@@ -1,0 +1,9 @@
+This project is a macOS app for AI chat with agentic capabilities. It uses Swift and a simple build system (`build.sh`). The UI is in the code, there are no XIBs. The app is currently in active development, so no backwards compatibility is required if we're changing something.
+
+The documentation for some of the libraries that we are using is located in `lib-docs`.
+
+Modern UI stuff could be used since we're targeting macOS 15 or higher. Feel free to do research using one-liners with `swift -e` if needed.
+
+Use `build.sh` to build the project and check for possible compilation errors (it's a wrapper around `swift build` that does everything to make a proper app bundle).
+
+Don't overthink. Ask if something is unclear. If encountered a difficult problem first explain it and ask advice from the user.

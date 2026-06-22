@@ -1,0 +1,12 @@
+*.app
+*.zip
+*.dmg
+*.log
+.DS_Store
+.build/
+.swiftpm/
+Package.resolved
+.env
+lib-docs/*
+plans/*
+dist/*
