@@ -3,6 +3,7 @@
 
 import SwiftUI
 import Textual
+import AppKit
 
 @main
 struct iCanHazAIApp: App {
@@ -24,9 +25,114 @@ struct iCanHazAIApp: App {
                     NSApplication.shared.activate(ignoringOtherApps: true)
                     if let window = NSApplication.shared.windows.first(where: { $0.contentViewController is NSHostingController<AnyView> }) ?? NSApplication.shared.windows.first {
                         window.makeKeyAndOrderFront(nil)
+                        restoreWindowFrame(window)
+                        trackWindowFrame(window)
                     }
                 }
         }
         .windowToolbarStyle(.unified)
+        .commands {
+            // Replace the default "New Window" item (Cmd+N) to prevent
+            // creating multiple main windows. We only expose "New Connection…".
+            CommandGroup(replacing: .newItem) {
+                Button("New Connection...") {
+                    ConnectionWizardView.show(onFinish: { AppViewModel.shared?.refreshAfterWizard() })
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+            }
+            CommandGroup(replacing: .appSettings) {
+                Button("Preferences...") {
+                    PreferencesView.show()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+        }
+    }
+
+    // MARK: - Window frame persistence
+
+    /// Applies the saved window position/size from config (if present).
+    private func restoreWindowFrame(_ window: NSWindow) {
+        Task {
+            let config = ConfigManager.shared
+            await config.load()
+            guard let wc = await config.getWindow() else { return }
+            var frame = window.frame
+            var changed = false
+            if let x = wc.x { frame.origin.x = x; changed = true }
+            if let y = wc.y { frame.origin.y = y; changed = true }
+            if let width = wc.width { frame.size.width = width; changed = true }
+            if let height = wc.height { frame.size.height = height; changed = true }
+            if changed {
+                await MainActor.run {
+                    window.setFrame(frame, display: true)
+                }
+            }
+        }
+    }
+
+    /// Starts tracking the window's frame changes with a 500 ms debounce,
+    /// writing the updated `[window]` section to the config file.
+    private func trackWindowFrame(_ window: NSWindow) {
+        let config = ConfigManager.shared
+        var debounceTask: Task<Void, Never>?
+
+        // Use a dedicated delegate object to intercept resize/move events.
+        let tracker = WindowFrameTracker { frame in
+            debounceTask?.cancel()
+            debounceTask = Task {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled else { return }
+                let wc = WindowConfig(x: frame.origin.x, y: frame.origin.y,
+                                      width: frame.size.width, height: frame.size.height)
+                await config.setWindow(wc)
+            }
+        }
+        // Keep the tracker alive by associating it with the window.
+        objc_setAssociatedObject(window, "frameTracker", tracker, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        tracker.attach(to: window)
+    }
+}
+
+// MARK: - Window frame tracking delegate
+
+/// Observes `NSWindow` frame changes (resize and move) and calls a callback
+/// with the new frame. Uses `NSWindowDelegate` and `NSViewFrameDidChangeNotification`.
+/// All methods are `@MainActor` since NSWindow is main-actor isolated.
+@MainActor
+private final class WindowFrameTracker: NSObject, NSWindowDelegate {
+    private let onFrameChange: (NSRect) -> Void
+    private weak var window: NSWindow?
+
+    init(onFrameChange: @escaping (NSRect) -> Void) {
+        self.onFrameChange = onFrameChange
+    }
+
+    func attach(to window: NSWindow) {
+        self.window = window
+        window.delegate = self
+        // Also observe live resize notifications since the delegate's
+        // `windowDidResize` only fires after resize ends.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(frameDidChange),
+            name: NSWindow.didResizeNotification,
+            object: window
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(frameDidChange),
+            name: NSWindow.didMoveNotification,
+            object: window
+        )
+    }
+
+    @objc private func frameDidChange(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        onFrameChange(window.frame)
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 }

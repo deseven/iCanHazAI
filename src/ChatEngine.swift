@@ -37,6 +37,10 @@ actor ChatEngine {
     /// Filename of the chat whose last assistant message can be retried.
     private var lastRetryableFilename: String?
 
+    /// Filenames of chats for which a name-generation request is in flight.
+    /// Prevents duplicate concurrent naming attempts for the same chat.
+    private var namingInProgress: Set<String> = []
+
     private let env = EnvironmentManager.shared
     private var watcher: EnvironmentWatcher?
 
@@ -146,6 +150,10 @@ actor ChatEngine {
             connections = env.loadConnections()
             emit(.connectionsChanged(connections))
         }
+        // Validate config references after any environment change so that
+        // stale default_connection / default_role / utility_connection
+        // entries are cleared from the config file.
+        Task { await ConfigManager.shared.validateReferences() }
     }
 
     // MARK: - Loading
@@ -237,12 +245,26 @@ actor ChatEngine {
 
     /// Creates a new empty chat and returns its filename. Any other empty
     /// chats (no messages) are pruned first so the sidebar doesn't accumulate
-    /// blank "New chat" entries.
+    /// blank "New chat" entries. Applies default connection and role from the
+    /// app config if set.
     @discardableResult
-    func createNewChat() -> String {
+    func createNewChat() async -> String {
         pruneEmptyChats(except: nil)
         let filename = env.newChatFilename()
-        let chat = Chat()
+        var chat = Chat()
+
+        // Apply config defaults for new chats (read from ConfigManager).
+        let config = ConfigManager.shared
+        let dc = await config.getDefaultConnection()
+        let dr = await config.getDefaultRole()
+        // Verify the defaults still reference valid items.
+        if let conn = dc, self.connections.contains(where: { $0.id == conn }) {
+            chat.connection = conn
+        }
+        if let role = dr, self.roles.contains(where: { $0.name == role }) {
+            chat.role = role
+        }
+
         env.saveChat(chat, filename: filename)
         let record = ChatRecord(filename: filename, chat: chat)
         records.insert(record, at: 0)
@@ -347,6 +369,11 @@ actor ChatEngine {
 
         lastRetryableFilename = filename
         runStream(for: filename, connection: connection, messages: messages)
+
+        // Fire-and-forget: try to generate a chat name via the utility connection
+        // if this chat doesn't have a title yet.
+        maybeGenerateChatName(filename: filename)
+
         return true
     }
 
@@ -492,6 +519,84 @@ actor ChatEngine {
             flushCoalescedEmit()
             emit(.chatsChanged(records))
         }
+    }
+
+    // MARK: - Chat naming
+
+    /// Kicks off a background request to generate a chat name via the utility
+    /// connection, if one is configured and the chat still has no title.
+    /// This is fire-and-forget and runs in parallel to the main stream.
+    private func maybeGenerateChatName(filename: String) {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }),
+              records[idx].chat.title == nil,
+              !namingInProgress.contains(filename) else { return }
+
+        guard let firstUserMsg = records[idx].chat.messages.first(where: { $0.role == .user }) else { return }
+        let firstUserText = firstUserMsg.content
+
+        namingInProgress.insert(filename)
+
+        Task { [weak self] in
+            defer {
+                Task { [weak self] in
+                    await self?.clearNamingInProgress(filename)
+                }
+            }
+
+            let config = ConfigManager.shared
+            guard let utilityConnID = await config.getUtilityConnection() else { return }
+            guard let self else { return }
+            guard let utilityConn = await self.connections.first(where: { $0.id == utilityConnID }) else { return }
+
+            let systemPrompt = """
+                The user just started a new chat and the following is their first message. \
+                This message is NOT a request to you, we only need to figure out a good chat name based on it.
+                Generate a short, descriptive chat name that captures the essence of their request. \
+                The name must be in the same language as the user's message. \
+                Respond with ONLY the chat name — no quotes, no punctuation, no explanations, no markdown. \
+                Keep it concise, ideally under 50 characters.
+                """
+
+            let messages: [ChatMessage] = [
+                ChatMessage(role: .system, content: systemPrompt),
+                ChatMessage(role: .user, content: firstUserText),
+            ]
+
+            do {
+                let rawName = try await ChatService.shared.stream(
+                    connection: utilityConn,
+                    messages: messages,
+                    onChunk: { _ in }
+                )
+                let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return }
+                await self.applyGeneratedName(filename: filename, name: trimmed)
+            } catch {
+                // Silently ignore — naming is best-effort.
+            }
+        }
+    }
+
+    /// Applies a generated name to a chat only if it still has no title
+    /// (the user may have renamed it in the meantime).
+    ///
+    /// When the chat is still streaming we only update the title in memory;
+    /// the next coalesced emit (for a content chunk) will push it to the UI,
+    /// and `finishStream` will persist it to disk.  When the stream has already
+    /// finished we persist and emit right away so the sidebar updates immediately.
+    private func applyGeneratedName(filename: String, name: String) {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }),
+              records[idx].chat.title == nil else { return }
+        records[idx].chat.title = name
+        if !records[idx].isStreaming {
+            env.saveChat(records[idx].chat, filename: filename)
+            emit(.chatsChanged(records))
+        }
+    }
+
+    /// Removes a filename from the naming-in-progress set.
+    private func clearNamingInProgress(_ filename: String) {
+        namingInProgress.remove(filename)
     }
 
     // MARK: - Message editing / deletion

@@ -3,6 +3,34 @@
 
 import SwiftUI
 
+/// A reusable confirmation sheet with a destructive action button and a Cancel
+/// button. Return confirms and Escape cancels, matching standard macOS behaviour.
+struct ConfirmActionSheet: View {
+    let title: String
+    let message: String
+    let confirmLabel: String
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(title)
+                .font(.headline)
+            Text(message)
+                .foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button(confirmLabel, role: .destructive, action: onConfirm)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 320)
+    }
+}
+
 /// A simple rename dialog with a text field and Cancel/OK buttons. The field
 /// is pre-filled with the current chat name and its contents selected on appear
 /// so the user can immediately overwrite or edit it.

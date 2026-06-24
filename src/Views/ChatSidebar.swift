@@ -82,31 +82,33 @@ struct ChatSidebar: View {
             )
         }
         // Delete confirmation
-        .confirmationDialog(
-            "Delete this chat?",
-            isPresented: Binding(
-                get: { deletingFilename != nil },
-                set: { if !$0 { deletingFilename = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                if let filename = deletingFilename {
-                    store.deleteChat(filename)
+        .sheet(item: Binding(
+            get: { deletingFilename.map(ChatDeleteTarget.init) },
+            set: { newValue in deletingFilename = newValue?.filename }
+        )) { target in
+            ConfirmActionSheet(
+                title: "Delete this chat?",
+                message: "This action cannot be undone.",
+                confirmLabel: "Delete",
+                onCancel: { deletingFilename = nil },
+                onConfirm: {
+                    store.deleteChat(target.filename)
+                    deletingFilename = nil
                 }
-                deletingFilename = nil
-            }
-            Button("Cancel", role: .cancel) {
-                deletingFilename = nil
-            }
-        } message: {
-            Text("This action cannot be undone.")
+            )
         }
     }
 }
 
 /// Wrapper to make a filename identifiable for use with `.sheet(item:)`.
 private struct ChatRenameTarget: Identifiable {
+    let filename: String
+    var id: String { filename }
+    init(_ filename: String) { self.filename = filename }
+}
+
+/// Wrapper to make a filename identifiable for use with `.sheet(item:)`.
+private struct ChatDeleteTarget: Identifiable {
     let filename: String
     var id: String { filename }
     init(_ filename: String) { self.filename = filename }
@@ -148,16 +150,9 @@ private struct ChatRow: View {
         .contentShape(Rectangle())
     }
 
-    /// Derives a display title from the user-defined title, or the first user
-    /// message, or "New chat" for empty chats.
+    /// Derives a display title from the shared `ChatRecord.displayTitle`.
     private var displayTitle: String {
-        if let title = item.chat.title, !title.isEmpty {
-            return title
-        }
-        if let firstUser = item.chat.messages.first(where: { $0.role == .user }) {
-            return String(firstUser.content.prefix(40))
-        }
-        return "New chat"
+        item.displayTitle
     }
 }
 

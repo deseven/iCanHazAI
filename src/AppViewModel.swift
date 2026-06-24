@@ -13,6 +13,11 @@ import SwiftUI
 @MainActor
 final class AppViewModel: ObservableObject {
 
+    /// Shared reference set by the app on launch so that auxiliary windows
+    /// (e.g. Preferences) can reach the view model without walking the
+    /// responder chain.
+    @MainActor static weak var shared: AppViewModel?
+
     // MARK: - Published state (mirrored from the engine)
 
     @Published var chatItems: [ChatRecord] = []
@@ -27,19 +32,85 @@ final class AppViewModel: ObservableObject {
     /// Whether the right-hand chat info sidebar is currently shown.
     @Published var chatInfoSidebarVisible: Bool = false
 
+    // MARK: - Preferences state (cached from ConfigManager)
+
+    /// Cached preferences values, kept in sync with ConfigManager.
+    @Published var preferencesDefaultConnection: String? = nil
+    @Published var preferencesDefaultRole: String? = "Assistant"
+    @Published var preferencesUtilityConnection: String? = nil
+
     // MARK: - Private
 
     private let engine = ChatEngine.shared
+    private let config = ConfigManager.shared
     private var subscription: Task<Void, Never>?
+    /// Whether we've already performed the initial "no connections" check.
+    /// Prevents the wizard from popping up again after the user dismisses it.
+    private var didCheckInitialConnections = false
 
     // MARK: - Init
 
     init() {
+        AppViewModel.shared = self
         startListening()
+        loadPreferences()
     }
 
     deinit {
         subscription?.cancel()
+    }
+
+    // MARK: - Preferences sync
+
+    /// Loads current preferences from the config manager into the cached
+    /// `@Published` properties.
+    private func loadPreferences() {
+        Task {
+            await config.load()
+            let dc = await config.getDefaultConnection()
+            let dr = await config.getDefaultRole()
+            let uc = await config.getUtilityConnection()
+            preferencesDefaultConnection = dc
+            preferencesDefaultRole = dr
+            preferencesUtilityConnection = uc
+        }
+    }
+
+    /// Reloads preferences (call after FSEvents changes to connections/roles).
+    func refreshPreferences() {
+        loadPreferences()
+    }
+
+    // MARK: - Preference bindings (two-way, write-through to ConfigManager)
+
+    var bindingDefaultConnection: Binding<String?> {
+        Binding(
+            get: { self.preferencesDefaultConnection },
+            set: { newValue in
+                self.preferencesDefaultConnection = newValue
+                Task { await self.config.setDefaultConnection(newValue) }
+            }
+        )
+    }
+
+    var bindingDefaultRole: Binding<String?> {
+        Binding(
+            get: { self.preferencesDefaultRole },
+            set: { newValue in
+                self.preferencesDefaultRole = newValue
+                Task { await self.config.setDefaultRole(newValue) }
+            }
+        )
+    }
+
+    var bindingUtilityConnection: Binding<String?> {
+        Binding(
+            get: { self.preferencesUtilityConnection },
+            set: { newValue in
+                self.preferencesUtilityConnection = newValue
+                Task { await self.config.setUtilityConnection(newValue) }
+            }
+        )
     }
 
     // MARK: - Listening
@@ -80,11 +151,101 @@ final class AppViewModel: ObservableObject {
             }
         case .rolesChanged(let roles):
             self.roles = roles
+            refreshPreferences()
         case .connectionsChanged(let connections):
             self.connections = connections
+            refreshPreferences()
+            // On the first connections snapshot, if there are no connections
+            // at all, automatically open the New Connection wizard.
+            if !didCheckInitialConnections {
+                didCheckInitialConnections = true
+                if connections.isEmpty {
+                    ConnectionWizardView.show(onFinish: { self.refreshAfterWizard() })
+                }
+            }
         case .error(let message):
             errorMessage = message
         }
+    }
+
+    // MARK: - Wizard completion
+
+    /// Called after the connection wizard finishes. Refreshes preferences and,
+    /// if the app has no default/utility connection set, asks the user whether
+    /// to use the just-created connection for those roles.
+    func refreshAfterWizard() {
+        refreshPreferences()
+        Task {
+            // Give the engine a moment to pick up the new connection file via
+            // FSEvents before reading the config.
+            try? await Task.sleep(for: .milliseconds(300))
+            await promptForDefaultIfNeeded()
+            await promptForUtilityIfNeeded()
+        }
+    }
+
+    /// If no default connection is configured, asks the user whether to set
+    /// the most recently created connection as the default.
+    private func promptForDefaultIfNeeded() async {
+        let dc = await config.getDefaultConnection()
+        guard dc == nil else { return }
+        guard let conn = connections.last else { return }
+        await MainActor.run {
+            self.askToSetConnection(
+                title: "Set Default Connection?",
+                message: "No default connection is set. Use “\(conn.displayName)” as the default connection for new chats?",
+                connectionID: conn.id,
+                setter: { self.setDefaultConnection($0) }
+            )
+        }
+    }
+
+    /// If no utility connection is configured, asks the user whether to set
+    /// the most recently created connection as the utility connection.
+    private func promptForUtilityIfNeeded() async {
+        let uc = await config.getUtilityConnection()
+        guard uc == nil else { return }
+        guard let conn = connections.last else { return }
+        await MainActor.run {
+            self.askToSetConnection(
+                title: "Set Utility Connection?",
+                message: "No utility connection is set. Use “\(conn.displayName)” for utility tasks such as chat name generation?",
+                connectionID: conn.id,
+                setter: { self.setUtilityConnection($0) }
+            )
+        }
+    }
+
+    /// Presents a yes/no alert asking whether to assign a connection to a role.
+    private func askToSetConnection(
+        title: String,
+        message: String,
+        connectionID: String,
+        setter: @escaping (String) -> Void
+    ) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "Set as Default")
+        alert.addButton(withTitle: "Not Now")
+        // Repurpose the first button title per caller context.
+        alert.buttons.first?.title = "Use This Connection"
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            setter(connectionID)
+        }
+    }
+
+    private func setDefaultConnection(_ id: String) {
+        preferencesDefaultConnection = id
+        Task { await config.setDefaultConnection(id) }
+    }
+
+    private func setUtilityConnection(_ id: String) {
+        preferencesUtilityConnection = id
+        Task { await config.setUtilityConnection(id) }
     }
 
     // MARK: - Derived helpers

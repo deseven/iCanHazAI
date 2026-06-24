@@ -35,6 +35,7 @@ struct MainWindow: View {
                         .frame(width: 260)
                 }
             }
+            .navigationTitle(store.selectedChatItem?.displayTitle ?? "")
         }
     }
 }

@@ -25,11 +25,11 @@ struct ChatInfoSidebar: View {
             if let item = store.selectedChatItem {
                 Form {
                     Section("Chat") {
-                        LabeledContent("Name", value: displayName(for: item))
+                        InfoCell(label: "Name", value: displayName(for: item))
                     }
                     Section("Timestamps") {
-                        LabeledContent("Created", value: formatted(createdDate(for: item)))
-                        LabeledContent("Updated", value: formatted(updatedDate(for: item)))
+                        InfoCell(label: "Created", value: formatted(createdDate(for: item)))
+                        InfoCell(label: "Updated", value: formatted(updatedDate(for: item)))
                     }
                     Section("Usage") {
                         LabeledContent("Tokens", value: "\(item.tokenCount)")
@@ -73,5 +73,24 @@ struct ChatInfoSidebar: View {
 
     private func formatted(_ date: Date) -> String {
         date.formatted(date: .abbreviated, time: .shortened)
+    }
+}
+
+/// A stacked label+value cell: label on the first line, value (possibly multiline)
+/// below it. Never breaks the layout regardless of value length.
+private struct InfoCell: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.body)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, 2)
     }
 }

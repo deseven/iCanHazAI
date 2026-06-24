@@ -2,7 +2,7 @@ This project is a macOS app for AI chat with agentic capabilities. It uses Swift
 
 The documentation for some of the libraries that we are using is located in `lib-docs`.
 
-Modern UI stuff could be used since we're targeting macOS 15 or higher. Feel free to do research using one-liners with `swift -e` if needed.
+Modern UI stuff could be used since we're targeting macOS 15 or higher. Feel free to do research using one-liners with `swift -e` or writing temp swift files using the included tool and launching them if it's more than one line.
 
 Use `build.sh` to build the project and check for possible compilation errors (it's a wrapper around `swift build` that does everything to make a proper app bundle).
 

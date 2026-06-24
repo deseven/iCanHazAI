@@ -98,17 +98,17 @@ struct MessageView: View {
                 }
             )
         }
-        .confirmationDialog(
-            "Delete this message?",
-            isPresented: $isConfirmingDelete,
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                store.deleteMessage(messageID: message.id)
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This action cannot be undone.")
+        .sheet(isPresented: $isConfirmingDelete) {
+            ConfirmActionSheet(
+                title: "Delete this message?",
+                message: "This action cannot be undone.",
+                confirmLabel: "Delete",
+                onCancel: { isConfirmingDelete = false },
+                onConfirm: {
+                    store.deleteMessage(messageID: message.id)
+                    isConfirmingDelete = false
+                }
+            )
         }
     }
 

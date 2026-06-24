@@ -39,6 +39,130 @@ final class ChatService: @unchecked Sendable {
         }
     }
 
+    /// Fetches the list of available model IDs from an OpenAI-compatible
+    /// provider. Not supported for Anthropic (the SwiftAnthropic package does
+    /// not expose a models endpoint).
+    func listModels(endpoint: String?, token: String?) async throws -> [String] {
+        let configuration: OpenAI.Configuration
+        if let endpoint = endpoint, let url = URL(string: endpoint) {
+            let host = url.host ?? "api.openai.com"
+            let port = url.port ?? (url.scheme == "http" ? 80 : 443)
+            let scheme = url.scheme ?? "https"
+            let basePath = url.path.isEmpty ? "/v1" : url.path
+            configuration = OpenAI.Configuration(
+                token: token,
+                host: host,
+                port: port,
+                scheme: scheme,
+                basePath: basePath,
+                parsingOptions: .relaxed
+            )
+        } else {
+            configuration = OpenAI.Configuration(
+                token: token,
+                parsingOptions: .relaxed
+            )
+        }
+
+        let openAI = OpenAI(configuration: configuration)
+        let result = try await openAI.models()
+        return result.data.map { $0.id }.sorted()
+    }
+
+    /// Performs a non-streaming chat completion and returns the assistant's
+    /// text. Used by the connection wizard's "say hi" test.
+    func complete(connection: Connection, messages: [ChatMessage]) async throws -> String {
+        switch connection.provider {
+        case .openai:
+            return try await completeOpenAI(connection: connection, messages: messages)
+        case .anthropic:
+            return try await completeAnthropic(connection: connection, messages: messages)
+        }
+    }
+
+    private func completeOpenAI(connection: Connection, messages: [ChatMessage]) async throws -> String {
+        let configuration: OpenAI.Configuration
+        if let endpoint = connection.endpoint, let url = URL(string: endpoint) {
+            let host = url.host ?? "api.openai.com"
+            let port = url.port ?? (url.scheme == "http" ? 80 : 443)
+            let scheme = url.scheme ?? "https"
+            let basePath = url.path.isEmpty ? "/v1" : url.path
+            configuration = OpenAI.Configuration(
+                token: connection.token,
+                host: host,
+                port: port,
+                scheme: scheme,
+                basePath: basePath,
+                parsingOptions: .relaxed
+            )
+        } else {
+            configuration = OpenAI.Configuration(
+                token: connection.token,
+                parsingOptions: .relaxed
+            )
+        }
+
+        let openAI = OpenAI(configuration: configuration)
+
+        let chatMessages: [ChatQuery.ChatCompletionMessageParam] = messages.compactMap { msg in
+            ChatQuery.ChatCompletionMessageParam(role: roleFor(msg.role), content: msg.content)
+        }
+
+        let query = ChatQuery(
+            messages: chatMessages,
+            model: connection.model,
+            maxCompletionTokens: connection.maxCompletionTokens,
+            temperature: connection.temperature,
+            topP: connection.topP
+        )
+
+        let result = try await openAI.chats(query: query, vendorParameters: connection.vendorParameters)
+        return result.choices.first?.message.content ?? ""
+    }
+
+    private func completeAnthropic(connection: Connection, messages: [ChatMessage]) async throws -> String {
+        let apiVersion = "2023-06-01"
+        let basePath = connection.endpoint ?? "https://api.anthropic.com"
+        let service = AnthropicServiceFactory.service(
+            apiKey: connection.token ?? "",
+            apiVersion: apiVersion,
+            basePath: basePath,
+            betaHeaders: nil
+        )
+
+        var systemText: String?
+        var conversationMessages: [ChatMessage] = []
+        for msg in messages {
+            if msg.role == .system {
+                systemText = msg.content
+            } else {
+                conversationMessages.append(msg)
+            }
+        }
+
+        let anthropicMessages: [MessageParameter.Message] = conversationMessages.map { msg in
+            let role: MessageParameter.Message.Role = msg.role == .user ? .user : .assistant
+            return MessageParameter.Message(role: role, content: .text(msg.content))
+        }
+
+        let maxTokens = connection.maxTokens ?? 4096
+        let parameters = MessageParameter(
+            model: .other(connection.model),
+            messages: anthropicMessages,
+            maxTokens: maxTokens,
+            system: systemText.map { .text($0) }
+        )
+
+        let response = try await service.createMessage(parameters)
+        // Extract text from the first text content block.
+        for content in response.content {
+            if case .text(let text, _) = content {
+                return text
+            }
+        }
+        return ""
+    }
+
     /// A box that lets `withTaskCancellationHandler.onCancel` reach both the
     /// vendor cancellable handle and the `AsyncThrowingStream` continuation,
     /// so it can cancel the HTTP request *and* finish the continuation

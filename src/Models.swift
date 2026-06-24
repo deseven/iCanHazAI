@@ -109,6 +109,18 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     var sortKey: Date {
         chat.messages.last?.timestamp ?? createdAt
     }
+
+    /// Display title derived from the user-defined title, the first user
+    /// message, or "New chat" for empty chats.
+    var displayTitle: String {
+        if let title = chat.title, !title.isEmpty {
+            return title
+        }
+        if let firstUser = chat.messages.first(where: { $0.role == .user }) {
+            return String(firstUser.content.prefix(40))
+        }
+        return "New chat"
+    }
 }
 
 // MARK: - Token estimation
@@ -185,7 +197,7 @@ struct Connection: Identifiable, Equatable, @unchecked Sendable {
     let vendorParameters: [String: JSONValue]?
 
     /// Display name shown in the UI.
-    var displayName: String { "\(name) (\(provider.rawValue))" }
+    var displayName: String { name }
 }
 
 /// Raw structure decoded from a connection TOML file.
