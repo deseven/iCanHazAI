@@ -6,6 +6,13 @@ import SwiftUI
 struct ChatSidebar: View {
     @EnvironmentObject var store: AppViewModel
 
+    /// Filename pending a rename action (drives the rename sheet).
+    @State private var renamingFilename: String?
+    @State private var renameText: String = ""
+
+    /// Filename pending a delete confirmation (drives the confirmation dialog).
+    @State private var deletingFilename: String?
+
     var body: some View {
         VStack(spacing: 0) {
             // Header with new chat button
@@ -42,6 +49,16 @@ struct ChatSidebar: View {
                         .onTapGesture {
                             store.selectChat(item.id)
                         }
+                        // Right-click / control-click context menu.
+                        .contextMenu {
+                            Button("Rename") {
+                                renamingFilename = item.id
+                                renameText = item.chat.title ?? ""
+                            }
+                            Button("Delete", role: .destructive) {
+                                deletingFilename = item.id
+                            }
+                        }
                         if item.id != store.chatItems.last?.id {
                             Divider()
                         }
@@ -50,7 +67,49 @@ struct ChatSidebar: View {
             }
         }
         .background(.regularMaterial)
+        // Rename sheet
+        .sheet(item: Binding(
+            get: { renamingFilename.map(ChatRenameTarget.init) },
+            set: { newValue in renamingFilename = newValue?.filename }
+        )) { target in
+            RenameChatSheet(
+                initialText: renameText,
+                onCancel: { renamingFilename = nil },
+                onConfirm: { newTitle in
+                    store.renameChat(target.filename, to: newTitle)
+                    renamingFilename = nil
+                }
+            )
+        }
+        // Delete confirmation
+        .confirmationDialog(
+            "Delete this chat?",
+            isPresented: Binding(
+                get: { deletingFilename != nil },
+                set: { if !$0 { deletingFilename = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let filename = deletingFilename {
+                    store.deleteChat(filename)
+                }
+                deletingFilename = nil
+            }
+            Button("Cancel", role: .cancel) {
+                deletingFilename = nil
+            }
+        } message: {
+            Text("This action cannot be undone.")
+        }
     }
+}
+
+/// Wrapper to make a filename identifiable for use with `.sheet(item:)`.
+private struct ChatRenameTarget: Identifiable {
+    let filename: String
+    var id: String { filename }
+    init(_ filename: String) { self.filename = filename }
 }
 
 private struct ChatRow: View {
@@ -89,11 +148,16 @@ private struct ChatRow: View {
         .contentShape(Rectangle())
     }
 
-    /// Derives a display title from the first user message, if any.
+    /// Derives a display title from the user-defined title, or the first user
+    /// message, or "New chat" for empty chats.
     private var displayTitle: String {
+        if let title = item.chat.title, !title.isEmpty {
+            return title
+        }
         if let firstUser = item.chat.messages.first(where: { $0.role == .user }) {
             return String(firstUser.content.prefix(40))
         }
         return "New chat"
     }
 }
+

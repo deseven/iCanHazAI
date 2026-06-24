@@ -3,6 +3,7 @@
 
 import Foundation
 import TOML
+import OpenAI
 
 /// Manages the app's data directory
 /// and provides loading/saving of chats, roles, and connections.
@@ -144,11 +145,18 @@ final class EnvironmentManager: @unchecked Sendable {
         return files
             .filter { $0.pathExtension == "toml" }
             .compactMap { url in
-                guard let data = try? Data(contentsOf: url),
-                      let config = try? TOMLDecoder().decode(ConnectionConfig.self, from: data) else {
+                guard let data = try? Data(contentsOf: url) else {
+                    return nil
+                }
+                guard let config = try? TOMLDecoder().decode(ConnectionConfig.self, from: data) else {
                     return nil
                 }
                 let name = url.deletingPathExtension().lastPathComponent
+                let vendorParams: [String: JSONValue]? = {
+                    guard let jsonString = config.vendorParameters,
+                          let jsonData = jsonString.data(using: .utf8) else { return nil }
+                    return try? JSONDecoder().decode([String: JSONValue].self, from: jsonData)
+                }()
                 return Connection(
                     provider: provider,
                     name: name,
@@ -167,7 +175,7 @@ final class EnvironmentManager: @unchecked Sendable {
                     stopSequences: config.stopSequences,
                     thinkingEnabled: config.thinkingEnabled,
                     thinkingBudget: config.thinkingBudget,
-                    vendorParameters: config.vendorParameters
+                    vendorParameters: vendorParams
                 )
             }
     }

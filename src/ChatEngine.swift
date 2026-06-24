@@ -23,6 +23,17 @@ actor ChatEngine {
     /// In-flight streaming tasks keyed by chat filename, used for cancellation.
     private var streamTasks: [String: Task<Void, Never>] = [:]
 
+    /// Coalesced-emit bookkeeping. While a chat is streaming, rapid chunks
+    /// would otherwise each trigger a full `chatsChanged` event, flooding the
+    /// UI's main-actor queue and making the stop button feel unresponsive
+    /// (especially for OpenAI-compatible providers that emit 1–4 char deltas).
+    /// Instead we defer the emit: the first chunk schedules a flush task that
+    /// fires after `emitCoalesceInterval`; subsequent chunks just mark state
+    /// dirty. This collapses dozens of events per second into ~20.
+    private var pendingEmitTask: Task<Void, Never>?
+    private var emitDirty = false
+    private let emitCoalesceInterval: UInt64 = 50_000_000 // 50ms in nanoseconds
+
     /// Filename of the chat whose last assistant message can be retried.
     private var lastRetryableFilename: String?
 
@@ -82,6 +93,31 @@ actor ChatEngine {
         }
     }
 
+    /// Schedules a coalesced `chatsChanged` emit. The first call starts a
+    /// timer; subsequent calls just mark state dirty. When the timer fires we
+    /// emit once with the latest `records`. This collapses a burst of streaming
+    /// chunks into a single UI event every `emitCoalesceInterval`.
+    private func scheduleCoalescedEmit() {
+        emitDirty = true
+        guard pendingEmitTask == nil else { return }
+        let interval = emitCoalesceInterval
+        pendingEmitTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: interval)
+            await self?.flushCoalescedEmit()
+        }
+    }
+
+    /// Emits a pending coalesced `chatsChanged` (if any) and clears the timer.
+    /// Called by the timer, and also directly by state transitions that must
+    /// reach the UI immediately (stop, finish, error).
+    private func flushCoalescedEmit() {
+        pendingEmitTask?.cancel()
+        pendingEmitTask = nil
+        guard emitDirty else { return }
+        emitDirty = false
+        emit(.chatsChanged(records))
+    }
+
     // MARK: - Watching
 
     private func startWatching() {
@@ -125,9 +161,11 @@ actor ChatEngine {
                 chat: chat,
                 isStreaming: existing?.isStreaming ?? false,
                 hasUnreadActivity: existing?.hasUnreadActivity ?? false,
-                lastError: existing?.lastError
+                lastError: existing?.lastError,
+                createdAt: existing?.createdAt ?? Date()
             ))
         }
+        sortRecordsByActivity(&newRecords)
         records = newRecords
         roles = env.loadAllRoles()
         connections = env.loadConnections()
@@ -139,6 +177,21 @@ actor ChatEngine {
             emit(.rolesChanged(roles))
             emit(.connectionsChanged(connections))
         }
+    }
+
+    /// Orders records so the chat with the most recent activity comes first.
+    /// Empty chats (no messages) are ordered by their in-memory creation time;
+    /// once a chat has messages it switches to ordering by the last message
+    /// timestamp.
+    private func sortRecordsByActivity(_ list: inout [ChatRecord]) {
+        list.sort { a, b in
+            a.sortKey > b.sortKey
+        }
+    }
+
+    private func sortAndEmit() {
+        sortRecordsByActivity(&records)
+        emit(.chatsChanged(records))
     }
 
     /// Reconciles in-memory chat state with disk. Chats that are currently
@@ -164,7 +217,8 @@ actor ChatEngine {
                         chat: diskChat,
                         isStreaming: false,
                         hasUnreadActivity: existing.hasUnreadActivity,
-                        lastError: nil
+                        lastError: nil,
+                        createdAt: existing.createdAt
                     ))
                 }
             } else {
@@ -172,6 +226,7 @@ actor ChatEngine {
                 newRecords.append(ChatRecord(filename: filename, chat: diskChat))
             }
         }
+        sortRecordsByActivity(&newRecords)
         records = newRecords
         // Drop bookkeeping for deleted chats.
         streamTasks = streamTasks.filter { loadedIDs.contains($0.key) }
@@ -180,9 +235,12 @@ actor ChatEngine {
 
     // MARK: - Chat management
 
-    /// Creates a new empty chat and returns its filename.
+    /// Creates a new empty chat and returns its filename. Any other empty
+    /// chats (no messages) are pruned first so the sidebar doesn't accumulate
+    /// blank "New chat" entries.
     @discardableResult
     func createNewChat() -> String {
+        pruneEmptyChats(except: nil)
         let filename = env.newChatFilename()
         let chat = Chat()
         env.saveChat(chat, filename: filename)
@@ -199,6 +257,38 @@ actor ChatEngine {
         env.deleteChat(filename: filename)
         records.removeAll(where: { $0.filename == filename })
         if lastRetryableFilename == filename { lastRetryableFilename = nil }
+        emit(.chatsChanged(records))
+    }
+
+    /// Renames a chat by setting its user-defined display title.
+    func renameChat(filename: String, to newTitle: String) {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        var chat = records[idx].chat
+        chat.title = trimmed.isEmpty ? nil : trimmed
+        saveChat(chat, filename: filename)
+        emit(.chatsChanged(records))
+    }
+
+    /// Removes all chats that have no messages, except the one identified by
+    /// `keep` (pass nil to prune every empty chat). Used when the user selects
+    /// or creates a different chat so blank placeholders don't linger.
+    func pruneEmptyChats(except keep: String?) {
+        let toRemove = records.filter { $0.chat.messages.isEmpty && $0.filename != keep }
+        guard !toRemove.isEmpty else { return }
+        for record in toRemove {
+            streamTasks[record.filename]?.cancel()
+            streamTasks[record.filename] = nil
+            env.deleteChat(filename: record.filename)
+            if lastRetryableFilename == record.filename { lastRetryableFilename = nil }
+        }
+        records.removeAll(where: { toRemove.contains($0) })
+    }
+
+    /// Called when the user selects a chat: prunes other empty chats so the
+    /// sidebar stays tidy.
+    func selectChat(filename: String) {
+        pruneEmptyChats(except: filename)
         emit(.chatsChanged(records))
     }
 
@@ -251,8 +341,9 @@ actor ChatEngine {
         // Add the user message immediately and create a placeholder assistant message.
         var updatedChat = baseChat
         updatedChat.messages.append(ChatMessage(role: .user, content: text))
-        updatedChat.messages.append(ChatMessage(role: .assistant, content: ""))
+        updatedChat.messages.append(ChatMessage(role: .assistant, content: "", connectionName: connection.displayName))
         saveChat(updatedChat, filename: filename)
+        sortAndEmit()
 
         lastRetryableFilename = filename
         runStream(for: filename, connection: connection, messages: messages)
@@ -277,8 +368,9 @@ actor ChatEngine {
             updatedChat.messages[lastIdx].content = ""
             updatedChat.messages[lastIdx].thinking = nil
             updatedChat.messages[lastIdx].error = nil
+            updatedChat.messages[lastIdx].connectionName = connection.displayName
         } else {
-            updatedChat.messages.append(ChatMessage(role: .assistant, content: ""))
+            updatedChat.messages.append(ChatMessage(role: .assistant, content: "", connectionName: connection.displayName))
         }
         records[idx].chat = updatedChat
         emit(.chatsChanged(records))
@@ -320,7 +412,8 @@ actor ChatEngine {
                 _ = result
                 await self?.finishStream(filename: filename)
             } catch is CancellationError {
-                // User-initiated stop: finalize whatever was streamed so far.
+                await self?.finishStream(filename: filename)
+            } catch let error as URLError where error.code == .cancelled {
                 await self?.finishStream(filename: filename)
             } catch {
                 await self?.recordError(error.localizedDescription, filename: filename)
@@ -345,7 +438,11 @@ actor ChatEngine {
             chat.messages[lastIdx].error = text
         }
         records[idx].chat = chat
-        emit(.chatsChanged(records))
+        // Coalesce: don't emit on every chunk. The flush fires on a timer,
+        // collapsing a burst of deltas into one UI event. This keeps the
+        // main-actor queue from backing up (the root cause of the sluggish
+        // stop button for OpenAI-compatible providers with tiny deltas).
+        scheduleCoalescedEmit()
     }
 
     /// Marks a stream as finished for the given chat, persisting the final
@@ -363,6 +460,9 @@ actor ChatEngine {
         // Flag as unread so the user is notified of new activity (the UI clears
         // this when the chat is viewed).
         records[idx].hasUnreadActivity = true
+        // Flush any pending coalesced emit first, then emit the final state
+        // immediately so the UI reflects "stopped/finished" without delay.
+        flushCoalescedEmit()
         emit(.chatsChanged(records))
     }
 
@@ -379,9 +479,47 @@ actor ChatEngine {
         env.saveChat(chat, filename: filename)
     }
 
-    /// Cancels the in-flight stream for the given chat.
+    /// Cancels the in-flight stream for the given chat. Flips the streaming
+    /// flag immediately so the UI reflects the stop right away; the stream
+    /// task finalizes the message content asynchronously via `finishStream`.
     func stopStreaming(filename: String) {
         streamTasks[filename]?.cancel()
+        if let idx = records.firstIndex(where: { $0.filename == filename }) {
+            records[idx].isStreaming = false
+            // Flush any pending coalesced emit first so the latest streamed
+            // content is visible, then emit the stopped state immediately so
+            // the stop button reacts without waiting for the coalesce timer.
+            flushCoalescedEmit()
+            emit(.chatsChanged(records))
+        }
+    }
+
+    // MARK: - Message editing / deletion
+
+    /// Edits the content of a message in place (plain text). Used by the
+    /// message hover "edit" action. Persists the updated chat to disk.
+    func editMessage(filename: String, messageID: UUID, newText: String) {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        var chat = records[idx].chat
+        guard let msgIdx = chat.messages.firstIndex(where: { $0.id == messageID }) else { return }
+        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        chat.messages[msgIdx].content = trimmed
+        // Clear any stale error/thinking on edit so the message renders cleanly.
+        chat.messages[msgIdx].error = nil
+        saveChat(chat, filename: filename)
+        emit(.chatsChanged(records))
+    }
+
+    /// Deletes a single message from the message tree by id. Persists the
+    /// updated chat to disk.
+    func deleteMessage(filename: String, messageID: UUID) {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        var chat = records[idx].chat
+        guard let msgIdx = chat.messages.firstIndex(where: { $0.id == messageID }) else { return }
+        chat.messages.remove(at: msgIdx)
+        saveChat(chat, filename: filename)
+        emit(.chatsChanged(records))
     }
 
     // MARK: - Selection updates

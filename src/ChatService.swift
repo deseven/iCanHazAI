@@ -39,6 +39,18 @@ final class ChatService: @unchecked Sendable {
         }
     }
 
+    /// A box that lets `withTaskCancellationHandler.onCancel` reach both the
+    /// vendor cancellable handle and the `AsyncThrowingStream` continuation,
+    /// so it can cancel the HTTP request *and* finish the continuation
+    /// synchronously — unblocking the `for try await` loop immediately.
+    private final class StreamBox: @unchecked Sendable {
+        var handle: (any CancellableRequest)?
+        var continuation: AsyncThrowingStream<ChatStreamResult, Error>.Continuation?
+        /// Guards against double-finishing the continuation (which is undefined
+        /// behaviour and can crash or silently fail).
+        var didFinish = false
+    }
+
     // MARK: - OpenAI
 
     private func streamOpenAI(
@@ -104,24 +116,101 @@ final class ChatService: @unchecked Sendable {
 
         var fullContent = ""
 
-        let stream = (openAI as OpenAIAsync).chatsStream(query: query, vendorParameters: connection.vendorParameters)
-        for try await result in stream {
-            // Allow the caller to cancel an in-flight stream between chunks.
-            try Task.checkCancellation()
-            for choice in result.choices {
-                let delta = choice.delta
-                if let content = delta.content {
-                    fullContent += content
-                    await onChunk(.content(content))
-                }
-                // Reasoning content from providers like DeepSeek/Grok/OpenRouter/Gemini.
-                if let reasoning = delta.reasoning {
-                    await onChunk(.thinking(reasoning))
-                }
+        // --- Chunk coalescing -------------------------------------------------
+        // OpenAI-compatible providers (and many OpenRouter/Gemini proxies) emit
+        // SSE deltas as small as a single token — often 1–4 characters. Each
+        // delta would otherwise become its own `onChunk` call, which the engine
+        // turns into a full `chatsChanged` event for the UI. At hundreds of
+        // events per second the main actor's queue backs up for several
+        // seconds, which is why the stop button felt unresponsive for OpenAI
+        // but worked instantly for Anthropic (whose deltas are much larger).
+        //
+        // We accumulate content and reasoning text into buffers and only flush
+        // to `onChunk` when either:
+        //   • a buffer reaches `coalesceMinChars`, or
+        //   • `coalesceInterval` has elapsed since the last flush.
+        // This cuts the number of UI events by ~10–50× without introducing
+        // noticeable latency (the interval is well below a frame).
+        let coalesceMinChars = 10
+        let coalesceInterval = Duration.milliseconds(40)
+        let clock = ContinuousClock()
+        var contentBuffer = ""
+        var thinkingBuffer = ""
+        var lastFlush = clock.now
+
+        func flush(force: Bool) async {
+            let now = clock.now
+            let due = force || (now - lastFlush >= coalesceInterval)
+            if !contentBuffer.isEmpty && (force || contentBuffer.count >= coalesceMinChars || due) {
+                await onChunk(.content(contentBuffer))
+                contentBuffer.removeAll(keepingCapacity: true)
             }
+            if !thinkingBuffer.isEmpty && (force || thinkingBuffer.count >= coalesceMinChars || due) {
+                await onChunk(.thinking(thinkingBuffer))
+                thinkingBuffer.removeAll(keepingCapacity: true)
+            }
+            if due { lastFlush = now }
         }
 
-        return fullContent
+        let box = StreamBox()
+        return try await withTaskCancellationHandler {
+            let stream = AsyncThrowingStream<ChatStreamResult, Error> { continuation in
+                let cancellable = openAI.chatsStream(
+                    query: query,
+                    vendorParameters: connection.vendorParameters,
+                    onResult: { result in
+                        continuation.yield(with: result)
+                    },
+                    completion: { error in
+                        guard !box.didFinish else {
+                            return
+                        }
+                        box.didFinish = true
+                        continuation.finish(throwing: error)
+                    }
+                )
+                box.handle = cancellable
+                box.continuation = continuation
+                continuation.onTermination = { term in
+                    // Always cancel the underlying URLSession.
+                    cancellable.cancelRequest()
+                    // If the stream was cancelled by the user, finish the
+                    // continuation with CancellationError to unblock the
+                    // `for try await` loop immediately. Only do this once.
+                    if case .cancelled = term, !box.didFinish {
+                        box.didFinish = true
+                        continuation.finish(throwing: CancellationError())
+                    }
+                }
+            }
+            for try await result in stream {
+                try Task.checkCancellation()
+                for choice in result.choices {
+                    let delta = choice.delta
+                    if let content = delta.content {
+                        fullContent += content
+                        contentBuffer += content
+                    }
+                    // Reasoning content from providers like DeepSeek/Grok/OpenRouter/Gemini.
+                    if let reasoning = delta.reasoning {
+                        thinkingBuffer += reasoning
+                    }
+                }
+                await flush(force: false)
+            }
+            // Drain any remaining buffered text before returning.
+            await flush(force: true)
+            return fullContent
+        } onCancel: {
+            // Safety net: if onTermination hasn't fired yet, finish the
+            // continuation here. onCancel fires synchronously when the Task
+            // is cancelled, but onTermination typically fires first.
+            box.handle?.cancelRequest()
+            if !box.didFinish, let c = box.continuation {
+                box.didFinish = true
+                c.finish(throwing: CancellationError())
+            }
+        }
     }
 
     private func roleFor(_ role: MessageRole) -> ChatQuery.ChatCompletionMessageParam.Role {

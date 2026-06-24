@@ -21,13 +21,23 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     /// Optional error text captured while streaming this assistant message.
     /// When non-nil, the message is rendered as an error block with a retry button.
     var error: String?
+    /// Wall-clock time the message was created (set once, when the message is
+    /// first added to a chat; never updated thereafter). Encoded as a JSON date
+    /// so it persists to disk.
+    var timestamp: Date
+    /// For assistant messages: the display name of the connection that produced
+    /// this response. Persisted so it survives reloads. Nil for non-assistant
+    /// messages or messages produced before this field existed.
+    var connectionName: String?
 
-    init(id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil, error: String? = nil) {
+    init(id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil, error: String? = nil, timestamp: Date = Date(), connectionName: String? = nil) {
         self.id = id
         self.role = role
         self.content = content
         self.thinking = thinking
         self.error = error
+        self.timestamp = timestamp
+        self.connectionName = connectionName
     }
 }
 
@@ -40,12 +50,22 @@ struct Chat: Codable, Identifiable, Equatable {
     var connection: String?
     /// Selected role name.
     var role: String?
+    /// Optional user-defined display title. When nil the UI derives a title
+    /// from the first user message (or "New chat").
+    var title: String?
 
-    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil) {
+    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, title: String? = nil) {
         self.id = id
         self.messages = messages
         self.connection = connection
         self.role = role
+        self.title = title
+    }
+
+    /// Wall-clock time of the most recent message, used to order chats in the
+    /// sidebar by last activity. Falls back to `Date.distantPast` for empty chats.
+    var lastActivity: Date {
+        messages.last?.timestamp ?? Date.distantPast
     }
 }
 
@@ -64,13 +84,46 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     var hasUnreadActivity: Bool
     /// Last error captured for this chat, if any.
     var lastError: String?
+    /// In-memory creation time. Used to order empty chats (which have no
+    /// messages yet) in the sidebar; once a message exists the chat switches
+    /// to ordering by the last message timestamp.
+    var createdAt: Date
 
-    init(filename: String, chat: Chat, isStreaming: Bool = false, hasUnreadActivity: Bool = false, lastError: String? = nil) {
+    init(filename: String, chat: Chat, isStreaming: Bool = false, hasUnreadActivity: Bool = false, lastError: String? = nil, createdAt: Date = Date()) {
         self.filename = filename
         self.chat = chat
         self.isStreaming = isStreaming
         self.hasUnreadActivity = hasUnreadActivity
         self.lastError = lastError
+        self.createdAt = createdAt
+    }
+
+    /// Approximate token count for the whole conversation (all messages,
+    /// including thinking). Updated live as content streams in.
+    var tokenCount: Int {
+        chat.messages.reduce(0) { $0 + TokenEstimator.estimate($1.content) + TokenEstimator.estimate($1.thinking ?? "") }
+    }
+
+    /// Key used to order chats in the sidebar. Empty chats use their in-memory
+    /// creation time; chats with messages use the last message timestamp.
+    var sortKey: Date {
+        chat.messages.last?.timestamp ?? createdAt
+    }
+}
+
+// MARK: - Token estimation
+
+/// A lightweight, dependency-free token estimator. Real BPE tokenizers are
+/// model-specific and heavy; for a UI counter a rough heuristic is enough.
+/// The approximation (~4 chars/token) tracks the OpenAI family closely enough
+/// for display purposes and updates in real time as content streams in.
+enum TokenEstimator {
+    static func estimate(_ text: String) -> Int {
+        guard !text.isEmpty else { return 0 }
+        // ~4 characters per token is the commonly cited heuristic for English
+        // text on GPT-family tokenizers. Round up so the counter never reads 0
+        // for non-empty content.
+        return max(1, (text.count + 3) / 4)
     }
 }
 
@@ -160,5 +213,25 @@ struct ConnectionConfig: Codable {
     var thinkingBudget: Int?
 
     /// Arbitrary vendor-specific parameters injected into the request JSON (OpenAI-compatible only).
-    var vendorParameters: [String: JSONValue]?
+    /// Raw JSON string, e.g. `{"thinking":{"type":"disabled"}}`.
+    var vendorParameters: String?
+
+    enum CodingKeys: String, CodingKey {
+        case endpoint
+        case token
+        case model
+        case maxTokens = "max_tokens"
+        case temperature
+        case topP = "top_p"
+        case reasoningEffort = "reasoning_effort"
+        case frequencyPenalty = "frequency_penalty"
+        case presencePenalty = "presence_penalty"
+        case maxCompletionTokens = "max_completion_tokens"
+        case seed
+        case topK = "top_k"
+        case stopSequences = "stop_sequences"
+        case thinkingEnabled = "thinking_enabled"
+        case thinkingBudget = "thinking_budget"
+        case vendorParameters = "vendor_parameters"
+    }
 }

@@ -20,6 +20,12 @@ final class AppViewModel: ObservableObject {
     @Published var connections: [Connection] = []
     @Published var selectedChatID: String?
     @Published var errorMessage: String?
+    /// Whether the currently selected chat is scrolled to the bottom. Updated
+    /// by `ChatView`; used to suppress the unread marker when the user is
+    /// already looking at the latest content.
+    @Published var selectedChatAtBottom: Bool = true
+    /// Whether the right-hand chat info sidebar is currently shown.
+    @Published var chatInfoSidebarVisible: Bool = false
 
     // MARK: - Private
 
@@ -62,6 +68,16 @@ final class AppViewModel: ObservableObject {
             } else {
                 selectedChatID = records.first?.id
             }
+            // If the user is viewing the selected chat and is scrolled to the
+            // bottom, suppress the unread marker — they've already seen the
+            // latest content (e.g. a stream that just finished).
+            if selectedChatAtBottom,
+               let selected = selectedChatID,
+               let item = records.first(where: { $0.id == selected }),
+               item.hasUnreadActivity,
+               !item.isStreaming {
+                Task { await engine.markViewed(filename: selected) }
+            }
         case .rolesChanged(let roles):
             self.roles = roles
         case .connectionsChanged(let connections):
@@ -92,6 +108,12 @@ final class AppViewModel: ObservableObject {
         return true
     }
 
+    /// Approximate token count for the currently selected chat, updated live
+    /// as content streams in.
+    var selectedChatTokenCount: Int {
+        selectedChatItem?.tokenCount ?? 0
+    }
+
     // MARK: - Actions (forwarders to the engine)
 
     func sendMessage(_ text: String) {
@@ -109,6 +131,18 @@ final class AppViewModel: ObservableObject {
         Task { await engine.stopStreaming(filename: filename) }
     }
 
+    /// Edits a message's plain-text content in the selected chat.
+    func editMessage(messageID: UUID, to newText: String) {
+        guard let filename = selectedChatID else { return }
+        Task { await engine.editMessage(filename: filename, messageID: messageID, newText: newText) }
+    }
+
+    /// Deletes a single message from the selected chat's message tree.
+    func deleteMessage(messageID: UUID) {
+        guard let filename = selectedChatID else { return }
+        Task { await engine.deleteMessage(filename: filename, messageID: messageID) }
+    }
+
     func createNewChat() {
         Task {
             let filename = await engine.createNewChat()
@@ -118,6 +152,10 @@ final class AppViewModel: ObservableObject {
 
     func deleteChat(_ filename: String) {
         Task { await engine.deleteChat(filename: filename) }
+    }
+
+    func renameChat(_ filename: String, to newTitle: String) {
+        Task { await engine.renameChat(filename: filename, to: newTitle) }
     }
 
     func setConnection(_ connectionID: String) {
@@ -130,9 +168,12 @@ final class AppViewModel: ObservableObject {
         Task { await engine.setRole(filename: filename, roleName: roleName) }
     }
 
-    /// Selects a chat and clears its unread marker.
+    /// Selects a chat, prunes other empty chats, and clears its unread marker.
     func selectChat(_ filename: String) {
         selectedChatID = filename
-        Task { await engine.markViewed(filename: filename) }
+        Task {
+            await engine.selectChat(filename: filename)
+            await engine.markViewed(filename: filename)
+        }
     }
 }

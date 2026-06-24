@@ -7,6 +7,12 @@ import Textual
 struct MessageView: View {
     let message: ChatMessage
     @EnvironmentObject private var store: AppViewModel
+    @State private var isHovering = false
+
+    /// Drives the edit sheet.
+    @State private var isEditing = false
+    /// Drives the delete confirmation dialog.
+    @State private var isConfirmingDelete = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -19,9 +25,40 @@ struct MessageView: View {
                 .clipShape(Circle())
 
             VStack(alignment: .leading, spacing: 6) {
-                Text(roleLabel)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(roleLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    // On hover, show the timestamp (and connection name for
+                    // assistant messages) to the right of the participant name.
+                    if isHovering {
+                        Text(hoverDetail)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .transition(.opacity)
+                    }
+
+                    Spacer(minLength: 4)
+
+                    // Action buttons live in the top-right corner, opposite the
+                    // speaker name and details. The container is always present
+                    // (reserving layout space) but only visible while hovering,
+                    // so the content below doesn't shift when the buttons appear.
+                    HStack(spacing: 2) {
+                        MessageActionButton(systemName: "doc.on.doc", help: "Copy") {
+                            copyContent()
+                        }
+                        MessageActionButton(systemName: "pencil", help: "Edit") {
+                            isEditing = true
+                        }
+                        MessageActionButton(systemName: "trash", help: "Delete", role: .destructive) {
+                            isConfirmingDelete = true
+                        }
+                    }
+                    .opacity(isHovering ? 1 : 0)
+                    .allowsHitTesting(isHovering)
+                    .animation(.easeInOut(duration: 0.15), value: isHovering)
+                }
 
                 // Thinking block (collapsible)
                 if let thinking = message.thinking, !thinking.isEmpty {
@@ -44,6 +81,43 @@ struct MessageView: View {
             }
         }
         .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isHovering = hovering
+            }
+        }
+        .sheet(isPresented: $isEditing) {
+            EditMessageSheet(
+                initialText: message.content,
+                onCancel: { isEditing = false },
+                onConfirm: { newText in
+                    store.editMessage(messageID: message.id, to: newText)
+                    isEditing = false
+                }
+            )
+        }
+        .confirmationDialog(
+            "Delete this message?",
+            isPresented: $isConfirmingDelete,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                store.deleteMessage(messageID: message.id)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This action cannot be undone.")
+        }
+    }
+
+    /// Copies the original plain-text content (not the rendered markdown) to
+    /// the system pasteboard.
+    private func copyContent() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(message.content, forType: .string)
     }
 
     private var avatarIcon: String {
@@ -67,6 +141,85 @@ struct MessageView: View {
         case .system: return "System"
         case .user: return "You"
         case .assistant: return "Assistant"
+        }
+    }
+
+    /// Text shown on hover next to the participant name: the message timestamp,
+    /// and for assistant messages the connection that produced the response.
+    private var hoverDetail: String {
+        var parts = [timestampText]
+        if message.role == .assistant, let conn = message.connectionName, !conn.isEmpty {
+            parts.append("via \(conn)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Formats the message timestamp for display (date + time), following the
+    /// user's system locale and date/time preferences.
+    private var timestampText: String {
+        message.timestamp.formatted(date: .abbreviated, time: .shortened)
+    }
+}
+
+/// A compact, borderless icon button used for the per-message hover actions.
+private struct MessageActionButton: View {
+    let systemName: String
+    let help: String
+    var role: ButtonRole? = nil
+    let action: () -> Void
+
+    var body: some View {
+        Button(role: role, action: action) {
+            Image(systemName: systemName)
+                .font(.caption)
+                .frame(width: 20, height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .help(help)
+    }
+}
+
+/// A multiline plain-text editing modal for editing a message's content.
+private struct EditMessageSheet: View {
+    let initialText: String
+    let onCancel: () -> Void
+    let onConfirm: (String) -> Void
+
+    @State private var text: String = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Edit message")
+                .font(.headline)
+
+            TextEditor(text: $text)
+                .font(.body)
+                .frame(minHeight: 120, maxHeight: 240)
+                .scrollContentBackground(.hidden)
+                .background(Color(nsColor: .textBackgroundColor))
+                .cornerRadius(6)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                )
+                .focused($isFocused)
+
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") { onConfirm(text) }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+        .onAppear {
+            text = initialText
+            isFocused = true
         }
     }
 }

@@ -27,6 +27,6 @@ struct iCanHazAIApp: App {
                     }
                 }
         }
-        .windowStyle(.hiddenTitleBar)
+        .windowToolbarStyle(.unified)
     }
 }

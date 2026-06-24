@@ -3,54 +3,43 @@
 
 import SwiftUI
 
-struct StatusBar: View {
-    @EnvironmentObject var store: AppViewModel
+/// A simple rename dialog with a text field and Cancel/OK buttons. The field
+/// is pre-filled with the current chat name and its contents selected on appear
+/// so the user can immediately overwrite or edit it.
+struct RenameChatSheet: View {
+    let initialText: String
+    let onCancel: () -> Void
+    let onConfirm: (String) -> Void
+
+    @State private var text: String = ""
+    @FocusState private var isFocused: Bool
 
     var body: some View {
-        HStack(spacing: 12) {
-            // Connection picker
-            Picker("Connection", selection: Binding(
-                get: { store.selectedChatItem?.chat.connection ?? "" },
-                set: { store.setConnection($0) }
-            )) {
-                Text("No connection").tag("")
-                ForEach(store.connections) { connection in
-                    Text(connection.displayName).tag(connection.id)
-                }
-            }
-            .labelsHidden()
-            .frame(width: 240)
-
-            Divider()
-                .frame(height: 20)
-
-            // Role picker
-            Picker("Role", selection: Binding(
-                get: { store.selectedChatItem?.chat.role ?? "" },
-                set: { store.setRole($0) }
-            )) {
-                Text("No role").tag("")
-                ForEach(store.roles) { role in
-                    HStack {
-                        Text(role.name)
-                        if role.isDefault {
-                            Image(systemName: "checkmark.seal")
-                        }
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Rename chat")
+                .font(.headline)
+            TextField("Chat title", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .focused($isFocused)
+                .onAppear {
+                    text = initialText
+                    // Focus the field and select all its text so the user can
+                    // immediately type over it or edit part of it.
+                    isFocused = true
+                    DispatchQueue.main.async {
+                        NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil)
                     }
-                    .tag(role.name)
                 }
-            }
-            .labelsHidden()
-            .frame(width: 200)
-
-            Spacer()
-
-            // Status indicator
-            if store.isStreaming {
-                ProgressView()
-                    .controlSize(.small)
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("OK") { onConfirm(text) }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
-        .padding(.horizontal, 12)
+        .padding(20)
+        .frame(width: 320)
     }
 }

@@ -8,6 +8,18 @@ struct ChatView: View {
     @EnvironmentObject var store: AppViewModel
     @State private var inputText: String = ""
     @State private var isAtBottom = true
+    /// Master switch: true means we should keep scrolling to the bottom as new
+    /// content arrives. Only cleared by a genuine user scroll-up gesture (scroll
+    /// phase = interacting AND geometry says not at bottom). Restored any time
+    /// the view reaches the bottom — whether by the user scrolling back down or
+    /// by a programmatic scroll.
+    @State private var autoscrollEnabled = true
+    /// True while the user's finger/trackpad is actively driving the scroll.
+    /// Used to distinguish user gestures from programmatic scroll animations.
+    @State private var userIsScrolling = false
+    /// Bumped before chatInfoSidebarVisible changes so the scroll fires with
+    /// the pre-toggle value of autoscrollEnabled (before geometry changes flip it).
+    @State private var scrollRequest: UUID?
 
     /// Sentinel id placed at the very bottom of the content; scrolling to it with
     /// `.bottom` lands flush against the end, with no leftover padding gap.
@@ -15,10 +27,21 @@ struct ChatView: View {
 
     /// Grace interval (in points). If the user is within this distance of the bottom
     /// we still consider them "at the bottom" and keep auto-scrolling.
-    private let bottomGrace: CGFloat = 40
+    private let bottomGrace: CGFloat = 80
 
     var body: some View {
         VStack(spacing: 0) {
+            // Custom header bar with pickers — lives inside ChatView so it
+            // naturally shrinks when the inspector panel is open.
+            ChatHeaderBar {
+                // Capture autoscrollEnabled before the sidebar toggle causes a
+                // geometry change that may flip it to false.
+                if autoscrollEnabled { scrollRequest = UUID() }
+                store.chatInfoSidebarVisible.toggle()
+            }
+
+            Divider()
+
             // Messages
             ScrollViewReader { proxy in
                 ScrollView {
@@ -45,36 +68,80 @@ struct ChatView: View {
                             .id(bottomID)
                     }
                 }
-                // Track whether the user is currently at the bottom of the scroll view.
+                // Track genuine user-initiated scrolling so we can tell it apart
+                // from programmatic animations triggered by `scrollTo`.
+                // The moment a real touch/drag begins we disable autoscroll
+                // immediately so the very next content onChange doesn't fight the
+                // user's gesture. It is re-enabled when the view reaches the bottom.
+                .onScrollPhaseChange { _, newPhase in
+                    let interacting = newPhase == .interacting
+                    userIsScrolling = interacting
+                    if interacting {
+                        autoscrollEnabled = false
+                    }
+                }
+                // Geometry change: re-enable autoscroll once the view reaches
+                // the bottom (whether the user scrolled back or we programmatically
+                // scrolled there). Content-height jumps that push us slightly off
+                // the bottom while the user isn't scrolling are ignored.
                 .onScrollGeometryChange(for: Bool.self) { geo in
-                    // Consider "at bottom" when within the grace interval of the end.
-                    let maxOffset = geo.contentSize.height - geo.visibleRect.height
+                    let maxOffset = max(0, geo.contentSize.height - geo.visibleRect.height)
                     return maxOffset - geo.contentOffset.y <= bottomGrace
                 } action: { _, atBottom in
                     isAtBottom = atBottom
+                    store.selectedChatAtBottom = atBottom
+                    if atBottom {
+                        // Reached the bottom — re-engage autoscroll regardless of
+                        // how we got here.
+                        autoscrollEnabled = true
+                    }
+                    // Disabling autoscroll is handled exclusively in
+                    // onScrollPhaseChange (on .interacting) to avoid races with
+                    // content-driven geometry updates.
                 }
                 .onAppear {
                     scrollToBottom(proxy)
                 }
                 .onChange(of: store.selectedChatItem?.id) { _, _ in
+                    autoscrollEnabled = true
                     isAtBottom = true
+                    store.selectedChatAtBottom = true
                     scrollToBottom(proxy)
                 }
                 .onChange(of: store.selectedChatItem?.chat.messages.last?.content) { _, _ in
-                    if isAtBottom { scrollToBottom(proxy) }
+                    if autoscrollEnabled && !userIsScrolling { scrollToBottom(proxy) }
                 }
                 .onChange(of: store.selectedChatItem?.chat.messages.last?.thinking) { _, _ in
-                    if isAtBottom { scrollToBottom(proxy) }
+                    if autoscrollEnabled && !userIsScrolling { scrollToBottom(proxy) }
                 }
                 .onChange(of: store.selectedChatItem?.chat.messages.last?.error) { _, _ in
-                    if isAtBottom { scrollToBottom(proxy) }
+                    if autoscrollEnabled && !userIsScrolling { scrollToBottom(proxy) }
                 }
                 .onChange(of: store.selectedChatItem?.chat.messages.count) { _, _ in
                     // A message-count change only happens on a user-initiated send, so
-                    // always follow it to the bottom (independent of isAtBottom, which
-                    // may transiently be false right after the content grows).
+                    // always follow it to the bottom.
+                    autoscrollEnabled = true
                     isAtBottom = true
+                    store.selectedChatAtBottom = true
                     scrollToBottom(proxy)
+                }
+                // When the left sidebar opens/closes the available width animates;
+                // re-anchor to the bottom once the animation settles.
+                .onGeometryChange(for: CGFloat.self) { geo in
+                    geo.size.width
+                } action: { _, _ in
+                    if autoscrollEnabled {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            scrollToBottom(proxy)
+                        }
+                    }
+                }
+                // scrollRequest is set in the info-button action *before* the
+                // sidebar toggle, so autoscrollEnabled is captured at pre-layout time.
+                .onChange(of: scrollRequest) { _, _ in
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        scrollToBottom(proxy)
+                    }
                 }
             }
 
@@ -124,6 +191,61 @@ struct ChatView: View {
         // Disallow sending when there's no usable connection selected.
         if !store.selectedChatHasConnection { return true }
         return inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    /// A header bar that sits at the top of the chat content area (below the
+    /// window titlebar). By living inside the content, it naturally shifts left
+    /// when the inspector panel opens — unlike toolbar items which span the full
+    /// titlebar width regardless of the inspector.
+    private struct ChatHeaderBar: View {
+        @EnvironmentObject var store: AppViewModel
+        let onToggleInfo: () -> Void
+
+        var body: some View {
+            HStack(spacing: 8) {
+                Picker("Connection", selection: Binding(
+                    get: { store.selectedChatItem?.chat.connection ?? "" },
+                    set: { store.setConnection($0) }
+                )) {
+                    Text("No connection").tag("")
+                    ForEach(store.connections) { connection in
+                        Text(connection.displayName).tag(connection.id)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 220)
+
+                Picker("Role", selection: Binding(
+                    get: { store.selectedChatItem?.chat.role ?? "" },
+                    set: { store.setRole($0) }
+                )) {
+                    Text("No role").tag("")
+                    ForEach(store.roles) { role in
+                        HStack {
+                            Text(role.name)
+                            if role.isDefault {
+                                Image(systemName: "checkmark.seal")
+                            }
+                        }
+                        .tag(role.name)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 180)
+
+                Spacer()
+
+                Button(action: onToggleInfo) {
+                    Image(systemName: "info.circle")
+                        .font(.title3)
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.borderless)
+                .help(store.chatInfoSidebarVisible ? "Hide chat info" : "Show chat info")
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+        }
     }
 
     /// Routes the button press to either stop (while streaming) or send.

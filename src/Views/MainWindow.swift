@@ -7,17 +7,18 @@ struct MainWindow: View {
     @EnvironmentObject var store: AppViewModel
 
     var body: some View {
-        HStack(spacing: 0) {
-            // Left: chat tabs sidebar
+        NavigationSplitView {
+            // Left sidebar: chat selector.
             ChatSidebar()
-                .frame(width: 220)
-
-            Divider()
-
-            // Right: selected chat + status bar
-            VStack(spacing: 0) {
+                .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 320)
+        } detail: {
+            // Detail: chat + optional right info panel side by side.
+            // Using a stable HStack avoids layout thrashing and scroll
+            // artifacts that happen when swapping between 2-col/3-col layouts.
+            HStack(spacing: 0) {
                 if store.selectedChatItem != nil {
                     ChatView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     VStack {
                         Spacer()
@@ -25,10 +26,14 @@ struct MainWindow: View {
                             .foregroundStyle(.secondary)
                         Spacer()
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                Divider()
-                StatusBar()
-                    .frame(height: 36)
+
+                if store.chatInfoSidebarVisible && store.selectedChatItem != nil {
+                    Divider()
+                    ChatInfoSidebar()
+                        .frame(width: 260)
+                }
             }
         }
     }

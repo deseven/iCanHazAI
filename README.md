@@ -48,9 +48,9 @@ seed = 42
 
 # Optional. Arbitrary vendor-specific parameters injected into the request JSON.
 # Useful for providers like DeepSeek/x.ai that support non-standard fields.
-# Example: enable thinking on DeepSeek
-# [vendor_parameters]
-# thinking = { type = "enabled" }
+# Value must be a JSON object string.
+# Example: disable thinking on DeepSeek
+vendor_parameters = '{"thinking":{"type":"disabled"}}'
 ```
 
 ### Anthropic connections (`connections/anthropic/{name}.toml`)
