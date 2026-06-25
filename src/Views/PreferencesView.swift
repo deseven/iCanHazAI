@@ -87,18 +87,43 @@ struct PreferencesView: View {
     }
 }
 
+// MARK: - Shared preference row
+
+/// A reusable preference row layout:
+///
+/// ```
+/// [ title ] [ description ]
+/// [ control ]
+/// ```
+///
+/// The title and description sit on the first line; the control (picker,
+/// toggle, etc.) is placed on the line below, left-aligned.
+private struct PrefRow<Control: View>: View {
+    let title: String
+    let description: String
+    @ViewBuilder let control: () -> Control
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.body)
+            control()
+            Text(description)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
 // MARK: - General tab
 
 private struct GeneralTab: View {
     @EnvironmentObject var store: AppViewModel
 
-    /// Fixed label column width so all pickers start at the same x position.
-    private let labelWidth: CGFloat = 130
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            prefRow(
-                label: "Default Connection:",
+        VStack(alignment: .leading, spacing: 20) {
+            PrefRow(
+                title: "Default Connection",
                 description: "A connection used by default for new chats"
             ) {
                 Picker("", selection: store.bindingDefaultConnection) {
@@ -112,8 +137,8 @@ private struct GeneralTab: View {
                 .fixedSize()
             }
 
-            prefRow(
-                label: "Default Role:",
+            PrefRow(
+                title: "Default Role",
                 description: "A role used by default for new chats"
             ) {
                 Picker("", selection: store.bindingDefaultRole) {
@@ -126,8 +151,8 @@ private struct GeneralTab: View {
                 .fixedSize()
             }
 
-            prefRow(
-                label: "Utility Connection:",
+            PrefRow(
+                title: "Utility Connection",
                 description: "A connection used for utility tasks such as chat name generation"
             ) {
                 Picker("", selection: store.bindingUtilityConnection) {
@@ -143,24 +168,8 @@ private struct GeneralTab: View {
 
             Spacer()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 8)
-    }
-
-    @ViewBuilder
-    private func prefRow<C: View>(label: String, description: String, @ViewBuilder control: () -> C) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(alignment: .firstTextBaseline, spacing: 0) {
-                Text(label)
-                    .frame(width: labelWidth, alignment: .trailing)
-                    .padding(.trailing, 8)
-                control()
-                Spacer(minLength: 0)
-            }
-            Text(description)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.leading, labelWidth + 8)
-        }
     }
 }
 
@@ -169,35 +178,26 @@ private struct GeneralTab: View {
 private struct ChatFeaturesTab: View {
     @EnvironmentObject var store: AppViewModel
 
-    @ViewBuilder
-    private func featureRow(title: String, description: String, isOn: Binding<Bool>) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.body)
-                Text(description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Toggle("", isOn: isOn)
-                .labelsHidden()
-                .toggleStyle(.switch)
-        }
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            featureRow(
+        VStack(alignment: .leading, spacing: 20) {
+            PrefRow(
                 title: "Mermaid",
-                description: "Render Mermaid diagrams from fenced `mermaid` code blocks.",
-                isOn: store.bindingMermaidEnabled
-            )
-            featureRow(
+                description: "Render Mermaid diagrams from fenced `mermaid` code blocks."
+            ) {
+                Toggle("", isOn: store.bindingMermaidEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+
+            PrefRow(
                 title: "KaTeX",
-                description: "Render LaTeX math using `$...$` for inline and `$$...$$` for block equations.",
-                isOn: store.bindingKatexEnabled
-            )
+                description: "Render LaTeX math using `$...$` for inline and `$$...$$` for block equations."
+            ) {
+                Toggle("", isOn: store.bindingKatexEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+
             Spacer()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -210,30 +210,17 @@ private struct ChatFeaturesTab: View {
 private struct DebugTab: View {
     @EnvironmentObject var store: AppViewModel
 
-    @ViewBuilder
-    private func featureRow(title: String, description: String, isOn: Binding<Bool>) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.body)
-                Text(description)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Toggle("", isOn: isOn)
-                .labelsHidden()
-                .toggleStyle(.switch)
-        }
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            featureRow(
+        VStack(alignment: .leading, spacing: 20) {
+            PrefRow(
                 title: "Chat Renderer Debug",
-                description: "Show an on-screen debug overlay in the chat renderer with timestamps for message loads, edits, deletions, and streaming events.",
-                isOn: store.bindingChatRendererDebugEnabled
-            )
+                description: "Show an on-screen debug overlay in the chat renderer with timestamps for message loads, edits, deletions, and streaming events."
+            ) {
+                Toggle("", isOn: store.bindingChatRendererDebugEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+
             Spacer()
         }
         .frame(maxWidth: .infinity, alignment: .leading)

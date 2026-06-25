@@ -7,31 +7,64 @@ import TOML
 // MARK: - Config model (Codable, maps to TOML)
 
 /// The app configuration persisted to `~/iCanHazAI/config.toml`.
-/// All keys are sorted alphabetically on write via `TOMLEncoder.outputFormatting = .sortedKeys`.
+/// Preferences are organized into TOML groups that mirror the preferences
+/// UI tabs: `[general]`, `[chat_features]`, `[debug]`, and `[window]`.
+/// All keys are sorted alphabetically on write via
+/// `TOMLEncoder.outputFormatting = .sortedKeys`.
 struct AppConfig: Codable, Equatable {
+    /// General preferences: default connection, role, and utility connection.
+    var general: GeneralConfig = GeneralConfig()
+    /// Chat feature toggles: Mermaid and KaTeX rendering.
+    var chatFeatures: ChatFeaturesConfig = ChatFeaturesConfig()
+    /// Debug preferences: chat renderer debug overlay.
+    var debug: DebugConfig = DebugConfig()
+    /// Window position and size for the UI layer.
+    var window: WindowConfig?
+
+    enum CodingKeys: String, CodingKey {
+        case general
+        case chatFeatures = "chat_features"
+        case debug
+        case window
+    }
+}
+
+/// `[general]` group — default connection, role, and utility connection.
+struct GeneralConfig: Codable, Equatable {
     /// Connection identifier (`"provider/name"`) used by default for new chats.
     var defaultConnection: String?
     /// Role name used by default for new chats. Falls back to "Assistant" when nil.
     var defaultRole: String?
     /// Connection identifier (`"provider/name"`) used for utility tasks (e.g. chat naming).
     var utilityConnection: String?
-    /// Whether Mermaid diagram rendering is enabled in the chat view.
-    var mermaidEnabled: Bool = false
-    /// Whether KaTeX math rendering is enabled in the chat view.
-    var katexEnabled: Bool = false
-    /// Whether the chat renderer debug overlay is enabled.
-    var chatRendererDebugEnabled: Bool = false
-    /// Window position and size for the UI layer.
-    var window: WindowConfig?
 
     enum CodingKeys: String, CodingKey {
         case defaultConnection = "default_connection"
         case defaultRole = "default_role"
         case utilityConnection = "utility_connection"
+    }
+}
+
+/// `[chat_features]` group — rendering feature toggles.
+struct ChatFeaturesConfig: Codable, Equatable {
+    /// Whether Mermaid diagram rendering is enabled in the chat view.
+    var mermaidEnabled: Bool = false
+    /// Whether KaTeX math rendering is enabled in the chat view.
+    var katexEnabled: Bool = false
+
+    enum CodingKeys: String, CodingKey {
         case mermaidEnabled = "mermaid_enabled"
         case katexEnabled = "katex_enabled"
+    }
+}
+
+/// `[debug]` group — debug-related toggles.
+struct DebugConfig: Codable, Equatable {
+    /// Whether the chat renderer debug overlay is enabled.
+    var chatRendererDebugEnabled: Bool = false
+
+    enum CodingKeys: String, CodingKey {
         case chatRendererDebugEnabled = "chat_renderer_debug_enabled"
-        case window
     }
 }
 
@@ -145,12 +178,12 @@ actor ConfigManager {
         // deleted all connections. Treating it as "all deleted" was the root
         // cause of `default_connection` / `utility_connection` being wiped.
         if !connections.isEmpty {
-            if let dc = config.defaultConnection, !connectionIDs.contains(dc) {
-                config.defaultConnection = nil
+            if let dc = config.general.defaultConnection, !connectionIDs.contains(dc) {
+                config.general.defaultConnection = nil
                 dirty = true
             }
-            if let uc = config.utilityConnection, !connectionIDs.contains(uc) {
-                config.utilityConnection = nil
+            if let uc = config.general.utilityConnection, !connectionIDs.contains(uc) {
+                config.general.utilityConnection = nil
                 dirty = true
             }
         }
@@ -158,12 +191,12 @@ actor ConfigManager {
         let roles = EnvironmentManager.shared.loadAllRoles()
         let roleNames = Set(roles.map { $0.name })
 
-        if let dr = config.defaultRole, !roleNames.contains(dr) {
-            config.defaultRole = "Assistant"
+        if let dr = config.general.defaultRole, !roleNames.contains(dr) {
+            config.general.defaultRole = "Assistant"
             dirty = true
         }
-        if config.defaultRole == nil {
-            config.defaultRole = "Assistant"
+        if config.general.defaultRole == nil {
+            config.general.defaultRole = "Assistant"
             dirty = true
         }
 
@@ -182,15 +215,15 @@ actor ConfigManager {
     // MARK: - Getters / Setters
 
     func getDefaultConnection() -> String? {
-        config.defaultConnection
+        config.general.defaultConnection
     }
 
     func getDefaultRole() -> String? {
-        config.defaultRole
+        config.general.defaultRole
     }
 
     func getUtilityConnection() -> String? {
-        config.utilityConnection
+        config.general.utilityConnection
     }
 
     func getWindow() -> WindowConfig? {
@@ -198,15 +231,15 @@ actor ConfigManager {
     }
 
     func getMermaidEnabled() -> Bool {
-        config.mermaidEnabled
+        config.chatFeatures.mermaidEnabled
     }
 
     func getKatexEnabled() -> Bool {
-        config.katexEnabled
+        config.chatFeatures.katexEnabled
     }
 
     func getChatRendererDebugEnabled() -> Bool {
-        config.chatRendererDebugEnabled
+        config.debug.chatRendererDebugEnabled
     }
 
     func getChatListSidebarVisible() -> Bool? {
@@ -218,32 +251,32 @@ actor ConfigManager {
     }
 
     func setDefaultConnection(_ id: String?) {
-        config.defaultConnection = id
+        config.general.defaultConnection = id
         persist()
     }
 
     func setDefaultRole(_ name: String?) {
-        config.defaultRole = name
+        config.general.defaultRole = name
         persist()
     }
 
     func setUtilityConnection(_ id: String?) {
-        config.utilityConnection = id
+        config.general.utilityConnection = id
         persist()
     }
 
     func setMermaidEnabled(_ enabled: Bool) {
-        config.mermaidEnabled = enabled
+        config.chatFeatures.mermaidEnabled = enabled
         persist()
     }
 
     func setKatexEnabled(_ enabled: Bool) {
-        config.katexEnabled = enabled
+        config.chatFeatures.katexEnabled = enabled
         persist()
     }
 
     func setChatRendererDebugEnabled(_ enabled: Bool) {
-        config.chatRendererDebugEnabled = enabled
+        config.debug.chatRendererDebugEnabled = enabled
         persist()
     }
 
