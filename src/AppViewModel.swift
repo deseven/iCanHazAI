@@ -29,8 +29,16 @@ final class AppViewModel: ObservableObject {
     /// by `ChatView`; used to suppress the unread marker when the user is
     /// already looking at the latest content.
     @Published var selectedChatAtBottom: Bool = true
+    /// Whether the left sidebar (chat list) is currently shown.
+    @Published var chatListSidebarVisible: Bool = true
     /// Whether the right-hand chat info sidebar is currently shown.
     @Published var chatInfoSidebarVisible: Bool = false
+    /// Message id pending an edit action (set by the web view bridge; consumed
+    /// by ChatView's edit sheet).
+    @Published var pendingEditMessageID: UUID?
+    /// Message id pending a delete action (set by the web view bridge;
+    /// consumed by ChatView's delete confirmation sheet).
+    @Published var pendingDeleteMessageID: UUID?
 
     // MARK: - Preferences state (cached from ConfigManager)
 
@@ -48,16 +56,33 @@ final class AppViewModel: ObservableObject {
     /// Prevents the wizard from popping up again after the user dismisses it.
     private var didCheckInitialConnections = false
 
+    // MARK: - Ctrl+Tab chat switching state
+
+    /// The chat that was selected before the current one, used for quick
+    /// single-press Ctrl+Tab toggle.
+    private var previousChatID: String?
+    /// Whether we are currently in a Ctrl+Tab session (Ctrl is held).
+    private var ctrlTabSessionActive = false
+    /// The chat that was selected when the Ctrl+Tab session started.
+    private var ctrlTabOriginID: String?
+    /// Current index into `chatItems` during a Ctrl+Tab cycle.
+    private var ctrlTabCurrentIndex: Int = 0
+    /// Local event monitor token for intercepting Ctrl+Tab.
+    private var keyMonitor: Any?
+
     // MARK: - Init
 
     init() {
         AppViewModel.shared = self
         startListening()
         loadPreferences()
+        setupKeyboardMonitor()
     }
 
     deinit {
         subscription?.cancel()
+        // The local event monitor is torn down by the system when the app
+        // terminates, since AppViewModel is a singleton.
     }
 
     // MARK: - Preferences sync
@@ -70,9 +95,23 @@ final class AppViewModel: ObservableObject {
             let dc = await config.getDefaultConnection()
             let dr = await config.getDefaultRole()
             let uc = await config.getUtilityConnection()
+            let ls = await config.getChatListSidebarVisible()
+            let rs = await config.getChatInfoSidebarVisible()
             preferencesDefaultConnection = dc
             preferencesDefaultRole = dr
             preferencesUtilityConnection = uc
+            if let ls { chatListSidebarVisible = ls }
+            if let rs { chatInfoSidebarVisible = rs }
+        }
+    }
+
+    /// Persists the current sidebar visibility states to config.
+    func saveSidebarState() {
+        let listVisible = chatListSidebarVisible
+        let infoVisible = chatInfoSidebarVisible
+        Task {
+            await config.setChatListSidebarVisible(listVisible)
+            await config.setChatInfoSidebarVisible(infoVisible)
         }
     }
 
@@ -305,6 +344,9 @@ final class AppViewModel: ObservableObject {
     }
 
     func createNewChat() {
+        if let current = selectedChatID {
+            previousChatID = current
+        }
         Task {
             let filename = await engine.createNewChat()
             selectedChatID = filename
@@ -331,10 +373,94 @@ final class AppViewModel: ObservableObject {
 
     /// Selects a chat, prunes other empty chats, and clears its unread marker.
     func selectChat(_ filename: String) {
+        // Track the previous chat for Ctrl+Tab quick-switch, but not during
+        // a Ctrl+Tab cycling session (to avoid overwriting the origin).
+        if !ctrlTabSessionActive, let current = selectedChatID, current != filename {
+            previousChatID = current
+        }
         selectedChatID = filename
         Task {
             await engine.selectChat(filename: filename)
             await engine.markViewed(filename: filename)
         }
+    }
+
+    // MARK: - Keyboard shortcuts
+
+    /// Installs a local event monitor that intercepts Ctrl+Tab for chat
+    /// switching and Ctrl release to end the switch session.
+    private func setupKeyboardMonitor() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.keyDown, .flagsChanged]
+        ) { [weak self] event in
+            guard let self else { return event }
+            // Only handle events destined for the main window.
+            guard let window = event.window,
+                  window == NSApplication.shared.mainWindow else {
+                return event
+            }
+            switch event.type {
+            case .keyDown:
+                if event.keyCode == 48, // Tab key
+                   event.modifierFlags.contains(.control),
+                   !event.modifierFlags.contains(.command) {
+                    self.handleCtrlTab()
+                    return nil // Swallow the event
+                }
+            case .flagsChanged:
+                // Detect when Ctrl is released to end the session.
+                if self.ctrlTabSessionActive,
+                   !event.modifierFlags.contains(.control) {
+                    self.endCtrlTabSession()
+                }
+            default:
+                break
+            }
+            return event
+        }
+    }
+
+    /// Handles a single Ctrl+Tab key press.
+    private func handleCtrlTab() {
+        let items = chatItems
+        guard !items.isEmpty else { return }
+
+        if !ctrlTabSessionActive {
+            // Start a new Ctrl+Tab session.
+            ctrlTabSessionActive = true
+            ctrlTabOriginID = selectedChatID
+
+            // First press: go to the previous chat if available, otherwise
+            // go to the next chat in the list.
+            if let prev = previousChatID,
+               let idx = items.firstIndex(where: { $0.id == prev }) {
+                ctrlTabCurrentIndex = idx
+            } else if let current = selectedChatID,
+                      let idx = items.firstIndex(where: { $0.id == current }) {
+                ctrlTabCurrentIndex = (idx + 1) % items.count
+            } else {
+                ctrlTabCurrentIndex = 0
+            }
+        } else {
+            // Continuing the session: cycle to the next chat.
+            ctrlTabCurrentIndex = (ctrlTabCurrentIndex + 1) % items.count
+        }
+
+        let targetID = items[ctrlTabCurrentIndex].id
+        selectedChatID = targetID
+        Task {
+            await engine.selectChat(filename: targetID)
+            await engine.markViewed(filename: targetID)
+        }
+    }
+
+    /// Ends the Ctrl+Tab session, finalising the switch.
+    private func endCtrlTabSession() {
+        ctrlTabSessionActive = false
+        // Update previousChatID so the next single Ctrl+Tab toggles back.
+        if let origin = ctrlTabOriginID, let current = selectedChatID, origin != current {
+            previousChatID = origin
+        }
+        ctrlTabOriginID = nil
     }
 }

@@ -31,6 +31,19 @@ struct WindowConfig: Codable, Equatable {
     var y: Double?
     var width: Double?
     var height: Double?
+    /// Whether the left sidebar (chat list) was visible when the window was last closed.
+    var chatListSidebarVisible: Bool?
+    /// Whether the right sidebar (chat info) was visible when the window was last closed.
+    var chatInfoSidebarVisible: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case x
+        case y
+        case width
+        case height
+        case chatListSidebarVisible = "chat_list_sidebar_visible"
+        case chatInfoSidebarVisible = "chat_info_sidebar_visible"
+    }
 }
 
 // MARK: - Config manager
@@ -151,6 +164,14 @@ actor ConfigManager {
         config.window
     }
 
+    func getChatListSidebarVisible() -> Bool? {
+        config.window?.chatListSidebarVisible
+    }
+
+    func getChatInfoSidebarVisible() -> Bool? {
+        config.window?.chatInfoSidebarVisible
+    }
+
     func setDefaultConnection(_ id: String?) {
         config.defaultConnection = id
         persist()
@@ -167,7 +188,27 @@ actor ConfigManager {
     }
 
     func setWindow(_ window: WindowConfig?) {
-        config.window = window
+        // Merge: preserve existing sidebar visibility if the incoming config
+        // doesn't specify it (e.g. when the window frame tracker saves position).
+        if var w = window {
+            if w.chatListSidebarVisible == nil { w.chatListSidebarVisible = config.window?.chatListSidebarVisible }
+            if w.chatInfoSidebarVisible == nil { w.chatInfoSidebarVisible = config.window?.chatInfoSidebarVisible }
+            config.window = w
+        } else {
+            config.window = nil
+        }
+        persist()
+    }
+
+    func setChatListSidebarVisible(_ visible: Bool) {
+        if config.window == nil { config.window = WindowConfig() }
+        config.window?.chatListSidebarVisible = visible
+        persist()
+    }
+
+    func setChatInfoSidebarVisible(_ visible: Bool) {
+        if config.window == nil { config.window = WindowConfig() }
+        config.window?.chatInfoSidebarVisible = visible
         persist()
     }
 }

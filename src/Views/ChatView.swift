@@ -2,148 +2,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import SwiftUI
-import Textual
 
 struct ChatView: View {
     @EnvironmentObject var store: AppViewModel
     @State private var inputText: String = ""
-    @State private var isAtBottom = true
-    /// Master switch: true means we should keep scrolling to the bottom as new
-    /// content arrives. Only cleared by a genuine user scroll-up gesture (scroll
-    /// phase = interacting AND geometry says not at bottom). Restored any time
-    /// the view reaches the bottom — whether by the user scrolling back down or
-    /// by a programmatic scroll.
-    @State private var autoscrollEnabled = true
-    /// True while the user's finger/trackpad is actively driving the scroll.
-    /// Used to distinguish user gestures from programmatic scroll animations.
-    @State private var userIsScrolling = false
-    /// Bumped before chatInfoSidebarVisible changes so the scroll fires with
-    /// the pre-toggle value of autoscrollEnabled (before geometry changes flip it).
-    @State private var scrollRequest: UUID?
-
-    /// Sentinel id placed at the very bottom of the content; scrolling to it with
-    /// `.bottom` lands flush against the end, with no leftover padding gap.
-    private let bottomID = "chat-bottom"
-
-    /// Grace interval (in points). If the user is within this distance of the bottom
-    /// we still consider them "at the bottom" and keep auto-scrolling.
-    private let bottomGrace: CGFloat = 80
+    @FocusState private var isInputFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             // Custom header bar with pickers — lives inside ChatView so it
             // naturally shrinks when the inspector panel is open.
             ChatHeaderBar {
-                // Capture autoscrollEnabled before the sidebar toggle causes a
-                // geometry change that may flip it to false.
-                if autoscrollEnabled { scrollRequest = UUID() }
                 store.chatInfoSidebarVisible.toggle()
             }
 
             Divider()
 
-            // Messages
-            ScrollViewReader { proxy in
-                ScrollView {
-                    // Outer VStack places the sentinel after the padded content so
-                    // nothing (not even padding) sits below it — scrolling to it lands
-                    // flush at 100% of the bottom.
-                    VStack(spacing: 0) {
-                        // A regular (non-lazy) VStack keeps layout stable and avoids the
-                        // measurement jumps that LazyVStack produces while streaming.
-                        VStack(alignment: .leading, spacing: 16) {
-                            if let item = store.selectedChatItem {
-                                ForEach(item.chat.messages) { message in
-                                    MessageView(message: message)
-                                        .id(message.id)
-                                }
-                            }
-                        }
-                        .padding(16)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                        // Bottom sentinel: scrolling here lands flush at the very end.
-                        Color.clear
-                            .frame(height: 0)
-                            .id(bottomID)
-                    }
-                }
-                // Track genuine user-initiated scrolling so we can tell it apart
-                // from programmatic animations triggered by `scrollTo`.
-                // The moment a real touch/drag begins we disable autoscroll
-                // immediately so the very next content onChange doesn't fight the
-                // user's gesture. It is re-enabled when the view reaches the bottom.
-                .onScrollPhaseChange { _, newPhase in
-                    let interacting = newPhase == .interacting
-                    userIsScrolling = interacting
-                    if interacting {
-                        autoscrollEnabled = false
-                    }
-                }
-                // Geometry change: re-enable autoscroll once the view reaches
-                // the bottom (whether the user scrolled back or we programmatically
-                // scrolled there). Content-height jumps that push us slightly off
-                // the bottom while the user isn't scrolling are ignored.
-                .onScrollGeometryChange(for: Bool.self) { geo in
-                    let maxOffset = max(0, geo.contentSize.height - geo.visibleRect.height)
-                    return maxOffset - geo.contentOffset.y <= bottomGrace
-                } action: { _, atBottom in
-                    isAtBottom = atBottom
-                    store.selectedChatAtBottom = atBottom
-                    if atBottom {
-                        // Reached the bottom — re-engage autoscroll regardless of
-                        // how we got here.
-                        autoscrollEnabled = true
-                    }
-                    // Disabling autoscroll is handled exclusively in
-                    // onScrollPhaseChange (on .interacting) to avoid races with
-                    // content-driven geometry updates.
-                }
-                .onAppear {
-                    scrollToBottom(proxy)
-                }
-                .onChange(of: store.selectedChatItem?.id) { _, _ in
-                    autoscrollEnabled = true
-                    isAtBottom = true
-                    store.selectedChatAtBottom = true
-                    scrollToBottom(proxy)
-                }
-                .onChange(of: store.selectedChatItem?.chat.messages.last?.content) { _, _ in
-                    if autoscrollEnabled && !userIsScrolling { scrollToBottom(proxy) }
-                }
-                .onChange(of: store.selectedChatItem?.chat.messages.last?.thinking) { _, _ in
-                    if autoscrollEnabled && !userIsScrolling { scrollToBottom(proxy) }
-                }
-                .onChange(of: store.selectedChatItem?.chat.messages.last?.error) { _, _ in
-                    if autoscrollEnabled && !userIsScrolling { scrollToBottom(proxy) }
-                }
-                .onChange(of: store.selectedChatItem?.chat.messages.count) { _, _ in
-                    // A message-count change only happens on a user-initiated send, so
-                    // always follow it to the bottom.
-                    autoscrollEnabled = true
-                    isAtBottom = true
-                    store.selectedChatAtBottom = true
-                    scrollToBottom(proxy)
-                }
-                // When the left sidebar opens/closes the available width animates;
-                // re-anchor to the bottom once the animation settles.
-                .onGeometryChange(for: CGFloat.self) { geo in
-                    geo.size.width
-                } action: { _, _ in
-                    if autoscrollEnabled {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                            scrollToBottom(proxy)
-                        }
-                    }
-                }
-                // scrollRequest is set in the info-button action *before* the
-                // sidebar toggle, so autoscrollEnabled is captured at pre-layout time.
-                .onChange(of: scrollRequest) { _, _ in
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                        scrollToBottom(proxy)
-                    }
-                }
-            }
+            // Chat content: rendered by the persistent web view.
+            ChatWebView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
 
@@ -159,6 +36,7 @@ struct ChatView: View {
                         RoundedRectangle(cornerRadius: 6)
                             .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
                     )
+                    .focused($isInputFocused)
                     .onKeyPress(.return, phases: .down) { press in
                         if press.modifiers.contains(.shift) {
                             // Let the default newline happen
@@ -178,11 +56,48 @@ struct ChatView: View {
             }
             .padding(12)
         }
-    }
-
-    /// Scrolls to the bottom sentinel, anchoring it flush at the very bottom.
-    private func scrollToBottom(_ proxy: ScrollViewProxy) {
-        proxy.scrollTo(bottomID, anchor: .bottom)
+        .onAppear {
+            isInputFocused = true
+        }
+        .onChange(of: store.selectedChatID) { _, _ in
+            inputText = ""
+            isInputFocused = true
+        }
+        // Edit sheet — driven by the web view bridge setting
+        // `pendingEditMessageID`.
+        .sheet(item: Binding(
+            get: { store.pendingEditMessageID.map { PendingID(id: $0) } },
+            set: { if $0 == nil { store.pendingEditMessageID = nil } }
+        )) { pending in
+            if let item = store.selectedChatItem,
+               let msg = item.chat.messages.first(where: { $0.id == pending.id }) {
+                EditMessageSheet(
+                    initialText: msg.content,
+                    onCancel: { store.pendingEditMessageID = nil },
+                    onConfirm: { newText in
+                        store.editMessage(messageID: pending.id, to: newText)
+                        store.pendingEditMessageID = nil
+                    }
+                )
+            }
+        }
+        // Delete confirmation — driven by the web view bridge setting
+        // `pendingDeleteMessageID`.
+        .sheet(item: Binding(
+            get: { store.pendingDeleteMessageID.map { PendingID(id: $0) } },
+            set: { if $0 == nil { store.pendingDeleteMessageID = nil } }
+        )) { pending in
+            ConfirmActionSheet(
+                title: "Delete this message?",
+                message: "This action cannot be undone.",
+                confirmLabel: "Delete",
+                onCancel: { store.pendingDeleteMessageID = nil },
+                onConfirm: {
+                    store.deleteMessage(messageID: pending.id)
+                    store.pendingDeleteMessageID = nil
+                }
+            )
+        }
     }
 
     /// Whether the send/stop button should be disabled.
@@ -192,7 +107,7 @@ struct ChatView: View {
         if !store.selectedChatHasConnection { return true }
         return inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
-    
+
     /// A header bar that sits at the top of the chat content area (below the
     /// window titlebar). By living inside the content, it naturally shifts left
     /// when the inspector panel opens — unlike toolbar items which span the full
@@ -263,8 +178,11 @@ struct ChatView: View {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !store.isStreaming else { return }
         inputText = ""
-        // Sending a new message implies we want to follow the new response.
-        isAtBottom = true
         store.sendMessage(text)
     }
+}
+
+/// A wrapper that makes a `UUID` `Identifiable` so it can drive `.sheet(item:)`.
+private struct PendingID: Identifiable {
+    let id: UUID
 }

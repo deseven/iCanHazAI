@@ -14,6 +14,21 @@ actor ChatEngine {
 
     static let shared = ChatEngine()
 
+    /// Information about the frontend's rendering capabilities, appended to
+    /// every role's system prompt so the model knows what it can use.
+    private static let renderingCapabilities = """
+
+        --- Rendering capabilities ---
+        Your responses are rendered in a chat UI that supports:
+        - GitHub-Flavored Markdown (tables, strikethrough, task lists, autolinks)
+        - Syntax-highlighted code blocks (fenced with a language tag)
+        - LaTeX math via KaTeX: use `$...$` for inline and `$$...$$` for block equations
+        - Mermaid diagrams: use a fenced code block with language `mermaid`
+        - Inline HTML is allowed
+        Use these features where appropriate to make your answers clearer.
+        --- End rendering capabilities ---
+        """
+
     // MARK: - State
 
     private(set) var records: [ChatRecord] = []
@@ -355,7 +370,7 @@ actor ChatEngine {
         var messages: [ChatMessage] = []
         if let roleName = baseChat.role,
            let role = roles.first(where: { $0.name == roleName }) {
-            messages.append(ChatMessage(role: .system, content: role.content))
+            messages.append(ChatMessage(role: .system, content: role.content + Self.renderingCapabilities))
         }
         messages.append(contentsOf: baseChat.messages)
         messages.append(ChatMessage(role: .user, content: text))
@@ -406,7 +421,7 @@ actor ChatEngine {
         var messages: [ChatMessage] = []
         if let roleName = updatedChat.role,
            let role = roles.first(where: { $0.name == roleName }) {
-            messages.append(ChatMessage(role: .system, content: role.content))
+            messages.append(ChatMessage(role: .system, content: role.content + Self.renderingCapabilities))
         }
         for msg in updatedChat.messages.dropLast() {
             messages.append(msg)

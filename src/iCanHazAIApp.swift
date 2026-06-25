@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import SwiftUI
-import Textual
 import AppKit
 
 @main
@@ -33,8 +32,16 @@ struct iCanHazAIApp: App {
         .windowToolbarStyle(.unified)
         .commands {
             // Replace the default "New Window" item (Cmd+N) to prevent
-            // creating multiple main windows. We only expose "New Connection…".
+            // creating multiple main windows.
             CommandGroup(replacing: .newItem) {
+                Button("New Chat") {
+                    AppViewModel.shared?.createNewChat()
+                }
+                .keyboardShortcut("n", modifiers: .command)
+                Button("New Chat") {
+                    AppViewModel.shared?.createNewChat()
+                }
+                .keyboardShortcut("t", modifiers: .command)
                 Button("New Connection...") {
                     ConnectionWizardView.show(onFinish: { AppViewModel.shared?.refreshAfterWizard() })
                 }

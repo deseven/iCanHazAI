@@ -10,7 +10,6 @@ let package = Package(
         .package(url: "https://github.com/mattt/swift-toml.git", from: "2.0.0"),
         .package(url: "https://github.com/deseven/Swift-OpenAI.git", branch: "main"),
         .package(url: "https://github.com/jamesrochabrun/SwiftAnthropic.git", from: "2.0.0"),
-        .package(url: "https://github.com/gonzalezreal/textual.git", from: "0.5.0"),
         .package(url: "https://github.com/Frizlab/FSEventsWrapper.git", from: "2.1.0")
     ],
     targets: [
@@ -20,7 +19,6 @@ let package = Package(
                 .product(name: "TOML", package: "swift-toml"),
                 .product(name: "OpenAI", package: "Swift-OpenAI"),
                 .product(name: "SwiftAnthropic", package: "SwiftAnthropic"),
-                .product(name: "Textual", package: "textual"),
                 .product(name: "FSEventsWrapper", package: "FSEventsWrapper")
             ],
             path: "src"

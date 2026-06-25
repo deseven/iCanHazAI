@@ -114,6 +114,13 @@ do_resolve_deps() {
     swift package resolve
 }
 
+do_build_web() {
+    cd "$loc/chatrenderer"
+    npm install --no-audit --no-fund
+    npm run build
+    cd "$loc"
+}
+
 do_clean_build() {
     swift package clean
 }
@@ -136,6 +143,7 @@ do_create_universal() {
 do_create_bundle() {
     mkdir -p "$loc/dist/$name.app/Contents/MacOS"
     mkdir -p "$loc/dist/$name.app/Contents/Resources"
+    mkdir -p "$loc/dist/$name.app/Contents/Resources/ChatRenderer"
 
     if [ "$mode" = "dev" ]; then
         cp "$loc/.build/arm64-apple-macosx/$buildConfig/$name" "$loc/dist/$name.app/Contents/MacOS/$name"
@@ -147,12 +155,15 @@ do_create_bundle() {
     cp "$loc/Info.plist" "$loc/dist/$name.app/Contents/Info.plist"
     cp "$loc/res/main.icns" "$loc/dist/$name.app/Contents/Resources/"
     cp -R "$loc/res/roles" "$loc/dist/$name.app/Contents/Resources/"
+    # Copy the built web renderer (index.html + app.js + app.css) into the
+    # bundle so WKWebView can load it via Bundle.main.
+    cp "$loc/chatrenderer/dist/"* "$loc/dist/$name.app/Contents/Resources/ChatRenderer/"
 }
 
 do_codesign() {
     xattr -cr "$loc/dist/$name.app"
     if [ "$can_sign" = true ]; then
-        codesign --force --deep --sign "$ICH_SIGNING_IDENTITY" \
+        codesign --force --deep --sign "$ICHAI_SIGNING_IDENTITY" \
             --options runtime \
             --timestamp \
             "$loc/dist/$name.app"
@@ -190,18 +201,18 @@ do_create_dmg() {
 }
 
 do_sign_dmg() {
-    codesign --force --sign "$ICH_SIGNING_IDENTITY" --timestamp "$loc/dist/$shortName.dmg"
+    codesign --force --sign "$ICHAI_SIGNING_IDENTITY" --timestamp "$loc/dist/$shortName.dmg"
 }
 
 do_notarize() {
     local file="$1"
     if [ -n "${ICH_NOTARY_PROFILE:-}" ]; then
-        xcrun notarytool submit "$file" --keychain-profile "$ICH_NOTARY_PROFILE" --wait
+        xcrun notarytool submit "$file" --keychain-profile "$ICHAI_NOTARY_PROFILE" --wait
     else
         xcrun notarytool submit "$file" \
-            --apple-id "$ICH_APPLE_ID" \
-            --team-id "$ICH_TEAM_ID" \
-            --password "$ICH_APP_PASSWORD" \
+            --apple-id "$ICHAI_APPLE_ID" \
+            --team-id "$ICHAI_TEAM_ID" \
+            --password "$ICHAI_APP_PASSWORD" \
             --wait
     fi
 }
@@ -233,9 +244,9 @@ do_upload() {
 
 # ── Calculate total steps per mode ───────────────────────────────────
 case "$mode" in
-    dev)         totalSteps=5 ;;
+    dev)         totalSteps=6 ;;
     dev-release)
-        totalSteps=9
+        totalSteps=10
         if [ "$can_notarize" = true ]; then
             totalSteps=$((totalSteps + 2))
         fi
@@ -244,7 +255,7 @@ case "$mode" in
         fi
         ;;
     release)
-        totalSteps=9
+        totalSteps=10
         if [ "$can_sign" = true ]; then
             totalSteps=$((totalSteps + 1))
         fi
@@ -264,6 +275,7 @@ do_clean_dist
 
 run_step "Resolving dependencies..."            "failed to resolve dependencies"           do_resolve_deps
 run_step "Cleaning build artifacts..."           "failed to clean build artifacts"          do_clean_build
+run_step "Building chat renderer (web)..."       "failed to build chat renderer"            do_build_web
 run_step "Compiling Swift sources (arm64)..."    "failed to compile $shortName for arm64"   do_compile_arm64
 
 if [ "$mode" != "dev" ]; then

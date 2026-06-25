@@ -10,3 +10,5 @@ Package.resolved
 lib-docs/*
 plans/*
 dist/*
+chatrenderer/dist/*
+chatrenderer/node_modules/

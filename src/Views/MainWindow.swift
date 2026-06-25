@@ -5,9 +5,10 @@ import SwiftUI
 
 struct MainWindow: View {
     @EnvironmentObject var store: AppViewModel
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             // Left sidebar: chat selector.
             ChatSidebar()
                 .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 320)
@@ -36,6 +37,22 @@ struct MainWindow: View {
                 }
             }
             .navigationTitle(store.selectedChatItem?.displayTitle ?? "")
+        }
+        .onAppear {
+            columnVisibility = store.chatListSidebarVisible ? .all : .detailOnly
+        }
+        .onChange(of: store.chatListSidebarVisible) { _, visible in
+            columnVisibility = visible ? .all : .detailOnly
+        }
+        .onChange(of: columnVisibility) { _, newValue in
+            let visible = newValue != .detailOnly
+            if store.chatListSidebarVisible != visible {
+                store.chatListSidebarVisible = visible
+                store.saveSidebarState()
+            }
+        }
+        .onChange(of: store.chatInfoSidebarVisible) { _, _ in
+            store.saveSidebarState()
         }
     }
 }

@@ -42,7 +42,7 @@ struct ChatSidebar: View {
                         ChatRow(
                             item: item,
                             isSelected: item.id == store.selectedChatID,
-                            isUnread: item.hasUnreadActivity,
+                            isUnread: item.hasUnreadActivity && item.id != store.selectedChatID,
                             isStreaming: item.isStreaming
                         )
                         .contentShape(Rectangle())
@@ -57,6 +57,10 @@ struct ChatSidebar: View {
                             }
                             Button("Delete", role: .destructive) {
                                 deletingFilename = item.id
+                            }
+                            Divider()
+                            Button("Reveal in Finder") {
+                                revealInFinder(filename: item.id)
                             }
                         }
                         if item.id != store.chatItems.last?.id {
@@ -97,6 +101,12 @@ struct ChatSidebar: View {
                 }
             )
         }
+    }
+
+    /// Opens the chat JSON file in Finder, selecting it.
+    private func revealInFinder(filename: String) {
+        let url = EnvironmentManager.shared.chatsURL.appendingPathComponent(filename)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 }
 

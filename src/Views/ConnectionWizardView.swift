@@ -85,6 +85,20 @@ struct ConnectionWizardView: View {
     /// the finish step.
     @State private var savedFileURL: URL?
 
+    // MARK: - Focus state
+
+    /// Identifies a focusable field in the wizard. Used with `@FocusState`
+    /// so that switching steps auto-focuses the primary input.
+    private enum Field: Hashable {
+        case endpoint
+        case token
+        case modelSearch
+        case modelText
+        case connectionName
+    }
+
+    @FocusState private var focusedField: Field?
+
     // MARK: - Provider presets
 
     /// The provider presets offered in step 1. Only Anthropic maps to the
@@ -182,6 +196,26 @@ struct ConnectionWizardView: View {
             // Navigation buttons
             navigationBar
                 .padding(12)
+        }
+        .onChange(of: step) { _, newStep in
+            switch newStep {
+            case .credentials:
+                if providerPreset.showsEndpoint {
+                    focusedField = .endpoint
+                } else {
+                    focusedField = .token
+                }
+            case .model:
+                if providerPreset == .anthropic {
+                    focusedField = .modelText
+                } else {
+                    focusedField = .modelSearch
+                }
+            case .name:
+                focusedField = .connectionName
+            default:
+                focusedField = nil
+            }
         }
         .frame(width: 560, height: 480)
     }
@@ -390,6 +424,8 @@ struct ConnectionWizardView: View {
                         .foregroundStyle(.secondary)
                     TextField("https://", text: $endpoint)
                         .textFieldStyle(.roundedBorder)
+                        .focused($focusedField, equals: .endpoint)
+                        .onSubmit { goNext() }
                 }
             }
 
@@ -401,6 +437,8 @@ struct ConnectionWizardView: View {
                     .foregroundStyle(.secondary)
                 SecureField("sk-...", text: $token)
                     .textFieldStyle(.roundedBorder)
+                    .focused($focusedField, equals: .token)
+                    .onSubmit { goNext() }
             }
 
             if let err = credentialsError {
@@ -482,6 +520,8 @@ struct ConnectionWizardView: View {
                         .font(.headline)
                     TextField("claude-3-5-sonnet-latest", text: $selectedModel)
                         .textFieldStyle(.roundedBorder)
+                        .focused($focusedField, equals: .modelText)
+                        .onSubmit { goNext() }
                 }
             } else {
                 Text("Select a model from the list returned by the provider. You can search to filter.")
@@ -493,6 +533,8 @@ struct ConnectionWizardView: View {
                         .font(.headline)
                     TextField("Search models…", text: $modelSearch)
                         .textFieldStyle(.roundedBorder)
+                        .focused($focusedField, equals: .modelSearch)
+                        .onSubmit { goNext() }
                         .padding(.bottom, 2)
 
                     ScrollView {
@@ -628,6 +670,8 @@ struct ConnectionWizardView: View {
                     .font(.headline)
                 TextField("my-connection", text: $connectionName)
                     .textFieldStyle(.roundedBorder)
+                    .focused($focusedField, equals: .connectionName)
+                    .onSubmit { goNext() }
                 Text("File: connections/\(providerPreset.connectionProvider.rawValue)/\(sanitizedFilename(connectionName)).toml")
                     .font(.caption)
                     .foregroundStyle(.secondary)

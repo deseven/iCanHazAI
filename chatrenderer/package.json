@@ -1,0 +1,26 @@
+{
+  "name": "chatrenderer",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --watch"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@vscode/markdown-it-katex": "^1.1.2",
+    "highlight.js": "^11.11.1",
+    "katex": "^0.17.0",
+    "lucide-preact": "^1.21.0",
+    "markdown-it-ts": "^1.0.2",
+    "mermaid": "^11.15.0",
+    "preact": "^10.29.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1",
+    "typescript": "^6.0.3"
+  }
+}
