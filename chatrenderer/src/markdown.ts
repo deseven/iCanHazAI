@@ -13,8 +13,8 @@
 //  - Mermaid diagrams (custom fence rule; rendered client-side via mermaid.run)
 import MarkdownIt from "markdown-it-ts";
 import type { Token } from "markdown-it-ts";
-import katexPlugin from "@vscode/markdown-it-katex";
 import hljs from "highlight.js/lib/core";
+import { debugLog, setupDebugOverlay } from "./debug";
 import bash from "highlight.js/lib/languages/bash";
 import c from "highlight.js/lib/languages/c";
 import cpp from "highlight.js/lib/languages/cpp";
@@ -101,6 +101,25 @@ for (const [name, lang] of languages) {
   hljs.registerLanguage(name, lang);
 }
 
+// Feature flags passed by the native host via URL query parameters. Flags are
+// presence-based: `?withMermaid&withKatex&withDebug` enables all features. When
+// a feature is disabled its (large) bundle is never loaded and the
+// corresponding markdown-it plugin / fence rule is not registered.
+interface ChatFeatures {
+  mermaid: boolean;
+  katex: boolean;
+}
+function readFeatures(): ChatFeatures {
+  const params = new URLSearchParams(location.search);
+  const f = {
+    mermaid: params.has("withMermaid"),
+    katex: params.has("withKatex"),
+  };
+  debugLog("markdown", "features: " + JSON.stringify(f) + " search: " + location.search);
+  return f;
+}
+const features: ChatFeatures = readFeatures();
+
 const md = new MarkdownIt({
   // Allow raw HTML so KaTeX-rendered output and mermaid containers can be
   // injected. The content originates from the host (trusted model output),
@@ -111,8 +130,9 @@ const md = new MarkdownIt({
   typographer: true,
   highlight(str: string, lang?: string): string {
     // Mermaid diagrams are rendered client-side: emit a container that the
-    // renderer scans for after each render pass (see renderMermaidIn).
-    if (lang === "mermaid") {
+    // renderer scans for after each render pass (see renderMermaidIn). Only
+    // active when the mermaid feature flag is enabled.
+    if (features.mermaid && lang === "mermaid") {
       return (
         '<div class="mermaid" data-mermaid="' +
         encodeURIComponent(str) +
@@ -135,9 +155,81 @@ const md = new MarkdownIt({
 });
 
 // LaTeX math support via KaTeX. Handles $...$ (inline) and $$...$$ (block).
+// Only loaded when the katex feature flag is enabled. The bundle is loaded via
+// a dynamically-injected <script> tag (WKWebView doesn't support dynamic
+// import() with file:// URLs) so the KaTeX bundle is excluded entirely when
+// disabled. The bundle attaches its export to `window.__katexPlugin`.
 // Cast: the plugin targets the markdown-it API; markdown-it-ts's plugin type
 // is stricter on options, but the runtime contract is compatible.
-md.use(katexPlugin as any);
+let katexReady: Promise<void> | null = null;
+function loadKatex(): Promise<void> {
+  if (!katexReady) {
+    debugLog("katex", "Loading KaTeX bundle via <script> tag...");
+    katexReady = loadScript("./katex-bundle.js")
+      .then(() => {
+        debugLog("katex", "bundle loaded, registering plugin");
+        const w = window as any;
+        if (w.__katexPlugin) {
+          md.use(w.__katexPlugin as any);
+          debugLog("katex", "plugin registered");
+        } else {
+          debugLog("katex", "ERROR: plugin not found on window after script load");
+        }
+      })
+      .catch((err) => {
+        debugLog("katex", "load failed: " + (err instanceof Error ? err.message : String(err)));
+        reportFeatureError(
+          "KaTeX",
+          err instanceof Error ? err.message : String(err)
+        );
+      });
+  }
+  return katexReady;
+}
+if (features.katex) {
+  debugLog("katex", "feature enabled, starting load");
+  loadKatex();
+} else {
+  debugLog("katex", "feature disabled");
+}
+
+/**
+ * Resolves once all enabled optional feature bundles have finished loading.
+ * The app awaits this before rendering so the first render already has all
+ * plugins registered (e.g. KaTeX). When no features are enabled, resolves
+ * immediately.
+ */
+export const featuresReady: Promise<void> = Promise.all([
+  features.katex ? loadKatex() : Promise.resolve(),
+]).then(() => {
+  debugLog("markdown", "all features ready");
+});
+
+/** Reports a feature-loading error so it's visible to the user. */
+function reportFeatureError(feature: string, message: string): void {
+  debugLog("markdown", `ERROR: Failed to load ${feature}: ${message}`);
+}
+
+/**
+ * Loads a JS bundle by injecting a <script> tag. Resolves on load, rejects on
+ * error. More reliable than dynamic import() in WKWebView with file:// URLs.
+ */
+function loadScript(src: string): Promise<void> {
+  debugLog("script", `Loading: ${src}`);
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = src;
+    script.onload = () => {
+      debugLog("script", `Loaded: ${src}`);
+      resolve();
+    };
+    script.onerror = () => {
+      debugLog("script", `Failed to load: ${src}`);
+      reject(new Error(`Failed to load ${src}`));
+    };
+    document.head.appendChild(script);
+  });
+}
 
 // Open links in a new window (the host app intercepts external navigation anyway,
 // but this is a sensible default for a chat view).
@@ -209,50 +301,76 @@ export function renderInline(src: string): string {
 // scan the rendered container after it is inserted into the DOM, calling
 // mermaid.run() on any unprocessed elements.
 
-let mermaidReady: Promise<typeof import("mermaid")> | null = null;
+// Mermaid is loaded via a <script> tag (see loadScript). The bundle attaches
+// its export to `window.__mermaid`.
+let mermaidReady: Promise<void> | null = null;
 
-async function loadMermaid() {
+function loadMermaid(): Promise<void> {
   if (!mermaidReady) {
-    mermaidReady = import("mermaid").then((m) => {
-      m.default.initialize({
-        startOnLoad: false,
-        theme: document.documentElement.getAttribute("data-theme") === "light"
-          ? "default"
-          : "dark",
-        securityLevel: "strict",
+    debugLog("mermaid", "Loading bundle via <script> tag...");
+    mermaidReady = loadScript("./mermaid-bundle.js")
+      .then(() => {
+        debugLog("mermaid", "bundle loaded, initializing");
+        const w = window as any;
+        if (w.__mermaid) {
+          w.__mermaid.initialize({
+            startOnLoad: false,
+            theme: document.documentElement.getAttribute("data-theme") === "light"
+              ? "default"
+              : "dark",
+            securityLevel: "strict",
+          });
+          debugLog("mermaid", "initialized");
+        } else {
+          debugLog("mermaid", "ERROR: not found on window after script load");
+        }
+      })
+      .catch((err) => {
+        debugLog("mermaid", "load failed: " + (err instanceof Error ? err.message : String(err)));
+        reportFeatureError(
+          "Mermaid",
+          err instanceof Error ? err.message : String(err)
+        );
       });
-      return m;
-    });
   }
   return mermaidReady;
 }
 
-/** Re-theme mermaid when the app theme changes. */
+/** Re-theme mermaid when the app theme changes. No-op if mermaid is disabled. */
 export async function setMermaidTheme(theme: "light" | "dark") {
-  const m = await loadMermaid();
-  m.default.initialize({
-    startOnLoad: false,
-    theme: theme === "light" ? "default" : "dark",
-    securityLevel: "strict",
-  });
+  if (!features.mermaid) return;
+  await loadMermaid();
+  const m = (window as any).__mermaid;
+  if (m) {
+    m.initialize({
+      startOnLoad: false,
+      theme: theme === "light" ? "default" : "dark",
+      securityLevel: "strict",
+    });
+  }
 }
 
 /**
  * Find unrendered `.mermaid` elements inside `root` and render them.
  * Called by the message component after its HTML is committed to the DOM.
+ * No-op if mermaid is disabled (no `.mermaid` containers are emitted).
  */
 export async function renderMermaidIn(root: HTMLElement) {
+  if (!features.mermaid) return;
   const nodes = root.querySelectorAll<HTMLElement>(
     ".mermaid:not([data-mermaid-done])"
   );
   if (nodes.length === 0) return;
-  const m = await loadMermaid();
+  debugLog("mermaid", `rendering ${nodes.length} diagram(s)`);
+  await loadMermaid();
+  const m = (window as any).__mermaid;
+  if (!m) return;
   for (const node of nodes) {
     const src = node.getAttribute("data-mermaid");
     if (!src) continue;
     node.setAttribute("data-mermaid-done", "1");
     try {
-      const { svg } = await m.default.render(
+      const { svg } = await m.render(
         "mermaid-" + Math.random().toString(36).slice(2),
         decodeURIComponent(src)
       );
@@ -261,6 +379,12 @@ export async function renderMermaidIn(root: HTMLElement) {
       node.classList.add("mermaid-error");
       node.textContent =
         "Mermaid error: " + (err instanceof Error ? err.message : String(err));
+      debugLog("mermaid", "render error: " + (err instanceof Error ? err.message : String(err)));
     }
   }
 }
+
+// Set up the debug overlay as early as possible so log lines emitted during
+// module init (feature loading, etc.) are captured. No-op when withDebug is
+// absent.
+setupDebugOverlay();

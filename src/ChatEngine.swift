@@ -16,18 +16,36 @@ actor ChatEngine {
 
     /// Information about the frontend's rendering capabilities, appended to
     /// every role's system prompt so the model knows what it can use.
-    private static let renderingCapabilities = """
-
-        --- Rendering capabilities ---
-        Your responses are rendered in a chat UI that supports:
-        - GitHub-Flavored Markdown (tables, strikethrough, task lists, autolinks)
-        - Syntax-highlighted code blocks (fenced with a language tag)
-        - LaTeX math via KaTeX: use `$...$` for inline and `$$...$$` for block equations
-        - Mermaid diagrams: use a fenced code block with language `mermaid`
-        - Inline HTML is allowed
-        Use these features where appropriate to make your answers clearer.
-        --- End rendering capabilities ---
-        """
+    /// Built dynamically from the current config so disabled features are not
+    /// advertised to the model.
+    private func renderingCapabilities() async -> String {
+        let mermaid = await ConfigManager.shared.getMermaidEnabled()
+        let katex = await ConfigManager.shared.getKatexEnabled()
+        var lines: [String] = [
+            "",
+            "--- Rendering capabilities ---",
+            "Your responses are rendered in a chat UI with the following features:",
+            "- GitHub-Flavored Markdown (tables, strikethrough, task lists, autolinks)",
+            "- Syntax-highlighted code blocks (fenced with a language tag)",
+        ]
+        if katex {
+            lines.append("- LaTeX math via KaTeX: use `$...$` for inline and `$$...$$` for block equations")
+        } else {
+            lines.append("- LaTeX math is NOT supported")
+        }
+        if mermaid {
+            lines.append("- Mermaid diagrams: use a fenced code block with language `mermaid`")
+        } else {
+            lines.append("- Mermaid diagrams are NOT supported")
+        }
+        lines.append(contentsOf: [
+            "- Inline HTML is allowed",
+            "Use these features where appropriate to make your answers clearer.",
+            "--- End rendering capabilities ---",
+            "",
+        ])
+        return lines.joined(separator: "\n") + "\n"
+    }
 
     // MARK: - State
 
@@ -348,7 +366,7 @@ actor ChatEngine {
     /// Sends a user message and streams the assistant response for the given chat.
     /// Returns false (and emits an error) if no valid connection is selected.
     @discardableResult
-    func sendMessage(filename: String, text: String) -> Bool {
+    func sendMessage(filename: String, text: String) async -> Bool {
         guard let record = records.first(where: { $0.filename == filename }) else { return false }
         guard let connectionID = record.chat.connection,
               !connectionID.isEmpty,
@@ -370,7 +388,8 @@ actor ChatEngine {
         var messages: [ChatMessage] = []
         if let roleName = baseChat.role,
            let role = roles.first(where: { $0.name == roleName }) {
-            messages.append(ChatMessage(role: .system, content: role.content + Self.renderingCapabilities))
+            let caps = await renderingCapabilities()
+            messages.append(ChatMessage(role: .system, content: role.content + caps))
         }
         messages.append(contentsOf: baseChat.messages)
         messages.append(ChatMessage(role: .user, content: text))
@@ -393,7 +412,7 @@ actor ChatEngine {
     }
 
     /// Retries the last request for the given chat.
-    func retryLastMessage(filename: String) {
+    func retryLastMessage(filename: String) async {
         guard !isStreaming(filename: filename) else { return }
         guard lastRetryableFilename == filename else { return }
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
@@ -421,7 +440,8 @@ actor ChatEngine {
         var messages: [ChatMessage] = []
         if let roleName = updatedChat.role,
            let role = roles.first(where: { $0.name == roleName }) {
-            messages.append(ChatMessage(role: .system, content: role.content + Self.renderingCapabilities))
+            let caps = await renderingCapabilities()
+            messages.append(ChatMessage(role: .system, content: role.content + caps))
         }
         for msg in updatedChat.messages.dropLast() {
             messages.append(msg)

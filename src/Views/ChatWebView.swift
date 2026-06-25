@@ -93,6 +93,17 @@ struct ChatWebView: View {
             .onChange(of: store.isStreaming) { _, _ in
                 model.pushSnapshot()
             }
+            // Reload the web view when chat rendering features change so the
+            // renderer re-evaluates which optional dependencies to load.
+            .onChange(of: store.preferencesMermaidEnabled) { _, _ in
+                model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled)
+            }
+            .onChange(of: store.preferencesKatexEnabled) { _, _ in
+                model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled)
+            }
+            .onChange(of: store.preferencesChatRendererDebugEnabled) { _, _ in
+                model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled)
+            }
             // Observe a lightweight signature of the selected chat's messages
             // (count + total content length + total thinking length). This
             // catches new messages, edits, deletes, and streaming token updates
@@ -128,6 +139,11 @@ final class ChatWebViewModel: ObservableObject {
     private var lastMessageIds: [String] = []
     private var store: AppViewModel?
     private var themeObservation: NSKeyValueObservation?
+    /// Feature flags passed to the renderer via URL query params so it only
+    /// loads the (large) Mermaid/KaTeX bundles when enabled.
+    private var mermaidEnabled: Bool = false
+    private var katexEnabled: Bool = false
+    private var debugEnabled: Bool = false
 
     init() {
         let config = WKWebViewConfiguration()
@@ -147,8 +163,6 @@ final class ChatWebViewModel: ObservableObject {
 
         // Register the JS -> Swift bridge. The view model is the message handler.
         userContentController.add(MessageHandlerBridge(target: self), name: "bridge")
-
-        loadPage()
     }
 
     deinit {
@@ -163,12 +177,32 @@ final class ChatWebViewModel: ObservableObject {
 
     /// Loads the bundled index.html from the app bundle's ChatRenderer resource
     /// directory. The web renderer is always built and included in the bundle
-    /// by `build.sh`; there is no dev fallback.
+    /// by `build.sh`; there is no dev fallback. Feature flags are passed via
+    /// URL query params so the renderer only loads Mermaid/KaTeX when enabled.
     private func loadPage() {
+        // Feature flags are presence-based query params, e.g.
+        // `?withMermaid&withKatex&withDebug`. Only enabled features are included.
+        var parts: [String] = []
+        if mermaidEnabled { parts.append("withMermaid") }
+        if katexEnabled { parts.append("withKatex") }
+        if debugEnabled { parts.append("withDebug") }
+        let query = parts.isEmpty ? "" : "?" + parts.joined(separator: "&")
         if let url = Bundle.main.url(forResource: "index", withExtension: "html", subdirectory: "ChatRenderer") {
-            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+            var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            components?.query = query.isEmpty ? nil : query.dropFirst().description
+            if let final = components?.url {
+                webView.loadFileURL(final, allowingReadAccessTo: url.deletingLastPathComponent())
+            } else {
+                webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+            }
         } else if let url = Bundle.main.url(forResource: "index", withExtension: "html") {
-            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+            var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            components?.query = query.isEmpty ? nil : query.dropFirst().description
+            if let final = components?.url {
+                webView.loadFileURL(final, allowingReadAccessTo: url.deletingLastPathComponent())
+            } else {
+                webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+            }
         }
     }
 
@@ -177,12 +211,32 @@ final class ChatWebViewModel: ObservableObject {
     /// Connects this model to the app view model and starts pushing snapshots.
     func bind(store: AppViewModel) {
         self.store = store
+        mermaidEnabled = store.preferencesMermaidEnabled
+        katexEnabled = store.preferencesKatexEnabled
+        debugEnabled = store.preferencesChatRendererDebugEnabled
+        loadPage()
         observeTheme()
         pushSnapshot()
     }
 
     func unbind() {
         store = nil
+    }
+
+    /// Reloads the web page with updated feature flags. Called when the
+    /// Mermaid/KaTeX preferences change so the renderer loads (or skips) the
+    /// corresponding bundles.
+    func reload(mermaid: Bool, katex: Bool, debug: Bool) {
+        mermaidEnabled = mermaid
+        katexEnabled = katex
+        debugEnabled = debug
+        // Reset bridge state so queued messages are flushed after re-ready.
+        webReady = false
+        renderedChatId = nil
+        lastMessages = [:]
+        lastMessageIds = []
+        lastStreamingState = false
+        loadPage()
     }
 
     // MARK: - Theme

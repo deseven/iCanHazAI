@@ -17,9 +17,9 @@ import { useEffect, useRef, useState, useCallback } from "preact/hooks";
 import type { ChatMessage, ChatSnapshot, HostMessage } from "./types";
 import { setHostSubscriber, sendToHost } from "./bridge";
 import { MessageItem } from "./components/Message";
-import { setMermaidTheme } from "./markdown";
+import { setMermaidTheme, featuresReady } from "./markdown";
+import { debugLog } from "./debug";
 import "./styles.css";
-import "katex/dist/katex.min.css";
 // highlight.js token colors are defined directly in styles.css, scoped by
 // [data-theme="dark"] / [data-theme="light"] (atom-one-dark / atom-one-light).
 
@@ -51,30 +51,43 @@ function ChatApp() {
       switch (msg.type) {
         case "snapshot": {
           const prev = loadedChatIdRef.current;
-          const isNewChat = prev !== msg.snapshot.chatId;
+          const isFirstLoad = prev === null;
+          const isNewChat = !isFirstLoad && prev !== msg.snapshot.chatId;
           loadedChatIdRef.current = msg.snapshot.chatId;
+          debugLog(
+            "load",
+            `snapshot chatId=${msg.snapshot.chatId} msgs=${msg.snapshot.messages.length} streaming=${msg.snapshot.isStreaming}` +
+              (isFirstLoad ? " (initial)" : isNewChat ? " (chat switch)" : "")
+          );
           setSnapshot(msg.snapshot);
           setLoading(false);
           // When switching chats, jump to the bottom and reset follow state.
-          if (isNewChat) {
+          if (isFirstLoad || isNewChat) {
             atBottomRef.current = true;
             requestAnimationFrame(() => scrollToBottom(true));
           }
           break;
         }
         case "streaming":
+          debugLog("streaming", `chatId=${msg.chatId} isStreaming=${msg.isStreaming}`);
           setSnapshot((s) =>
             s && s.chatId === msg.chatId ? { ...s, isStreaming: msg.isStreaming } : s
           );
           setTick((t) => t + 1);
           break;
         case "theme":
+          debugLog("theme", msg.theme);
           setTheme(msg.theme);
           break;
         case "scrollToBottom":
+          debugLog("scroll", "scrollToBottom requested");
           requestAnimationFrame(() => scrollToBottom(true));
           break;
         case "updateMessage":
+          debugLog(
+            "edit",
+            `updateMessage id=${msg.message.id} role=${msg.message.role} len=${msg.message.content.length}`
+          );
           setSnapshot((s) => {
             if (!s || s.chatId !== msg.chatId) return s;
             const messages = s.messages.map((m) =>
@@ -85,6 +98,10 @@ function ChatApp() {
           setTick((t) => t + 1);
           break;
         case "addMessage":
+          debugLog(
+            "add",
+            `addMessage id=${msg.message.id} role=${msg.message.role} index=${msg.index} len=${msg.message.content.length}`
+          );
           setSnapshot((s) => {
             if (!s || s.chatId !== msg.chatId) return s;
             const messages = [...s.messages];
@@ -95,6 +112,7 @@ function ChatApp() {
           setTick((t) => t + 1);
           break;
         case "deleteMessage":
+          debugLog("delete", `deleteMessage id=${msg.messageId}`);
           setSnapshot((s) => {
             if (!s || s.chatId !== msg.chatId) return s;
             const messages = s.messages.filter((m) => m.id !== msg.messageId);
@@ -104,6 +122,7 @@ function ChatApp() {
           break;
       }
     });
+    debugLog("init", "renderer ready, signaling host");
     // Signal that the renderer is ready to receive snapshots.
     sendToHost({ type: "ready" });
   }, []);
@@ -150,6 +169,7 @@ function ChatApp() {
     // Infinite scroll: near the top → request older messages.
     if (el.scrollTop < 60 && snapshot && !loadingOlderRef.current) {
       loadingOlderRef.current = true;
+      debugLog("scroll", `requestOlder chatId=${snapshot.chatId} (near top)`);
       sendToHost({ type: "requestOlder", chatId: snapshot.chatId });
     }
   }, [snapshot]);
@@ -209,4 +229,10 @@ function ChatApp() {
   );
 }
 
-render(<ChatApp />, APP_ROOT);
+// Wait for any enabled optional feature bundles (e.g. KaTeX) to finish
+// loading before rendering, so the first render already has all plugins
+// registered. When no features are enabled this resolves immediately.
+featuresReady.then(() => {
+  debugLog("init", "features ready, mounting ChatApp");
+  render(<ChatApp />, APP_ROOT);
+});

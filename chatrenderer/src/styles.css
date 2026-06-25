@@ -2,6 +2,64 @@
    Uses CSS variables driven by [data-theme="light"|"dark"] on <html>.
    Designed to feel native: system fonts, translucent surfaces, smooth scroll. */
 
+/* ── Debug overlay ────────────────────────────────────────────────────
+   A collapsible panel pinned to the very top of the viewport. Created and
+   populated by debug.ts when the page is loaded with `withDebug`. Collapsed
+   by default; expands on header click. The inner <pre> autoscrolls to the
+   bottom on new content. */
+
+.debug-wrapper {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 99999;
+  background: rgba(0, 0, 0, 0.85);
+  color: #0f0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border-bottom: 1px solid rgba(0, 255, 0, 0.25);
+}
+
+.debug-header {
+  appearance: none;
+  border: none;
+  background: rgba(0, 0, 0, 0.6);
+  color: #0f0;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  width: 100%;
+  padding: 4px 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.debug-header:hover {
+  background: rgba(0, 255, 0, 0.1);
+}
+
+.debug-content {
+  overflow: hidden;
+  transition: max-height 0.12s ease;
+  max-height: 220px;
+}
+
+.debug-content.debug-collapsed {
+  max-height: 0;
+}
+
+.debug-content #__debug_overlay__ {
+  display: block;
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: transparent;
+}
+
 :root {
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
     system-ui, sans-serif;

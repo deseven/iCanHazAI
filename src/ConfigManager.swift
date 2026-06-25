@@ -15,6 +15,12 @@ struct AppConfig: Codable, Equatable {
     var defaultRole: String?
     /// Connection identifier (`"provider/name"`) used for utility tasks (e.g. chat naming).
     var utilityConnection: String?
+    /// Whether Mermaid diagram rendering is enabled in the chat view.
+    var mermaidEnabled: Bool = false
+    /// Whether KaTeX math rendering is enabled in the chat view.
+    var katexEnabled: Bool = false
+    /// Whether the chat renderer debug overlay is enabled.
+    var chatRendererDebugEnabled: Bool = false
     /// Window position and size for the UI layer.
     var window: WindowConfig?
 
@@ -22,6 +28,9 @@ struct AppConfig: Codable, Equatable {
         case defaultConnection = "default_connection"
         case defaultRole = "default_role"
         case utilityConnection = "utility_connection"
+        case mermaidEnabled = "mermaid_enabled"
+        case katexEnabled = "katex_enabled"
+        case chatRendererDebugEnabled = "chat_renderer_debug_enabled"
         case window
     }
 }
@@ -59,6 +68,13 @@ actor ConfigManager {
     /// The current in-memory config. Always reflects what's on disk.
     private(set) var config = AppConfig()
 
+    /// Whether `load()` has completed at least once. Validation/persistence is
+    /// suppressed until the config has been read from disk, otherwise an
+    /// FSEvent-triggered `validateReferences()` that fires *before* the initial
+    /// load would wipe `default_connection` / `utility_connection` (which are
+    /// still nil in the default `AppConfig()` and would be persisted as such).
+    private var didLoad = false
+
     private let fileURL: URL
 
     private init() {
@@ -76,14 +92,17 @@ actor ConfigManager {
         guard fm.fileExists(atPath: fileURL.path),
               let data = try? Data(contentsOf: fileURL) else {
             config = AppConfig()
+            didLoad = true
             return
         }
         do {
             config = try TOMLDecoder().decode(AppConfig.self, from: data)
         } catch {
             config = AppConfig()
+            didLoad = true
             return
         }
+        didLoad = true
         validateAndSave()
     }
 
@@ -108,18 +127,32 @@ actor ConfigManager {
     /// Checks that `default_connection`, `utility_connection`, and `default_role`
     /// still refer to existing items. Clears invalid references and persists.
     private func validateAndSave() {
+        // Suppress validation until the config has been loaded from disk at
+        // least once. Otherwise an FSEvent-triggered `validateReferences()`
+        // that races ahead of the initial `load()` would validate against the
+        // default (empty) `AppConfig()` and persist a wiped config file.
+        guard didLoad else { return }
+
         var dirty = false
 
         let connections = EnvironmentManager.shared.loadConnections()
         let connectionIDs = Set(connections.map { $0.id })
 
-        if let dc = config.defaultConnection, !connectionIDs.contains(dc) {
-            config.defaultConnection = nil
-            dirty = true
-        }
-        if let uc = config.utilityConnection, !connectionIDs.contains(uc) {
-            config.utilityConnection = nil
-            dirty = true
+        // Only clear a connection reference when we actually loaded connections
+        // and the referenced one is missing. An empty `loadConnections()` result
+        // is almost always a transient/race state (e.g. directory just created,
+        // or a connection file being replaced) — not a signal that the user
+        // deleted all connections. Treating it as "all deleted" was the root
+        // cause of `default_connection` / `utility_connection` being wiped.
+        if !connections.isEmpty {
+            if let dc = config.defaultConnection, !connectionIDs.contains(dc) {
+                config.defaultConnection = nil
+                dirty = true
+            }
+            if let uc = config.utilityConnection, !connectionIDs.contains(uc) {
+                config.utilityConnection = nil
+                dirty = true
+            }
         }
 
         let roles = EnvironmentManager.shared.loadAllRoles()
@@ -164,6 +197,18 @@ actor ConfigManager {
         config.window
     }
 
+    func getMermaidEnabled() -> Bool {
+        config.mermaidEnabled
+    }
+
+    func getKatexEnabled() -> Bool {
+        config.katexEnabled
+    }
+
+    func getChatRendererDebugEnabled() -> Bool {
+        config.chatRendererDebugEnabled
+    }
+
     func getChatListSidebarVisible() -> Bool? {
         config.window?.chatListSidebarVisible
     }
@@ -184,6 +229,21 @@ actor ConfigManager {
 
     func setUtilityConnection(_ id: String?) {
         config.utilityConnection = id
+        persist()
+    }
+
+    func setMermaidEnabled(_ enabled: Bool) {
+        config.mermaidEnabled = enabled
+        persist()
+    }
+
+    func setKatexEnabled(_ enabled: Bool) {
+        config.katexEnabled = enabled
+        persist()
+    }
+
+    func setChatRendererDebugEnabled(_ enabled: Bool) {
+        config.chatRendererDebugEnabled = enabled
         persist()
     }
 

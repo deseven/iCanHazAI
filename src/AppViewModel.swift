@@ -46,6 +46,9 @@ final class AppViewModel: ObservableObject {
     @Published var preferencesDefaultConnection: String? = nil
     @Published var preferencesDefaultRole: String? = "Assistant"
     @Published var preferencesUtilityConnection: String? = nil
+    @Published var preferencesMermaidEnabled: Bool = false
+    @Published var preferencesKatexEnabled: Bool = false
+    @Published var preferencesChatRendererDebugEnabled: Bool = false
 
     // MARK: - Private
 
@@ -97,9 +100,15 @@ final class AppViewModel: ObservableObject {
             let uc = await config.getUtilityConnection()
             let ls = await config.getChatListSidebarVisible()
             let rs = await config.getChatInfoSidebarVisible()
+            let me = await config.getMermaidEnabled()
+            let ke = await config.getKatexEnabled()
+            let cd = await config.getChatRendererDebugEnabled()
             preferencesDefaultConnection = dc
             preferencesDefaultRole = dr
             preferencesUtilityConnection = uc
+            preferencesMermaidEnabled = me
+            preferencesKatexEnabled = ke
+            preferencesChatRendererDebugEnabled = cd
             if let ls { chatListSidebarVisible = ls }
             if let rs { chatInfoSidebarVisible = rs }
         }
@@ -148,6 +157,36 @@ final class AppViewModel: ObservableObject {
             set: { newValue in
                 self.preferencesUtilityConnection = newValue
                 Task { await self.config.setUtilityConnection(newValue) }
+            }
+        )
+    }
+
+    var bindingMermaidEnabled: Binding<Bool> {
+        Binding(
+            get: { self.preferencesMermaidEnabled },
+            set: { newValue in
+                self.preferencesMermaidEnabled = newValue
+                Task { await self.config.setMermaidEnabled(newValue) }
+            }
+        )
+    }
+
+    var bindingKatexEnabled: Binding<Bool> {
+        Binding(
+            get: { self.preferencesKatexEnabled },
+            set: { newValue in
+                self.preferencesKatexEnabled = newValue
+                Task { await self.config.setKatexEnabled(newValue) }
+            }
+        )
+    }
+
+    var bindingChatRendererDebugEnabled: Binding<Bool> {
+        Binding(
+            get: { self.preferencesChatRendererDebugEnabled },
+            set: { newValue in
+                self.preferencesChatRendererDebugEnabled = newValue
+                Task { await self.config.setChatRendererDebugEnabled(newValue) }
             }
         )
     }

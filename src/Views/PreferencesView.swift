@@ -14,18 +14,24 @@ struct PreferencesView: View {
 
     private enum Tab: String, CaseIterable, Identifiable {
         case general
+        case chatFeatures
+        case debug
 
         var id: String { rawValue }
 
         var label: String {
             switch self {
             case .general: return "General"
+            case .chatFeatures: return "Chat Features"
+            case .debug: return "Debug"
             }
         }
 
         var icon: String {
             switch self {
             case .general: return "gearshape"
+            case .chatFeatures: return "text.bubble"
+            case .debug: return "ladybug"
             }
         }
     }
@@ -68,6 +74,10 @@ struct PreferencesView: View {
                 switch selectedTab {
                 case .general:
                     GeneralTab()
+                case .chatFeatures:
+                    ChatFeaturesTab()
+                case .debug:
+                    DebugTab()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -151,6 +161,83 @@ private struct GeneralTab: View {
                 .foregroundStyle(.secondary)
                 .padding(.leading, labelWidth + 8)
         }
+    }
+}
+
+// MARK: - Chat features tab
+
+private struct ChatFeaturesTab: View {
+    @EnvironmentObject var store: AppViewModel
+
+    @ViewBuilder
+    private func featureRow(title: String, description: String, isOn: Binding<Bool>) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.body)
+                Text(description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            featureRow(
+                title: "Mermaid",
+                description: "Render Mermaid diagrams from fenced `mermaid` code blocks.",
+                isOn: store.bindingMermaidEnabled
+            )
+            featureRow(
+                title: "KaTeX",
+                description: "Render LaTeX math using `$...$` for inline and `$$...$$` for block equations.",
+                isOn: store.bindingKatexEnabled
+            )
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 8)
+    }
+}
+
+// MARK: - Debug tab
+
+private struct DebugTab: View {
+    @EnvironmentObject var store: AppViewModel
+
+    @ViewBuilder
+    private func featureRow(title: String, description: String, isOn: Binding<Bool>) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.body)
+                Text(description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            featureRow(
+                title: "Chat Renderer Debug",
+                description: "Show an on-screen debug overlay in the chat renderer with timestamps for message loads, edits, deletions, and streaming events.",
+                isOn: store.bindingChatRendererDebugEnabled
+            )
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 8)
     }
 }
 
