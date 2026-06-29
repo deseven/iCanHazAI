@@ -4,15 +4,29 @@
 import SwiftUI
 import AppKit
 
-@main
-struct iCanHazAIApp: App {
-    @StateObject private var viewModel = AppViewModel()
-
-    init() {
+/// App delegate used to hook into application termination so we can tear down
+/// MCP server connections (especially stdio subprocesses) cleanly. Without this,
+/// force-quitting the app would orphan spawned MCP server processes.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
         // Start the UI-free engine at launch so it outlives any window and
         // can later be driven by a CLI.
         Task { await ChatEngine.shared.start() }
     }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Disconnect all MCP servers (terminates stdio subprocesses) so we
+        // don't leave orphaned processes behind on quit.
+        Task { await MCPManager.shared.disconnectAll() }
+    }
+}
+
+@main
+struct iCanHazAIApp: App {
+    @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
+    @StateObject private var viewModel = AppViewModel()
+
+    init() {}
 
     var body: some Scene {
         WindowGroup {

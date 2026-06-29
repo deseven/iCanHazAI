@@ -65,14 +65,23 @@ actor MCPManager {
     // MARK: - Reload / diff
 
     /// Reconciles the active connection set against `servers`: disconnects
-    /// removed servers, connects added/changed ones. Idempotent.
+    /// removed servers (terminating any spawned stdio subprocesses), connects
+    /// added/changed ones. Idempotent.
     func reload(_ servers: [MCPServer]) async {
         let newByName = Dictionary(servers.map { ($0.name, $0) }, uniquingKeysWith: { _, b in b })
+        let newNames = Set(newByName.keys)
 
-        // Disconnect removed or changed servers.
+        // Disconnect removed servers (their config file was deleted or renamed).
+        // This terminates any spawned stdio subprocess so we don't leak orphans.
         let currentNames = Set(connections.keys)
-        for name in currentNames where newByName[name] == nil {
+        for name in currentNames where !newNames.contains(name) {
             await disconnect(name: name)
+        }
+        // Clean up stale `unavailable` entries for servers that no longer exist
+        // on disk. These have no process to terminate, but leaving them would
+        // prevent a same-named server from being retried after a re-create.
+        for name in unavailable where !newNames.contains(name) {
+            unavailable.remove(name)
         }
         // Reconnect changed servers (config differs).
         for server in servers {
@@ -158,11 +167,19 @@ actor MCPManager {
         }
     }
 
-    /// Disconnects and tears down the client for `name`.
+    /// Disconnects and tears down the client for `name`. Closes the MCP
+    /// client (which closes the transport pipes) and terminates any spawned
+    /// stdio subprocess so we don't leak orphaned processes.
     func disconnect(name: String) async {
         guard let conn = connections.removeValue(forKey: name) else { return }
         await conn.client.disconnect()
-        conn.process?.terminate()
+        if let process = conn.process {
+            process.terminate()
+            // Give the subprocess a moment to exit, then reap it so we don't
+            // leave a zombie. `waitUntilExit` blocks the actor briefly, but
+            // termination is infrequent and the delay is typically <100ms.
+            process.waitUntilExit()
+        }
         unavailable.remove(name)
     }
 
