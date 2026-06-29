@@ -350,6 +350,9 @@ final class ChatService: @unchecked Sendable {
         case .system: return .system
         case .user: return .user
         case .assistant: return .assistant
+        // Tool-result messages are mapped to the `tool` role in Phase C; until
+        // then they fall back to `user` so the message list still serializes.
+        case .tool: return .user
         }
     }
 

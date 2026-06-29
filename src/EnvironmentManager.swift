@@ -18,6 +18,7 @@ final class EnvironmentManager: @unchecked Sendable {
     let connectionsURL: URL
     let openaiConnectionsURL: URL
     let anthropicConnectionsURL: URL
+    let mcpsURL: URL
 
     private init() {
         let fm = FileManager.default
@@ -28,6 +29,7 @@ final class EnvironmentManager: @unchecked Sendable {
         connectionsURL = rootURL.appendingPathComponent("connections", isDirectory: true)
         openaiConnectionsURL = connectionsURL.appendingPathComponent("openai", isDirectory: true)
         anthropicConnectionsURL = connectionsURL.appendingPathComponent("anthropic", isDirectory: true)
+        mcpsURL = rootURL.appendingPathComponent("mcp", isDirectory: true)
     }
 
     // MARK: - Setup
@@ -35,7 +37,7 @@ final class EnvironmentManager: @unchecked Sendable {
     /// Ensures the data directory structure exists, creating it if needed.
     func ensureDirectories() {
         let fm = FileManager.default
-        for url in [rootURL, chatsURL, rolesURL, connectionsURL, openaiConnectionsURL, anthropicConnectionsURL] {
+        for url in [rootURL, chatsURL, rolesURL, connectionsURL, openaiConnectionsURL, anthropicConnectionsURL, mcpsURL] {
             try? fm.createDirectory(at: url, withIntermediateDirectories: true)
         }
     }
@@ -219,5 +221,37 @@ final class EnvironmentManager: @unchecked Sendable {
                     imageInput: config.imageInput
                 )
             }
+    }
+
+    // MARK: - MCP servers
+
+    /// Loads all MCP servers from the `mcp` directory, sorted by name.
+    func loadMCPs() -> [MCPServer] {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: mcpsURL, includingPropertiesForKeys: nil) else {
+            return []
+        }
+        return files
+            .filter { $0.pathExtension == "toml" }
+            .compactMap { url in
+                guard let data = try? Data(contentsOf: url) else { return nil }
+                guard let config = try? TOMLDecoder().decode(MCPConfig.self, from: data) else { return nil }
+                let name = url.deletingPathExtension().lastPathComponent
+                return MCPServer(name: name, config: config)
+            }
+            .sorted { $0.name < $1.name }
+    }
+
+    /// Saves an MCP server to `mcp/<name>.toml` (TOML encoded).
+    func saveMCP(_ server: MCPServer) {
+        let url = mcpsURL.appendingPathComponent("\(server.name).toml")
+        guard let data = try? TOMLEncoder().encode(server.config) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    /// Deletes an MCP server config file by name.
+    func deleteMCP(name: String) {
+        let url = mcpsURL.appendingPathComponent("\(name).toml")
+        try? FileManager.default.removeItem(at: url)
     }
 }

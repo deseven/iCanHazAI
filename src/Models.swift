@@ -10,6 +10,9 @@ enum MessageRole: String, Codable, Sendable {
     case system
     case user
     case assistant
+    /// Tool-result message (OpenAI `tool` role). For Anthropic, rendered as a
+    /// `tool_result` content block on a `user` message — handled in ChatService.
+    case tool
 }
 
 struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
@@ -33,8 +36,13 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     /// reference to a processed image file stored in the chat's image folder.
     /// Nil/empty for messages without images.
     var images: [ImageAttachment]?
+    /// For assistant messages: tool calls issued by the model. Nil for messages
+    /// without tool calls.
+    var toolCalls: [ToolCall]?
+    /// For `tool`-role messages: the result of a tool call. Nil otherwise.
+    var toolResults: [ToolResult]?
 
-    init(id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil, error: String? = nil, timestamp: Date = Date(), connectionName: String? = nil, images: [ImageAttachment]? = nil) {
+    init(id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil, error: String? = nil, timestamp: Date = Date(), connectionName: String? = nil, images: [ImageAttachment]? = nil, toolCalls: [ToolCall]? = nil, toolResults: [ToolResult]? = nil) {
         self.id = id
         self.role = role
         self.content = content
@@ -43,6 +51,8 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         self.timestamp = timestamp
         self.connectionName = connectionName
         self.images = images
+        self.toolCalls = toolCalls
+        self.toolResults = toolResults
     }
 }
 
@@ -58,13 +68,18 @@ struct Chat: Codable, Identifiable, Equatable {
     /// Optional user-defined display title. When nil the UI derives a title
     /// from the first user message (or "New chat").
     var title: String?
+    /// Names of MCP servers active for this chat. Nil when no MCP servers are
+    /// configured or selected. New chats are seeded with servers flagged
+    /// "default for new chats".
+    var mcps: [String]?
 
-    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, title: String? = nil) {
+    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, title: String? = nil, mcps: [String]? = nil) {
         self.id = id
         self.messages = messages
         self.connection = connection
         self.role = role
         self.title = title
+        self.mcps = mcps
     }
 
     /// Wall-clock time of the most recent message, used to order chats in the
@@ -152,6 +167,8 @@ enum EngineEvent: Sendable {
     case chatsChanged([ChatRecord])
     case rolesChanged([Role])
     case connectionsChanged([Connection])
+    /// The set of configured MCP servers changed (load, add, edit, delete).
+    case mcpsChanged([MCPServer])
     case error(String)
 }
 

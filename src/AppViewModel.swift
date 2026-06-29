@@ -23,6 +23,7 @@ final class AppViewModel: ObservableObject {
     @Published var chatItems: [ChatRecord] = []
     @Published var roles: [Role] = []
     @Published var connections: [Connection] = []
+    @Published var mcps: [MCPServer] = []
     @Published var selectedChatID: String?
     @Published var errorMessage: String?
     /// Whether the currently selected chat is scrolled to the bottom. Updated
@@ -241,6 +242,8 @@ final class AppViewModel: ObservableObject {
                     ConnectionWizardView.show(onFinish: { self.refreshAfterWizard() })
                 }
             }
+        case .mcpsChanged(let mcps):
+            self.mcps = mcps
         case .error(let message):
             errorMessage = message
         }
