@@ -68,6 +68,8 @@ struct ConnectionWizardView: View {
     @State private var selectedModel: String = ""
     /// Search text for the model dropdown.
     @State private var modelSearch: String = ""
+    /// Whether the user indicated the selected model supports image input.
+    @State private var imageInput: Bool = false
 
     // Step 4 — test
     /// Whether the "say hi" test request is in flight.
@@ -354,6 +356,7 @@ struct ConnectionWizardView: View {
             availableModels = []
             selectedModel = ""
             modelSearch = ""
+            imageInput = false
         }
         if step < .test {
             resetTestState()
@@ -574,6 +577,9 @@ struct ConnectionWizardView: View {
                 }
             }
 
+            Toggle("The model supports image input", isOn: $imageInput)
+                .padding(.top, 4)
+
             Spacer()
         }
     }
@@ -697,6 +703,7 @@ struct ConnectionWizardView: View {
             summaryRow("Provider", providerPreset.displayName)
             summaryRow("Model", selectedModel)
             summaryRow("Name", connectionName)
+            summaryRow("Image input", imageInput ? "Yes" : "No")
             if providerPreset.showsEndpoint {
                 summaryRow("Endpoint", endpoint)
             }
@@ -749,7 +756,8 @@ struct ConnectionWizardView: View {
             stopSequences: nil,
             thinkingEnabled: nil,
             thinkingBudget: nil,
-            vendorParameters: nil
+            vendorParameters: nil,
+            imageInput: imageInput ? true : nil
         )
     }
 
@@ -807,7 +815,8 @@ struct ConnectionWizardView: View {
             provider: provider,
             endpoint: effectiveEndpoint,
             token: token.isEmpty ? nil : token,
-            model: selectedModel
+            model: selectedModel,
+            imageInput: imageInput ? true : nil
         )
 
         let url = dir.appendingPathComponent("\(name).toml")

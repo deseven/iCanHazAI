@@ -23,19 +23,21 @@ final class ChatService: @unchecked Sendable {
     /// - Parameters:
     ///   - connection: The connection to use.
     ///   - messages: The full conversation history (including system prompt if any).
+    ///   - chatFilename: The chat's filename, used to resolve image attachments on disk.
     ///   - onChunk: Called for each streamed chunk.
     /// - Returns: The final assistant message text.
     @discardableResult
     func stream(
         connection: Connection,
         messages: [ChatMessage],
+        chatFilename: String,
         onChunk: @escaping @Sendable (StreamChunk) async -> Void
     ) async throws -> String {
         switch connection.provider {
         case .openai:
-            return try await streamOpenAI(connection: connection, messages: messages, onChunk: onChunk)
+            return try await streamOpenAI(connection: connection, messages: messages, chatFilename: chatFilename, onChunk: onChunk)
         case .anthropic:
-            return try await streamAnthropic(connection: connection, messages: messages, onChunk: onChunk)
+            return try await streamAnthropic(connection: connection, messages: messages, chatFilename: chatFilename, onChunk: onChunk)
         }
     }
 
@@ -180,6 +182,7 @@ final class ChatService: @unchecked Sendable {
     private func streamOpenAI(
         connection: Connection,
         messages: [ChatMessage],
+        chatFilename: String,
         onChunk: @escaping @Sendable (StreamChunk) async -> Void
     ) async throws -> String {
         // Build configuration with optional endpoint override.
@@ -206,9 +209,14 @@ final class ChatService: @unchecked Sendable {
 
         let openAI = OpenAI(configuration: configuration)
 
-        // Convert messages to OpenAI format.
+        // Convert messages to OpenAI format. User messages with images become
+        // multipart content (text + image_url parts); everything else stays a
+        // plain string.
         let chatMessages: [ChatQuery.ChatCompletionMessageParam] = messages.compactMap { msg in
-            ChatQuery.ChatCompletionMessageParam(role: roleFor(msg.role), content: msg.content)
+            if msg.role == .user, let images = msg.images, !images.isEmpty {
+                return openAIMessage(for: msg, images: images, chatFilename: chatFilename)
+            }
+            return ChatQuery.ChatCompletionMessageParam(role: roleFor(msg.role), content: msg.content)
         }
 
         // Parse reasoning effort from string.
@@ -345,11 +353,63 @@ final class ChatService: @unchecked Sendable {
         }
     }
 
+    // MARK: - Image content builders
+
+    /// Builds an OpenAI user message with multipart content (text + image_url
+    /// parts) for a message that carries images. Images are base64-encoded
+    /// data URLs.
+    private func openAIMessage(
+        for msg: ChatMessage,
+        images: [ImageAttachment],
+        chatFilename: String
+    ) -> ChatQuery.ChatCompletionMessageParam {
+        typealias UserMsg = ChatQuery.ChatCompletionMessageParam.UserMessageParam
+        var parts: [UserMsg.Content.ContentPart] = []
+        // Text first (if any), then images.
+        if !msg.content.isEmpty {
+            parts.append(.text(.init(text: msg.content)))
+        }
+        for img in images {
+            guard let data = EnvironmentManager.shared.loadImageData(img, chatFilename: chatFilename) else { continue }
+            let url = "data:\(img.mimeType);base64,\(data.base64EncodedString())"
+            let imageURL = ChatQuery.ChatCompletionMessageParam.ContentPartImageParam.ImageURL(url: url, detail: .auto)
+            parts.append(.image(.init(imageUrl: imageURL)))
+        }
+        let content = UserMsg.Content.contentParts(parts)
+        return .user(.init(content: content))
+    }
+
+    /// Builds an Anthropic message with multipart content (text + image parts)
+    /// for a message that carries images. Images are base64-encoded sources.
+    private func anthropicMessage(
+        for msg: ChatMessage,
+        images: [ImageAttachment],
+        role: MessageParameter.Message.Role,
+        chatFilename: String
+    ) -> MessageParameter.Message {
+        var objects: [MessageParameter.Message.Content.ContentObject] = []
+        if !msg.content.isEmpty {
+            objects.append(.text(msg.content))
+        }
+        for img in images {
+            guard let data = EnvironmentManager.shared.loadImageData(img, chatFilename: chatFilename) else { continue }
+            let mediaType: MessageParameter.Message.Content.ImageSource.MediaType = img.isLossless ? .png : .jpeg
+            let source = MessageParameter.Message.Content.ImageSource(
+                type: .base64,
+                mediaType: mediaType,
+                data: data.base64EncodedString()
+            )
+            objects.append(.image(source))
+        }
+        return MessageParameter.Message(role: role, content: .list(objects))
+    }
+
     // MARK: - Anthropic
 
     private func streamAnthropic(
         connection: Connection,
         messages: [ChatMessage],
+        chatFilename: String,
         onChunk: @escaping @Sendable (StreamChunk) async -> Void
     ) async throws -> String {
         let apiVersion = "2023-06-01"
@@ -375,6 +435,9 @@ final class ChatService: @unchecked Sendable {
 
         let anthropicMessages: [MessageParameter.Message] = conversationMessages.map { msg in
             let role: MessageParameter.Message.Role = msg.role == .user ? .user : .assistant
+            if let images = msg.images, !images.isEmpty {
+                return anthropicMessage(for: msg, images: images, role: role, chatFilename: chatFilename)
+            }
             return MessageParameter.Message(role: role, content: .text(msg.content))
         }
 

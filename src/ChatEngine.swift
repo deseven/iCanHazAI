@@ -305,11 +305,13 @@ actor ChatEngine {
         return filename
     }
 
-    /// Deletes a chat file and removes it from memory.
+    /// Deletes a chat file and removes it from memory, including its image
+    /// folder on disk.
     func deleteChat(filename: String) {
         streamTasks[filename]?.cancel()
         streamTasks[filename] = nil
         env.deleteChat(filename: filename)
+        env.deleteAllImages(for: filename)
         records.removeAll(where: { $0.filename == filename })
         if lastRetryableFilename == filename { lastRetryableFilename = nil }
         emit(.chatsChanged(records))
@@ -365,8 +367,12 @@ actor ChatEngine {
 
     /// Sends a user message and streams the assistant response for the given chat.
     /// Returns false (and emits an error) if no valid connection is selected.
+    ///
+    /// `pendingImages` are in-memory attachments that are committed to disk
+    /// (resized + re-encoded + saved) only at this point — i.e. when the user
+    /// actually sends the message. If the user cancels, nothing is written.
     @discardableResult
-    func sendMessage(filename: String, text: String) async -> Bool {
+    func sendMessage(filename: String, text: String, pendingImages: [PendingImageAttachment] = []) async -> Bool {
         guard let record = records.first(where: { $0.filename == filename }) else { return false }
         guard let connectionID = record.chat.connection,
               !connectionID.isEmpty,
@@ -384,6 +390,14 @@ actor ChatEngine {
             baseChat.messages.remove(at: lastIdx)
         }
 
+        // Commit pending images to disk now that the user has actually sent.
+        // Each attachment is resized/re-encoded and saved into the chat's
+        // image folder; the returned ImageAttachment refs are persisted on
+        // the user message and used to build the request payload.
+        let committed: [ImageAttachment] = pendingImages.compactMap {
+            ImageManager.commit($0, chatFilename: filename)
+        }
+
         // Build the message list including the system prompt from the selected role.
         var messages: [ChatMessage] = []
         if let roleName = baseChat.role,
@@ -392,11 +406,12 @@ actor ChatEngine {
             messages.append(ChatMessage(role: .system, content: role.content + caps))
         }
         messages.append(contentsOf: baseChat.messages)
-        messages.append(ChatMessage(role: .user, content: text))
+        let userMessage = ChatMessage(role: .user, content: text, images: committed.isEmpty ? nil : committed)
+        messages.append(userMessage)
 
         // Add the user message immediately and create a placeholder assistant message.
         var updatedChat = baseChat
-        updatedChat.messages.append(ChatMessage(role: .user, content: text))
+        updatedChat.messages.append(userMessage)
         updatedChat.messages.append(ChatMessage(role: .assistant, content: "", connectionName: connection.displayName))
         saveChat(updatedChat, filename: filename)
         sortAndEmit()
@@ -467,7 +482,8 @@ actor ChatEngine {
             do {
                 let result = try await ChatService.shared.stream(
                     connection: connection,
-                    messages: messages
+                    messages: messages,
+                    chatFilename: filename
                 ) { @Sendable [weak self] chunk in
                     await self?.applyChunk(chunk, filename: filename)
                 }
@@ -601,6 +617,7 @@ actor ChatEngine {
                 let rawName = try await ChatService.shared.stream(
                     connection: utilityConn,
                     messages: messages,
+                    chatFilename: filename,
                     onChunk: { _ in }
                 )
                 let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -652,11 +669,17 @@ actor ChatEngine {
     }
 
     /// Deletes a single message from the message tree by id. Persists the
-    /// updated chat to disk.
+    /// updated chat to disk and removes any image files owned by the message.
     func deleteMessage(filename: String, messageID: UUID) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         var chat = records[idx].chat
         guard let msgIdx = chat.messages.firstIndex(where: { $0.id == messageID }) else { return }
+        // Clean up image files owned by the deleted message.
+        if let images = chat.messages[msgIdx].images {
+            for img in images {
+                env.deleteImage(img, chatFilename: filename)
+            }
+        }
         chat.messages.remove(at: msgIdx)
         saveChat(chat, filename: filename)
         emit(.chatsChanged(records))

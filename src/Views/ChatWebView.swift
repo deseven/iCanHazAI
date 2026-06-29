@@ -122,6 +122,8 @@ struct ChatWebView: View {
 @MainActor
 final class ChatWebViewModel: ObservableObject {
     let webView: WKWebView
+    /// The scheme handler serving chat images via `ichai://`.
+    private let imageSchemeHandler = ImageSchemeHandler()
     /// Whether the web page has finished loading and reported `ready`.
     /// Messages sent before this are queued and flushed on ready.
     private var webReady: Bool = false
@@ -152,6 +154,10 @@ final class ChatWebViewModel: ObservableObject {
         // Allow local file access for the bundled web assets.
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
         config.setValue(true, forKey: "allowUniversalAccessFromFileURLs")
+
+        // Register the custom `ichai://` scheme handler so the renderer can
+        // load chat images by UUID without base64 in the DOM.
+        config.setURLSchemeHandler(imageSchemeHandler, forURLScheme: ImageSchemeHandler.scheme)
 
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = nil
@@ -266,6 +272,10 @@ final class ChatWebViewModel: ObservableObject {
     func pushSnapshot() {
         guard let store else { return }
         guard let item = store.selectedChatItem else { return }
+
+        // Keep the image scheme handler pointed at the current chat so
+        // `ichai://` URLs resolve to the right image folder.
+        ImageSchemeHandler.currentChatFilename = item.filename
 
         let chatId = item.id
         let isStreaming = item.isStreaming
@@ -601,6 +611,18 @@ struct ChatMessageData: Codable, Equatable {
     let error: String?
     let timestamp: String
     let connectionName: String?
+    /// Images attached to the message, as `ichai://` URLs the renderer can
+    /// load via the custom scheme handler. Nil/empty for messages without
+    /// images.
+    let images: [ImageData]?
+
+    /// A single image reference for the wire protocol.
+    struct ImageData: Codable, Equatable {
+        /// The `ichai://` URL the renderer uses as the `src`.
+        let url: String
+        /// Original filename for display/alt text.
+        let name: String?
+    }
 }
 
 extension ChatMessage {
@@ -608,6 +630,12 @@ extension ChatMessage {
     var webData: ChatMessageData {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let images = images?.map {
+            ChatMessageData.ImageData(
+                url: "\(ImageSchemeHandler.scheme)://\($0.filename)",
+                name: $0.originalName
+            )
+        }
         return ChatMessageData(
             id: id.uuidString,
             role: role.rawValue,
@@ -615,7 +643,8 @@ extension ChatMessage {
             thinking: thinking,
             error: error,
             timestamp: formatter.string(from: timestamp),
-            connectionName: connectionName
+            connectionName: connectionName,
+            images: images
         )
     }
 }

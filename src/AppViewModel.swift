@@ -347,6 +347,15 @@ final class AppViewModel: ObservableObject {
         return true
     }
 
+    /// Whether the selected chat's connection supports image input. Used to
+    /// gate the attach button and drag-and-drop in the input area.
+    var selectedChatSupportsImageInput: Bool {
+        guard let item = selectedChatItem,
+              let connectionID = item.chat.connection,
+              let conn = connections.first(where: { $0.id == connectionID }) else { return false }
+        return conn.imageInput == true
+    }
+
     /// Approximate token count for the currently selected chat, updated live
     /// as content streams in.
     var selectedChatTokenCount: Int {
@@ -355,9 +364,9 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - Actions (forwarders to the engine)
 
-    func sendMessage(_ text: String) {
+    func sendMessage(_ text: String, pendingImages: [PendingImageAttachment] = []) {
         guard let filename = selectedChatID else { return }
-        Task { await engine.sendMessage(filename: filename, text: text) }
+        Task { await engine.sendMessage(filename: filename, text: text, pendingImages: pendingImages) }
     }
 
     func retryLastMessage() {

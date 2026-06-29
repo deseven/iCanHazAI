@@ -29,8 +29,12 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     /// this response. Persisted so it survives reloads. Nil for non-assistant
     /// messages or messages produced before this field existed.
     var connectionName: String?
+    /// Images attached to this message (user messages only). Each entry is a
+    /// reference to a processed image file stored in the chat's image folder.
+    /// Nil/empty for messages without images.
+    var images: [ImageAttachment]?
 
-    init(id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil, error: String? = nil, timestamp: Date = Date(), connectionName: String? = nil) {
+    init(id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil, error: String? = nil, timestamp: Date = Date(), connectionName: String? = nil, images: [ImageAttachment]? = nil) {
         self.id = id
         self.role = role
         self.content = content
@@ -38,6 +42,7 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         self.error = error
         self.timestamp = timestamp
         self.connectionName = connectionName
+        self.images = images
     }
 }
 
@@ -196,6 +201,10 @@ struct Connection: Identifiable, Equatable, @unchecked Sendable {
     /// Arbitrary vendor-specific parameters injected into the request JSON (OpenAI only).
     let vendorParameters: [String: JSONValue]?
 
+    /// Meta flag indicating whether the model supports image input. False by
+    /// default. Not yet used by the chat engine; preparation for future tasks.
+    let imageInput: Bool?
+
     /// Display name shown in the UI.
     var displayName: String { name }
 }
@@ -228,6 +237,10 @@ struct ConnectionConfig: Codable {
     /// Raw JSON string, e.g. `{"thinking":{"type":"disabled"}}`.
     var vendorParameters: String?
 
+    /// Meta flag indicating whether the model supports image input. Optional,
+    /// defaults to false (nil) when absent from the TOML file.
+    var imageInput: Bool?
+
     enum CodingKeys: String, CodingKey {
         case endpoint
         case token
@@ -245,5 +258,6 @@ struct ConnectionConfig: Codable {
         case thinkingEnabled = "thinking_enabled"
         case thinkingBudget = "thinking_budget"
         case vendorParameters = "vendor_parameters"
+        case imageInput = "image_input"
     }
 }

@@ -3,6 +3,14 @@
 
 export type MessageRole = "system" | "user" | "assistant";
 
+/** An image attached to a message, loaded via the custom `ichai://` scheme. */
+export interface MessageImage {
+  /** The `ichai://{UUID}.{ext}` URL to use as the `src`. */
+  url: string;
+  /** Original filename for alt text / display. */
+  name?: string | null;
+}
+
 export interface ChatMessage {
   id: string;
   role: MessageRole;
@@ -13,6 +21,8 @@ export interface ChatMessage {
   timestamp: string;
   /** Display name of the connection that produced an assistant response. */
   connectionName?: string | null;
+  /** Images attached to the message (user messages only). */
+  images?: MessageImage[] | null;
 }
 
 export interface ChatSnapshot {

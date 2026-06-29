@@ -7,9 +7,10 @@
 // re-laying-out every table/code-block on every incoming token — block
 // markdown only re-renders when a newline arrives (a block completes), and the
 // partial line updates cheaply as inline.
-import { useMemo, useState, useRef, useEffect } from "preact/hooks";
+import { useMemo, useState, useRef, useEffect, useCallback } from "preact/hooks";
 import { memo } from "preact/compat";
-import type { ChatMessage } from "../types";
+import { createPortal } from "preact/compat";
+import type { ChatMessage, MessageImage } from "../types";
 import { renderMarkdown, renderInline, renderMermaidIn } from "../markdown";
 import { sendToHost } from "../bridge";
 import { Copy, SquarePen, Trash2, Brain, User, Bot, Settings, AlertTriangle, RotateCcw, ChevronRight, ChevronDown } from "lucide-preact";
@@ -65,6 +66,53 @@ function splitStreaming(content: string): { block: string; partial: string } {
     block: content.slice(0, idx + 1),
     partial: content.slice(idx + 1),
   };
+}
+
+/** A gallery of image squares with click-to-zoom. Images are displayed as
+ *  fixed 512×512 squares with the image centered (object-fit: cover). Clicking
+ *  a square opens a full-image overlay; clicking outside closes it. */
+function ImageGallery({ images }: { images: MessageImage[] }) {
+  const [zoomed, setZoomed] = useState<MessageImage | null>(null);
+
+  const closeZoom = useCallback(() => setZoomed(null), []);
+
+  // Close on Escape.
+  useEffect(() => {
+    if (!zoomed) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setZoomed(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [zoomed]);
+
+  return (
+    <div class="msg-images">
+      {images.map((img) => (
+        <button
+          key={img.url}
+          class="msg-image-square"
+          type="button"
+          title={img.name ?? "image"}
+          onClick={() => setZoomed(img)}
+        >
+          <img src={img.url} alt={img.name ?? "image"} loading="lazy" />
+        </button>
+      ))}
+      {zoomed &&
+        createPortal(
+          <div class="msg-image-zoom-overlay" onClick={closeZoom}>
+            <img
+              class="msg-image-zoomed"
+              src={zoomed.url}
+              alt={zoomed.name ?? "image"}
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>,
+          document.body,
+        )}
+    </div>
+  );
 }
 
 export const MessageItem = memo(function MessageItem({ message, isStreaming }: Props) {
@@ -141,6 +189,7 @@ export const MessageItem = memo(function MessageItem({ message, isStreaming }: P
   const hasThinking = !!message.thinking && message.thinking.trim().length > 0;
   const hasError = !!message.error && message.error.trim().length > 0;
   const hasContent = !!message.content && message.content.trim().length > 0;
+  const hasImages = !!message.images && message.images.length > 0;
 
   const hoverDetail = [
     formatTimestamp(message.timestamp),
@@ -207,6 +256,10 @@ export const MessageItem = memo(function MessageItem({ message, isStreaming }: P
               <div class="thinking-content">{message.thinking}</div>
             )}
           </div>
+        )}
+
+        {hasImages && (
+          <ImageGallery images={message.images!} />
         )}
 
         {hasContent && (

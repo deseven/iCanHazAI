@@ -35,7 +35,8 @@ enum ConnectionFileWriter {
         provider: ConnectionProvider,
         endpoint: String?,
         token: String?,
-        model: String
+        model: String,
+        imageInput: Bool? = nil
     ) -> String {
 
         // Active (set by the wizard) parameters.
@@ -47,6 +48,9 @@ enum ConnectionFileWriter {
             active.append(("token", token))
         }
         active.append(("model", model))
+        if let imageInput = imageInput {
+            active.append(("image_input", imageInput ? "true" : "false"))
+        }
         // Sort active params alphabetically by key.
         active.sort { $0.key < $1.key }
 
@@ -82,6 +86,7 @@ enum ConnectionFileWriter {
     private static func optionalParameters(for provider: ConnectionProvider) -> [Line] {
         // Common parameters shared by both provider types.
         var lines: [Line] = [
+            Line(key: "image_input", value: "false", comment: "Meta flag: whether the model supports image input.", active: false),
             Line(key: "max_tokens", value: "4096", comment: "Maximum number of tokens to generate.", active: false),
             Line(key: "temperature", value: "1.0", comment: "Sampling temperature (0.0–2.0). Higher is more random.", active: false),
             Line(key: "top_p", value: "1.0", comment: "Nucleus sampling cutoff (0.0–1.0).", active: false),

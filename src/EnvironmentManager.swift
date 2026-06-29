@@ -40,6 +40,46 @@ final class EnvironmentManager: @unchecked Sendable {
         }
     }
 
+    // MARK: - Chat images
+
+    /// Returns the directory holding image files for the given chat filename.
+    /// The directory is created on demand.
+    func imagesDirectory(for chatFilename: String) -> URL {
+        let name = (chatFilename as NSString).deletingPathExtension
+        let dir = chatsURL.appendingPathComponent(name, isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// Saves processed image data for a chat, returning the on-disk URL.
+    func saveImage(data: Data, filename: String, chatFilename: String) -> URL {
+        let dir = imagesDirectory(for: chatFilename)
+        let url = dir.appendingPathComponent(filename)
+        try? data.write(to: url, options: .atomic)
+        return url
+    }
+
+    /// Loads the raw bytes of an image attachment for a chat.
+    func loadImageData(_ attachment: ImageAttachment, chatFilename: String) -> Data? {
+        let dir = imagesDirectory(for: chatFilename)
+        let url = dir.appendingPathComponent(attachment.filename)
+        return try? Data(contentsOf: url)
+    }
+
+    /// Deletes a single image file for a chat.
+    func deleteImage(_ attachment: ImageAttachment, chatFilename: String) {
+        let dir = imagesDirectory(for: chatFilename)
+        let url = dir.appendingPathComponent(attachment.filename)
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    /// Deletes the entire image folder for a chat (used when a chat is deleted).
+    func deleteAllImages(for chatFilename: String) {
+        let name = (chatFilename as NSString).deletingPathExtension
+        let dir = chatsURL.appendingPathComponent(name, isDirectory: true)
+        try? FileManager.default.removeItem(at: dir)
+    }
+
     // MARK: - Chats
 
     /// Loads all chats from the chats directory, sorted by filename (which encodes creation time).
@@ -175,7 +215,8 @@ final class EnvironmentManager: @unchecked Sendable {
                     stopSequences: config.stopSequences,
                     thinkingEnabled: config.thinkingEnabled,
                     thinkingBudget: config.thinkingBudget,
-                    vendorParameters: vendorParams
+                    vendorParameters: vendorParams,
+                    imageInput: config.imageInput
                 )
             }
     }
