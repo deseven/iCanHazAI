@@ -10,6 +10,11 @@ enum StreamChunk: Sendable {
     case thinking(String)
     case content(String)
     case error(String)
+    /// A completed tool call accumulated from streamed deltas.
+    case toolCall(ToolCall)
+    /// The finish reason reported by the provider (e.g. "stop", "tool_calls",
+    /// "tool_use"). Emitted once at the end of a stream.
+    case finishReason(String)
 }
 
 /// Provides streaming chat completion for both OpenAI-compatible and Anthropic connections.
@@ -19,25 +24,38 @@ final class ChatService: @unchecked Sendable {
 
     private init() {}
 
+    /// The outcome of a single streaming iteration. The tool-calling loop in
+    /// `ChatEngine` inspects `toolCalls` and `finishReason` to decide whether
+    /// to iterate again.
+    struct StreamResult: Sendable {
+        let content: String
+        let toolCalls: [ToolCall]
+        let finishReason: String?
+    }
+
     /// Streams a chat completion, calling `onChunk` for each piece of content/thinking.
     /// - Parameters:
     ///   - connection: The connection to use.
     ///   - messages: The full conversation history (including system prompt if any).
     ///   - chatFilename: The chat's filename, used to resolve image attachments on disk.
+    ///   - tools: Optional MCP tool definitions to expose to the model. When
+    ///     non-empty, the model may emit tool calls instead of (or alongside)
+    ///     text content.
     ///   - onChunk: Called for each streamed chunk.
-    /// - Returns: The final assistant message text.
+    /// - Returns: The stream result (final text, accumulated tool calls, finish reason).
     @discardableResult
     func stream(
         connection: Connection,
         messages: [ChatMessage],
         chatFilename: String,
+        tools: [ToolDefinition]? = nil,
         onChunk: @escaping @Sendable (StreamChunk) async -> Void
-    ) async throws -> String {
+    ) async throws -> StreamResult {
         switch connection.provider {
         case .openai:
-            return try await streamOpenAI(connection: connection, messages: messages, chatFilename: chatFilename, onChunk: onChunk)
+            return try await streamOpenAI(connection: connection, messages: messages, chatFilename: chatFilename, tools: tools, onChunk: onChunk)
         case .anthropic:
-            return try await streamAnthropic(connection: connection, messages: messages, chatFilename: chatFilename, onChunk: onChunk)
+            return try await streamAnthropic(connection: connection, messages: messages, chatFilename: chatFilename, tools: tools, onChunk: onChunk)
         }
     }
 
@@ -183,8 +201,9 @@ final class ChatService: @unchecked Sendable {
         connection: Connection,
         messages: [ChatMessage],
         chatFilename: String,
+        tools: [ToolDefinition]?,
         onChunk: @escaping @Sendable (StreamChunk) async -> Void
-    ) async throws -> String {
+    ) async throws -> StreamResult {
         // Build configuration with optional endpoint override.
         let configuration: OpenAI.Configuration
         if let endpoint = connection.endpoint, let url = URL(string: endpoint) {
@@ -211,10 +230,36 @@ final class ChatService: @unchecked Sendable {
 
         // Convert messages to OpenAI format. User messages with images become
         // multipart content (text + image_url parts); everything else stays a
-        // plain string.
+        // plain string. Assistant messages carrying tool calls and tool-role
+        // result messages are mapped to their OpenAI equivalents so the model
+        // sees the full tool-calling history on re-request.
         let chatMessages: [ChatQuery.ChatCompletionMessageParam] = messages.compactMap { msg in
             if msg.role == .user, let images = msg.images, !images.isEmpty {
                 return openAIMessage(for: msg, images: images, chatFilename: chatFilename)
+            }
+            // Assistant message with tool calls → assistant message carrying tool_calls.
+            if msg.role == .assistant, let calls = msg.toolCalls, !calls.isEmpty {
+                let toolCallParams = calls.map {
+                    ChatQuery.ChatCompletionMessageParam.AssistantMessageParam.ToolCallParam(
+                        id: $0.id,
+                        function: .init(arguments: $0.arguments, name: $0.name)
+                    )
+                }
+                let content: ChatQuery.ChatCompletionMessageParam.TextOrRefusalContent?
+                if msg.content.isEmpty {
+                    content = nil
+                } else {
+                    content = .textContent(msg.content)
+                }
+                return .assistant(.init(content: content, toolCalls: toolCallParams))
+            }
+            // Tool-result message → tool role message with tool_call_id.
+            if msg.role == .tool, let results = msg.toolResults, !results.isEmpty {
+                // OpenAI expects one tool message per tool_call_id. If a single
+                // ChatMessage carries multiple results (unusual), we emit the
+                // first; the loop normally creates one message per result.
+                let r = results[0]
+                return .tool(.init(content: .textContent(r.content), toolCallId: r.callID))
             }
             return ChatQuery.ChatCompletionMessageParam(role: roleFor(msg.role), content: msg.content)
         }
@@ -234,6 +279,34 @@ final class ChatService: @unchecked Sendable {
             reasoningEffort = nil
         }
 
+        // Build tool definitions for the OpenAI Chat Completions `tools` field.
+        // Each MCP tool is mapped to a function tool whose name is the
+        // namespaced `mcp__{server}__{tool}` identifier.
+        let toolParams: [ChatQuery.ChatCompletionToolParam]? = {
+            guard let tools, !tools.isEmpty else { return nil }
+            return tools.map { def in
+                // Build the JSON schema parameter. The OpenAI `JSONSchema` is
+                // an object dictionary; we decode the MCP schema string into
+                // `[String: AnyJSONDocument]` and wrap as `.object`. The
+                // closure is inlined into `parameters:` so its contextual type
+                // (the OpenAI `JSONSchema?`) disambiguates the name collision
+                // with SwiftAnthropic's `JSONSchema`.
+                ChatQuery.ChatCompletionToolParam(
+                    function: .init(
+                        name: def.namespacedName,
+                        description: def.description,
+                        parameters: {
+                            if let data = def.inputSchema.data(using: .utf8),
+                               let object = try? JSONDecoder().decode([String: AnyJSONDocument].self, from: data) {
+                                return .object(object)
+                            }
+                            return nil
+                        }()
+                    )
+                )
+            }
+        }()
+
         let query = ChatQuery(
             messages: chatMessages,
             model: connection.model,
@@ -243,10 +316,16 @@ final class ChatService: @unchecked Sendable {
             presencePenalty: connection.presencePenalty,
             seed: connection.seed,
             temperature: connection.temperature,
+            tools: toolParams,
             topP: connection.topP
         )
 
         var fullContent = ""
+        // Accumulate streamed tool-call deltas keyed by their `index`. OpenAI
+        // streams a tool call across multiple deltas: the first carries the id
+        // and function name, subsequent ones carry argument JSON fragments.
+        var toolCallAccumulator: [Int: (id: String, name: String, args: String)] = [:]
+        var finishReason: String?
 
         // --- Chunk coalescing -------------------------------------------------
         // OpenAI-compatible providers (and many OpenRouter/Gemini proxies) emit
@@ -327,12 +406,44 @@ final class ChatService: @unchecked Sendable {
                     if let reasoning = delta.reasoning {
                         thinkingBuffer += reasoning
                     }
+                    // Accumulate streamed tool-call deltas. OpenAI emits a
+                    // tool call across multiple chunks: the first carries the
+                    // id + function name, later ones carry argument JSON
+                    // fragments. We key by `index` (stable within a response).
+                    if let toolCallDeltas = delta.toolCalls {
+                        for tc in toolCallDeltas {
+                            var entry = toolCallAccumulator[tc.index] ?? (id: "", name: "", args: "")
+                            if let id = tc.id, !id.isEmpty { entry.id = id }
+                            if let fn = tc.function {
+                                if let name = fn.name, !name.isEmpty { entry.name = name }
+                                if let args = fn.arguments { entry.args += args }
+                            }
+                            toolCallAccumulator[tc.index] = entry
+                        }
+                    }
+                    // Capture the finish reason (emitted on the final chunk).
+                    if let reason = choice.finishReason {
+                        finishReason = reason.rawValue
+                    }
                 }
                 await flush(force: false)
             }
             // Drain any remaining buffered text before returning.
             await flush(force: true)
-            return fullContent
+            // Materialize accumulated tool calls into ToolCall objects and
+            // emit each as a chunk so the engine can render them live.
+            var toolCalls: [ToolCall] = []
+            for index in toolCallAccumulator.keys.sorted() {
+                guard let entry = toolCallAccumulator[index] else { continue }
+                let id = entry.id.isEmpty ? "call_\(index)" : entry.id
+                let call = ToolCall(id: id, name: entry.name, arguments: entry.args)
+                toolCalls.append(call)
+                await onChunk(.toolCall(call))
+            }
+            if let reason = finishReason {
+                await onChunk(.finishReason(reason))
+            }
+            return StreamResult(content: fullContent, toolCalls: toolCalls, finishReason: finishReason)
         } onCancel: {
             // Safety net: if onTermination hasn't fired yet, finish the
             // continuation here. onCancel fires synchronously when the Task
@@ -350,9 +461,7 @@ final class ChatService: @unchecked Sendable {
         case .system: return .system
         case .user: return .user
         case .assistant: return .assistant
-        // Tool-result messages are mapped to the `tool` role in Phase C; until
-        // then they fall back to `user` so the message list still serializes.
-        case .tool: return .user
+        case .tool: return .tool
         }
     }
 
@@ -413,8 +522,9 @@ final class ChatService: @unchecked Sendable {
         connection: Connection,
         messages: [ChatMessage],
         chatFilename: String,
+        tools: [ToolDefinition]?,
         onChunk: @escaping @Sendable (StreamChunk) async -> Void
-    ) async throws -> String {
+    ) async throws -> StreamResult {
         let apiVersion = "2023-06-01"
 
         let basePath = connection.endpoint ?? "https://api.anthropic.com"
@@ -436,10 +546,36 @@ final class ChatService: @unchecked Sendable {
             }
         }
 
+        // Convert messages to Anthropic format. Tool-result messages (role
+        // `.tool`) are folded into the preceding/following user message as
+        // `tool_result` content blocks, per the Anthropic API: tool results
+        // must be sent as `user` messages containing `tool_result` blocks.
+        // Assistant messages carrying tool calls become `assistant` messages
+        // with `tool_use` content blocks.
         let anthropicMessages: [MessageParameter.Message] = conversationMessages.map { msg in
-            let role: MessageParameter.Message.Role = msg.role == .user ? .user : .assistant
+            let role: MessageParameter.Message.Role = msg.role == .user || msg.role == .tool ? .user : .assistant
             if let images = msg.images, !images.isEmpty {
                 return anthropicMessage(for: msg, images: images, role: role, chatFilename: chatFilename)
+            }
+            // Assistant message with tool calls → list with text + tool_use blocks.
+            if msg.role == .assistant, let calls = msg.toolCalls, !calls.isEmpty {
+                var objects: [MessageParameter.Message.Content.ContentObject] = []
+                if !msg.content.isEmpty {
+                    objects.append(.text(msg.content))
+                }
+                for call in calls {
+                    let input = anthropicToolInput(from: call.arguments)
+                    objects.append(.toolUse(call.id, call.name, input))
+                }
+                return MessageParameter.Message(role: .assistant, content: .list(objects))
+            }
+            // Tool-result message → user message with tool_result block(s).
+            if msg.role == .tool, let results = msg.toolResults, !results.isEmpty {
+                var objects: [MessageParameter.Message.Content.ContentObject] = []
+                for r in results {
+                    objects.append(.toolResult(r.callID, [.text(r.content)], r.isError ? false : nil, nil))
+                }
+                return MessageParameter.Message(role: .user, content: .list(objects))
             }
             return MessageParameter.Message(role: role, content: .text(msg.content))
         }
@@ -454,6 +590,18 @@ final class ChatService: @unchecked Sendable {
             thinking = nil
         }
 
+        // Build Anthropic tool definitions from MCP tools.
+        let anthropicTools: [MessageParameter.Tool]? = {
+            guard let tools, !tools.isEmpty else { return nil }
+            return tools.map { def in
+                .function(
+                    name: def.namespacedName,
+                    description: def.description,
+                    inputSchema: anthropicJSONSchema(for: def.inputSchema)
+                )
+            }
+        }()
+
         let parameters = MessageParameter(
             model: .other(connection.model),
             messages: anthropicMessages,
@@ -463,27 +611,129 @@ final class ChatService: @unchecked Sendable {
             temperature: connection.temperature,
             topK: connection.topK,
             topP: connection.topP,
+            tools: anthropicTools,
             thinking: thinking
         )
 
         var fullContent = ""
+        var finishReason: String?
+        // Anthropic streams a tool_use block across events: `content_block_start`
+        // carries the id + name, then `content_block_delta` events carry
+        // `partialJson` fragments for the input. We accumulate per block index.
+        var toolBlockAccumulator: [Int: (id: String, name: String, args: String)] = [:]
 
         let stream = try await service.streamMessage(parameters)
         for try await event in stream {
             // Allow the caller to cancel an in-flight stream between chunks.
             try Task.checkCancellation()
-            if event.type == "content_block_delta" {
+            switch event.type {
+            case "content_block_start":
+                // A new content block is starting. If it's a tool_use block,
+                // capture its id + name keyed by index.
+                if let block = event.contentBlock, block.type == "tool_use",
+                   let index = event.index,
+                   let id = block.id, let name = block.name {
+                    toolBlockAccumulator[index] = (id: id, name: name, args: "")
+                }
+            case "content_block_delta":
                 if let delta = event.delta {
                     if delta.type == "thinking_delta", let thinking = delta.thinking {
                         await onChunk(.thinking(thinking))
+                    } else if delta.type == "input_json_delta", let partial = delta.partialJson {
+                        // Accumulate tool-use input JSON fragments.
+                        if let index = event.index, toolBlockAccumulator[index] != nil {
+                            toolBlockAccumulator[index]!.args += partial
+                        }
                     } else if let text = delta.text {
                         fullContent += text
                         await onChunk(.content(text))
                     }
                 }
+            case "message_delta":
+                // The stop_reason arrives in the message_delta event.
+                if let reason = event.delta?.stopReason {
+                    finishReason = reason
+                }
+            default:
+                break
             }
         }
 
-        return fullContent
+        // Materialize accumulated tool-use blocks into ToolCall objects.
+        var toolCalls: [ToolCall] = []
+        for index in toolBlockAccumulator.keys.sorted() {
+            guard let entry = toolBlockAccumulator[index] else { continue }
+            let call = ToolCall(id: entry.id, name: entry.name, arguments: entry.args)
+            toolCalls.append(call)
+            await onChunk(.toolCall(call))
+        }
+        if let reason = finishReason {
+            await onChunk(.finishReason(reason))
+        }
+        return StreamResult(content: fullContent, toolCalls: toolCalls, finishReason: finishReason)
+    }
+
+    // MARK: - Tool schema / input helpers
+
+    /// Maps a raw JSON Schema string (from an MCP tool) into the SwiftAnthropic
+    /// `JSONSchema` type. The Anthropic schema struct is a fixed shape that
+    /// only models a subset of JSON Schema; rather than fully walk the schema
+    /// tree, we decode the top-level `type`/`properties`/`required` and best-
+    /// effort map property types. If parsing fails we fall back to a permissive
+    /// object schema so the tool is still exposed.
+    private func anthropicJSONSchema(for schemaString: String) -> SwiftAnthropic.JSONSchema? {
+        guard let data = schemaString.data(using: .utf8),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return SwiftAnthropic.JSONSchema(type: .object, properties: [:], required: nil)
+        }
+        let typeString = (raw["type"] as? String) ?? "object"
+        let jsonType = SwiftAnthropic.JSONSchema.JSONType(rawValue: typeString) ?? .object
+        let required = raw["required"] as? [String]
+        var properties: [String: SwiftAnthropic.JSONSchema.Property] = [:]
+        if let props = raw["properties"] as? [String: Any] {
+            for (key, value) in props {
+                if let propDict = value as? [String: Any] {
+                    let propType = (propDict["type"] as? String) ?? "string"
+                    properties[key] = SwiftAnthropic.JSONSchema.Property(
+                        type: SwiftAnthropic.JSONSchema.JSONType(rawValue: propType) ?? .string,
+                        description: propDict["description"] as? String
+                    )
+                } else {
+                    properties[key] = SwiftAnthropic.JSONSchema.Property(type: .string)
+                }
+            }
+        }
+        return SwiftAnthropic.JSONSchema(type: jsonType, properties: properties, required: required)
+    }
+
+    /// Parses a raw JSON arguments string into the `Input` dictionary shape
+    /// expected by the SwiftAnthropic `toolUse` content object. If parsing
+    /// fails, an empty dictionary is returned so the tool call still serializes.
+    private func anthropicToolInput(from arguments: String) -> MessageResponse.Content.Input {
+        guard let data = arguments.data(using: .utf8),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        var input: MessageResponse.Content.Input = [:]
+        for (key, value) in raw {
+            input[key] = anthropicDynamicContent(from: value)
+        }
+        return input
+    }
+
+    /// Recursively converts a JSON-serialized value into the SwiftAnthropic
+    /// `DynamicContent` enum.
+    private func anthropicDynamicContent(from value: Any) -> MessageResponse.Content.DynamicContent {
+        if let v = value as? String { return .string(v) }
+        if let v = value as? Int { return .integer(v) }
+        if let v = value as? Double { return .double(v) }
+        if let v = value as? Bool { return .bool(v) }
+        if let v = value as? [Any] { return .array(v.map { anthropicDynamicContent(from: $0) }) }
+        if let v = value as? [String: Any] {
+            var dict: MessageResponse.Content.Input = [:]
+            for (k, val) in v { dict[k] = anthropicDynamicContent(from: val) }
+            return .dictionary(dict)
+        }
+        return .null
     }
 }

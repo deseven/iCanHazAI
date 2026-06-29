@@ -13,6 +13,7 @@ final class EnvironmentWatcher: @unchecked Sendable {
         case chats
         case roles
         case connections
+        case mcps
     }
 
     private var streams: [FSEventStream] = []

@@ -422,6 +422,12 @@ final class AppViewModel: ObservableObject {
         Task { await engine.setRole(filename: filename, roleName: roleName) }
     }
 
+    /// Updates the set of active MCP servers for the selected chat.
+    func setActiveMCPs(_ names: [String]?) {
+        guard let filename = selectedChatID else { return }
+        Task { await engine.setActiveMCPs(filename: filename, names: names) }
+    }
+
     /// Selects a chat, prunes other empty chats, and clears its unread marker.
     func selectChat(_ filename: String) {
         // Track the previous chat for Ctrl+Tab quick-switch, but not during

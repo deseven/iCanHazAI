@@ -52,6 +52,8 @@ actor ChatEngine {
     private(set) var records: [ChatRecord] = []
     private(set) var roles: [Role] = []
     private(set) var connections: [Connection] = []
+    /// Configured MCP servers. Loaded from disk and kept in sync via FSEvents.
+    private(set) var mcps: [MCPServer] = []
 
     /// In-flight streaming tasks keyed by chat filename, used for cancellation.
     private var streamTasks: [String: Task<Void, Never>] = [:]
@@ -91,11 +93,17 @@ actor ChatEngine {
         guard !didStart else { return }
         didStart = true
         env.ensureDirectories()
+        // Wire MCPManager errors into the engine's error event bus so the UI
+        // can surface connection failures without crashing the stream.
+        Task { await MCPManager.shared.setErrorHandler { [weak self] message in
+            Task { await self?.emit(.error(message)) }
+        } }
         reloadAll(shouldEmit: false)
         startWatching()
         emit(.chatsChanged(records))
         emit(.rolesChanged(roles))
         emit(.connectionsChanged(connections))
+        emit(.mcpsChanged(mcps))
     }
 
     // MARK: - Subscription
@@ -116,6 +124,7 @@ actor ChatEngine {
             continuation.yield(.chatsChanged(self.records))
             continuation.yield(.rolesChanged(self.roles))
             continuation.yield(.connectionsChanged(self.connections))
+            continuation.yield(.mcpsChanged(self.mcps))
         }
         return stream
     }
@@ -161,7 +170,8 @@ actor ChatEngine {
         let paths: [(path: String, area: EnvironmentWatcher.Area)] = [
             (env.chatsURL.path, .chats),
             (env.rolesURL.path, .roles),
-            (env.connectionsURL.path, .connections)
+            (env.connectionsURL.path, .connections),
+            (env.mcpsURL.path, .mcps)
         ]
         // The watcher callback hops back into the actor via a Task.
         watcher = EnvironmentWatcher(paths: paths) { [weak self] area in
@@ -182,11 +192,23 @@ actor ChatEngine {
         case .connections:
             connections = env.loadConnections()
             emit(.connectionsChanged(connections))
+        case .mcps:
+            reloadMCPs()
         }
         // Validate config references after any environment change so that
         // stale default_connection / default_role / utility_connection
         // entries are cleared from the config file.
         Task { await ConfigManager.shared.validateReferences() }
+    }
+
+    /// Reloads MCP servers from disk, reconciles the runtime connections in
+    /// `MCPManager`, and emits the updated set. Called on launch and whenever
+    /// the `mcp/` directory changes via FSEvents.
+    private func reloadMCPs() {
+        mcps = env.loadMCPs()
+        let snapshot = mcps
+        Task { await MCPManager.shared.reload(snapshot) }
+        emit(.mcpsChanged(mcps))
     }
 
     // MARK: - Loading
@@ -210,6 +232,10 @@ actor ChatEngine {
         records = newRecords
         roles = env.loadAllRoles()
         connections = env.loadConnections()
+        mcps = env.loadMCPs()
+        // Reconcile MCP runtime connections with the loaded config.
+        let mcpSnapshot = mcps
+        Task { await MCPManager.shared.reload(mcpSnapshot) }
         // Drop bookkeeping for chats that no longer exist.
         let validIDs = Set(records.map { $0.id })
         streamTasks = streamTasks.filter { validIDs.contains($0.key) }
@@ -217,6 +243,7 @@ actor ChatEngine {
             emit(.chatsChanged(records))
             emit(.rolesChanged(roles))
             emit(.connectionsChanged(connections))
+            emit(.mcpsChanged(mcps))
         }
     }
 
@@ -296,6 +323,11 @@ actor ChatEngine {
         }
         if let role = dr, self.roles.contains(where: { $0.name == role }) {
             chat.role = role
+        }
+        // Seed the chat with MCP servers flagged "default for new chats".
+        let defaultMcps = self.mcps.filter { $0.defaultForNewChats }.map(\.name)
+        if !defaultMcps.isEmpty {
+            chat.mcps = defaultMcps
         }
 
         env.saveChat(chat, filename: filename)
@@ -417,7 +449,7 @@ actor ChatEngine {
         sortAndEmit()
 
         lastRetryableFilename = filename
-        runStream(for: filename, connection: connection, messages: messages)
+        runToolLoop(for: filename, connection: connection, messages: messages)
 
         // Fire-and-forget: try to generate a chat name via the utility connection
         // if this chat doesn't have a title yet.
@@ -462,7 +494,7 @@ actor ChatEngine {
             messages.append(msg)
         }
 
-        runStream(for: filename, connection: connection, messages: messages)
+        runToolLoop(for: filename, connection: connection, messages: messages)
     }
 
     /// Whether a stream is currently in flight for the given chat.
@@ -470,8 +502,12 @@ actor ChatEngine {
         records.first(where: { $0.filename == filename })?.isStreaming ?? false
     }
 
-    /// Starts (or restarts) a streaming request for the given chat.
-    private func runStream(for filename: String, connection: Connection, messages: [ChatMessage]) {
+    /// Starts (or restarts) the tool-calling loop for the given chat. The loop
+    /// iterates: stream a completion with tools attached → if the model emitted
+    /// tool calls, execute them via `MCPManager`, append the results, and stream
+    /// again. Repeats until the model responds with no tool calls or the
+    /// max-iteration guard is hit.
+    private func runToolLoop(for filename: String, connection: Connection, messages: [ChatMessage]) {
         if let idx = records.firstIndex(where: { $0.filename == filename }) {
             records[idx].isStreaming = true
             records[idx].lastError = nil
@@ -479,26 +515,161 @@ actor ChatEngine {
         emit(.chatsChanged(records))
 
         let task = Task { [weak self] in
+            guard let self else { return }
+            await self.performToolLoop(filename: filename, connection: connection, messages: messages)
+        }
+        streamTasks[filename] = task
+    }
+
+    /// The body of the tool-calling loop. Runs as a detached task so it can
+    /// await MCP calls and re-stream without holding the actor.
+    private func performToolLoop(filename: String, connection: Connection, messages: [ChatMessage]) async {
+        // The working message history grows as tool calls + results are appended.
+        var history = messages
+        // Max iterations to prevent infinite tool-calling loops.
+        let maxIterations = 10
+
+        for iteration in 0..<maxIterations {
+            // Gather tools from the chat's active MCP servers. Individual
+            // server failures are collected and surfaced but don't abort the
+            // whole request — the model still gets the working servers' tools.
+            let toolDefs = await gatherTools(filename: filename)
+
             do {
                 let result = try await ChatService.shared.stream(
                     connection: connection,
-                    messages: messages,
-                    chatFilename: filename
+                    messages: history,
+                    chatFilename: filename,
+                    tools: toolDefs.isEmpty ? nil : toolDefs
                 ) { @Sendable [weak self] chunk in
                     await self?.applyChunk(chunk, filename: filename)
                 }
-                _ = result
-                await self?.finishStream(filename: filename)
+
+                // No tool calls → the loop is done; finalize the stream.
+                if result.toolCalls.isEmpty {
+                    finishStream(filename: filename)
+                    return
+                }
+
+                // The model emitted tool calls. Record them on the assistant
+                // message, then execute each and append tool-result messages.
+                applyToolCalls(result.toolCalls, filename: filename)
+
+                // Append the assistant message (with tool calls) to history.
+                // We read the finalized assistant message from the record so
+                // its content/thinking/toolCalls match what was streamed.
+                if let idx = records.firstIndex(where: { $0.filename == filename }) {
+                    let assistantMsg = records[idx].chat.messages.last(where: { $0.role == .assistant })
+                    if let assistantMsg {
+                        history.append(assistantMsg)
+                    }
+                }
+
+                // Execute each tool call and append a tool-result message.
+                for call in result.toolCalls {
+                    let toolResult = await executeToolCall(call, filename: filename)
+                    let toolMessage = ChatMessage(role: .tool, content: toolResult.content, toolResults: [toolResult])
+                    history.append(toolMessage)
+                    // Append the result to the in-memory chat so the renderer
+                    // can show it, and persist.
+                    appendToolResult(toolResult, toCall: call, filename: filename)
+                }
+
+                // Loop again: the model will see the tool results and either
+                // call more tools or produce a final answer.
             } catch is CancellationError {
-                await self?.finishStream(filename: filename)
+                finishStream(filename: filename)
+                return
             } catch let error as URLError where error.code == .cancelled {
-                await self?.finishStream(filename: filename)
+                finishStream(filename: filename)
+                return
             } catch {
-                await self?.recordError(error.localizedDescription, filename: filename)
-                await self?.finishStream(filename: filename)
+                recordError(error.localizedDescription, filename: filename)
+                finishStream(filename: filename)
+                return
             }
         }
-        streamTasks[filename] = task
+
+        // Max iterations exceeded — surface an error and stop.
+        recordError("Tool-calling loop exceeded \(maxIterations) iterations.", filename: filename)
+        finishStream(filename: filename)
+    }
+
+    /// Gathers tool definitions from the chat's active MCP servers. Failures
+    /// of individual servers are collected and surfaced via `.error` but don't
+    /// abort the request; the model still gets the working servers' tools.
+    private func gatherTools(filename: String) async -> [ToolDefinition] {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return [] }
+        let activeNames = records[idx].chat.mcps ?? []
+        guard !activeNames.isEmpty else { return [] }
+
+        var defs: [ToolDefinition] = []
+        for serverName in activeNames {
+            do {
+                let tools = try await MCPManager.shared.listTools(for: serverName)
+                defs.append(contentsOf: tools.map { tool in
+                    ToolDefinition(
+                        serverName: serverName,
+                        name: tool.name,
+                        description: tool.description,
+                        inputSchema: tool.inputSchema
+                    )
+                })
+            } catch {
+                emit(.error("MCP server \"\(serverName)\" tools unavailable: \(error.localizedDescription)"))
+            }
+        }
+        return defs
+    }
+
+    /// Records tool calls onto the last assistant message of the chat so the
+    /// renderer can display them (and show a "running" state until results arrive).
+    private func applyToolCalls(_ calls: [ToolCall], filename: String) {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        var chat = records[idx].chat
+        if let lastIdx = chat.messages.indices.last, chat.messages[lastIdx].role == .assistant {
+            chat.messages[lastIdx].toolCalls = calls
+        }
+        records[idx].chat = chat
+        scheduleCoalescedEmit()
+    }
+
+    /// Executes a single tool call via `MCPManager`, going through the approval
+    /// hook (which auto-approves in this iteration). Returns the tool result.
+    private func executeToolCall(_ call: ToolCall, filename: String) async -> ToolResult {
+        // The approval hook. This iteration auto-approves every call; a future
+        // UI can intercept here to present a deny/allow-once/allow-always sheet.
+        let approval = await approveToolCall(chatFilename: filename, call: call)
+        switch approval {
+        case .allow:
+            // Resolve the server + tool name from the namespaced call name.
+            guard let parsed = ToolDefinition.parse(call.name) else {
+                return ToolResult(callID: call.id, content: "Could not parse tool name \"\(call.name)\".", isError: true)
+            }
+            return await MCPManager.shared.callTool(server: parsed.server, name: parsed.tool, arguments: call.arguments)
+        case .deny(let reason):
+            return ToolResult(callID: call.id, content: "User denied the tool call: \(reason)", isError: true)
+        }
+    }
+
+    /// The tool-call approval decision point. This iteration auto-approves
+    /// every call (equivalent to "allow always"). A future UI can replace the
+    /// body to present a sheet and await the user's choice.
+    private func approveToolCall(chatFilename: String, call: ToolCall) async -> ToolApproval {
+        return .allow
+    }
+
+    /// Appends a tool result to the in-memory chat (as a new `tool`-role
+    /// message) and persists, so the renderer can show the result and the
+    /// history is complete for the next loop iteration.
+    private func appendToolResult(_ result: ToolResult, toCall call: ToolCall, filename: String) {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        var chat = records[idx].chat
+        let toolMessage = ChatMessage(role: .tool, content: result.content, toolResults: [result])
+        chat.messages.append(toolMessage)
+        records[idx].chat = chat
+        env.saveChat(chat, filename: filename)
+        scheduleCoalescedEmit()
     }
 
     /// Applies a streamed chunk to the last assistant message of the given chat.
@@ -514,6 +685,15 @@ actor ChatEngine {
             chat.messages[lastIdx].content += text
         case .error(let text):
             chat.messages[lastIdx].error = text
+        case .toolCall(let call):
+            // Accumulate tool calls as they're emitted at stream end.
+            var calls = chat.messages[lastIdx].toolCalls ?? []
+            calls.append(call)
+            chat.messages[lastIdx].toolCalls = calls
+        case .finishReason:
+            // No state change needed; the finish reason is used by the loop
+            // via the StreamResult return value.
+            break
         }
         records[idx].chat = chat
         // Coalesce: don't emit on every chunk. The flush fires on a timer,
@@ -614,13 +794,13 @@ actor ChatEngine {
             ]
 
             do {
-                let rawName = try await ChatService.shared.stream(
+                let result = try await ChatService.shared.stream(
                     connection: utilityConn,
                     messages: messages,
                     chatFilename: filename,
                     onChunk: { _ in }
                 )
-                let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let trimmed = result.content.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return }
                 await self.applyGeneratedName(filename: filename, name: trimmed)
             } catch {
@@ -705,6 +885,17 @@ actor ChatEngine {
         emit(.chatsChanged(records))
     }
 
+    /// Updates the set of active MCP servers for a chat. `names` is the list
+    /// of server names to enable; pass an empty array (or nil) to disable all.
+    func setActiveMCPs(filename: String, names: [String]?) {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        var chat = records[idx].chat
+        let filtered = (names ?? []).filter { name in self.mcps.contains(where: { $0.name == name }) }
+        chat.mcps = filtered.isEmpty ? nil : filtered
+        saveChat(chat, filename: filename)
+        emit(.chatsChanged(records))
+    }
+
     /// Clears the unread marker for a chat once the user views it.
     func markViewed(filename: String) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
@@ -712,4 +903,14 @@ actor ChatEngine {
         records[idx].hasUnreadActivity = false
         emit(.chatsChanged(records))
     }
+}
+
+// MARK: - Tool approval
+
+/// The outcome of the tool-call approval decision point. This iteration auto-
+/// approves every call (`.allow`); a future UI can return `.deny` to block a
+/// call and feed an error result back to the model.
+enum ToolApproval: Sendable {
+    case allow
+    case deny(reason: String)
 }
