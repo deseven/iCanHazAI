@@ -48,6 +48,18 @@ actor MCPManager {
     /// Names of servers that failed to connect or died. Their tools are
     /// excluded from requests but the request still proceeds with others.
     private var unavailable: Set<String> = []
+    /// The full set of servers known from the last `reload`. Used to look up
+    /// run policy and config when an on-demand server needs to be started.
+    private var knownServers: [String: MCPServer] = [:]
+    /// Wall-clock time of the last tool activity (listTools/callTool) for an
+    /// on-demand server. Used to compute the 600s idle timeout.
+    private var lastActivity: [String: Date] = [:]
+    /// Pending idle-shutdown tasks for on-demand servers, keyed by server name.
+    /// Cancelled when activity resumes or the server is disconnected.
+    private var idleTasks: [String: Task<Void, Never>] = [:]
+    /// Seconds an on-demand server stays alive after the last tool activity
+    /// before being shut down.
+    private let idleTimeout: TimeInterval = 600
     /// Optional sink for human-readable error messages (wired to ChatEngine).
     private var errorHandler: ((String) -> Void)?
     /// Optional sink for streaming tool-output progress. Called with the
@@ -104,12 +116,28 @@ actor MCPManager {
 
     // MARK: - Reload / diff
 
+    /// Returns true if the server should be kept alive continuously (always-on
+    /// or http/nil policy). Only stdio on-demand servers are started lazily.
+    private func isAlwaysOn(_ server: MCPServer) -> Bool {
+        server.runPolicy != .onDemand
+    }
+
     /// Reconciles the active connection set against `servers`: disconnects
     /// removed servers (terminating any spawned stdio subprocesses), connects
-    /// added/changed ones. Idempotent.
+    /// added/changed ones according to their run policy. Idempotent.
+    ///
+    /// Run policy handling:
+    /// - `alwaysOn` servers are (re)connected immediately here.
+    /// - `onDemand` servers are NOT auto-started; they are started lazily by
+    ///   `ensureConnected` when a chat actually needs them. If an on-demand
+    ///   server's config changed (including a run-policy change), it is
+    ///   disconnected here and will be restarted on the next request. If the
+    ///   config changed during the idle timeout period, the server is simply
+    ///   shut down until the next request.
     func reload(_ servers: [MCPServer]) async {
         let newByName = Dictionary(servers.map { ($0.name, $0) }, uniquingKeysWith: { _, b in b })
         let newNames = Set(newByName.keys)
+        knownServers = newByName
 
         // Disconnect removed servers (their config file was deleted or renamed).
         // This terminates any spawned stdio subprocess so we don't leak orphans.
@@ -117,23 +145,92 @@ actor MCPManager {
         for name in currentNames where !newNames.contains(name) {
             await disconnect(name: name)
         }
+        // Cancel any pending idle-shutdown tasks for servers that no longer
+        // exist on disk, and drop their activity bookkeeping.
+        for name in idleTasks.keys where !newNames.contains(name) {
+            idleTasks.removeValue(forKey: name)?.cancel()
+            lastActivity.removeValue(forKey: name)
+        }
         // Clean up stale `unavailable` entries for servers that no longer exist
         // on disk. These have no process to terminate, but leaving them would
         // prevent a same-named server from being retried after a re-create.
         for name in unavailable where !newNames.contains(name) {
             unavailable.remove(name)
         }
-        // Reconnect changed servers (config differs).
+        // Reconcile each known server.
         for server in servers {
             if let existing = connections[server.name] {
                 if existing.server != server {
+                    // Config changed (possibly including the run policy). Tear
+                    // down the old connection. Always-on servers are restarted
+                    // immediately; on-demand servers are left disconnected and
+                    // will be started on the next request that needs them.
                     await disconnect(name: server.name)
-                    await connect(server)
+                    if isAlwaysOn(server) {
+                        await connect(server)
+                    }
                 }
-            } else if unavailable.contains(server.name) || !connections.keys.contains(server.name) {
-                // (Re)connect servers not yet connected or previously failed.
-                await connect(server)
+            } else {
+                // Not currently connected.
+                if isAlwaysOn(server) {
+                    // (Re)connect always-on servers not yet connected or
+                    // previously failed.
+                    if unavailable.contains(server.name) || !connections.keys.contains(server.name) {
+                        await connect(server)
+                    }
+                }
+                // on-demand servers are started lazily via ensureConnected.
             }
+        }
+    }
+
+    /// Ensures an on-demand server is connected before a tool operation. If
+    /// the server is already connected, this just refreshes its idle timer.
+    /// If not, it looks up the current config from `knownServers` and starts
+    /// it. Called by `listTools`/`callTool` for on-demand servers. No-op for
+    /// always-on servers (they are kept alive by `reload`).
+    private func ensureConnected(_ name: String) async {
+        guard let server = knownServers[name] else { return }
+        if connections[name] != nil {
+            touchActivity(name)
+            return
+        }
+        // Start (or retry) the on-demand server now.
+        if unavailable.contains(name) {
+            unavailable.remove(name)
+        }
+        await connect(server)
+        touchActivity(name)
+    }
+
+    /// Records the current time as the last activity for an on-demand server
+    /// and (re)schedules its idle-shutdown task.
+    private func touchActivity(_ name: String) {
+        lastActivity[name] = Date()
+        // Cancel any previously scheduled idle shutdown and schedule a fresh one.
+        idleTasks.removeValue(forKey: name)?.cancel()
+        let task = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64((self?.idleTimeout ?? 600) * 1_000_000_000))
+            guard let self else { return }
+            // Re-check on the actor: only shut down if still on-demand and the
+            // timeout has genuinely elapsed (no newer activity superseded this).
+            await self.handleIdleTimeout(name)
+        }
+        idleTasks[name] = task
+    }
+
+    /// Actor-isolated idle-timeout handler. If the server is still on-demand
+    /// and no activity has occurred since the timer was scheduled, disconnect
+    /// it. Otherwise the timer is stale and ignored.
+    private func handleIdleTimeout(_ name: String) async {
+        guard let last = lastActivity[name] else { return }
+        let elapsed = Date().timeIntervalSince(last)
+        guard elapsed >= idleTimeout else { return }
+        // Only auto-shut-down on-demand servers.
+        if let server = knownServers[name], server.runPolicy == .onDemand {
+            await disconnect(name: name)
+            lastActivity.removeValue(forKey: name)
+            idleTasks.removeValue(forKey: name)
         }
     }
 
@@ -224,6 +321,9 @@ actor MCPManager {
     /// client (which closes the transport pipes) and terminates any spawned
     /// stdio subprocess so we don't leak orphaned processes.
     func disconnect(name: String) async {
+        // Cancel any pending idle-shutdown task for this server.
+        idleTasks.removeValue(forKey: name)?.cancel()
+        lastActivity.removeValue(forKey: name)
         guard let conn = connections.removeValue(forKey: name) else { return }
         await conn.client.disconnect()
         if let process = conn.process {
@@ -238,6 +338,10 @@ actor MCPManager {
 
     /// Disconnects all servers (e.g. on app shutdown).
     func disconnectAll() async {
+        // Cancel all pending idle-shutdown tasks.
+        for task in idleTasks.values { task.cancel() }
+        idleTasks.removeAll()
+        lastActivity.removeAll()
         let names = Array(connections.keys)
         for name in names {
             await disconnect(name: name)
@@ -247,8 +351,13 @@ actor MCPManager {
     // MARK: - Tools
 
     /// Lists the tools exposed by `server`. Throws if the server is not
-    /// connected or the call fails.
+    /// connected or the call fails. For on-demand servers this first ensures
+    /// the server is started (and refreshes its idle timer).
     func listTools(for server: String) async throws -> [MCPTool] {
+        // Start on-demand servers lazily before listing tools.
+        if let known = knownServers[server], known.runPolicy == .onDemand {
+            await ensureConnected(server)
+        }
         guard let conn = connections[server] else {
             throw MCPManagerError.unavailable(server)
         }
@@ -282,6 +391,10 @@ actor MCPManager {
     /// notifications can be routed to that chat's live `tool`-role message
     /// directly. Non-text content is summarized.
     func callTool(server: String, name: String, arguments: String, callID: String, chatFilename: String) async -> ToolResult {
+        // Start on-demand servers lazily before calling tools.
+        if let known = knownServers[server], known.runPolicy == .onDemand {
+            await ensureConnected(server)
+        }
         guard let conn = connections[server] else {
             return ToolResult(callID: callID, content: "MCP server \"\(server)\" is not available.", isError: true)
         }

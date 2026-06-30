@@ -11,12 +11,31 @@ enum MCPTransport: String, Codable, Sendable {
     case http
 }
 
+/// Controls when a stdio MCP server is started and kept alive.
+///
+/// - `alwaysOn`: the server is started on app launch (or when its config is
+///   created), reloaded when its config changes on disk, and stopped when its
+///   config is deleted.
+/// - `onDemand`: the server is started only when a chat that has it active
+///   sends a request, and is shut down 600 seconds after the last use. The
+///   same reload-on-config-change rules apply; if the config changes during
+///   the idle timeout the server is simply stopped until the next request.
+enum MCPRunPolicy: String, Codable, Sendable {
+    case alwaysOn
+    case onDemand
+}
+
 /// A configured MCP server. One server per file in `~/iCanHazAI/mcp/<name>.toml`.
 /// `id` is the filesystem-safe name (unique).
 struct MCPServer: Identifiable, Equatable, Sendable {
     var id: String { name }
     let name: String
     let transport: MCPTransport
+    /// When the server process is started/stopped. Only meaningful for stdio
+    /// servers (where we own the subprocess); nil for http servers. Defaults
+    /// to `alwaysOn` for backwards compatibility with stdio configs that
+    /// predate the field.
+    var runPolicy: MCPRunPolicy?
     /// stdio: the executable command (e.g. "npx").
     var command: String?
     /// stdio: arguments passed to the command.
@@ -25,27 +44,25 @@ struct MCPServer: Identifiable, Equatable, Sendable {
     var endpoint: String?
     /// http: optional bearer token.
     var token: String?
-    /// Whether this server is enabled for new chats by default.
-    var defaultForNewChats: Bool
 }
 
 /// Raw structure decoded from an MCP server TOML file.
 /// Mirrors `ConnectionConfig` with snake_case keys.
 struct MCPConfig: Codable {
     var transport: String
+    var runPolicy: String?
     var command: String?
     var args: [String]?
     var endpoint: String?
     var token: String?
-    var defaultForNewChats: Bool?
 
     enum CodingKeys: String, CodingKey {
         case transport
+        case runPolicy
         case command
         case args
         case endpoint
         case token
-        case defaultForNewChats = "default_for_new_chats"
     }
 }
 
@@ -53,26 +70,34 @@ extension MCPServer {
     /// Builds an `MCPServer` from a decoded `MCPConfig` and a name (from the filename).
     init(name: String, config: MCPConfig) {
         let transport = MCPTransport(rawValue: config.transport) ?? .stdio
+        // run_policy only applies to stdio servers. For http it is ignored.
+        let runPolicy: MCPRunPolicy?
+        if transport == .stdio {
+            runPolicy = MCPRunPolicy(rawValue: config.runPolicy ?? "") ?? .alwaysOn
+        } else {
+            runPolicy = nil
+        }
         self.init(
             name: name,
             transport: transport,
+            runPolicy: runPolicy,
             command: config.command,
             args: config.args,
             endpoint: config.endpoint,
-            token: config.token,
-            defaultForNewChats: config.defaultForNewChats ?? false
+            token: config.token
         )
     }
 
     /// Encodes this server back into a `MCPConfig` for TOML serialization.
+    /// `runPolicy` is only written for stdio servers.
     var config: MCPConfig {
         MCPConfig(
             transport: transport.rawValue,
+            runPolicy: transport == .stdio ? runPolicy?.rawValue : nil,
             command: command,
             args: args,
             endpoint: endpoint,
-            token: token,
-            defaultForNewChats: defaultForNewChats
+            token: token
         )
     }
 }

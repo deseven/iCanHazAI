@@ -332,12 +332,11 @@ actor ChatEngine {
         if let role = dr, self.roles.contains(where: { $0.name == role }) {
             chat.role = role
         }
-        // Seed the chat with MCP servers flagged "default for new chats".
-        let defaultMcps = self.mcps.filter { $0.defaultForNewChats }.map(\.name)
-        if !defaultMcps.isEmpty {
-            chat.mcps = defaultMcps
+        // Seed the chat with all configured MCP servers by default.
+        let allMcpNames = self.mcps.map(\.name)
+        if !allMcpNames.isEmpty {
+            chat.mcps = allMcpNames
         }
-
         env.saveChat(chat, filename: filename)
         let record = ChatRecord(filename: filename, chat: chat)
         records.insert(record, at: 0)

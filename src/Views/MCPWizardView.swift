@@ -56,6 +56,8 @@ struct MCPWizardView: View {
     @State private var transport: MCPTransport = .stdio
 
     // Step 2 — parameters
+    /// When the server process is started/stopped.
+    @State private var runPolicy: MCPRunPolicy = .alwaysOn
     /// stdio: the executable command (e.g. "python3" or "npx").
     @State private var command: String = ""
     /// stdio: arguments as a single space-separated string; split on save.
@@ -64,8 +66,6 @@ struct MCPWizardView: View {
     @State private var endpoint: String = ""
     /// http: optional bearer token.
     @State private var token: String = ""
-    /// Whether this server is enabled for new chats by default.
-    @State private var defaultForNewChats: Bool = false
 
     // Step 3 — test
     /// Whether the listTools test request is in flight.
@@ -260,7 +260,6 @@ struct MCPWizardView: View {
             args = ""
             endpoint = ""
             token = ""
-            defaultForNewChats = false
         }
         if step < .test {
             resetTestState()
@@ -378,8 +377,43 @@ struct MCPWizardView: View {
                 }
             }
 
-            Toggle("Enabled for new chats by default", isOn: $defaultForNewChats)
-                .padding(.top, 4)
+            // Run Policy — only meaningful for stdio servers, where we own the
+            // subprocess lifecycle. HTTP servers are remote and stateless from
+            // our perspective, so the policy is fixed to "always on".
+            if transport == .stdio {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Run Policy")
+                        .font(.headline)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach([MCPRunPolicy.alwaysOn, .onDemand], id: \.self) { option in
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: runPolicy == option ? "largecircle.fill.circle" : "circle")
+                                    .foregroundStyle(runPolicy == option ? Color.accentColor : Color.secondary)
+                                    .onTapGesture { runPolicy = option }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(option == .alwaysOn ? "Always on" : "On-demand")
+                                        .fontWeight(.medium)
+                                    Text(option == .alwaysOn
+                                         ? "The server is started on app launch (or when this config is created), reloaded when its config changes, and stopped when its config is deleted."
+                                         : "The server is started only when a chat that has it active sends a request, and shut down after 600 seconds of inactivity. Reloaded on config change.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture { runPolicy = option }
+                            .padding(8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(runPolicy == option ? Color.accentColor.opacity(0.1) : Color.clear)
+                            )
+                        }
+                    }
+                }
+            }
 
             Spacer()
         }
@@ -461,16 +495,17 @@ struct MCPWizardView: View {
     /// disconnected after the test (and on cancel) so it never lingers.
     private var tempServerName: String { "__wizard_test__" }
 
-    /// Builds an `MCPServer` from the current wizard state.
+    /// Builds an `MCPServer` from the current wizard state. `runPolicy` is
+    /// only set for stdio servers; http servers have no run policy.
     private func buildServer(name: String) -> MCPServer {
         MCPServer(
             name: name,
             transport: transport,
+            runPolicy: transport == .stdio ? runPolicy : nil,
             command: transport == .stdio ? command : nil,
             args: transport == .stdio ? splitArgs(args) : nil,
             endpoint: transport == .http ? endpoint : nil,
-            token: transport == .http && !token.isEmpty ? token : nil,
-            defaultForNewChats: defaultForNewChats
+            token: transport == .http && !token.isEmpty ? token : nil
         )
     }
 
@@ -546,13 +581,13 @@ struct MCPWizardView: View {
 
             summaryRow("Transport", transport == .stdio ? "stdio" : "streamable http")
             summaryRow("Name", sanitizedFilename(serverName))
-            summaryRow("Default for new chats", defaultForNewChats ? "Yes" : "No")
             switch transport {
             case .stdio:
                 summaryRow("Command", command)
                 if !args.isEmpty {
                     summaryRow("Arguments", args)
                 }
+                summaryRow("Run Policy", runPolicy == .alwaysOn ? "Always on" : "On-demand")
             case .http:
                 summaryRow("Endpoint", endpoint)
                 summaryRow("Token", token.isEmpty ? "none" : "set")
