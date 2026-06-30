@@ -35,10 +35,12 @@ struct ChatSidebar: View {
 
             Divider()
 
-            // Chat list
+            // Chat list. Observes the cheap `chatSummaries` projection (no
+            // message arrays) so per-token emits from a busy chat don't force
+            // the sidebar to re-diff full message arrays for every chat.
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(store.chatItems) { item in
+                    ForEach(store.chatSummaries) { item in
                         ChatRow(
                             item: item,
                             isSelected: item.id == store.selectedChatID,
@@ -53,7 +55,11 @@ struct ChatSidebar: View {
                         .contextMenu {
                             Button("Rename") {
                                 renamingFilename = item.id
-                                renameText = item.chat.title ?? ""
+                                // Fetch the current title from the full record
+                                // (the summary carries displayTitle, but the
+                                // rename sheet wants the raw user-defined
+                                // title, which may differ from displayTitle).
+                                renameText = store.chatItems.first(where: { $0.id == item.id })?.chat.title ?? ""
                             }
                             Button("Delete", role: .destructive) {
                                 deletingFilename = item.id
@@ -63,7 +69,7 @@ struct ChatSidebar: View {
                                 revealInFinder(filename: item.id)
                             }
                         }
-                        if item.id != store.chatItems.last?.id {
+                        if item.id != store.chatSummaries.last?.id {
                             Divider()
                         }
                     }
@@ -125,7 +131,7 @@ private struct ChatDeleteTarget: Identifiable {
 }
 
 private struct ChatRow: View {
-    let item: ChatRecord
+    let item: ChatSummary
     let isSelected: Bool
     var isUnread: Bool = false
     var isStreaming: Bool = false
@@ -133,7 +139,7 @@ private struct ChatRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(displayTitle)
+                Text(item.displayTitle)
                     .font(.callout)
                     .lineLimit(1)
                 Text(item.filename)
@@ -158,11 +164,6 @@ private struct ChatRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
         .contentShape(Rectangle())
-    }
-
-    /// Derives a display title from the shared `ChatRecord.displayTitle`.
-    private var displayTitle: String {
-        item.displayTitle
     }
 }
 

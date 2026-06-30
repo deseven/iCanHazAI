@@ -21,6 +21,11 @@ final class AppViewModel: ObservableObject {
     // MARK: - Published state (mirrored from the engine)
 
     @Published var chatItems: [ChatRecord] = []
+    /// Cheap, message-free projection of `chatItems` for the sidebar. The
+    /// sidebar observes this instead of `chatItems` so a busy chat's per-token
+    /// emits don't force it to re-diff full message arrays for every chat.
+    /// Derived in `apply(.chatsChanged)` from `chatItems`.
+    @Published var chatSummaries: [ChatSummary] = []
     @Published var roles: [Role] = []
     @Published var connections: [Connection] = []
     @Published var mcps: [MCPServer] = []
@@ -217,6 +222,9 @@ final class AppViewModel: ObservableObject {
         switch event {
         case .chatsChanged(let records):
             chatItems = records
+            // Project a cheap, message-free summary for the sidebar so it
+            // doesn't re-diff full message arrays on every token of any chat.
+            chatSummaries = records.map(ChatSummary.init)
             // Preserve selection if still present, otherwise pick the first.
             if let selected = selectedChatID, records.contains(where: { $0.id == selected }) {
                 // keep selection
@@ -233,11 +241,12 @@ final class AppViewModel: ObservableObject {
                !item.isStreaming {
                 Task { await engine.markViewed(filename: selected) }
             }
-            // Push the snapshot synchronously in the same main-actor turn that
-            // processes this event. This guarantees the web view reflects
-            // tool-call state (and any other state change) before the engine
-            // actor resumes to execute the tool — closing the timing gap where
-            // the tool-call block would otherwise only appear after execution.
+            // React to this event synchronously: push the snapshot in the same
+            // main-actor turn that processes it. This is event-driven (not a
+            // polling/waiting hack) — it guarantees the web view reflects
+            // tool-call state before the engine actor resumes to execute the
+            // tool, closing the timing gap where the tool-call block would
+            // otherwise only appear after execution.
             chatWebViewModel?.pushSnapshot()
         case .rolesChanged(let roles):
             self.roles = roles

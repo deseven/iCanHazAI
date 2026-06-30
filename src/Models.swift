@@ -159,6 +159,38 @@ enum TokenEstimator {
     }
 }
 
+// MARK: - ChatSummary
+
+/// A cheap, message-free projection of a `ChatRecord` for the sidebar list.
+/// The sidebar only needs a handful of scalars (title, streaming/unread/error
+/// flags, sort key) — it never inspects `chat.messages`. Previously the sidebar
+/// observed the full `[ChatRecord]` (all chats, all messages, all tokens) on
+/// every coalesced flush, so a busy chat's per-token emits forced the sidebar
+/// to re-diff full message arrays for every chat. `ChatSummary` is a value type
+/// with no message data, so diffing it is O(1)-per-chat and the sidebar stops
+/// touching message arrays on tokens.
+struct ChatSummary: Identifiable, Equatable, Sendable {
+    var id: String { filename }
+    let filename: String
+    let displayTitle: String
+    let isStreaming: Bool
+    let hasUnreadActivity: Bool
+    let lastError: String?
+    /// Sort key (last message timestamp or in-memory creation time). The
+    /// sidebar uses this to keep its ordering in sync with the engine without
+    /// needing the message arrays.
+    let sortKey: Date
+
+    init(record: ChatRecord) {
+        self.filename = record.filename
+        self.displayTitle = record.displayTitle
+        self.isStreaming = record.isStreaming
+        self.hasUnreadActivity = record.hasUnreadActivity
+        self.lastError = record.lastError
+        self.sortKey = record.sortKey
+    }
+}
+
 // MARK: - EngineEvent
 
 /// Events emitted by `ChatEngine` to its subscribers.

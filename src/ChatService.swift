@@ -17,6 +17,78 @@ enum StreamChunk: Sendable {
     case finishReason(String)
 }
 
+/// A shared chunk coalescer used by both providers so they stream at the same
+/// cadence. Providers (especially OpenAI-compatible ones) emit deltas as small
+/// as a single token; without coalescing each delta becomes its own `onChunk`
+/// call, which the engine turns into a full `chatsChanged` event. At hundreds
+/// of events per second the main-actor queue backs up and the stop button
+/// feels sluggish.
+///
+/// Text (content + thinking) is accumulated into buffers and only flushed to
+/// `onChunk` when either a buffer reaches `minChars` or `interval` has elapsed
+/// since the last flush. Non-text chunks (tool calls, finish reason, errors)
+/// are flushed immediately via `flush(force:)` at the end of the stream.
+///
+/// Both providers use the same instance parameters (~40 ms / 10 chars) so the
+/// two paths stream at the same cadence — previously only OpenAI coalesced,
+/// which is why the stop button felt different between providers.
+struct ChunkCoalescer {
+    private let minChars: Int
+    private let interval: Duration
+    private let clock: ContinuousClock
+    private var contentBuffer = ""
+    private var thinkingBuffer = ""
+    private var lastFlush: ContinuousClock.Instant
+
+    private let onChunk: @Sendable (StreamChunk) async -> Void
+
+    init(
+        minChars: Int = 10,
+        interval: Duration = .milliseconds(40),
+        clock: ContinuousClock = ContinuousClock(),
+        onChunk: @escaping @Sendable (StreamChunk) async -> Void
+    ) {
+        self.minChars = minChars
+        self.interval = interval
+        self.clock = clock
+        self.onChunk = onChunk
+        self.lastFlush = clock.now
+    }
+
+    /// Accumulates a text/thinking fragment into the appropriate buffer and
+    /// flushes if a buffer threshold or the time interval is met.
+    mutating func add(_ chunk: StreamChunk) async {
+        switch chunk {
+        case .content(let text):
+            contentBuffer += text
+        case .thinking(let text):
+            thinkingBuffer += text
+        default:
+            // Non-text chunks are not coalesced; flush buffers first so order
+            // is preserved, then emit directly.
+            await flush(force: true)
+            await onChunk(chunk)
+            return
+        }
+        await flush(force: false)
+    }
+
+    /// Flushes any buffered text. Call with `force: true` at stream end.
+    mutating func flush(force: Bool) async {
+        let now = clock.now
+        let due = force || (now - lastFlush >= interval)
+        if !contentBuffer.isEmpty && (force || contentBuffer.count >= minChars || due) {
+            await onChunk(.content(contentBuffer))
+            contentBuffer.removeAll(keepingCapacity: true)
+        }
+        if !thinkingBuffer.isEmpty && (force || thinkingBuffer.count >= minChars || due) {
+            await onChunk(.thinking(thinkingBuffer))
+            thinkingBuffer.removeAll(keepingCapacity: true)
+        }
+        if due { lastFlush = now }
+    }
+}
+
 /// Provides streaming chat completion for both OpenAI-compatible and Anthropic connections.
 final class ChatService: @unchecked Sendable {
 
@@ -329,41 +401,9 @@ final class ChatService: @unchecked Sendable {
         var toolCallAccumulator: [Int: (id: String, name: String, args: String)] = [:]
         var finishReason: String?
 
-        // --- Chunk coalescing -------------------------------------------------
-        // OpenAI-compatible providers (and many OpenRouter/Gemini proxies) emit
-        // SSE deltas as small as a single token — often 1–4 characters. Each
-        // delta would otherwise become its own `onChunk` call, which the engine
-        // turns into a full `chatsChanged` event for the UI. At hundreds of
-        // events per second the main actor's queue backs up for several
-        // seconds, which is why the stop button felt unresponsive for OpenAI
-        // but worked instantly for Anthropic (whose deltas are much larger).
-        //
-        // We accumulate content and reasoning text into buffers and only flush
-        // to `onChunk` when either:
-        //   • a buffer reaches `coalesceMinChars`, or
-        //   • `coalesceInterval` has elapsed since the last flush.
-        // This cuts the number of UI events by ~10–50× without introducing
-        // noticeable latency (the interval is well below a frame).
-        let coalesceMinChars = 10
-        let coalesceInterval = Duration.milliseconds(40)
-        let clock = ContinuousClock()
-        var contentBuffer = ""
-        var thinkingBuffer = ""
-        var lastFlush = clock.now
-
-        func flush(force: Bool) async {
-            let now = clock.now
-            let due = force || (now - lastFlush >= coalesceInterval)
-            if !contentBuffer.isEmpty && (force || contentBuffer.count >= coalesceMinChars || due) {
-                await onChunk(.content(contentBuffer))
-                contentBuffer.removeAll(keepingCapacity: true)
-            }
-            if !thinkingBuffer.isEmpty && (force || thinkingBuffer.count >= coalesceMinChars || due) {
-                await onChunk(.thinking(thinkingBuffer))
-                thinkingBuffer.removeAll(keepingCapacity: true)
-            }
-            if due { lastFlush = now }
-        }
+        // Shared coalescer (same cadence as the Anthropic path) so both
+        // providers stream at the same rate. See `ChunkCoalescer`.
+        var coalescer = ChunkCoalescer(onChunk: onChunk)
 
         let box = StreamBox()
         return try await withTaskCancellationHandler {
@@ -402,11 +442,11 @@ final class ChatService: @unchecked Sendable {
                     let delta = choice.delta
                     if let content = delta.content {
                         fullContent += content
-                        contentBuffer += content
+                        await coalescer.add(.content(content))
                     }
                     // Reasoning content from providers like DeepSeek/Grok/OpenRouter/Gemini.
                     if let reasoning = delta.reasoning {
-                        thinkingBuffer += reasoning
+                        await coalescer.add(.thinking(reasoning))
                     }
                     // Accumulate streamed tool-call deltas. OpenAI emits a
                     // tool call across multiple chunks: the first carries the
@@ -428,10 +468,9 @@ final class ChatService: @unchecked Sendable {
                         finishReason = reason.rawValue
                     }
                 }
-                await flush(force: false)
             }
             // Drain any remaining buffered text before returning.
-            await flush(force: true)
+            await coalescer.flush(force: true)
             // Materialize accumulated tool calls into ToolCall objects and
             // emit each as a chunk so the engine can render them live.
             var toolCalls: [ToolCall] = []
@@ -626,6 +665,21 @@ final class ChatService: @unchecked Sendable {
         // `partialJson` fragments for the input. We accumulate per block index.
         var toolBlockAccumulator: [Int: (id: String, name: String, args: String)] = [:]
 
+        // Shared coalescer (same cadence as the OpenAI path)
+        var coalescer = ChunkCoalescer(onChunk: onChunk)
+
+        // Cancellation: SwiftAnthropic's `streamMessage` wraps
+        // `URLSession.bytes(for:).lines` in two nested `AsyncThrowingStream`/
+        // `Task` layers (see URLSessionHTTPClientAdapter.bytes and
+        // fetchStream). That double-wrapping severs the cancellation link, so
+        // cancelling the consumer exits this `for try await` loop promptly
+        // (it ends normally rather than throwing) but does NOT cancel the
+        // underlying URLSession request — the HTTP connection keeps running
+        // until the server finishes. We can't reach the URLSession task handle
+        // from here, so we accept prompt loop-exit + a lingering request.
+        // TODO(upstream): SwiftAnthropic should propagate cancellation to the
+        // URLSession task (e.g. via onTermination → task.cancel() that reaches
+        // the bytes iterator). Until then the request drains on its own.
         let stream = try await service.streamMessage(parameters)
         for try await event in stream {
             // Allow the caller to cancel an in-flight stream between chunks.
@@ -642,7 +696,7 @@ final class ChatService: @unchecked Sendable {
             case "content_block_delta":
                 if let delta = event.delta {
                     if delta.type == "thinking_delta", let thinking = delta.thinking {
-                        await onChunk(.thinking(thinking))
+                        await coalescer.add(.thinking(thinking))
                     } else if delta.type == "input_json_delta", let partial = delta.partialJson {
                         // Accumulate tool-use input JSON fragments.
                         if let index = event.index, toolBlockAccumulator[index] != nil {
@@ -650,7 +704,7 @@ final class ChatService: @unchecked Sendable {
                         }
                     } else if let text = delta.text {
                         fullContent += text
-                        await onChunk(.content(text))
+                        await coalescer.add(.content(text))
                     }
                 }
             case "message_delta":
@@ -662,6 +716,9 @@ final class ChatService: @unchecked Sendable {
                 break
             }
         }
+
+        // Drain any remaining buffered text before returning.
+        await coalescer.flush(force: true)
 
         // Materialize accumulated tool-use blocks into ToolCall objects.
         var toolCalls: [ToolCall] = []

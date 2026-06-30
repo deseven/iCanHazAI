@@ -105,7 +105,7 @@ final class EnvironmentManager: @unchecked Sendable {
     /// Generates a new chat filename using the current date/time.
     func newChatFilename() -> String {
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        formatter.dateFormat = "yyyy-MM-dd HH-mm-ss"
         formatter.timeZone = TimeZone.current
         return formatter.string(from: Date()) + ".json"
     }
