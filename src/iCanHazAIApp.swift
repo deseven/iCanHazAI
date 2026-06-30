@@ -60,6 +60,10 @@ struct iCanHazAIApp: App {
                     ConnectionWizardView.show(onFinish: { AppViewModel.shared?.refreshAfterWizard() })
                 }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
+                Button("New MCP Server...") {
+                    MCPWizardView.show(onFinish: { AppViewModel.shared?.refreshPreferences() })
+                }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
             }
             CommandGroup(replacing: .appSettings) {
                 Button("Preferences...") {

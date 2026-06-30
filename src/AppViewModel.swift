@@ -56,6 +56,11 @@ final class AppViewModel: ObservableObject {
     private let engine = ChatEngine.shared
     private let config = ConfigManager.shared
     private var subscription: Task<Void, Never>?
+    /// Weak reference to the active web view model, set when
+    /// `ChatWebView.bind(store:)` is called. Used to push snapshots
+    /// synchronously in `apply(.chatsChanged)` so the web view reflects
+    /// tool-call state before the engine proceeds to execute the tool.
+    weak var chatWebViewModel: ChatWebViewModel?
     /// Whether we've already performed the initial "no connections" check.
     /// Prevents the wizard from popping up again after the user dismisses it.
     private var didCheckInitialConnections = false
@@ -228,6 +233,12 @@ final class AppViewModel: ObservableObject {
                !item.isStreaming {
                 Task { await engine.markViewed(filename: selected) }
             }
+            // Push the snapshot synchronously in the same main-actor turn that
+            // processes this event. This guarantees the web view reflects
+            // tool-call state (and any other state change) before the engine
+            // actor resumes to execute the tool — closing the timing gap where
+            // the tool-call block would otherwise only appear after execution.
+            chatWebViewModel?.pushSnapshot()
         case .rolesChanged(let roles):
             self.roles = roles
             refreshPreferences()

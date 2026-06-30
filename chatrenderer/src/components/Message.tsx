@@ -13,7 +13,9 @@ import { createPortal } from "preact/compat";
 import type { ChatMessage, MessageImage } from "../types";
 import { renderMarkdown, renderInline, renderMermaidIn } from "../markdown";
 import { sendToHost } from "../bridge";
-import { Copy, SquarePen, Trash2, Brain, User, Bot, Settings, AlertTriangle, RotateCcw, ChevronRight, ChevronDown } from "lucide-preact";
+import { debugLog } from "../debug";
+import { Copy, SquarePen, Trash2, Brain, User, Bot, Settings, AlertTriangle, RotateCcw, ChevronRight, ChevronDown, Wrench, Terminal } from "lucide-preact";
+import type { ToolCallData, ToolResultData } from "../types";
 
 interface Props {
   message: ChatMessage;
@@ -28,6 +30,8 @@ function roleLabel(role: string): string {
       return "You";
     case "assistant":
       return "Assistant";
+    case "tool":
+      return "Tool";
     default:
       return role;
   }
@@ -41,9 +45,79 @@ function AvatarIcon({ role }: { role: string }) {
       return <User size={24} />;
     case "assistant":
       return <Bot size={24} />;
+    case "tool":
+      return <Terminal size={24} />;
     default:
       return null;
   }
+}
+
+/** Pretty-print a JSON arguments string; falls back to the raw string. */
+function prettyPrintArgs(args: string): string {
+  try {
+    return JSON.stringify(JSON.parse(args), null, 2);
+  } catch {
+    return args;
+  }
+}
+
+/** Strip the `mcp__{server}__` namespace prefix for display. */
+function shortToolName(name: string): string {
+  if (name.startsWith("mcp__")) {
+    const rest = name.slice("mcp__".length);
+    const idx = rest.indexOf("__");
+    if (idx >= 0) return rest.slice(idx + 2);
+  }
+  return name;
+}
+
+/** A collapsible block showing a tool call and (optionally) its result. */
+function ToolBlock({
+  call,
+  result,
+  isStreaming,
+}: {
+  call: ToolCallData;
+  result?: ToolResultData;
+  isStreaming: boolean;
+}) {
+  // `running` covers two cases: no result yet (the call hasn't returned), or a
+  // result whose `isStreaming` flag is set (the server is streaming progress).
+  const running = (!result && isStreaming) || (result?.isStreaming ?? false);
+  const [open, setOpen] = useState(false);
+  return (
+    <div class="tool-block">
+      <button class="tool-toggle" onClick={() => setOpen((v) => !v)}>
+        <Wrench size={14} />
+        <span class="tool-name">{shortToolName(call.name)}</span>
+        {running && <span class="tool-spinner" aria-hidden="true" />}
+        {result && !result.isStreaming && result.isError && (
+          <span class="tool-badge tool-badge-error">error</span>
+        )}
+        {result && !result.isStreaming && !result.isError && (
+          <span class="tool-badge tool-badge-ok">done</span>
+        )}
+        {result?.isStreaming && <span class="tool-badge tool-badge-running">running</span>}
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+      </button>
+      {open && (
+        <div class="tool-content">
+          <div class="tool-call">
+            <div class="tool-call-label">Arguments</div>
+            <pre class="tool-call-args">{prettyPrintArgs(call.arguments)}</pre>
+          </div>
+          {result && (
+            <div class={`tool-result${result.isError ? " tool-result-error" : ""}`}>
+              <div class="tool-call-label">
+                {result.isStreaming ? "Result (streaming…)" : "Result"}
+              </div>
+              <pre class="tool-call-args">{result.content}</pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function formatTimestamp(iso: string): string {
@@ -278,6 +352,36 @@ export const MessageItem = memo(function MessageItem({ message, isStreaming }: P
             )}
             {isStreaming && <span class="streaming-cursor" />}
           </div>
+        )}
+
+        {/* Tool calls (assistant) or tool results (tool-role messages).
+            Placed after content so the natural order is:
+            thinking → response → tool call. */}
+        {message.toolCalls && message.toolCalls.length > 0 && (
+          message.toolCalls.map((call) => {
+            const result = message.toolResults?.find((r) => r.callID === call.id);
+            debugLog(
+              "tool",
+              `render ToolBlock call=${call.name} hasResult=${!!result} isStreaming=${isStreaming}`
+            );
+            return (
+              <ToolBlock
+                key={call.id}
+                call={call}
+                result={result}
+                isStreaming={isStreaming}
+              />
+            );
+          })
+        )}
+        {message.role === "tool" && message.toolResults && message.toolResults.length > 0 && !message.toolCalls && (
+          message.toolResults.map((r) => (
+            <div class="tool-block" key={r.callID}>
+              <div class="tool-result-only">
+                <pre class={`tool-call-args${r.isError ? " tool-result-error-text" : ""}`}>{r.content}</pre>
+              </div>
+            </div>
+          ))
         )}
 
         {hasError && (

@@ -6,6 +6,6 @@ For chat rendering we're using webview with web app from `chatrenderer`.
 
 Modern UI stuff could be used since we're targeting macOS 15 or higher. Feel free to do research using one-liners with `swift -e` or writing temp swift files using the included tool and launching them if it's more than one line.
 
-Use `build.sh` to build the project and check for possible compilation errors (it's a wrapper around `swift build` that does everything to make a proper app bundle, no need to call it with `tail`, `head` or `2>&1` - the output is not long and the errors will be in stdout).
+Use `build.sh` to build the project (including the `chatrenderer`) and return for possible compilation errors. No need to call it with `tail`, `head` or `2>&1` - the output is not long and the errors will be in stdout.
 
 Don't overthink. Ask if something is unclear. If encountered a difficult problem first explain it and ask advice from the user.

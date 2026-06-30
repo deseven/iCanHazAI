@@ -86,7 +86,13 @@ function ChatApp() {
         case "updateMessage":
           debugLog(
             "edit",
-            `updateMessage id=${msg.message.id} role=${msg.message.role} len=${msg.message.content.length}`
+            `updateMessage id=${msg.message.id} role=${msg.message.role} len=${msg.message.content.length}` +
+              (msg.message.toolCalls?.length
+                ? ` toolCalls=${msg.message.toolCalls.length}`
+                : "") +
+              (msg.message.toolResults?.length
+                ? ` toolResults=${msg.message.toolResults.length}`
+                : "")
           );
           setSnapshot((s) => {
             if (!s || s.chatId !== msg.chatId) return s;

@@ -217,6 +217,10 @@ final class ChatWebViewModel: ObservableObject {
     /// Connects this model to the app view model and starts pushing snapshots.
     func bind(store: AppViewModel) {
         self.store = store
+        // Register this view model with the store so `apply(.chatsChanged)`
+        // can push snapshots synchronously, before the engine proceeds to
+        // execute tool calls.
+        store.chatWebViewModel = self
         mermaidEnabled = store.preferencesMermaidEnabled
         katexEnabled = store.preferencesKatexEnabled
         debugEnabled = store.preferencesChatRendererDebugEnabled
@@ -226,6 +230,10 @@ final class ChatWebViewModel: ObservableObject {
     }
 
     func unbind() {
+        // Clear the store's reference so it no longer pushes snapshots here.
+        if store?.chatWebViewModel === self {
+            store?.chatWebViewModel = nil
+        }
         store = nil
     }
 
@@ -279,7 +287,12 @@ final class ChatWebViewModel: ObservableObject {
 
         let chatId = item.id
         let isStreaming = item.isStreaming
-        let currentMessages = item.chat.messages.map(\.webData)
+        // Project the stored message list into the wire shape, folding
+        // `tool`-role result messages onto the preceding assistant message's
+        // `toolResults` so the renderer shows them in the same tool block
+        // (inline fold is a view concern, not a storage concern). The folded
+        // `tool` messages are dropped from the wire list.
+        let currentMessages = Self.projectToolResults(item.chat.messages)
         let currentIds = currentMessages.map(\.id)
 
         // Chat switched: send a full snapshot and reset diff state.
@@ -332,6 +345,49 @@ final class ChatWebViewModel: ObservableObject {
         // Update diff state.
         lastMessages = Dictionary(uniqueKeysWithValues: currentMessages.map { ($0.id, $0) })
         lastMessageIds = currentIds
+    }
+
+    /// Projects the stored message list into the wire shape, folding
+    /// `tool`-role result messages onto the preceding assistant message's
+    /// `toolResults` (matched by `callID`) so the renderer shows each result
+    /// in the same inline tool block as the call that issued it. The folded
+    /// `tool` messages are dropped from the returned list. This is a pure view
+    /// projection — storage keeps the natural provider shape (one `tool`-role
+    /// message per result).
+    static func projectToolResults(_ messages: [ChatMessage]) -> [ChatMessageData] {
+        var out: [ChatMessageData] = []
+        // Index of the last assistant message in `out`, so we can fold
+        // subsequent tool results onto it.
+        var lastAssistantOutIndex: Int? = nil
+        for msg in messages {
+            if msg.role == .tool, let results = msg.toolResults, !results.isEmpty {
+                // Fold each result onto the preceding assistant message's
+                // toolResults, matched by callID.
+                if let aIdx = lastAssistantOutIndex {
+                    var folded = out[aIdx].toolResults ?? []
+                    for r in results {
+                        if let i = folded.firstIndex(where: { $0.callID == r.callID }) {
+                            folded[i] = ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming)
+                        } else {
+                            folded.append(ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming))
+                        }
+                    }
+                    out[aIdx].toolResults = folded
+                }
+                // Drop the `tool`-role message from the wire list.
+                continue
+            }
+            var data = msg.webData
+            if msg.role == .assistant {
+                // Assistant messages no longer carry folded toolResults in
+                // storage; clear any stale value so the projection is the
+                // single source of truth for the fold.
+                data.toolResults = nil
+                lastAssistantOutIndex = out.count
+            }
+            out.append(data)
+        }
+        return out
     }
 
     /// Forces a scroll-to-bottom in the web view (e.g. when the user sends a
@@ -615,6 +671,12 @@ struct ChatMessageData: Codable, Equatable {
     /// load via the custom scheme handler. Nil/empty for messages without
     /// images.
     let images: [ImageData]?
+    /// For assistant messages: tool calls issued by the model. Nil otherwise.
+    let toolCalls: [ToolCallData]?
+    /// For `tool`-role messages: the result of a tool call. Nil otherwise.
+    /// Mutable so the view projection in `projectToolResults` can fold
+    /// `tool`-role messages onto the preceding assistant message.
+    var toolResults: [ToolResultData]?
 
     /// A single image reference for the wire protocol.
     struct ImageData: Codable, Equatable {
@@ -622,6 +684,23 @@ struct ChatMessageData: Codable, Equatable {
         let url: String
         /// Original filename for display/alt text.
         let name: String?
+    }
+
+    /// A tool call issued by the assistant.
+    struct ToolCallData: Codable, Equatable {
+        let id: String
+        let name: String
+        /// Raw JSON arguments string as returned by the model.
+        let arguments: String
+    }
+
+    /// The result of executing a tool call.
+    struct ToolResultData: Codable, Equatable {
+        let callID: String
+        let content: String
+        let isError: Bool
+        /// True while the tool is still running and `content` is streaming in.
+        let isStreaming: Bool
     }
 }
 
@@ -636,6 +715,12 @@ extension ChatMessage {
                 name: $0.originalName
             )
         }
+        let toolCalls = toolCalls?.map {
+            ChatMessageData.ToolCallData(id: $0.id, name: $0.name, arguments: $0.arguments)
+        }
+        let toolResults = toolResults?.map {
+            ChatMessageData.ToolResultData(callID: $0.callID, content: $0.content, isError: $0.isError, isStreaming: $0.isStreaming)
+        }
         return ChatMessageData(
             id: id.uuidString,
             role: role.rawValue,
@@ -644,7 +729,9 @@ extension ChatMessage {
             error: error,
             timestamp: formatter.string(from: timestamp),
             connectionName: connectionName,
-            images: images
+            images: images,
+            toolCalls: toolCalls,
+            toolResults: toolResults
         )
     }
 }

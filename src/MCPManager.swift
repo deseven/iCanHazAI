@@ -50,6 +50,14 @@ actor MCPManager {
     private var unavailable: Set<String> = []
     /// Optional sink for human-readable error messages (wired to ChatEngine).
     private var errorHandler: ((String) -> Void)?
+    /// Optional sink for streaming tool-output progress. Called with the
+    /// `chatFilename` of the chat that owns the in-flight tool call, the
+    /// `callID` of the call, and the human-readable progress `message` (or a
+    /// fallback) emitted by the server via `notifications/progress`. Wired by
+    /// `ChatEngine` so partial results can be folded onto the live `tool`-role
+    /// message in that one chat directly. Marked `@Sendable` because the
+    /// notification handler closure may escape the actor.
+    private var progressHandler: (@Sendable (String, String, String) -> Void)?
 
     private init() {}
 
@@ -58,8 +66,40 @@ actor MCPManager {
         self.errorHandler = handler
     }
 
+    /// Sets the streaming-progress sink. Called once by `ChatEngine` at
+    /// startup. The handler receives `(chatFilename, callID, partialText)` for
+    /// each progress notification a server emits during a `tools/call`. The
+    /// closure is `@Sendable` because it is invoked from the MCP notification
+    /// handler which may run off the actor.
+    func setProgressHandler(_ handler: @escaping @Sendable (String, String, String) -> Void) {
+        self.progressHandler = handler
+    }
+
     private func reportError(_ message: String) {
         errorHandler?(message)
+    }
+
+    /// Maps an MCP progress token back to the originating call's
+    /// `(chatFilename, callID)` so progress notifications can be correlated
+    /// with the chat + call that issued them. Populated in `callTool`, cleared
+    /// when the call completes.
+    private var progressTokenToCall: [String: (chatFilename: String, callID: String)] = [:]
+
+    /// Looks up the `(chatFilename, callID)` for a progress token. Actor-isolated.
+    private func call(forProgressToken token: ProgressToken) -> (chatFilename: String, callID: String)? {
+        switch token {
+        case .string(let s): return progressTokenToCall[s]
+        case .integer(let i): return progressTokenToCall[String(i)]
+        }
+    }
+
+    /// Actor-isolated helper that resolves a progress token to its
+    /// `(chatFilename, callID)` and forwards the partial text to the progress
+    /// sink. Called from the non-isolated notification handler closure via
+    /// `await`.
+    private func forwardProgress(token: ProgressToken, text: String) {
+        guard let call = call(forProgressToken: token) else { return }
+        progressHandler?(call.chatFilename, call.callID, text)
     }
 
     // MARK: - Reload / diff
@@ -153,6 +193,19 @@ actor MCPManager {
             }
 
             let client = Client(name: "iCanHazAI", version: "1.0.0")
+            // Register a progress-notification handler for this client. The
+            // server emits `notifications/progress` (with the progress token we
+            // attached to the `tools/call` request) to stream incremental tool
+            // output. We map the token back to the model-assigned `callID`
+            // via `progressTokenToCallID` and forward the human-readable
+            // `message` (falling back to a numeric progress value) to the
+            // engine's progress sink so it can update the live tool result.
+            await client.onNotification(ProgressNotification.self) { [weak self] message in
+                guard let self else { return }
+                let params = message.params
+                let text = params.message ?? "progress \(Int(params.progress))\(params.total.map { "/\(Int($0))" } ?? "")"
+                await self.forwardProgress(token: params.progressToken, text: text)
+            }
             do {
                 _ = try await client.connect(transport: transport)
             } catch {
@@ -223,10 +276,14 @@ actor MCPManager {
     }
 
     /// Calls a tool on `server` with JSON-encoded `arguments` and maps the
-    /// result into our `ToolResult`. Non-text content is summarized.
-    func callTool(server: String, name: String, arguments: String) async -> ToolResult {
+    /// result into our `ToolResult`. `callID` is the model-assigned tool call
+    /// id, propagated onto the result so the provider can correlate them.
+    /// `chatFilename` identifies the chat that owns this call so progress
+    /// notifications can be routed to that chat's live `tool`-role message
+    /// directly. Non-text content is summarized.
+    func callTool(server: String, name: String, arguments: String, callID: String, chatFilename: String) async -> ToolResult {
         guard let conn = connections[server] else {
-            return ToolResult(callID: UUID().uuidString, content: "MCP server \"\(server)\" is not available.", isError: true)
+            return ToolResult(callID: callID, content: "MCP server \"\(server)\" is not available.", isError: true)
         }
         // Parse the raw JSON arguments string into an MCP `Value`.
         let argsValue: [String: Value]?
@@ -239,14 +296,33 @@ actor MCPManager {
                     argsValue = nil
                 }
             } catch {
-                return ToolResult(callID: UUID().uuidString, content: "Failed to parse tool arguments JSON: \(error.localizedDescription)", isError: true)
+                return ToolResult(callID: callID, content: "Failed to parse tool arguments JSON: \(error.localizedDescription)", isError: true)
             }
         } else {
             argsValue = nil
         }
 
+        // Attach a unique progress token so the server can stream incremental
+        // output via `notifications/progress`. The handler registered in
+        // `connect` maps this token back to `(chatFilename, callID)` and
+        // forwards the text to the engine's progress sink, which folds it onto
+        // the live `tool`-role message in that chat.
+        let progressToken = ProgressToken.unique()
+        let tokenKey: String = {
+            switch progressToken {
+            case .string(let s): return s
+            case .integer(let i): return String(i)
+            }
+        }()
+        progressTokenToCall[tokenKey] = (chatFilename, callID)
+        defer { progressTokenToCall.removeValue(forKey: tokenKey) }
+
         do {
-            let (content, isError) = try await conn.client.callTool(name: name, arguments: argsValue)
+            let (content, isError) = try await conn.client.callTool(
+                name: name,
+                arguments: argsValue,
+                meta: Metadata(progressToken: progressToken)
+            )
             let text = content.map { item -> String in
                 switch item {
                 case .text(let text, _, _):
@@ -261,12 +337,12 @@ actor MCPManager {
                     return "[resource link: \(name) at \(uri)]"
                 }
             }.joined(separator: "\n")
-            return ToolResult(callID: UUID().uuidString, content: text, isError: isError ?? false)
+            return ToolResult(callID: callID, content: text, isError: isError ?? false)
         } catch is CancellationError {
-            return ToolResult(callID: UUID().uuidString, content: "Tool call was cancelled.", isError: true)
+            return ToolResult(callID: callID, content: "Tool call was cancelled.", isError: true)
         } catch {
             unavailable.insert(server)
-            return ToolResult(callID: UUID().uuidString, content: "Tool call failed: \(error.localizedDescription)", isError: true)
+            return ToolResult(callID: callID, content: "Tool call failed: \(error.localizedDescription)", isError: true)
         }
     }
 

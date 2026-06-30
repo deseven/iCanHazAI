@@ -98,6 +98,14 @@ actor ChatEngine {
         Task { await MCPManager.shared.setErrorHandler { [weak self] message in
             Task { await self?.emit(.error(message)) }
         } }
+        // Wire MCPManager progress notifications into the engine so streaming
+        // tool output is folded onto the live `tool`-role message in the
+        // originating chat (identified by chatFilename + callID) and pushed to
+        // the renderer as it arrives. No global scan: the sink carries the
+        // chatFilename so we update one message in one chat directly.
+        Task { await MCPManager.shared.setProgressHandler { [weak self] chatFilename, callID, partial in
+            Task { await self?.updateStreamingToolResult(chatFilename: chatFilename, callID: callID, partial: partial) }
+        } }
         reloadAll(shouldEmit: false)
         startWatching()
         emit(.chatsChanged(records))
@@ -529,7 +537,7 @@ actor ChatEngine {
         // Max iterations to prevent infinite tool-calling loops.
         let maxIterations = 10
 
-        for iteration in 0..<maxIterations {
+        for _ in 0..<maxIterations {
             // Gather tools from the chat's active MCP servers. Individual
             // server failures are collected and surfaced but don't abort the
             // whole request — the model still gets the working servers' tools.
@@ -551,9 +559,15 @@ actor ChatEngine {
                     return
                 }
 
-                // The model emitted tool calls. Record them on the assistant
-                // message, then execute each and append tool-result messages.
+                // The model emitted tool calls. They were already accumulated
+                // onto the assistant message during streaming (via
+                // `applyChunk(.toolCall)`); ensure they're set in case the
+                // service returned them only in the final result.
                 applyToolCalls(result.toolCalls, filename: filename)
+                // Flush immediately so the tool-call block appears in the UI
+                // before we begin (potentially slow) tool execution.
+                flushCoalescedEmit()
+                emit(.chatsChanged(records))
 
                 // Append the assistant message (with tool calls) to history.
                 // We read the finalized assistant message from the record so
@@ -565,15 +579,26 @@ actor ChatEngine {
                     }
                 }
 
-                // Execute each tool call and append a tool-result message.
+                // Execute each tool call and append its result as its own
+                // `tool`-role `ChatMessage` tagged with `callID` — the natural
+                // provider shape. The renderer folds these back onto the
+                // preceding assistant `toolCalls` as a view projection, so the
+                // visible inline tool block is unchanged. The provider history
+                // is built directly from these messages by `ChatService` (no
+                // un-folding `flatMap` needed).
                 for call in result.toolCalls {
                     let toolResult = await executeToolCall(call, filename: filename)
-                    let toolMessage = ChatMessage(role: .tool, content: toolResult.content, toolResults: [toolResult])
-                    history.append(toolMessage)
-                    // Append the result to the in-memory chat so the renderer
-                    // can show it, and persist.
-                    appendToolResult(toolResult, toCall: call, filename: filename)
+                    // Append the result as a `tool`-role message and persist.
+                    appendToolResult(toolResult, filename: filename)
+                    // Mirror into the working history so the next stream
+                    // request includes it.
+                    history.append(ChatMessage(role: .tool, content: toolResult.content, toolResults: [toolResult]))
                 }
+
+                // Create a new assistant message for the model's follow-up
+                // response so it doesn't get appended to the tool-result
+                // message.
+                appendAssistantMessage(filename: filename, connection: connection)
 
                 // Loop again: the model will see the tool results and either
                 // call more tools or produce a final answer.
@@ -636,6 +661,8 @@ actor ChatEngine {
 
     /// Executes a single tool call via `MCPManager`, going through the approval
     /// hook (which auto-approves in this iteration). Returns the tool result.
+    /// `filename` is the owning chat's filename, forwarded to `MCPManager` so
+    /// progress notifications route to this chat's live `tool`-role message.
     private func executeToolCall(_ call: ToolCall, filename: String) async -> ToolResult {
         // The approval hook. This iteration auto-approves every call; a future
         // UI can intercept here to present a deny/allow-once/allow-always sheet.
@@ -646,7 +673,7 @@ actor ChatEngine {
             guard let parsed = ToolDefinition.parse(call.name) else {
                 return ToolResult(callID: call.id, content: "Could not parse tool name \"\(call.name)\".", isError: true)
             }
-            return await MCPManager.shared.callTool(server: parsed.server, name: parsed.tool, arguments: call.arguments)
+            return await MCPManager.shared.callTool(server: parsed.server, name: parsed.tool, arguments: call.arguments, callID: call.id, chatFilename: filename)
         case .deny(let reason):
             return ToolResult(callID: call.id, content: "User denied the tool call: \(reason)", isError: true)
         }
@@ -659,17 +686,80 @@ actor ChatEngine {
         return .allow
     }
 
-    /// Appends a tool result to the in-memory chat (as a new `tool`-role
-    /// message) and persists, so the renderer can show the result and the
-    /// history is complete for the next loop iteration.
-    private func appendToolResult(_ result: ToolResult, toCall call: ToolCall, filename: String) {
+    /// Appends a tool result as its own `tool`-role `ChatMessage` (tagged with
+    /// `callID` via `toolResults`) — the natural provider shape. If a streaming
+    /// placeholder message for this `callID` already exists (created by
+    /// `updateStreamingToolResult`), it is replaced in place rather than
+    /// duplicated, so the final result supersedes the partial content. Persists
+    /// and emits.
+    private func appendToolResult(_ result: ToolResult, filename: String) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         var chat = records[idx].chat
-        let toolMessage = ChatMessage(role: .tool, content: result.content, toolResults: [result])
-        chat.messages.append(toolMessage)
+        // If a streaming placeholder `tool`-role message exists for this
+        // callID, replace it in place with the final result.
+        if let tIdx = chat.messages.indices.reversed().first(where: {
+            chat.messages[$0].role == .tool
+                && chat.messages[$0].toolResults?.contains(where: { $0.callID == result.callID }) ?? false
+        }) {
+            chat.messages[tIdx] = ChatMessage(role: .tool, content: result.content, toolResults: [result])
+        } else {
+            // No placeholder yet — append a new `tool`-role message.
+            chat.messages.append(ChatMessage(role: .tool, content: result.content, toolResults: [result]))
+        }
         records[idx].chat = chat
         env.saveChat(chat, filename: filename)
         scheduleCoalescedEmit()
+    }
+
+    /// Updates a `tool`-role message's content live as the MCP server streams
+    /// progress notifications. Called from the progress sink registered in
+    /// `start()`. Routes directly to the one chat identified by `chatFilename`
+    /// and the one `tool`-role message carrying `callID` (creating a streaming
+    /// placeholder if none exists yet), appends the partial text, marks it
+    /// `isStreaming = true`, persists, and emits. When the call completes,
+    /// `appendToolResult` replaces the placeholder with the final result.
+    private func updateStreamingToolResult(chatFilename: String, callID: String, partial: String) {
+        guard let idx = records.firstIndex(where: { $0.filename == chatFilename }) else { return }
+        var chat = records[idx].chat
+        // Find the `tool`-role message carrying an in-flight result for this
+        // callID and append to its streaming content.
+        if let tIdx = chat.messages.indices.reversed().first(where: {
+            chat.messages[$0].role == .tool
+                && chat.messages[$0].toolResults?.contains(where: { $0.callID == callID }) ?? false
+        }), var results = chat.messages[tIdx].toolResults, let rIdx = results.firstIndex(where: { $0.callID == callID }) {
+            results[rIdx].content += partial + "\n"
+            results[rIdx].isStreaming = true
+            chat.messages[tIdx].toolResults = results
+            records[idx].chat = chat
+            env.saveChat(chat, filename: chatFilename)
+            scheduleCoalescedEmit()
+            return
+        }
+        // No existing `tool`-role message yet — the progress notification
+        // arrived before `appendToolResult` created one. Create a streaming
+        // placeholder now so the user sees output immediately. It will be
+        // replaced by the final result when the call completes.
+        let placeholder = ToolResult(callID: callID, content: partial + "\n", isError: false, isStreaming: true)
+        chat.messages.append(ChatMessage(role: .tool, content: placeholder.content, toolResults: [placeholder]))
+        records[idx].chat = chat
+        env.saveChat(chat, filename: chatFilename)
+        scheduleCoalescedEmit()
+    }
+
+    /// Appends a new (empty) assistant message that the next stream iteration
+    /// will fill with the model's follow-up response. After a tool call, the
+    /// conversation has three distinct blocks: the user message, the assistant
+    /// message carrying the tool call + result, and this new assistant message
+    /// with the final answer. Persists and emits immediately so the new row
+    /// appears right away.
+    private func appendAssistantMessage(filename: String, connection: Connection) {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        var chat = records[idx].chat
+        chat.messages.append(ChatMessage(role: .assistant, content: "", connectionName: connection.displayName))
+        records[idx].chat = chat
+        env.saveChat(chat, filename: filename)
+        flushCoalescedEmit()
+        emit(.chatsChanged(records))
     }
 
     /// Applies a streamed chunk to the last assistant message of the given chat.

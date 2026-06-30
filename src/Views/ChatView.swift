@@ -257,6 +257,40 @@ struct ChatView: View {
                 .labelsHidden()
                 .frame(width: 180)
 
+                if !store.mcps.isEmpty {
+                    Menu {
+                        Button("None") {
+                            store.setActiveMCPs(nil)
+                        }
+                        Divider()
+                        ForEach(store.mcps) { server in
+                            let active = store.selectedChatItem?.chat.mcps?.contains(server.name) ?? false
+                            Button {
+                                var current = store.selectedChatItem?.chat.mcps ?? []
+                                if active {
+                                    current.removeAll { $0 == server.name }
+                                } else {
+                                    current.append(server.name)
+                                }
+                                store.setActiveMCPs(current.isEmpty ? nil : current)
+                            } label: {
+                                if active {
+                                    Label(server.name, systemImage: "checkmark")
+                                } else {
+                                    Text(server.name)
+                                }
+                            }
+                        }
+                    } label: {
+                        let count = store.selectedChatItem?.chat.mcps?.count ?? 0
+                        Label("MCP: \(count)", systemImage: "wrench.and.screwdriver")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Active MCP servers for this chat")
+                }
+
                 Spacer()
 
                 Button(action: onToggleInfo) {

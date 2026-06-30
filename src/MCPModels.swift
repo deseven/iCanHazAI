@@ -93,6 +93,10 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
     var callID: String
     var content: String
     var isError: Bool
+    /// True while the tool is still running and `content` is being streamed in
+    /// via MCP progress notifications. The renderer shows a spinner and the
+    /// partial content; when the call completes this flips to false.
+    var isStreaming: Bool = false
 }
 
 // MARK: - Tool definition (provider-agnostic)

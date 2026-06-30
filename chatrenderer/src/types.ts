@@ -1,7 +1,7 @@
 // Shared types between the Swift host and the web renderer.
 // These mirror the Swift `ChatMessage` / `MessageRole` models.
 
-export type MessageRole = "system" | "user" | "assistant";
+export type MessageRole = "system" | "user" | "assistant" | "tool";
 
 /** An image attached to a message, loaded via the custom `ichai://` scheme. */
 export interface MessageImage {
@@ -9,6 +9,23 @@ export interface MessageImage {
   url: string;
   /** Original filename for alt text / display. */
   name?: string | null;
+}
+
+/** A tool call issued by the assistant. */
+export interface ToolCallData {
+  id: string;
+  name: string;
+  /** Raw JSON arguments string as returned by the model. */
+  arguments: string;
+}
+
+/** The result of executing a tool call. */
+export interface ToolResultData {
+  callID: string;
+  content: string;
+  isError: boolean;
+  /** True while the tool is still running and `content` is streaming in. */
+  isStreaming?: boolean;
 }
 
 export interface ChatMessage {
@@ -23,6 +40,10 @@ export interface ChatMessage {
   connectionName?: string | null;
   /** Images attached to the message (user messages only). */
   images?: MessageImage[] | null;
+  /** For assistant messages: tool calls issued by the model. */
+  toolCalls?: ToolCallData[] | null;
+  /** For `tool`-role messages: the result of a tool call. */
+  toolResults?: ToolResultData[] | null;
 }
 
 export interface ChatSnapshot {

@@ -232,8 +232,10 @@ final class ChatService: @unchecked Sendable {
         // multipart content (text + image_url parts); everything else stays a
         // plain string. Assistant messages carrying tool calls and tool-role
         // result messages are mapped to their OpenAI equivalents so the model
-        // sees the full tool-calling history on re-request.
-        let chatMessages: [ChatQuery.ChatCompletionMessageParam] = messages.compactMap { msg in
+        // sees the full tool-calling history on re-request. Tool results are
+        // stored as their own `tool`-role `ChatMessage` (the natural provider
+        // shape), so no un-folding is needed — each message maps 1:1.
+        let chatMessages: [ChatQuery.ChatCompletionMessageParam] = messages.compactMap { msg -> ChatQuery.ChatCompletionMessageParam? in
             if msg.role == .user, let images = msg.images, !images.isEmpty {
                 return openAIMessage(for: msg, images: images, chatFilename: chatFilename)
             }
@@ -547,12 +549,14 @@ final class ChatService: @unchecked Sendable {
         }
 
         // Convert messages to Anthropic format. Tool-result messages (role
-        // `.tool`) are folded into the preceding/following user message as
-        // `tool_result` content blocks, per the Anthropic API: tool results
-        // must be sent as `user` messages containing `tool_result` blocks.
-        // Assistant messages carrying tool calls become `assistant` messages
-        // with `tool_use` content blocks.
-        let anthropicMessages: [MessageParameter.Message] = conversationMessages.map { msg in
+        // `.tool`) are folded into a `user` message as `tool_result` content
+        // blocks, per the Anthropic API: tool results must be sent as `user`
+        // messages containing `tool_result` blocks. Assistant messages
+        // carrying tool calls become `assistant` messages with `tool_use`
+        // content blocks. Tool results are stored as their own `tool`-role
+        // `ChatMessage` (the natural provider shape), so no un-folding is
+        // needed — each message maps 1:1.
+        let anthropicMessages: [MessageParameter.Message] = conversationMessages.map { msg -> MessageParameter.Message in
             let role: MessageParameter.Message.Role = msg.role == .user || msg.role == .tool ? .user : .assistant
             if let images = msg.images, !images.isEmpty {
                 return anthropicMessage(for: msg, images: images, role: role, chatFilename: chatFilename)
