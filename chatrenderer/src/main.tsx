@@ -19,6 +19,7 @@ import { setHostSubscriber, sendToHost } from "./bridge";
 import { MessageItem } from "./components/Message";
 import { setMermaidTheme, featuresReady } from "./markdown";
 import { debugLog } from "./debug";
+import { expandThinking, expandToolUse } from "./chatBehaviour";
 import "./styles.css";
 // highlight.js token colors are defined directly in styles.css, scoped by
 // [data-theme="dark"] / [data-theme="light"] (atom-one-dark / atom-one-light).
@@ -225,6 +226,8 @@ function ChatApp() {
               key={m.id}
               message={m}
               isStreaming={m.id === streamingId}
+              defaultThinkingOpen={expandThinking}
+              defaultToolOpen={expandToolUse}
             />
           ))
         )}

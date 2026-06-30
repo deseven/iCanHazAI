@@ -14,6 +14,7 @@ struct PreferencesView: View {
 
     private enum Tab: String, CaseIterable, Identifiable {
         case general
+        case chatBehaviour
         case chatFeatures
         case debug
 
@@ -22,6 +23,7 @@ struct PreferencesView: View {
         var label: String {
             switch self {
             case .general: return "General"
+            case .chatBehaviour: return "Chat Behaviour"
             case .chatFeatures: return "Chat Features"
             case .debug: return "Debug"
             }
@@ -30,6 +32,7 @@ struct PreferencesView: View {
         var icon: String {
             switch self {
             case .general: return "gearshape"
+            case .chatBehaviour: return "rectangle.expand.vertical"
             case .chatFeatures: return "text.bubble"
             case .debug: return "ladybug"
             }
@@ -64,7 +67,7 @@ struct PreferencesView: View {
                 }
                 Spacer()
             }
-            .frame(width: 160)
+            .frame(width: 170)
             .padding(.vertical, 8)
 
             Divider()
@@ -74,6 +77,8 @@ struct PreferencesView: View {
                 switch selectedTab {
                 case .general:
                     GeneralTab()
+                case .chatBehaviour:
+                    ChatBehaviourTab()
                 case .chatFeatures:
                     ChatFeaturesTab()
                 case .debug:
@@ -83,7 +88,7 @@ struct PreferencesView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(20)
         }
-        .frame(width: 600, height: 380)
+        .frame(width: 610, height: 380)
     }
 }
 
@@ -164,6 +169,38 @@ private struct GeneralTab: View {
                 .labelsHidden()
                 .pickerStyle(.menu)
                 .fixedSize()
+            }
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 8)
+    }
+}
+
+// MARK: - Chat behaviour tab
+
+private struct ChatBehaviourTab: View {
+    @EnvironmentObject var store: AppViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            PrefRow(
+                title: "Expand Thinking",
+                description: "Controls whether the Thinking blocks will be expanded by default"
+            ) {
+                Toggle("", isOn: store.bindingExpandThinking)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+
+            PrefRow(
+                title: "Expand Tool Use",
+                description: "Controls whether the Tool Use blocks will be expanded by default"
+            ) {
+                Toggle("", isOn: store.bindingExpandToolUse)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
             }
 
             Spacer()
@@ -256,7 +293,7 @@ extension PreferencesView {
         // before center() is called — NSWindow.center() places the window
         // at Apple's "golden ratio" position (slightly above true center),
         // but only works correctly once the frame is known.
-        window.setContentSize(NSSize(width: 600, height: 380))
+        window.setContentSize(NSSize(width: 610, height: 380))
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

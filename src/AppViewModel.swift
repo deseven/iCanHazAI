@@ -55,6 +55,8 @@ final class AppViewModel: ObservableObject {
     @Published var preferencesMermaidEnabled: Bool = false
     @Published var preferencesKatexEnabled: Bool = false
     @Published var preferencesChatRendererDebugEnabled: Bool = false
+    @Published var preferencesExpandThinking: Bool = false
+    @Published var preferencesExpandToolUse: Bool = false
 
     // MARK: - Private
 
@@ -114,12 +116,16 @@ final class AppViewModel: ObservableObject {
             let me = await config.getMermaidEnabled()
             let ke = await config.getKatexEnabled()
             let cd = await config.getChatRendererDebugEnabled()
+            let et = await config.getExpandThinking()
+            let eu = await config.getExpandToolUse()
             preferencesDefaultConnection = dc
             preferencesDefaultRole = dr
             preferencesUtilityConnection = uc
             preferencesMermaidEnabled = me
             preferencesKatexEnabled = ke
             preferencesChatRendererDebugEnabled = cd
+            preferencesExpandThinking = et
+            preferencesExpandToolUse = eu
             if let ls { chatListSidebarVisible = ls }
             if let rs { chatInfoSidebarVisible = rs }
         }
@@ -198,6 +204,26 @@ final class AppViewModel: ObservableObject {
             set: { newValue in
                 self.preferencesChatRendererDebugEnabled = newValue
                 Task { await self.config.setChatRendererDebugEnabled(newValue) }
+            }
+        )
+    }
+
+    var bindingExpandThinking: Binding<Bool> {
+        Binding(
+            get: { self.preferencesExpandThinking },
+            set: { newValue in
+                self.preferencesExpandThinking = newValue
+                Task { await self.config.setExpandThinking(newValue) }
+            }
+        )
+    }
+
+    var bindingExpandToolUse: Binding<Bool> {
+        Binding(
+            get: { self.preferencesExpandToolUse },
+            set: { newValue in
+                self.preferencesExpandToolUse = newValue
+                Task { await self.config.setExpandToolUse(newValue) }
             }
         )
     }

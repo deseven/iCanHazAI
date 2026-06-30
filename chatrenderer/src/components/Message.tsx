@@ -20,6 +20,10 @@ import type { ToolCallData, ToolResultData } from "../types";
 interface Props {
   message: ChatMessage;
   isStreaming: boolean;
+  /** Whether Thinking blocks should be expanded by default (host preference). */
+  defaultThinkingOpen: boolean;
+  /** Whether Tool Use blocks should be expanded by default (host preference). */
+  defaultToolOpen: boolean;
 }
 
 function roleLabel(role: string): string {
@@ -76,15 +80,17 @@ function ToolBlock({
   call,
   result,
   isStreaming,
+  defaultOpen,
 }: {
   call: ToolCallData;
   result?: ToolResultData;
   isStreaming: boolean;
+  defaultOpen: boolean;
 }) {
   // `running` covers two cases: no result yet (the call hasn't returned), or a
   // result whose `isStreaming` flag is set (the server is streaming progress).
   const running = (!result && isStreaming) || (result?.isStreaming ?? false);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <div class="tool-block">
       <button class="tool-toggle" onClick={() => setOpen((v) => !v)}>
@@ -189,9 +195,14 @@ function ImageGallery({ images }: { images: MessageImage[] }) {
   );
 }
 
-export const MessageItem = memo(function MessageItem({ message, isStreaming }: Props) {
+export const MessageItem = memo(function MessageItem({
+  message,
+  isStreaming,
+  defaultThinkingOpen,
+  defaultToolOpen,
+}: Props) {
   const [hovering, setHovering] = useState(false);
-  const [thinkingOpen, setThinkingOpen] = useState(false);
+  const [thinkingOpen, setThinkingOpen] = useState(defaultThinkingOpen);
   const [topVisible, setTopVisible] = useState(true);
   const [msgVisible, setMsgVisible] = useState(true);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -370,6 +381,7 @@ export const MessageItem = memo(function MessageItem({ message, isStreaming }: P
                 call={call}
                 result={result}
                 isStreaming={isStreaming}
+                defaultOpen={defaultToolOpen}
               />
             );
           })

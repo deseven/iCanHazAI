@@ -96,13 +96,21 @@ struct ChatWebView: View {
             // Reload the web view when chat rendering features change so the
             // renderer re-evaluates which optional dependencies to load.
             .onChange(of: store.preferencesMermaidEnabled) { _, _ in
-                model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled)
+                model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
             }
             .onChange(of: store.preferencesKatexEnabled) { _, _ in
-                model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled)
+                model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
             }
             .onChange(of: store.preferencesChatRendererDebugEnabled) { _, _ in
-                model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled)
+                model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
+            }
+            // Reload the web view when the default expansion behaviour changes
+            // so the renderer re-applies the expanded/collapsed defaults.
+            .onChange(of: store.preferencesExpandThinking) { _, _ in
+                model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
+            }
+            .onChange(of: store.preferencesExpandToolUse) { _, _ in
+                model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
             }
             // Observe a lightweight signature of the selected chat's messages
             // (count + total content length + total thinking length). This
@@ -146,6 +154,8 @@ final class ChatWebViewModel: ObservableObject {
     private var mermaidEnabled: Bool = false
     private var katexEnabled: Bool = false
     private var debugEnabled: Bool = false
+    private var expandThinkingEnabled: Bool = false
+    private var expandToolUseEnabled: Bool = false
 
     init() {
         let config = WKWebViewConfiguration()
@@ -192,6 +202,8 @@ final class ChatWebViewModel: ObservableObject {
         if mermaidEnabled { parts.append("withMermaid") }
         if katexEnabled { parts.append("withKatex") }
         if debugEnabled { parts.append("withDebug") }
+        if expandThinkingEnabled { parts.append("withExpandedThinking") }
+        if expandToolUseEnabled { parts.append("withExpandedToolUse") }
         let query = parts.isEmpty ? "" : "?" + parts.joined(separator: "&")
         if let url = Bundle.main.url(forResource: "index", withExtension: "html", subdirectory: "ChatRenderer") {
             var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
@@ -224,6 +236,8 @@ final class ChatWebViewModel: ObservableObject {
         mermaidEnabled = store.preferencesMermaidEnabled
         katexEnabled = store.preferencesKatexEnabled
         debugEnabled = store.preferencesChatRendererDebugEnabled
+        expandThinkingEnabled = store.preferencesExpandThinking
+        expandToolUseEnabled = store.preferencesExpandToolUse
         loadPage()
         observeTheme()
         pushSnapshot()
@@ -240,10 +254,12 @@ final class ChatWebViewModel: ObservableObject {
     /// Reloads the web page with updated feature flags. Called when the
     /// Mermaid/KaTeX preferences change so the renderer loads (or skips) the
     /// corresponding bundles.
-    func reload(mermaid: Bool, katex: Bool, debug: Bool) {
+    func reload(mermaid: Bool, katex: Bool, debug: Bool, expandThinking: Bool, expandToolUse: Bool) {
         mermaidEnabled = mermaid
         katexEnabled = katex
         debugEnabled = debug
+        expandThinkingEnabled = expandThinking
+        expandToolUseEnabled = expandToolUse
         // Reset bridge state so queued messages are flushed after re-ready.
         webReady = false
         renderedChatId = nil

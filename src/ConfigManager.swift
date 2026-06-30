@@ -14,6 +14,8 @@ import TOML
 struct AppConfig: Codable, Equatable {
     /// General preferences: default connection, role, and utility connection.
     var general: GeneralConfig = GeneralConfig()
+    /// Chat behaviour toggles: default expansion of thinking / tool use blocks.
+    var chatBehaviour: ChatBehaviourConfig = ChatBehaviourConfig()
     /// Chat feature toggles: Mermaid and KaTeX rendering.
     var chatFeatures: ChatFeaturesConfig = ChatFeaturesConfig()
     /// Debug preferences: chat renderer debug overlay.
@@ -23,6 +25,7 @@ struct AppConfig: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case general
+        case chatBehaviour = "chat_behaviour"
         case chatFeatures = "chat_features"
         case debug
         case window
@@ -42,6 +45,19 @@ struct GeneralConfig: Codable, Equatable {
         case defaultConnection = "default_connection"
         case defaultRole = "default_role"
         case utilityConnection = "utility_connection"
+    }
+}
+
+/// `[chat_behaviour]` group — default expansion of thinking / tool use blocks.
+struct ChatBehaviourConfig: Codable, Equatable {
+    /// Whether Thinking blocks are expanded by default in the chat renderer.
+    var expandThinking: Bool = false
+    /// Whether Tool Use blocks are expanded by default in the chat renderer.
+    var expandToolUse: Bool = false
+
+    enum CodingKeys: String, CodingKey {
+        case expandThinking = "expand_thinking"
+        case expandToolUse = "expand_tool_use"
     }
 }
 
@@ -238,6 +254,14 @@ actor ConfigManager {
         config.chatFeatures.katexEnabled
     }
 
+    func getExpandThinking() -> Bool {
+        config.chatBehaviour.expandThinking
+    }
+
+    func getExpandToolUse() -> Bool {
+        config.chatBehaviour.expandToolUse
+    }
+
     func getChatRendererDebugEnabled() -> Bool {
         config.debug.chatRendererDebugEnabled
     }
@@ -272,6 +296,16 @@ actor ConfigManager {
 
     func setKatexEnabled(_ enabled: Bool) {
         config.chatFeatures.katexEnabled = enabled
+        persist()
+    }
+
+    func setExpandThinking(_ enabled: Bool) {
+        config.chatBehaviour.expandThinking = enabled
+        persist()
+    }
+
+    func setExpandToolUse(_ enabled: Bool) {
+        config.chatBehaviour.expandToolUse = enabled
         persist()
     }
 
