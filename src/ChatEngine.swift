@@ -55,6 +55,11 @@ actor ChatEngine {
     /// Configured MCP servers. Loaded from disk and kept in sync via FSEvents.
     private(set) var mcps: [MCPServer] = []
 
+    /// The filename of the chat the user is currently viewing. Used to suppress
+    /// the unread marker when a stream finishes for the chat that's already on
+    /// screen — the user has seen the answer, so no notification is needed.
+    private(set) var selectedFilename: String?
+
     /// In-flight streaming tasks keyed by chat filename, used for cancellation.
     private var streamTasks: [String: Task<Void, Never>] = [:]
 
@@ -353,6 +358,7 @@ actor ChatEngine {
         env.deleteAllImages(for: filename)
         records.removeAll(where: { $0.filename == filename })
         if lastRetryableFilename == filename { lastRetryableFilename = nil }
+        if selectedFilename == filename { selectedFilename = nil }
         emit(.chatsChanged(records))
     }
 
@@ -384,6 +390,7 @@ actor ChatEngine {
     /// Called when the user selects a chat: prunes other empty chats so the
     /// sidebar stays tidy.
     func selectChat(filename: String) {
+        selectedFilename = filename
         pruneEmptyChats(except: filename)
         emit(.chatsChanged(records))
     }
@@ -804,9 +811,14 @@ actor ChatEngine {
         env.saveChat(finalChat, filename: filename)
         records[idx].isStreaming = false
         streamTasks[filename] = nil
-        // Flag as unread so the user is notified of new activity (the UI clears
-        // this when the chat is viewed).
-        records[idx].hasUnreadActivity = true
+        // Flag as unread so the user is notified of new activity — but only if
+        // this isn't the chat the user is currently looking at. When the
+        // finished chat is the selected one the user has already seen the
+        // answer, so marking it unread would only surface a stale circle once
+        // they switch away.
+        if records[idx].filename != selectedFilename {
+            records[idx].hasUnreadActivity = true
+        }
         // Flush any pending coalesced emit first, then emit the final state
         // immediately so the UI reflects "stopped/finished" without delay.
         flushCoalescedEmit()
