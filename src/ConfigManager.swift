@@ -129,9 +129,21 @@ actor ConfigManager {
 
     private let fileURL: URL
 
+    /// Hook called immediately before `persist()` writes `config.toml` to disk.
+    /// Set by `ChatEngine` at startup so the engine can register the config
+    /// file path in its per-path self-write suppression registry, preventing
+    /// the resulting FSEvents burst from triggering a redundant reload.
+    var willWriteConfig: (@Sendable () -> Void)?
+
     private init() {
         let home = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         fileURL = home.appendingPathComponent("iCanHazAI").appendingPathComponent("config.toml")
+    }
+
+    /// Registers the self-write hook used to suppress FSEvents for our own
+    /// writes to `config.toml`. Called once by `ChatEngine` at startup.
+    func setWillWriteConfigHook(_ hook: @escaping @Sendable () -> Void) {
+        willWriteConfig = hook
     }
 
     // MARK: - Load / Save
@@ -146,6 +158,7 @@ actor ConfigManager {
     func load() {
         guard !didLoad else { return }
         debugLog("Config", "loading from \(fileURL.path)")
+        debugLog("FileRead", "reading config.toml")
         let fm = FileManager.default
         guard fm.fileExists(atPath: fileURL.path),
               let data = try? Data(contentsOf: fileURL) else {
@@ -167,11 +180,40 @@ actor ConfigManager {
         validateAndSave()
     }
 
+    /// Re-reads `config.toml` from disk and updates in-memory state. Called
+    /// when an FSEvent for `config.toml` arrives (external edit). Unlike
+    /// `load()`, this is not idempotent — it always re-reads the file. After
+    /// loading, validates references and persists if anything was cleaned up.
+    func reload() {
+        debugLog("Config", "reloading from disk (FSEvent)")
+        debugLog("FileRead", "reading config.toml")
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: fileURL.path),
+              let data = try? Data(contentsOf: fileURL) else {
+            debugLog("Config", "no config file found on reload — keeping current state")
+            return
+        }
+        do {
+            config = try TOMLDecoder().decode(AppConfig.self, from: data)
+            debugLog("Config", "reloaded successfully (app_debug=\(config.debug.appDebugEnabled), chat_renderer_debug=\(config.debug.chatRendererDebugEnabled))")
+        } catch {
+            debugLog("Config", "failed to decode config on reload: \(error.localizedDescription) — keeping current state")
+            return
+        }
+        // Reset lastWritten so the next persist() comparison is accurate.
+        lastWritten = nil
+        validateAndSave()
+    }
+
     /// Persists the current config to disk with alphabetically sorted keys.
     /// Does nothing if the config hasn't changed since last write.
     private var lastWritten: AppConfig?
     private func persist() {
         guard config != lastWritten else { return }
+        // Register the config file path with the engine's per-path suppression
+        // registry before writing, so the resulting FSEvents burst is ignored.
+        willWriteConfig?()
+        debugLog("FileWrite", "writing config.toml")
         let encoder = TOMLEncoder()
         encoder.outputFormatting = .sortedKeys
         encoder.keyEncodingStrategy = .convertToSnakeCase

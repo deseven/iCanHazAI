@@ -307,6 +307,10 @@ final class AppViewModel: ObservableObject {
             }
         case .mcpsChanged(let mcps):
             self.mcps = mcps
+        case .configChanged:
+            // config.toml was reloaded from disk (external edit picked up via
+            // FSEvents). Refresh the cached preferences so the UI stays in sync.
+            refreshPreferences()
         case .error(let message):
             errorMessage = message
         }

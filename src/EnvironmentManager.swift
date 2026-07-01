@@ -92,6 +92,7 @@ final class EnvironmentManager: @unchecked Sendable {
         }
         var result: [(filename: String, chat: Chat)] = []
         for file in files where file.pathExtension == "json" {
+            debugLog("FileRead", "reading \(relativePath(file))")
             guard let data = try? Data(contentsOf: file),
                   let chat = try? JSONDecoder().decode(Chat.self, from: data) else {
                 continue
@@ -100,6 +101,16 @@ final class EnvironmentManager: @unchecked Sendable {
         }
         result.sort { $0.filename < $1.filename }
         return result
+    }
+
+    /// Loads and decodes a single chat file by filename. Returns nil if the
+    /// file is missing or undecodable. Used by the FSEvents per-file router so
+    /// only the changed file is reloaded instead of scanning the whole directory.
+    func loadSingleChat(filename: String) -> Chat? {
+        let url = chatsURL.appendingPathComponent(filename)
+        debugLog("FileRead", "reading \(relativePath(url))")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(Chat.self, from: data)
     }
 
     /// Generates a new chat filename using the current date/time.
@@ -113,6 +124,7 @@ final class EnvironmentManager: @unchecked Sendable {
     /// Saves a chat to disk under the given filename.
     func saveChat(_ chat: Chat, filename: String) {
         let url = chatsURL.appendingPathComponent(filename)
+        debugLog("FileWrite", "writing \(relativePath(url))")
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(chat) else { return }
@@ -122,6 +134,7 @@ final class EnvironmentManager: @unchecked Sendable {
     /// Deletes a chat file.
     func deleteChat(filename: String) {
         let url = chatsURL.appendingPathComponent(filename)
+        debugLog("FileWrite", "deleting \(relativePath(url))")
         try? FileManager.default.removeItem(at: url)
     }
 
@@ -152,11 +165,21 @@ final class EnvironmentManager: @unchecked Sendable {
         return files
             .filter { $0.pathExtension == "md" }
             .compactMap { url in
+                debugLog("FileRead", "reading \(relativePath(url))")
                 guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
                 let name = url.deletingPathExtension().lastPathComponent
                 return Role(name: name, content: content, isDefault: false)
             }
             .sorted { $0.name < $1.name }
+    }
+
+    /// Loads one custom role by name. Returns nil if not found. Does not fall
+    /// back to default roles — those are bundled and never change on disk.
+    func loadSingleRole(name: String) -> Role? {
+        let url = rolesURL.appendingPathComponent("\(name).md")
+        debugLog("FileRead", "reading \(relativePath(url))")
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        return Role(name: name, content: content, isDefault: false)
     }
 
     /// Loads all roles (default + custom). Custom roles override defaults with the same name.
@@ -187,40 +210,62 @@ final class EnvironmentManager: @unchecked Sendable {
         return files
             .filter { $0.pathExtension == "toml" }
             .compactMap { url in
+                debugLog("FileRead", "reading \(relativePath(url))")
                 guard let data = try? Data(contentsOf: url) else {
                     return nil
                 }
                 guard let config = try? TOMLDecoder().decode(ConnectionConfig.self, from: data) else {
                     return nil
                 }
-                let name = url.deletingPathExtension().lastPathComponent
-                let vendorParams: [String: JSONValue]? = {
-                    guard let jsonString = config.vendorParameters,
-                          let jsonData = jsonString.data(using: .utf8) else { return nil }
-                    return try? JSONDecoder().decode([String: JSONValue].self, from: jsonData)
-                }()
-                return Connection(
-                    provider: provider,
-                    name: name,
-                    endpoint: config.endpoint,
-                    token: config.token,
-                    model: config.model,
-                    maxTokens: config.maxTokens,
-                    temperature: config.temperature,
-                    topP: config.topP,
-                    reasoningEffort: config.reasoningEffort,
-                    frequencyPenalty: config.frequencyPenalty,
-                    presencePenalty: config.presencePenalty,
-                    maxCompletionTokens: config.maxCompletionTokens,
-                    seed: config.seed,
-                    topK: config.topK,
-                    stopSequences: config.stopSequences,
-                    thinkingEnabled: config.thinkingEnabled,
-                    thinkingBudget: config.thinkingBudget,
-                    vendorParameters: vendorParams,
-                    imageInput: config.imageInput
-                )
+                return connection(from: config, url: url, provider: provider)
             }
+    }
+
+    /// Loads one connection from a specific file URL, inferring the provider
+    /// from the parent directory name (`openai` or `anthropic`). Returns nil
+    /// if the file is missing or undecodable, or the provider is unknown.
+    func loadSingleConnection(url: URL) -> Connection? {
+        debugLog("FileRead", "reading \(relativePath(url))")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let config = try? TOMLDecoder().decode(ConnectionConfig.self, from: data) else { return nil }
+        let provider: ConnectionProvider
+        switch url.deletingLastPathComponent().lastPathComponent {
+        case "openai": provider = .openai
+        case "anthropic": provider = .anthropic
+        default: return nil
+        }
+        return connection(from: config, url: url, provider: provider)
+    }
+
+    /// Builds a `Connection` value from a decoded config + file URL + provider.
+    private func connection(from config: ConnectionConfig, url: URL, provider: ConnectionProvider) -> Connection {
+        let name = url.deletingPathExtension().lastPathComponent
+        let vendorParams: [String: JSONValue]? = {
+            guard let jsonString = config.vendorParameters,
+                  let jsonData = jsonString.data(using: .utf8) else { return nil }
+            return try? JSONDecoder().decode([String: JSONValue].self, from: jsonData)
+        }()
+        return Connection(
+            provider: provider,
+            name: name,
+            endpoint: config.endpoint,
+            token: config.token,
+            model: config.model,
+            maxTokens: config.maxTokens,
+            temperature: config.temperature,
+            topP: config.topP,
+            reasoningEffort: config.reasoningEffort,
+            frequencyPenalty: config.frequencyPenalty,
+            presencePenalty: config.presencePenalty,
+            maxCompletionTokens: config.maxCompletionTokens,
+            seed: config.seed,
+            topK: config.topK,
+            stopSequences: config.stopSequences,
+            thinkingEnabled: config.thinkingEnabled,
+            thinkingBudget: config.thinkingBudget,
+            vendorParameters: vendorParams,
+            imageInput: config.imageInput
+        )
     }
 
     // MARK: - MCP servers
@@ -234,6 +279,7 @@ final class EnvironmentManager: @unchecked Sendable {
         return files
             .filter { $0.pathExtension == "toml" }
             .compactMap { url in
+                debugLog("FileRead", "reading \(relativePath(url))")
                 guard let data = try? Data(contentsOf: url) else { return nil }
                 guard let config = try? TOMLDecoder().decode(MCPConfig.self, from: data) else { return nil }
                 let name = url.deletingPathExtension().lastPathComponent
@@ -242,9 +288,20 @@ final class EnvironmentManager: @unchecked Sendable {
             .sorted { $0.name < $1.name }
     }
 
+    /// Loads one MCP config by name. Returns nil if the file is missing or
+    /// undecodable.
+    func loadSingleMCP(name: String) -> MCPServer? {
+        let url = mcpsURL.appendingPathComponent("\(name).toml")
+        debugLog("FileRead", "reading \(relativePath(url))")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let config = try? TOMLDecoder().decode(MCPConfig.self, from: data) else { return nil }
+        return MCPServer(name: name, config: config)
+    }
+
     /// Saves an MCP server to `mcp/<name>.toml` (TOML encoded).
     func saveMCP(_ server: MCPServer) {
         let url = mcpsURL.appendingPathComponent("\(server.name).toml")
+        debugLog("FileWrite", "writing \(relativePath(url))")
         guard let data = try? TOMLEncoder().encode(server.config) else { return }
         try? data.write(to: url, options: .atomic)
     }
@@ -252,6 +309,21 @@ final class EnvironmentManager: @unchecked Sendable {
     /// Deletes an MCP server config file by name.
     func deleteMCP(name: String) {
         let url = mcpsURL.appendingPathComponent("\(name).toml")
+        debugLog("FileWrite", "deleting \(relativePath(url))")
         try? FileManager.default.removeItem(at: url)
+    }
+
+    // MARK: - Path helpers
+
+    /// Returns a path relative to `~/iCanHazAI` for readable log messages.
+    /// Falls back to the absolute path if the URL is not under the root.
+    func relativePath(_ url: URL) -> String {
+        let root = rootURL.standardizedFileURL.path
+        let abs = url.standardizedFileURL.path
+        if abs.hasPrefix(root) {
+            let rel = abs.dropFirst(root.count)
+            return rel.hasPrefix("/") ? String(rel.dropFirst()) : String(rel)
+        }
+        return abs
     }
 }

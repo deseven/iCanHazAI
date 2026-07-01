@@ -201,6 +201,9 @@ enum EngineEvent: Sendable {
     case connectionsChanged([Connection])
     /// The set of configured MCP servers changed (load, add, edit, delete).
     case mcpsChanged([MCPServer])
+    /// `config.toml` was reloaded from disk (external edit picked up via FSEvents).
+    /// The UI should refresh its cached preferences from `ConfigManager`.
+    case configChanged
     case error(String)
 }
 
