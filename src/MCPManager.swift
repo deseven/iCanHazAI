@@ -36,11 +36,16 @@ actor MCPManager {
         let client: Client
         /// For stdio servers: the spawned process. Nil for http.
         let process: Process?
+        /// The `Initialize.Result` returned by the server on connect. Carries
+        /// `serverInfo` (name/version), negotiated `protocolVersion`, and the
+        /// server's `capabilities`. Kept for later queries (e.g. UI display).
+        let initResult: Initialize.Result
 
-        init(server: MCPServer, client: Client, process: Process? = nil) {
+        init(server: MCPServer, client: Client, process: Process? = nil, initResult: Initialize.Result) {
             self.server = server
             self.client = client
             self.process = process
+            self.initResult = initResult
         }
     }
 
@@ -307,20 +312,33 @@ actor MCPManager {
                 let text = params.message ?? "progress \(Int(params.progress))\(params.total.map { "/\(Int($0))" } ?? "")"
                 await self.forwardProgress(token: params.progressToken, text: text)
             }
+            let initResult: Initialize.Result
             do {
-                _ = try await client.connect(transport: transport)
+                initResult = try await client.connect(transport: transport)
             } catch {
                 process?.terminate()
                 throw error
             }
-            connections[server.name] = Connection(server: server, client: client, process: process)
+            connections[server.name] = Connection(server: server, client: client, process: process, initResult: initResult)
             unavailable.remove(server.name)
-            debugLog("MCP", "connected — server=\"\(server.name)\"")
+            debugLog("MCP", "connected — server=\"\(server.name)\", serverName=\"\(initResult.serverInfo.name)\", serverVersion=\"\(initResult.serverInfo.version)\", protocolVersion=\"\(initResult.protocolVersion)\", capabilities=\(capabilitySummary(initResult.capabilities))")
         } catch {
             unavailable.insert(server.name)
             debugLog("MCP", "connect failed — server=\"\(server.name)\": \(error.localizedDescription)")
             reportError("MCP server \"\(server.name)\" failed to connect: \(error.localizedDescription)")
         }
+    }
+
+    /// Produces a compact, human-readable summary of a server's capabilities,
+    /// e.g. `"tools,resources,logging"`. Used for connect logging and UI.
+    nonisolated private func capabilitySummary(_ capabilities: Server.Capabilities) -> String {
+        var parts: [String] = []
+        if capabilities.tools != nil { parts.append("tools") }
+        if capabilities.resources != nil { parts.append("resources") }
+        if capabilities.prompts != nil { parts.append("prompts") }
+        if capabilities.logging != nil { parts.append("logging") }
+        if capabilities.completions != nil { parts.append("completions") }
+        return parts.isEmpty ? "none" : parts.joined(separator: ",")
     }
 
     /// Disconnects and tears down the client for `name`. Closes the MCP
@@ -386,10 +404,11 @@ actor MCPManager {
                 }
                 cursor = next
             } while cursor != nil
+            debugLog("MCP", "listTools — server=\"\(server)\", count=\(tools.count)")
             return tools
         } catch {
             unavailable.insert(server)
-            debugLog("MCP", "listTools failed — server=\"\(server)\" now unavailable: \(error.localizedDescription)")
+            debugLog("MCP", "listTools failed — server=\"\(server)\" now unavailable, error=\(error), type=\(String(describing: error))")
             throw MCPManagerError.toolListFailed(server, error.localizedDescription)
         }
     }
@@ -467,7 +486,7 @@ actor MCPManager {
             return ToolResult(callID: callID, content: "Tool call was cancelled.", isError: true)
         } catch {
             unavailable.insert(server)
-            debugLog("MCP", "callTool failed — server=\"\(server)\" now unavailable, tool=\"\(name)\", callID=\(callID): \(error.localizedDescription)")
+            debugLog("MCP", "callTool failed — server=\"\(server)\", tool=\"\(name)\", callID=\(callID), error=\(error), type=\(String(describing: error))")
             return ToolResult(callID: callID, content: "Tool call failed: \(error.localizedDescription)", isError: true)
         }
     }

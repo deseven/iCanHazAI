@@ -1014,15 +1014,31 @@ actor ChatEngine {
     /// Gathers tool definitions from the chat's active MCP servers. Failures
     /// of individual servers are collected and surfaced via `.error` but don't
     /// abort the request; the model still gets the working servers' tools.
+    ///
+    /// Before listing tools, each active server is checked for readiness via
+    /// `MCPManager.isAvailable`. Servers that are not connected (e.g. failed
+    /// to start) are skipped with a clear error so the request doesn't
+    /// silently proceed with 0 tools from that server.
     private func gatherTools(filename: String) async -> [ToolDefinition] {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return [] }
         let activeNames = records[idx].chat.mcps ?? []
         guard !activeNames.isEmpty else { return [] }
 
         var defs: [ToolDefinition] = []
+        var perServerCounts: [(String, Int)] = []
         for serverName in activeNames {
+            // Readiness guard: skip servers that aren't connected so we
+            // don't waste a request with 0 tools from a dead server.
+            let isReady = await MCPManager.shared.isAvailable(serverName)
+            if !isReady {
+                debugLog("MCP", "server not ready — server=\"\(serverName)\", chat=\(filename)")
+                emit(.error("MCP server \"\(serverName)\" is not connected. Tools from this server will be unavailable."))
+                perServerCounts.append((serverName, 0))
+                continue
+            }
             do {
                 let tools = try await MCPManager.shared.listTools(for: serverName)
+                perServerCounts.append((serverName, tools.count))
                 defs.append(contentsOf: tools.map { tool in
                     ToolDefinition(
                         serverName: serverName,
@@ -1033,7 +1049,12 @@ actor ChatEngine {
                 })
             } catch {
                 emit(.error("MCP server \"\(serverName)\" tools unavailable: \(error.localizedDescription)"))
+                perServerCounts.append((serverName, 0))
             }
+        }
+        debugLog("MCP", "gathered tools — chat=\(filename), total=\(defs.count), servers=\(activeNames.count)")
+        for (serverName, count) in perServerCounts {
+            debugLog("MCP", "  server=\"\(serverName)\" contributed \(count) tool(s)")
         }
         return defs
     }
