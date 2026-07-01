@@ -62,13 +62,14 @@ struct ConnectionWizardView: View {
     @State private var isFetchingModels: Bool = false
 
     // Step 3 — model
-    /// Models returned by the provider (OpenAI-compatible only).
-    @State private var availableModels: [String] = []
-    /// The selected model id. For Anthropic this is free-text.
+    /// Models returned by the provider, with capability info where reported.
+    @State private var availableModels: [ModelInfo] = []
+    /// The selected model id.
     @State private var selectedModel: String = ""
     /// Search text for the model dropdown.
     @State private var modelSearch: String = ""
-    /// Whether the user indicated the selected model supports image input.
+    /// Whether the selected model supports image input. Auto-set from the
+    /// provider's reported capability when available; user-editable otherwise.
     @State private var imageInput: Bool = false
 
     // Step 4 — test
@@ -140,13 +141,13 @@ struct ConnectionWizardView: View {
         }
 
         /// The default endpoint for this preset, or nil when the endpoint is
-        /// hidden (built into the library defaults).
+        /// hidden (uses the provider's default base URL).
         var defaultEndpoint: String? {
             switch self {
             case .openai:     return nil
             case .anthropic:  return nil
             case .openrouter: return "https://openrouter.ai/api/v1"
-            case .deepseek:   return "https://api.deepseek.com"
+            case .deepseek:   return "https://api.deepseek.com/v1"
             case .other:      return ""
             }
         }
@@ -209,7 +210,7 @@ struct ConnectionWizardView: View {
                     focusedField = .token
                 }
             case .model:
-                if providerPreset == .anthropic {
+                if useFreeTextModel {
                     focusedField = .modelText
                 } else {
                     focusedField = .modelSearch
@@ -465,9 +466,8 @@ struct ConnectionWizardView: View {
         }
     }
 
-    /// Fetches the model list (OpenAI-compatible) and advances to the model
-    /// step on success. On failure, stays on the credentials step and shows
-    /// the error in red.
+    /// Fetches the model list and advances to the model step on success. On
+    /// failure, stays on the credentials step and shows the error in red.
     private func fetchModelsThenAdvance() {
         credentialsError = nil
         isFetchingModels = true
@@ -475,23 +475,19 @@ struct ConnectionWizardView: View {
         let preset = providerPreset
         let endpointValue = preset.showsEndpoint ? endpoint : (preset.defaultEndpoint ?? "")
         let tokenValue = token
-
-        // Anthropic doesn't support listing models via the package, so skip
-        // the fetch and go straight to a free-text model field.
-        if preset == .anthropic {
-            isFetchingModels = false
-            availableModels = []
-            selectedModel = ""
-            step = .model
-            return
-        }
+        let provider = preset.connectionProvider
 
         Task {
             do {
-                let models = try await ChatService.shared.listModels(endpoint: endpointValue, token: tokenValue)
+                let models = try await ChatService.shared.listModels(provider: provider, baseUrl: endpointValue, apiKey: tokenValue)
                 await MainActor.run {
                     self.availableModels = models
-                    self.selectedModel = models.first ?? ""
+                    self.selectedModel = models.first?.id ?? ""
+                    // Auto-set imageInput from the first model's reported
+                    // capability, if the provider reports one.
+                    if let cap = models.first?.imageInput {
+                        self.imageInput = cap
+                    }
                     self.isFetchingModels = false
                     self.step = .model
                 }
@@ -506,23 +502,27 @@ struct ConnectionWizardView: View {
 
     // MARK: - Step 3: Model
 
-    private var filteredModels: [String] {
+    private var filteredModels: [ModelInfo] {
         let q = modelSearch.lowercased()
         guard !q.isEmpty else { return availableModels }
-        return availableModels.filter { $0.lowercased().contains(q) }
+        return availableModels.filter { $0.id.lowercased().contains(q) }
     }
+
+    /// Whether the model list returned by the provider is empty, in which
+    /// case we fall back to a free-text model field.
+    private var useFreeTextModel: Bool { availableModels.isEmpty }
 
     private var modelStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if providerPreset == .anthropic {
-                Text("Enter the model id to use. The Anthropic package does not expose a model list, so type it manually (e.g. claude-3-5-sonnet-latest).")
+            if useFreeTextModel {
+                Text("Enter the model id to use (e.g. claude-3-5-sonnet-latest).")
                     .font(.callout)
                     .foregroundStyle(.secondary)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Model")
                         .font(.headline)
-                    TextField("claude-3-5-sonnet-latest", text: $selectedModel)
+                    TextField("model-id", text: $selectedModel)
                         .textFieldStyle(.roundedBorder)
                         .focused($focusedField, equals: .modelText)
                         .onSubmit { goNext() }
@@ -543,21 +543,24 @@ struct ConnectionWizardView: View {
 
                     ScrollView {
                         VStack(alignment: .leading, spacing: 0) {
-                            ForEach(filteredModels, id: \.self) { model in
+                            ForEach(filteredModels, id: \.id) { model in
                                 HStack(spacing: 8) {
-                                    Image(systemName: selectedModel == model ? "largecircle.fill.circle" : "circle")
-                                        .foregroundStyle(selectedModel == model ? Color.accentColor : Color.secondary)
-                                    Text(model)
+                                    Image(systemName: selectedModel == model.id ? "largecircle.fill.circle" : "circle")
+                                        .foregroundStyle(selectedModel == model.id ? Color.accentColor : Color.secondary)
+                                    Text(model.id)
                                         .font(.callout)
                                     Spacer()
                                 }
                                 .padding(.vertical, 5)
                                 .padding(.horizontal, 8)
                                 .contentShape(Rectangle())
-                                .onTapGesture { selectedModel = model }
+                                .onTapGesture {
+                                    selectedModel = model.id
+                                    if let cap = model.imageInput { imageInput = cap }
+                                }
                                 .background(
                                     RoundedRectangle(cornerRadius: 4)
-                                        .fill(selectedModel == model ? Color.accentColor.opacity(0.1) : Color.clear)
+                                        .fill(selectedModel == model.id ? Color.accentColor.opacity(0.1) : Color.clear)
                                 )
                             }
                             if filteredModels.isEmpty {
@@ -652,12 +655,7 @@ struct ConnectionWizardView: View {
                 }
             } catch {
                 await MainActor.run {
-                    // The OpenAI library's async path does not check HTTP status
-                    // codes, so a rejected request (e.g. invalid API key) surfaces
-                    // as a generic decoding error ("The data couldn't be read…")
-                    // rather than the provider's real error message. Show the
-                    // same clear, actionable hint we use for empty responses.
-                    self.testError = "The model returned an empty response. This usually means the API key is invalid or the selected model is unavailable."
+                    self.testError = error.localizedDescription
                     self.isTesting = false
                 }
             }
@@ -679,7 +677,7 @@ struct ConnectionWizardView: View {
                     .textFieldStyle(.roundedBorder)
                     .focused($focusedField, equals: .connectionName)
                     .onSubmit { goNext() }
-                Text("File: connections/\(providerPreset.connectionProvider.rawValue)/\(sanitizedFilename(connectionName)).toml")
+                Text("File: connections/\(providerPreset.connectionProvider.rawValue)/\(sanitizedFilename(connectionName)).jsonc")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -742,28 +740,16 @@ struct ConnectionWizardView: View {
         Connection(
             provider: providerPreset.connectionProvider,
             name: name,
-            endpoint: effectiveEndpoint,
-            token: token.isEmpty ? nil : token,
+            baseUrl: effectiveBaseUrl,
+            apiKey: token.isEmpty ? nil : token,
             model: selectedModel,
-            maxTokens: nil,
-            temperature: nil,
-            topP: nil,
-            reasoningEffort: nil,
-            frequencyPenalty: nil,
-            presencePenalty: nil,
-            maxCompletionTokens: nil,
-            seed: nil,
-            topK: nil,
-            stopSequences: nil,
-            thinkingEnabled: nil,
-            thinkingBudget: nil,
-            vendorParameters: nil,
-            imageInput: imageInput ? true : nil
+            imageInput: imageInput,
+            requestParameters: nil
         )
     }
 
-    /// The endpoint to store, or nil when the provider uses library defaults.
-    private var effectiveEndpoint: String? {
+    /// The base URL to store, or nil when the provider uses its default.
+    private var effectiveBaseUrl: String? {
         switch providerPreset {
         case .openai, .anthropic:
             return nil
@@ -798,7 +784,7 @@ struct ConnectionWizardView: View {
             .joined(separator: "-")
     }
 
-    /// Writes the connection TOML file (with commented-out optional parameters)
+    /// Writes the connection JSONC file (with commented-out optional parameters)
     /// and records the saved URL for the "Reveal in Finder" link.
     private func saveConnection() {
         let name = sanitizedFilename(connectionName)
@@ -812,16 +798,16 @@ struct ConnectionWizardView: View {
         }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
-        let toml = ConnectionFileWriter.generateTOML(
+        let jsonc = ConnectionFileWriter.generateJSONC(
             provider: provider,
-            endpoint: effectiveEndpoint,
-            token: token.isEmpty ? nil : token,
+            baseUrl: effectiveBaseUrl,
+            apiKey: token.isEmpty ? nil : token,
             model: selectedModel,
-            imageInput: imageInput ? true : nil
+            imageInput: imageInput
         )
 
-        let url = dir.appendingPathComponent("\(name).toml")
-        try? toml.data(using: .utf8)?.write(to: url, options: .atomic)
+        let url = dir.appendingPathComponent("\(name).jsonc")
+        try? jsonc.data(using: .utf8)?.write(to: url, options: .atomic)
         savedFileURL = url
     }
 }

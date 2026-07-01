@@ -355,12 +355,12 @@ actor ChatEngine {
         if url.deletingLastPathComponent().path == env.rolesURL.path, ext == "md" {
             return .role
         }
-        // connections/openai/*.toml
-        if url.deletingLastPathComponent().path == env.openaiConnectionsURL.path, ext == "toml" {
+        // connections/openai/*.jsonc
+        if url.deletingLastPathComponent().path == env.openaiConnectionsURL.path, ext == "jsonc" {
             return .connectionOpenai
         }
-        // connections/anthropic/*.toml
-        if url.deletingLastPathComponent().path == env.anthropicConnectionsURL.path, ext == "toml" {
+        // connections/anthropic/*.jsonc
+        if url.deletingLastPathComponent().path == env.anthropicConnectionsURL.path, ext == "jsonc" {
             return .connectionAnthropic
         }
         // mcp/*.toml
@@ -1171,10 +1171,26 @@ actor ChatEngine {
             chat.messages[lastIdx].content += text
         case .error(let text):
             chat.messages[lastIdx].error = text
-        case .toolCall(let call):
-            // Accumulate tool calls as they're emitted at stream end.
+        case .toolCallDelta(let index, let id, let name, let argsDelta):
+            // Incremental tool call update — grow the tool call at `index`
+            // in place so the UI shows the arguments populating live. The
+            // final `.toolCall` chunk (emitted at stream end) replaces this
+            // entry with the authoritative, complete ToolCall.
             var calls = chat.messages[lastIdx].toolCalls ?? []
-            calls.append(call)
+            while calls.count <= index { calls.append(ToolCall(id: "", name: "", arguments: "")) }
+            if let id, !id.isEmpty { calls[index].id = id }
+            if let name, !name.isEmpty { calls[index].name = name }
+            calls[index].arguments += argsDelta
+            chat.messages[lastIdx].toolCalls = calls
+        case .toolCall(let call):
+            // The final, authoritative tool call emitted at stream end.
+            // Replace the entry at the matching index (or append if none).
+            var calls = chat.messages[lastIdx].toolCalls ?? []
+            if let matchIdx = calls.firstIndex(where: { $0.id == call.id && !call.id.isEmpty }) {
+                calls[matchIdx] = call
+            } else {
+                calls.append(call)
+            }
             chat.messages[lastIdx].toolCalls = calls
         case .finishReason:
             // No state change needed; the finish reason is used by the loop

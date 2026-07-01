@@ -3,7 +3,6 @@
 
 import Foundation
 import TOML
-import OpenAI
 
 /// Manages the app's data directory
 /// and provides loading/saving of chats, roles, and connections.
@@ -208,13 +207,13 @@ final class EnvironmentManager: @unchecked Sendable {
             return []
         }
         return files
-            .filter { $0.pathExtension == "toml" }
+            .filter { $0.pathExtension == "jsonc" }
             .compactMap { url in
                 debugLog("FileRead", "reading \(relativePath(url))")
                 guard let data = try? Data(contentsOf: url) else {
                     return nil
                 }
-                guard let config = try? TOMLDecoder().decode(ConnectionConfig.self, from: data) else {
+                guard let config = JSONC.parse(data, as: ConnectionConfig.self) else {
                     return nil
                 }
                 return connection(from: config, url: url, provider: provider)
@@ -227,7 +226,7 @@ final class EnvironmentManager: @unchecked Sendable {
     func loadSingleConnection(url: URL) -> Connection? {
         debugLog("FileRead", "reading \(relativePath(url))")
         guard let data = try? Data(contentsOf: url) else { return nil }
-        guard let config = try? TOMLDecoder().decode(ConnectionConfig.self, from: data) else { return nil }
+        guard let config = JSONC.parse(data, as: ConnectionConfig.self) else { return nil }
         let provider: ConnectionProvider
         switch url.deletingLastPathComponent().lastPathComponent {
         case "openai": provider = .openai
@@ -240,31 +239,14 @@ final class EnvironmentManager: @unchecked Sendable {
     /// Builds a `Connection` value from a decoded config + file URL + provider.
     private func connection(from config: ConnectionConfig, url: URL, provider: ConnectionProvider) -> Connection {
         let name = url.deletingPathExtension().lastPathComponent
-        let vendorParams: [String: JSONValue]? = {
-            guard let jsonString = config.vendorParameters,
-                  let jsonData = jsonString.data(using: .utf8) else { return nil }
-            return try? JSONDecoder().decode([String: JSONValue].self, from: jsonData)
-        }()
         return Connection(
             provider: provider,
             name: name,
-            endpoint: config.endpoint,
-            token: config.token,
+            baseUrl: config.baseUrl,
+            apiKey: config.apiKey,
             model: config.model,
-            maxTokens: config.maxTokens,
-            temperature: config.temperature,
-            topP: config.topP,
-            reasoningEffort: config.reasoningEffort,
-            frequencyPenalty: config.frequencyPenalty,
-            presencePenalty: config.presencePenalty,
-            maxCompletionTokens: config.maxCompletionTokens,
-            seed: config.seed,
-            topK: config.topK,
-            stopSequences: config.stopSequences,
-            thinkingEnabled: config.thinkingEnabled,
-            thinkingBudget: config.thinkingBudget,
-            vendorParameters: vendorParams,
-            imageInput: config.imageInput
+            imageInput: config.imageInput ?? false,
+            requestParameters: config.requestParameters
         )
     }
 

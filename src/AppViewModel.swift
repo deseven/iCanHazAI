@@ -423,7 +423,7 @@ final class AppViewModel: ObservableObject {
         guard let item = selectedChatItem,
               let connectionID = item.chat.connection,
               let conn = connections.first(where: { $0.id == connectionID }) else { return false }
-        return conn.imageInput == true
+        return conn.imageInput
     }
 
     /// Approximate token count for the currently selected chat, updated live

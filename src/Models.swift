@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import Foundation
-import OpenAI
 
 // MARK: - Message
 
@@ -228,88 +227,27 @@ struct Connection: Identifiable, Equatable, @unchecked Sendable {
     var id: String { "\(provider.rawValue)/\(name)" }
     let provider: ConnectionProvider
     let name: String
-    let endpoint: String?
-    let token: String?
+    /// Base URL of the endpoint. nil → provider default.
+    let baseUrl: String?
+    /// API key. nil when the endpoint doesn't require one.
+    let apiKey: String?
+    /// Model identifier.
     let model: String
-    let maxTokens: Int?
-
-    // Common optional parameters
-    let temperature: Double?
-    let topP: Double?
-
-    // OpenAI-specific
-    let reasoningEffort: String?
-    let frequencyPenalty: Double?
-    let presencePenalty: Double?
-    let maxCompletionTokens: Int?
-    let seed: Int?
-
-    // Anthropic-specific
-    let topK: Int?
-    let stopSequences: [String]?
-    let thinkingEnabled: Bool?
-    let thinkingBudget: Int?
-
-    /// Arbitrary vendor-specific parameters injected into the request JSON (OpenAI only).
-    let vendorParameters: [String: JSONValue]?
-
-    /// Meta flag indicating whether the model supports image input. False by
-    /// default. Not yet used by the chat engine; preparation for future tasks.
-    let imageInput: Bool?
+    /// Meta flag: whether the model supports image input. Used by the UI to
+    /// gate the image attach button — NOT sent to the API. Defaults to false.
+    let imageInput: Bool
+    /// Extra parameters inserted into every request body's root. Fully optional.
+    let requestParameters: [String: LLMJSONValue]?
 
     /// Display name shown in the UI.
     var displayName: String { name }
 }
 
-/// Raw structure decoded from a connection TOML file.
+/// Raw structure decoded from a connection `.jsonc` file.
 struct ConnectionConfig: Codable {
-    var endpoint: String?
-    var token: String?
+    var baseUrl: String?
+    var apiKey: String?
     var model: String
-    var maxTokens: Int?
-
-    // Common optional parameters
-    var temperature: Double?
-    var topP: Double?
-
-    // OpenAI-specific
-    var reasoningEffort: String?
-    var frequencyPenalty: Double?
-    var presencePenalty: Double?
-    var maxCompletionTokens: Int?
-    var seed: Int?
-
-    // Anthropic-specific
-    var topK: Int?
-    var stopSequences: [String]?
-    var thinkingEnabled: Bool?
-    var thinkingBudget: Int?
-
-    /// Arbitrary vendor-specific parameters injected into the request JSON (OpenAI-compatible only).
-    /// Raw JSON string, e.g. `{"thinking":{"type":"disabled"}}`.
-    var vendorParameters: String?
-
-    /// Meta flag indicating whether the model supports image input. Optional,
-    /// defaults to false (nil) when absent from the TOML file.
     var imageInput: Bool?
-
-    enum CodingKeys: String, CodingKey {
-        case endpoint
-        case token
-        case model
-        case maxTokens = "max_tokens"
-        case temperature
-        case topP = "top_p"
-        case reasoningEffort = "reasoning_effort"
-        case frequencyPenalty = "frequency_penalty"
-        case presencePenalty = "presence_penalty"
-        case maxCompletionTokens = "max_completion_tokens"
-        case seed
-        case topK = "top_k"
-        case stopSequences = "stop_sequences"
-        case thinkingEnabled = "thinking_enabled"
-        case thinkingBudget = "thinking_budget"
-        case vendorParameters = "vendor_parameters"
-        case imageInput = "image_input"
-    }
+    var requestParameters: [String: LLMJSONValue]?
 }
