@@ -135,6 +135,7 @@ actor MCPManager {
     ///   config changed during the idle timeout period, the server is simply
     ///   shut down until the next request.
     func reload(_ servers: [MCPServer]) async {
+        debugLog("MCP", "reload — \(servers.count) server(s) configured")
         let newByName = Dictionary(servers.map { ($0.name, $0) }, uniquingKeysWith: { _, b in b })
         let newNames = Set(newByName.keys)
         knownServers = newByName
@@ -228,6 +229,7 @@ actor MCPManager {
         guard elapsed >= idleTimeout else { return }
         // Only auto-shut-down on-demand servers.
         if let server = knownServers[name], server.runPolicy == .onDemand {
+            debugLog("MCP", "idle timeout — shutting down on-demand server \"\(name)\" after \(Int(elapsed))s of inactivity")
             await disconnect(name: name)
             lastActivity.removeValue(forKey: name)
             idleTasks.removeValue(forKey: name)
@@ -241,6 +243,7 @@ actor MCPManager {
     func connect(_ server: MCPServer) async {
         // Don't retry if already connected with the same config.
         if let existing = connections[server.name], existing.server == server { return }
+        debugLog("MCP", "connect — server=\"\(server.name)\", transport=\(server.transport)")
 
         do {
             let transport: any Transport
@@ -266,6 +269,7 @@ actor MCPManager {
                 proc.standardError = Pipe()
                 try proc.run()
                 process = proc
+                debugLog("MCP", "stdio server \"\(server.name)\" started — pid=\(proc.processIdentifier), command=\(command) args=\(server.args ?? [])")
                 // StdioTransport reads from `output` (server stdout) and writes to
                 // `input` (server stdin). We pass the pipe file handles' descriptors.
                 let inputFD = try fileDescriptor(for: stdout.fileHandleForReading)
@@ -311,8 +315,10 @@ actor MCPManager {
             }
             connections[server.name] = Connection(server: server, client: client, process: process)
             unavailable.remove(server.name)
+            debugLog("MCP", "connected — server=\"\(server.name)\"")
         } catch {
             unavailable.insert(server.name)
+            debugLog("MCP", "connect failed — server=\"\(server.name)\": \(error.localizedDescription)")
             reportError("MCP server \"\(server.name)\" failed to connect: \(error.localizedDescription)")
         }
     }
@@ -325,6 +331,7 @@ actor MCPManager {
         idleTasks.removeValue(forKey: name)?.cancel()
         lastActivity.removeValue(forKey: name)
         guard let conn = connections.removeValue(forKey: name) else { return }
+        debugLog("MCP", "disconnect — server=\"\(name)\"")
         await conn.client.disconnect()
         if let process = conn.process {
             process.terminate()
@@ -332,6 +339,7 @@ actor MCPManager {
             // leave a zombie. `waitUntilExit` blocks the actor briefly, but
             // termination is infrequent and the delay is typically <100ms.
             process.waitUntilExit()
+            debugLog("MCP", "stdio server \"\(name)\" terminated — pid=\(process.processIdentifier), exitStatus=\(process.terminationStatus), reason=\(process.terminationReason.rawValue)")
         }
         unavailable.remove(name)
     }
@@ -343,6 +351,7 @@ actor MCPManager {
         idleTasks.removeAll()
         lastActivity.removeAll()
         let names = Array(connections.keys)
+        debugLog("MCP", "disconnectAll — \(names.count) server(s)")
         for name in names {
             await disconnect(name: name)
         }
@@ -380,6 +389,7 @@ actor MCPManager {
             return tools
         } catch {
             unavailable.insert(server)
+            debugLog("MCP", "listTools failed — server=\"\(server)\" now unavailable: \(error.localizedDescription)")
             throw MCPManagerError.toolListFailed(server, error.localizedDescription)
         }
     }
@@ -391,6 +401,7 @@ actor MCPManager {
     /// notifications can be routed to that chat's live `tool`-role message
     /// directly. Non-text content is summarized.
     func callTool(server: String, name: String, arguments: String, callID: String, chatFilename: String) async -> ToolResult {
+        debugLog("MCP", "callTool — server=\"\(server)\", tool=\"\(name)\", callID=\(callID), chat=\(chatFilename)")
         // Start on-demand servers lazily before calling tools.
         if let known = knownServers[server], known.runPolicy == .onDemand {
             await ensureConnected(server)
@@ -452,9 +463,11 @@ actor MCPManager {
             }.joined(separator: "\n")
             return ToolResult(callID: callID, content: text, isError: isError ?? false)
         } catch is CancellationError {
+            debugLog("MCP", "callTool cancelled — server=\"\(server)\", tool=\"\(name)\", callID=\(callID)")
             return ToolResult(callID: callID, content: "Tool call was cancelled.", isError: true)
         } catch {
             unavailable.insert(server)
+            debugLog("MCP", "callTool failed — server=\"\(server)\" now unavailable, tool=\"\(name)\", callID=\(callID): \(error.localizedDescription)")
             return ToolResult(callID: callID, content: "Tool call failed: \(error.localizedDescription)", isError: true)
         }
     }

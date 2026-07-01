@@ -123,12 +123,29 @@ final class ChatService: @unchecked Sendable {
         tools: [ToolDefinition]? = nil,
         onChunk: @escaping @Sendable (StreamChunk) async -> Void
     ) async throws -> StreamResult {
-        switch connection.provider {
-        case .openai:
-            return try await streamOpenAI(connection: connection, messages: messages, chatFilename: chatFilename, tools: tools, onChunk: onChunk)
-        case .anthropic:
-            return try await streamAnthropic(connection: connection, messages: messages, chatFilename: chatFilename, tools: tools, onChunk: onChunk)
+        let toolCount = tools?.count ?? 0
+        debugLog("LLM", "request start — provider=\(connection.provider.rawValue), model=\(connection.model), messages=\(messages.count), tools=\(toolCount), chat=\(chatFilename)")
+        let started = Date()
+        let result: StreamResult
+        do {
+            switch connection.provider {
+            case .openai:
+                result = try await streamOpenAI(connection: connection, messages: messages, chatFilename: chatFilename, tools: tools, onChunk: onChunk)
+            case .anthropic:
+                result = try await streamAnthropic(connection: connection, messages: messages, chatFilename: chatFilename, tools: tools, onChunk: onChunk)
+            }
+        } catch is CancellationError {
+            let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
+            debugLog("LLM", "request cancelled — elapsed=\(elapsed)s, chat=\(chatFilename)")
+            throw CancellationError()
+        } catch {
+            let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
+            debugLog("LLM", "request failed — \(error.localizedDescription), elapsed=\(elapsed)s, chat=\(chatFilename)")
+            throw error
         }
+        let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
+        debugLog("LLM", "request finish — finishReason=\(result.finishReason ?? "nil"), contentSize=\(result.content.count), toolCalls=\(result.toolCalls.count), elapsed=\(elapsed)s, chat=\(chatFilename)")
+        return result
     }
 
     /// Fetches the list of available model IDs from an OpenAI-compatible

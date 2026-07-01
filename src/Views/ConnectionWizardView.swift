@@ -199,7 +199,8 @@ struct ConnectionWizardView: View {
             navigationBar
                 .padding(12)
         }
-        .onChange(of: step) { _, newStep in
+        .onChange(of: step) { (_: Step, newStep: Step) in
+            debugLog("Wizard", "Connection wizard step → \(newStep.title)")
             switch newStep {
             case .credentials:
                 if providerPreset.showsEndpoint {

@@ -250,6 +250,15 @@ private struct DebugTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             PrefRow(
+                title: "App Debug",
+                description: "Write timestamped debug logs to stdout for app startup, config loading, FSEvents, wizards, LLM requests, streaming, MCP servers, and tool calls. View the output in Console.app or by launching the app from a terminal."
+            ) {
+                Toggle("", isOn: store.bindingAppDebugEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+
+            PrefRow(
                 title: "Chat Renderer Debug",
                 description: "Show an on-screen debug overlay in the chat renderer with timestamps for message loads, edits, deletions, and streaming events."
             ) {

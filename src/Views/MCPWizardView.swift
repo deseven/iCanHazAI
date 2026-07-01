@@ -123,7 +123,8 @@ struct MCPWizardView: View {
             navigationBar
                 .padding(12)
         }
-        .onChange(of: step) { _, newStep in
+        .onChange(of: step) { (_: Step, newStep: Step) in
+            debugLog("Wizard", "MCP wizard step → \(newStep.title)")
             switch newStep {
             case .parameters:
                 focusedField = transport == .stdio ? .command : .endpoint

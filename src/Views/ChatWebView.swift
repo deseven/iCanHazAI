@@ -87,7 +87,8 @@ struct ChatWebView: View {
             .onDisappear {
                 model.unbind()
             }
-            .onChange(of: store.selectedChatID) { _, _ in
+            .onChange(of: store.selectedChatID) { _, newID in
+                debugLog("Chat", "selection changed → \(newID ?? "nil")")
                 model.pushSnapshot()
             }
             .onChange(of: store.isStreaming) { _, _ in
@@ -255,6 +256,7 @@ final class ChatWebViewModel: ObservableObject {
     /// Mermaid/KaTeX preferences change so the renderer loads (or skips) the
     /// corresponding bundles.
     func reload(mermaid: Bool, katex: Bool, debug: Bool, expandThinking: Bool, expandToolUse: Bool) {
+        debugLog("Renderer", "reload — mermaid=\(mermaid), katex=\(katex), debug=\(debug), expandThinking=\(expandThinking), expandToolUse=\(expandToolUse)")
         mermaidEnabled = mermaid
         katexEnabled = katex
         debugEnabled = debug

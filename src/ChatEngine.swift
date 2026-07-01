@@ -84,6 +84,21 @@ actor ChatEngine {
     private let env = EnvironmentManager.shared
     private var watcher: EnvironmentWatcher?
 
+    // MARK: - Self-write suppression & reconcile debouncing
+
+    /// Wall-clock time until which FSEvents-triggered chat reconciles are
+    /// suppressed. Set whenever the engine writes a chat file itself, so the
+    /// resulting FSEvents (which the watcher can't attribute to us) don't
+    /// trigger a redundant full reload of all chats. External edits (e.g. via
+    /// a CLI or another editor) that happen outside this window still reload.
+    private var selfWriteSuppressionUntil: Date = .distantPast
+    /// How long after one of our own saves we ignore chat FSEvents. Covers the
+    /// atomic-write burst (temp file + rename) and the watcher's 0.5s latency.
+    private let selfWriteSuppressionInterval: TimeInterval = 1.0
+    /// Pending debounced reconcile task. A burst of chat FSEvents collapses
+    /// into a single `reconcileChatsFromDisk()` once the burst settles.
+    private var pendingReconcileTask: Task<Void, Never>?
+
     // MARK: - Event bus
 
     private var continuations: [UUID: AsyncStream<EngineEvent>.Continuation] = [:]
@@ -97,6 +112,7 @@ actor ChatEngine {
     func start() {
         guard !didStart else { return }
         didStart = true
+        debugLog("Engine", "start — ensuring directories and wiring MCP handlers")
         env.ensureDirectories()
         // Wire MCPManager errors into the engine's error event bus so the UI
         // can surface connection failures without crashing the stream.
@@ -113,6 +129,7 @@ actor ChatEngine {
         } }
         reloadAll(shouldEmit: false)
         startWatching()
+        debugLog("Engine", "start complete — \(records.count) chats, \(connections.count) connections, \(mcps.count) MCP servers, \(roles.count) roles")
         emit(.chatsChanged(records))
         emit(.rolesChanged(roles))
         emit(.connectionsChanged(connections))
@@ -198,14 +215,25 @@ actor ChatEngine {
     private func handleEnvironmentChange(_ area: EnvironmentWatcher.Area) {
         switch area {
         case .chats:
-            reconcileChatsFromDisk()
+            // Suppress reloads we caused ourselves (the engine marks a
+            // self-write window around every `env.saveChat`). External edits
+            // outside the window still reconcile. Debounce the remainder so a
+            // burst of events collapses into one disk reload.
+            if Date() < selfWriteSuppressionUntil {
+                return
+            }
+            debugLog("FSEvents", "change detected in area: \(area.rawValue)")
+            scheduleReconcile()
         case .roles:
+            debugLog("FSEvents", "change detected in area: \(area.rawValue)")
             roles = env.loadAllRoles()
             emit(.rolesChanged(roles))
         case .connections:
+            debugLog("FSEvents", "change detected in area: \(area.rawValue)")
             connections = env.loadConnections()
             emit(.connectionsChanged(connections))
         case .mcps:
+            debugLog("FSEvents", "change detected in area: \(area.rawValue)")
             reloadMCPs()
         }
         // Validate config references after any environment change so that
@@ -214,11 +242,25 @@ actor ChatEngine {
         Task { await ConfigManager.shared.validateReferences() }
     }
 
+    /// Debounces `reconcileChatsFromDisk()`: a burst of chat FSEvents within
+    /// the settle interval collapses into a single reload. The first call
+    /// schedules a task; subsequent calls just reset the timer by cancelling
+    /// and rescheduling.
+    private func scheduleReconcile() {
+        pendingReconcileTask?.cancel()
+        pendingReconcileTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000) // 0.3s settle
+            guard !Task.isCancelled else { return }
+            await self?.reconcileChatsFromDisk()
+        }
+    }
+
     /// Reloads MCP servers from disk, reconciles the runtime connections in
     /// `MCPManager`, and emits the updated set. Called on launch and whenever
     /// the `mcp/` directory changes via FSEvents.
     private func reloadMCPs() {
         mcps = env.loadMCPs()
+        debugLog("MCP", "reloaded \(mcps.count) server config(s) from disk")
         let snapshot = mcps
         Task { await MCPManager.shared.reload(snapshot) }
         emit(.mcpsChanged(mcps))
@@ -281,6 +323,7 @@ actor ChatEngine {
     /// picked up. This is the fix for the "responses get cut" bug.
     private func reconcileChatsFromDisk() {
         let loaded = env.loadChats()
+        debugLog("FSEvents", "reconciling chats from disk — \(loaded.count) chat(s) found")
         let loadedMap = Dictionary(uniqueKeysWithValues: loaded.map { ($0.filename, $0.chat) })
         let loadedIDs = Set(loadedMap.keys)
 
@@ -343,6 +386,7 @@ actor ChatEngine {
             chat.mcps = allMcpNames
         }
         env.saveChat(chat, filename: filename)
+        markSelfWrite()
         let record = ChatRecord(filename: filename, chat: chat)
         records.insert(record, at: 0)
         emit(.chatsChanged(records))
@@ -401,12 +445,20 @@ actor ChatEngine {
     }
 
     /// Persists a chat to disk and updates the in-memory record (without
-    /// clobbering streaming/unread flags).
+    /// clobbering streaming/unread flags). Marks a self-write suppression
+    /// window so the resulting FSEvents don't trigger a redundant reload.
     private func saveChat(_ chat: Chat, filename: String) {
         env.saveChat(chat, filename: filename)
+        markSelfWrite()
         if let idx = records.firstIndex(where: { $0.filename == filename }) {
             records[idx].chat = chat
         }
+    }
+
+    /// Marks that we just wrote a chat file ourselves, so the next burst of
+    /// FSEvents (which we caused) is ignored by `handleEnvironmentChange`.
+    private func markSelfWrite() {
+        selfWriteSuppressionUntil = Date().addingTimeInterval(selfWriteSuppressionInterval)
     }
 
     // MARK: - Sending messages
@@ -419,6 +471,7 @@ actor ChatEngine {
     /// actually sends the message. If the user cancels, nothing is written.
     @discardableResult
     func sendMessage(filename: String, text: String, pendingImages: [PendingImageAttachment] = []) async -> Bool {
+        debugLog("Chat", "sendMessage — chat=\(filename), text length=\(text.count), images=\(pendingImages.count)")
         guard let record = records.first(where: { $0.filename == filename }) else { return false }
         guard let connectionID = record.chat.connection,
               !connectionID.isEmpty,
@@ -522,6 +575,7 @@ actor ChatEngine {
     /// again. Repeats until the model responds with no tool calls or the
     /// max-iteration guard is hit.
     private func runToolLoop(for filename: String, connection: Connection, messages: [ChatMessage]) {
+        debugLog("Stream", "start — chat=\(filename), connection=\(connection.id)")
         if let idx = records.firstIndex(where: { $0.filename == filename }) {
             records[idx].isStreaming = true
             records[idx].lastError = nil
@@ -677,10 +731,15 @@ actor ChatEngine {
         case .allow:
             // Resolve the server + tool name from the namespaced call name.
             guard let parsed = ToolDefinition.parse(call.name) else {
+                debugLog("Tool", "could not parse tool name \"\(call.name)\" — chat=\(filename)")
                 return ToolResult(callID: call.id, content: "Could not parse tool name \"\(call.name)\".", isError: true)
             }
-            return await MCPManager.shared.callTool(server: parsed.server, name: parsed.tool, arguments: call.arguments, callID: call.id, chatFilename: filename)
+            debugLog("Tool", "executing \(parsed.server)/\(parsed.tool) — callID=\(call.id), chat=\(filename)")
+            let result = await MCPManager.shared.callTool(server: parsed.server, name: parsed.tool, arguments: call.arguments, callID: call.id, chatFilename: filename)
+            debugLog("Tool", "result \(parsed.server)/\(parsed.tool) — isError=\(result.isError), contentSize=\(result.content.count), chat=\(filename)")
+            return result
         case .deny(let reason):
+            debugLog("Tool", "denied callID=\(call.id) — \(reason), chat=\(filename)")
             return ToolResult(callID: call.id, content: "User denied the tool call: \(reason)", isError: true)
         }
     }
@@ -714,6 +773,7 @@ actor ChatEngine {
         }
         records[idx].chat = chat
         env.saveChat(chat, filename: filename)
+        markSelfWrite()
         scheduleCoalescedEmit()
     }
 
@@ -738,6 +798,7 @@ actor ChatEngine {
             chat.messages[tIdx].toolResults = results
             records[idx].chat = chat
             env.saveChat(chat, filename: chatFilename)
+            markSelfWrite()
             scheduleCoalescedEmit()
             return
         }
@@ -749,6 +810,7 @@ actor ChatEngine {
         chat.messages.append(ChatMessage(role: .tool, content: placeholder.content, toolResults: [placeholder]))
         records[idx].chat = chat
         env.saveChat(chat, filename: chatFilename)
+        markSelfWrite()
         scheduleCoalescedEmit()
     }
 
@@ -764,6 +826,7 @@ actor ChatEngine {
         chat.messages.append(ChatMessage(role: .assistant, content: "", connectionName: connection.displayName))
         records[idx].chat = chat
         env.saveChat(chat, filename: filename)
+        markSelfWrite()
         flushCoalescedEmit()
         emit(.chatsChanged(records))
     }
@@ -802,6 +865,7 @@ actor ChatEngine {
     /// Marks a stream as finished for the given chat, persisting the final
     /// state and clearing bookkeeping.
     private func finishStream(filename: String) {
+        debugLog("Stream", "end — chat=\(filename)")
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else {
             streamTasks[filename] = nil
             return
@@ -809,6 +873,7 @@ actor ChatEngine {
         // Persist the final accumulated state to disk.
         let finalChat = records[idx].chat
         env.saveChat(finalChat, filename: filename)
+        markSelfWrite()
         records[idx].isStreaming = false
         streamTasks[filename] = nil
         // Flag as unread so the user is notified of new activity — but only if
@@ -836,12 +901,14 @@ actor ChatEngine {
         records[idx].chat = chat
         records[idx].lastError = text
         env.saveChat(chat, filename: filename)
+        markSelfWrite()
     }
 
     /// Cancels the in-flight stream for the given chat. Flips the streaming
     /// flag immediately so the UI reflects the stop right away; the stream
     /// task finalizes the message content asynchronously via `finishStream`.
     func stopStreaming(filename: String) {
+        debugLog("Stream", "stop requested — chat=\(filename)")
         streamTasks[filename]?.cancel()
         if let idx = records.firstIndex(where: { $0.filename == filename }) {
             records[idx].isStreaming = false
@@ -923,6 +990,7 @@ actor ChatEngine {
         records[idx].chat.title = name
         if !records[idx].isStreaming {
             env.saveChat(records[idx].chat, filename: filename)
+            markSelfWrite()
             emit(.chatsChanged(records))
         }
     }

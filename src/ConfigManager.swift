@@ -76,10 +76,13 @@ struct ChatFeaturesConfig: Codable, Equatable {
 
 /// `[debug]` group — debug-related toggles.
 struct DebugConfig: Codable, Equatable {
+    /// Whether the app-level debug logging (`debugLog`) is enabled.
+    var appDebugEnabled: Bool = false
     /// Whether the chat renderer debug overlay is enabled.
     var chatRendererDebugEnabled: Bool = false
 
     enum CodingKeys: String, CodingKey {
+        case appDebugEnabled = "app_debug_enabled"
         case chatRendererDebugEnabled = "chat_renderer_debug_enabled"
     }
 }
@@ -136,17 +139,26 @@ actor ConfigManager {
     /// Loads the config from disk. If the file doesn't exist yet, starts with defaults.
     /// After loading, validates that referenced connections and roles still exist;
     /// clears any that don't and writes the cleaned config back.
+    ///
+    /// Idempotent: subsequent calls after the first successful load are no-ops.
+    /// This prevents duplicate "loading from …" log lines when multiple startup
+    /// paths (window restore, preferences sync) both invoke `load()`.
     func load() {
+        guard !didLoad else { return }
+        debugLog("Config", "loading from \(fileURL.path)")
         let fm = FileManager.default
         guard fm.fileExists(atPath: fileURL.path),
               let data = try? Data(contentsOf: fileURL) else {
+            debugLog("Config", "no config file found — using defaults")
             config = AppConfig()
             didLoad = true
             return
         }
         do {
             config = try TOMLDecoder().decode(AppConfig.self, from: data)
+            debugLog("Config", "loaded successfully (app_debug=\(config.debug.appDebugEnabled), chat_renderer_debug=\(config.debug.chatRendererDebugEnabled))")
         } catch {
+            debugLog("Config", "failed to decode config: \(error.localizedDescription) — using defaults")
             config = AppConfig()
             didLoad = true
             return
@@ -262,6 +274,10 @@ actor ConfigManager {
         config.chatBehaviour.expandToolUse
     }
 
+    func getAppDebugEnabled() -> Bool {
+        config.debug.appDebugEnabled
+    }
+
     func getChatRendererDebugEnabled() -> Bool {
         config.debug.chatRendererDebugEnabled
     }
@@ -306,6 +322,11 @@ actor ConfigManager {
 
     func setExpandToolUse(_ enabled: Bool) {
         config.chatBehaviour.expandToolUse = enabled
+        persist()
+    }
+
+    func setAppDebugEnabled(_ enabled: Bool) {
+        config.debug.appDebugEnabled = enabled
         persist()
     }
 

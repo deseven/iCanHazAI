@@ -54,6 +54,7 @@ final class AppViewModel: ObservableObject {
     @Published var preferencesUtilityConnection: String? = nil
     @Published var preferencesMermaidEnabled: Bool = false
     @Published var preferencesKatexEnabled: Bool = false
+    @Published var preferencesAppDebugEnabled: Bool = false
     @Published var preferencesChatRendererDebugEnabled: Bool = false
     @Published var preferencesExpandThinking: Bool = false
     @Published var preferencesExpandToolUse: Bool = false
@@ -115,6 +116,7 @@ final class AppViewModel: ObservableObject {
             let rs = await config.getChatInfoSidebarVisible()
             let me = await config.getMermaidEnabled()
             let ke = await config.getKatexEnabled()
+            let ad = await config.getAppDebugEnabled()
             let cd = await config.getChatRendererDebugEnabled()
             let et = await config.getExpandThinking()
             let eu = await config.getExpandToolUse()
@@ -123,9 +125,13 @@ final class AppViewModel: ObservableObject {
             preferencesUtilityConnection = uc
             preferencesMermaidEnabled = me
             preferencesKatexEnabled = ke
+            preferencesAppDebugEnabled = ad
             preferencesChatRendererDebugEnabled = cd
             preferencesExpandThinking = et
             preferencesExpandToolUse = eu
+            // Sync the app debug flag into the logger so debugLog() calls
+            // take effect immediately after preferences are loaded.
+            DebugLogger.setEnabled(ad)
             if let ls { chatListSidebarVisible = ls }
             if let rs { chatInfoSidebarVisible = rs }
         }
@@ -194,6 +200,17 @@ final class AppViewModel: ObservableObject {
             set: { newValue in
                 self.preferencesKatexEnabled = newValue
                 Task { await self.config.setKatexEnabled(newValue) }
+            }
+        )
+    }
+
+    var bindingAppDebugEnabled: Binding<Bool> {
+        Binding(
+            get: { self.preferencesAppDebugEnabled },
+            set: { newValue in
+                self.preferencesAppDebugEnabled = newValue
+                DebugLogger.setEnabled(newValue)
+                Task { await self.config.setAppDebugEnabled(newValue) }
             }
         )
     }

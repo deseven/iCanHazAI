@@ -9,12 +9,14 @@ import AppKit
 /// force-quitting the app would orphan spawned MCP server processes.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
+        debugLog("App", "applicationWillFinishLaunching — starting engine")
         // Start the UI-free engine at launch so it outlives any window and
         // can later be driven by a CLI.
         Task { await ChatEngine.shared.start() }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        debugLog("App", "applicationWillTerminate — disconnecting MCP servers")
         // Disconnect all MCP servers (terminates stdio subprocesses) so we
         // don't leave orphaned processes behind on quit.
         Task { await MCPManager.shared.disconnectAll() }
