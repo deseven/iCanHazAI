@@ -141,9 +141,15 @@ actor ChatEngine {
     /// Whether `start()` has already run. Idempotency guard.
     private var didStart = false
 
-    func start() {
+    func start() async {
         guard !didStart else { return }
         didStart = true
+        // Consume the synchronously-bootstrapped config before anything else
+        // runs. This guarantees `didLoad` is true (and the in-memory config
+        // reflects disk) before the FSEvents watcher is started, so no
+        // event-driven `validateReferences()` can race ahead of the initial
+        // load and persist a wiped/empty config.
+        await ConfigManager.shared.load()
         debugLog("Engine", "start — ensuring directories and wiring MCP handlers")
         env.ensureDirectories()
         // Wire the ConfigManager self-write hook so our own config.toml writes

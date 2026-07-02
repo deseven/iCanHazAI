@@ -113,6 +113,16 @@ struct WindowConfig: Codable, Equatable {
 /// Every modification triggers an immediate TOML write so the file is always in a
 /// correct state. Validation of connection/role references happens on load and
 /// can be re-triggered by callers (e.g. after FSEvents).
+///
+/// Startup ordering: [`bootstrapSynchronously()`](src/ConfigManager.swift) must be
+/// called once at the very beginning of `applicationWillFinishLaunching`, before
+/// any `Task` is spawned. It reads and decodes `config.toml` on the calling
+/// thread and applies the debug-logging flag immediately, so that:
+///  - early `debugLog` calls are captured, and
+///  - the actor's [`load()`](src/ConfigManager.swift) consumes the already-decoded
+///    config without re-reading the file, eliminating the launch-time race where
+///    a mid-write read produced an empty config that was later persisted as
+///    defaults (wiping user configuration).
 actor ConfigManager {
 
     static let shared = ConfigManager()
@@ -140,6 +150,54 @@ actor ConfigManager {
         fileURL = home.appendingPathComponent("iCanHazAI").appendingPathComponent("config.toml")
     }
 
+    // MARK: - Synchronous bootstrap
+
+    /// Lock-protected holder for the config decoded during the synchronous
+    /// bootstrap. The actor's `load()` consumes it without re-reading the file.
+    private final class BootstrapBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _config: AppConfig?
+        func get() -> AppConfig? { lock.lock(); defer { lock.unlock() }; return _config }
+        func set(_ value: AppConfig) { lock.lock(); defer { lock.unlock() }; _config = value }
+    }
+    private static let bootstrapBox = BootstrapBox()
+
+    /// The config file URL, computed without touching actor isolation so the
+    /// synchronous bootstrap can resolve it on the calling thread.
+    private static var bootstrapFileURL: URL {
+        let home = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        return home.appendingPathComponent("iCanHazAI").appendingPathComponent("config.toml")
+    }
+
+    /// Reads and decodes `config.toml` synchronously on the calling thread and
+    /// applies the debug-logging flag immediately. Must be called exactly once,
+    /// at the very start of `applicationWillFinishLaunching`, **before** any
+    /// `Task` is spawned or any other component touches `ConfigManager`.
+    ///
+    /// This guarantees that:
+    ///  - `DebugLogger.enabled` reflects the user's preference from the first
+    ///    log line onward, and
+    ///  - the actor's `load()` can consume the already-decoded config without
+    ///    re-reading the file, so no launch-time FSEvent/atomic-write race can
+    ///    produce an empty config that would later be persisted as defaults.
+    ///
+    /// If the file is missing or undecodable, defaults are used (and stashed),
+    /// which is the correct behavior for a first launch or a genuinely corrupt
+    /// file — but the stash is never persisted by this call.
+    nonisolated static func bootstrapSynchronously() {
+        let url = bootstrapFileURL
+        var decoded = AppConfig()
+        if let data = try? Data(contentsOf: url) {
+            if let parsed = try? TOMLDecoder().decode(AppConfig.self, from: data) {
+                decoded = parsed
+            }
+        }
+        // Apply the debug-logging flag immediately so every subsequent
+        // debugLog call (including those inside the actor's load()) is captured.
+        DebugLogger.setEnabled(decoded.debug.appDebugEnabled)
+        bootstrapBox.set(decoded)
+    }
+
     /// Registers the self-write hook used to suppress FSEvents for our own
     /// writes to `config.toml`. Called once by `ChatEngine` at startup.
     func setWillWriteConfigHook(_ hook: @escaping @Sendable () -> Void) {
@@ -148,15 +206,30 @@ actor ConfigManager {
 
     // MARK: - Load / Save
 
-    /// Loads the config from disk. If the file doesn't exist yet, starts with defaults.
-    /// After loading, validates that referenced connections and roles still exist;
-    /// clears any that don't and writes the cleaned config back.
+    /// Loads the config. If [`bootstrapSynchronously()`](src/ConfigManager.swift)
+    /// has already run (the normal launch path), the config it decoded on the
+    /// calling thread is consumed directly — the file is **not** re-read, which
+    /// eliminates the launch-time race where a mid-atomic-write read produced
+    /// an empty config that was later persisted as defaults.
+    ///
+    /// If no bootstrap stash is present (e.g. a CLI entry point that didn't call
+    /// the bootstrap), this falls back to reading the file directly.
+    ///
+    /// After loading, validates that referenced connections and roles still
+    /// exist; clears any that don't and writes the cleaned config back.
     ///
     /// Idempotent: subsequent calls after the first successful load are no-ops.
     /// This prevents duplicate "loading from …" log lines when multiple startup
     /// paths (window restore, preferences sync) both invoke `load()`.
     func load() {
         guard !didLoad else { return }
+        if let stashed = ConfigManager.bootstrapBox.get() {
+            debugLog("Config", "consuming synchronously-bootstrapped config (app_debug=\(stashed.debug.appDebugEnabled), chat_renderer_debug=\(stashed.debug.chatRendererDebugEnabled))")
+            config = stashed
+            didLoad = true
+            validateAndSave()
+            return
+        }
         debugLog("Config", "loading from \(fileURL.path)")
         debugLog("FileRead", "reading config.toml")
         let fm = FileManager.default

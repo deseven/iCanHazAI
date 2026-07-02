@@ -9,6 +9,13 @@ import AppKit
 /// force-quitting the app would orphan spawned MCP server processes.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // Load and decode config.toml synchronously, on this thread, BEFORE
+        // any Task is spawned. This applies the debug-logging flag from the
+        // very first log line and stashes the decoded config so the actor's
+        // load() consumes it without re-reading the file — eliminating the
+        // launch-time race where a mid-atomic-write read produced an empty
+        // config that was later persisted as defaults (wiping user config).
+        ConfigManager.bootstrapSynchronously()
         debugLog("App", "applicationWillFinishLaunching — starting engine")
         // Start the UI-free engine at launch so it outlives any window and
         // can later be driven by a CLI.
