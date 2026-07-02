@@ -29,6 +29,7 @@ mode="dev"
 case "${1:-}" in
     dev-release) mode="dev-release" ;;
     release)     mode="release" ;;
+    clean)       mode="clean" ;;
     *)           mode="dev" ;;
 esac
 
@@ -305,8 +306,13 @@ esac
 do_init_log
 do_clean_dist
 
+if [ "$mode" = "clean" ]; then
+    swift package clean
+    echo -e "  ${greenColor}${bold}Clean complete.${noColor}"
+    exit 0
+fi
+
 run_step "Resolving dependencies..."            "failed to resolve dependencies"           do_resolve_deps
-run_step "Cleaning build artifacts..."           "failed to clean build artifacts"          do_clean_build
 run_step "Building chat renderer (web)..."       "failed to build chat renderer"            do_build_web
 run_step "Compiling Swift sources (arm64)..."    "failed to compile $shortName for arm64"   do_compile_arm64
 
