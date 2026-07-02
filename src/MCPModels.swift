@@ -129,7 +129,7 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
 /// A tool exposed by an MCP server, in a provider-agnostic shape ready to be
 /// mapped onto OpenAI/Anthropic tool definitions by `ChatService`.
 ///
-/// The `namespacedName` (`mcp__{server}__{tool}`) is what the model sees and
+/// The `namespacedName` (`{server}_{tool}`) is what the model sees and
 /// calls back; it guarantees uniqueness across servers. `ToolDefinition.parse`
 /// recovers the server + tool name from a call.
 struct ToolDefinition: Sendable, Equatable {
@@ -139,18 +139,16 @@ struct ToolDefinition: Sendable, Equatable {
     /// Raw JSON string of the tool's input schema (a JSON Schema object).
     let inputSchema: String
 
-    /// The namespaced name sent to the model: `mcp__{server}__{tool}`.
-    var namespacedName: String { "mcp__\(serverName)__\(name)" }
+    /// The namespaced name sent to the model: `{server}_{tool}`.
+    var namespacedName: String { "\(serverName)_\(name)" }
 
     /// Parses a namespaced tool name back into (server, tool).
-    /// Returns nil if the name doesn't follow the `mcp__{server}__{tool}` format.
+    /// Returns nil if the name doesn't follow the `{server}_{tool}` format.
     static func parse(_ namespacedName: String) -> (server: String, tool: String)? {
-        guard namespacedName.hasPrefix("mcp__") else { return nil }
-        let rest = String(namespacedName.dropFirst("mcp__".count))
-        // Split on the first "__" to separate server from tool name.
-        guard let range = rest.range(of: "__") else { return nil }
-        let server = String(rest[rest.startIndex..<range.lowerBound])
-        let tool = String(rest[range.upperBound...])
+        // Split on the first "_" to separate server from tool name.
+        guard let range = namespacedName.range(of: "_") else { return nil }
+        let server = String(namespacedName[namespacedName.startIndex..<range.lowerBound])
+        let tool = String(namespacedName[range.upperBound...])
         guard !server.isEmpty, !tool.isEmpty else { return nil }
         return (server, tool)
     }

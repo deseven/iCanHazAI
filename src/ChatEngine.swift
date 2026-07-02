@@ -55,6 +55,19 @@ actor ChatEngine {
     private(set) var connections: [Connection] = []
     /// Configured MCP servers. Loaded from disk and kept in sync via FSEvents.
     private(set) var mcps: [MCPServer] = []
+    /// Live MCP configuration status, mirrored from `MCPManager`'s status
+    /// sink. Drives the configuration overlay. The UI layer adds the display
+    /// delay; the engine only carries the logical state.
+    private(set) var mcpConfiguration: MCPConfigurationState = .empty
+    /// Guards against concurrent MCP configuration passes (e.g. a launch
+    /// configure racing with an FSEvent-driven reconfigure).
+    private var isConfiguringMCPs = false
+    /// A single-flight queue of pending server reconfigures, keyed by server
+    /// name. Coalesces a burst of FSEvents for the same server into one
+    /// reconfigure. Cleared once the reconfigure completes.
+    private var pendingReconfigures: [String: Task<Void, Never>] = [:]
+    /// Guards `pendingReconfigures` re-entrancy.
+    private var didInitialConfigure = false
 
     /// The filename of the chat the user is currently viewing. Used to suppress
     /// the unread marker when a stream finishes for the chat that's already on
@@ -156,6 +169,13 @@ actor ChatEngine {
         Task { await MCPManager.shared.setProgressHandler { [weak self] chatFilename, callID, partial in
             Task { await self?.updateStreamingToolResult(chatFilename: chatFilename, callID: callID, partial: partial) }
         } }
+        // Wire MCPManager configuration-status updates into the engine so the
+        // UI overlay can reflect each server's connect/listTools progress. The
+        // handler hops back into the engine actor to update `mcpConfiguration`
+        // and emit the snapshot.
+        Task { await MCPManager.shared.setStatusHandler { [weak self] state in
+            Task { await self?.handleMCPConfigurationState(state) }
+        } }
         reloadAll(shouldEmit: false)
         startWatching()
         debugLog("Engine", "start complete — \(records.count) chats, \(connections.count) connections, \(mcps.count) MCP servers, \(roles.count) roles")
@@ -163,6 +183,10 @@ actor ChatEngine {
         emit(.rolesChanged(roles))
         emit(.connectionsChanged(connections))
         emit(.mcpsChanged(mcps))
+        // Kick off the initial MCP configuration pass now that configs are
+        // loaded. This connects stdio servers, queries tools, and reports
+        // status for the overlay. Skipped if no MCPs are configured.
+        configureMCPs()
     }
 
     // MARK: - Subscription
@@ -569,7 +593,10 @@ actor ChatEngine {
         }
     }
 
-    /// Handles an FSEvent for an MCP config file.
+    /// Handles an FSEvent for an MCP config file. On create/modify/rename, the
+    /// server config is (re)loaded into memory and a single-flight reconfigure
+    /// is scheduled for that server in `MCPManager`. On remove, the server is
+    /// forgotten (disconnected + caches cleared).
     private func handleMCPFileEvent(_ event: FSEvent, url: URL) {
         let name = url.deletingPathExtension().lastPathComponent
         switch event {
@@ -581,18 +608,20 @@ actor ChatEngine {
                     mcps.append(server)
                     mcps.sort { $0.name < $1.name }
                 }
+                emit(.mcpsChanged(mcps))
+                // Single-flight reconfigure: coalesce a burst of events for the
+                // same server into one reconfigure.
+                scheduleReconfigure(server)
             } else {
                 // Undecodable — treat as removal.
                 mcps.removeAll(where: { $0.name == name })
+                emit(.mcpsChanged(mcps))
+                scheduleForget(name)
             }
-            let snapshot = mcps
-            Task { await MCPManager.shared.reload(snapshot) }
-            emit(.mcpsChanged(mcps))
         case .itemRemoved:
             mcps.removeAll(where: { $0.name == name })
-            let snapshot = mcps
-            Task { await MCPManager.shared.reload(snapshot) }
             emit(.mcpsChanged(mcps))
+            scheduleForget(name)
         default:
             break
         }
@@ -618,19 +647,108 @@ actor ChatEngine {
     // MARK: - Full rescan fallback
 
     /// Full rescan of all environment state. Used as a fallback for
-    /// `mustScanSubDirs` / `rootChanged` events (dropped events).
+    /// `mustScanSubDirs` / `rootChanged` events (dropped events). Reloads
+    /// everything from disk and re-runs the MCP configuration pass since the
+    /// set of servers may have changed in ways we couldn't track per-file.
     private func fullRescan() {
         reloadAll(shouldEmit: true)
+        configureMCPs()
     }
 
-    /// Reloads MCP servers from disk, reconciles the runtime connections in
-    /// `MCPManager`, and emits the updated set. Called on launch and as part
-    /// of a full rescan.
+    // MARK: - MCP configuration flow
+
+    /// Runs a full MCP configuration pass: reloads configs from disk and drives
+    /// `MCPManager.configure`, which connects stdio servers, queries tools,
+    /// discards failures, and stops on-demand stdio servers. Reports live
+    /// status via `handleMCPConfigurationState`. Skipped (no-op) when no MCPs
+    /// are configured. Guards against concurrent passes.
+    ///
+    /// Called on launch (from `start()`) and from "File > Reload MCPs…".
+    func configureMCPs() {
+        guard !isConfiguringMCPs else {
+            debugLog("MCP", "configureMCPs — already in progress, skipping")
+            return
+        }
+        // Reload the freshest configs from disk so the pass uses current state.
+        mcps = env.loadMCPs()
+        emit(.mcpsChanged(mcps))
+        guard !mcps.isEmpty else {
+            debugLog("MCP", "configureMCPs — no MCP servers configured, skipping")
+            return
+        }
+        isConfiguringMCPs = true
+        let snapshot = mcps
+        Task { [weak self] in
+            guard let self else { return }
+            await MCPManager.shared.configure(snapshot)
+            await self.markConfigureDone()
+        }
+    }
+
+    /// Clears the in-progress guard. Called when a configure pass completes.
+    private func markConfigureDone() {
+        isConfiguringMCPs = false
+        didInitialConfigure = true
+    }
+
+    /// Schedules a single-flight reconfigure for one server. Coalesces a burst
+    /// of FSEvents for the same server into one `MCPManager.reconfigure` call.
+    func scheduleReconfigure(_ server: MCPServer) {
+        let name = server.name
+        pendingReconfigures[name]?.cancel()
+        pendingReconfigures[name] = Task { [weak self] in
+            // Small debounce so a rapid save burst collapses into one reconfigure.
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            guard let self else { return }
+            await self.performReconfigure(server)
+            await self.clearPendingReconfigure(name)
+        }
+    }
+
+    /// Performs the reconfigure for one server on the engine actor, then
+    /// hands off to `MCPManager.reconfigure`.
+    private func performReconfigure(_ server: MCPServer) async {
+        // If a full configure is in progress, defer this slightly to avoid
+        // racing the full reset.
+        if isConfiguringMCPs {
+            debugLog("MCP", "reconfigure deferred — full configure in progress, server=\"\(server.name)\"")
+            try? await Task.sleep(for: .milliseconds(300))
+            if isConfiguringMCPs {
+                debugLog("MCP", "reconfigure still deferred — re-scheduling server=\"\(server.name)\"")
+                scheduleReconfigure(server)
+                return
+            }
+        }
+        await MCPManager.shared.reconfigure(server)
+    }
+
+    /// Removes a completed reconfigure task from the pending map.
+    private func clearPendingReconfigure(_ name: String) {
+        pendingReconfigures[name] = nil
+    }
+
+    /// Schedules a single-flight forget (disconnect + cache clear) for a
+    /// removed server.
+    func scheduleForget(_ name: String) {
+        pendingReconfigures[name]?.cancel()
+        Task { await MCPManager.shared.forget(name) }
+    }
+
+    /// Receives a configuration-state snapshot from `MCPManager`'s status
+    /// sink, stores it, and emits it so the UI overlay can update. The UI
+    /// layer is responsible for any display delay.
+    private func handleMCPConfigurationState(_ state: MCPConfigurationState) {
+        mcpConfiguration = state
+        emit(.mcpConfiguration(state))
+    }
+
+    /// Reloads MCP servers from disk and emits the updated set. The runtime
+    /// configuration is performed separately by `configureMCPs()` (on launch
+    /// and "Reload MCPs…") or `scheduleReconfigure` (on per-file FSEvents).
     private func reloadMCPs() {
         mcps = env.loadMCPs()
         debugLog("MCP", "reloaded \(mcps.count) server config(s) from disk")
-        let snapshot = mcps
-        Task { await MCPManager.shared.reload(snapshot) }
         emit(.mcpsChanged(mcps))
     }
 
@@ -656,9 +774,6 @@ actor ChatEngine {
         roles = env.loadAllRoles()
         connections = env.loadConnections()
         mcps = env.loadMCPs()
-        // Reconcile MCP runtime connections with the loaded config.
-        let mcpSnapshot = mcps
-        Task { await MCPManager.shared.reload(mcpSnapshot) }
         // Drop bookkeeping for chats that no longer exist.
         let validIDs = Set(records.map { $0.id })
         streamTasks = streamTasks.filter { validIDs.contains($0.key) }
@@ -1011,52 +1126,69 @@ actor ChatEngine {
         finishStream(filename: filename)
     }
 
-    /// Gathers tool definitions from the chat's active MCP servers. Failures
-    /// of individual servers are collected and surfaced via `.error` but don't
-    /// abort the request; the model still gets the working servers' tools.
+    /// Gathers tool definitions from the chat's active MCP servers using the
+    /// cached tool lists populated during MCP configuration. Servers that
+    /// failed configuration (no cached tools) are silently excluded — they're
+    /// already known to be unhealthy, and per spec we don't block LLM
+    /// interactions because of them. On-demand stdio servers are started
+    /// (if not already running) before the request via
+    /// `ensureOnDemandRunning`.
     ///
-    /// Before listing tools, each active server is checked for readiness via
-    /// `MCPManager.isAvailable`. Servers that are not connected (e.g. failed
-    /// to start) are skipped with a clear error so the request doesn't
-    /// silently proceed with 0 tools from that server.
+    /// No per-request listTools call is made: the cache is authoritative for
+    /// the duration of a configuration pass. If a server becomes unreachable
+    /// mid-conversation, `callTool` returns a clear error in the RESULT field
+    /// and the model can retry on the next call.
     private func gatherTools(filename: String) async -> [ToolDefinition] {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return [] }
         let activeNames = records[idx].chat.mcps ?? []
         guard !activeNames.isEmpty else { return [] }
 
+        // Start selected on-demand stdio servers if they aren't already
+        // running, so the tools we advertise are actually callable.
+        await MCPManager.shared.ensureOnDemandRunning(activeNames)
+
         var defs: [ToolDefinition] = []
         var perServerCounts: [(String, Int)] = []
         for serverName in activeNames {
-            // Readiness guard: skip servers that aren't connected so we
-            // don't waste a request with 0 tools from a dead server.
-            let isReady = await MCPManager.shared.isAvailable(serverName)
-            if !isReady {
-                debugLog("MCP", "server not ready — server=\"\(serverName)\", chat=\(filename)")
-                emit(.error("MCP server \"\(serverName)\" is not connected. Tools from this server will be unavailable."))
+            // Read the cached tool list. Servers with no cache entry either
+            // failed configuration or were never configured; skip them.
+            guard let tools = await MCPManager.shared.cachedTools(for: serverName) else {
+                debugLog("MCP", "no cached tools — server=\"\(serverName)\", chat=\(filename) (skipped)")
                 perServerCounts.append((serverName, 0))
                 continue
             }
-            do {
-                let tools = try await MCPManager.shared.listTools(for: serverName)
-                perServerCounts.append((serverName, tools.count))
-                defs.append(contentsOf: tools.map { tool in
-                    ToolDefinition(
-                        serverName: serverName,
-                        name: tool.name,
-                        description: tool.description,
-                        inputSchema: tool.inputSchema
-                    )
-                })
-            } catch {
-                emit(.error("MCP server \"\(serverName)\" tools unavailable: \(error.localizedDescription)"))
-                perServerCounts.append((serverName, 0))
+            perServerCounts.append((serverName, tools.count))
+            defs.append(contentsOf: tools.map { tool in
+                ToolDefinition(
+                    serverName: serverName,
+                    name: tool.name,
+                    description: tool.description,
+                    inputSchema: tool.inputSchema
+                )
+            })
+        }
+        // Deduplicate by namespaced name. Some MCP servers expose tools
+        // with duplicate names, which makes the LLM API reject
+        // the request with "Tool names must be unique". We keep the first
+        // occurrence of each name and drop the rest.
+        var seen = Set<String>()
+        var unique: [ToolDefinition] = []
+        var dropped = 0
+        for def in defs {
+            if seen.insert(def.namespacedName).inserted {
+                unique.append(def)
+            } else {
+                dropped += 1
             }
         }
-        debugLog("MCP", "gathered tools — chat=\(filename), total=\(defs.count), servers=\(activeNames.count)")
+        if dropped > 0 {
+            debugLog("MCP", "deduplicated tools — dropped \(dropped) duplicate name(s), chat=\(filename)")
+        }
+        debugLog("MCP", "gathered tools — chat=\(filename), total=\(unique.count), servers=\(activeNames.count)")
         for (serverName, count) in perServerCounts {
             debugLog("MCP", "  server=\"\(serverName)\" contributed \(count) tool(s)")
         }
-        return defs
+        return unique
     }
 
     /// Records tool calls onto the last assistant message of the chat so the

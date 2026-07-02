@@ -67,7 +67,7 @@ struct AnthropicProvider: LLMProvider {
         if let systemText { body["system"] = systemText }
 
         // Tools — each MCP tool becomes a function tool whose name is the
-        // namespaced `mcp__{server}__{tool}` identifier. The input schema is
+        // namespaced `{server}_{tool}` identifier. The input schema is
         // parsed from the MCP tool's JSON string and embedded verbatim.
         if let tools, !tools.isEmpty {
             body["tools"] = tools.map { def in

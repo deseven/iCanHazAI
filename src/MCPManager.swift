@@ -19,12 +19,20 @@ struct MCPTool: Sendable, Equatable {
 }
 
 /// Owns the runtime MCP client connections. A singleton `actor` that keeps
-/// `MCP.Client` instances alive, reconnects on config change, and exposes
-/// `listTools()`/`callTool()`. Lives alongside `ChatEngine`.
+/// `MCP.Client` instances alive, reconnects on config change, caches the
+/// discovered tool list per server, and exposes `callTool()` for the
+/// agent loop. Lives alongside `ChatEngine`.
 ///
-/// All public methods catch and rethrow typed errors; connection failures are
-/// surfaced via `errorHandler` so the UI can show them. Never crashes on a
-/// misbehaving server.
+/// The configuration flow (`configure`/`reconfigure`) is driven by
+/// `ChatEngine`. It connects stdio servers, queries tools, discards servers
+/// that fail, stops on-demand stdio servers, and reports live status via
+/// `statusHandler` so the UI can show a configuration overlay.
+///
+/// During chat requests, `cachedTools(for:)` returns the saved tool list
+/// without re-querying, and `callTool` starts on-demand stdio servers on
+/// demand. Servers that become unreachable mid-conversation are never
+/// permanently disabled: a clear error is returned to the LLM in the RESULT
+/// field, and the next tool call retries the connection.
 actor MCPManager {
 
     static let shared = MCPManager()
@@ -50,14 +58,16 @@ actor MCPManager {
     }
 
     private var connections: [String: Connection] = [:]
-    /// Names of servers that failed to connect or died. Their tools are
-    /// excluded from requests but the request still proceeds with others.
-    private var unavailable: Set<String> = []
-    /// The full set of servers known from the last `reload`. Used to look up
-    /// run policy and config when an on-demand server needs to be started.
+    /// The full set of servers known from the last `configure`. Used to look
+    /// up config when an on-demand server needs to be started for a chat
+    /// request, and to know each server's run policy.
     private var knownServers: [String: MCPServer] = [:]
-    /// Wall-clock time of the last tool activity (listTools/callTool) for an
-    /// on-demand server. Used to compute the 600s idle timeout.
+    /// Cached tool lists per server, populated during `configure` /
+    /// `reconfigure`. Read by `cachedTools(for:)` during chat requests so we
+    /// don't re-query servers on every LLM turn.
+    private var toolsCache: [String: [MCPTool]] = [:]
+    /// Wall-clock time of the last tool activity (callTool) for an on-demand
+    /// server. Used to compute the 600s idle timeout.
     private var lastActivity: [String: Date] = [:]
     /// Pending idle-shutdown tasks for on-demand servers, keyed by server name.
     /// Cancelled when activity resumes or the server is disconnected.
@@ -75,6 +85,12 @@ actor MCPManager {
     /// message in that one chat directly. Marked `@Sendable` because the
     /// notification handler closure may escape the actor.
     private var progressHandler: (@Sendable (String, String, String) -> Void)?
+    /// Optional sink for live MCP configuration status updates. Called by
+    /// `configure`/`reconfigure` as each server's connect/listTools step
+    /// starts, succeeds, or fails. Wired by `ChatEngine` so the UI can show
+    /// the configuration overlay. The closure is `@Sendable` because it is
+    /// invoked from the actor and hops to the engine.
+    private var statusHandler: (@Sendable (MCPConfigurationState) -> Void)?
 
     private init() {}
 
@@ -92,8 +108,20 @@ actor MCPManager {
         self.progressHandler = handler
     }
 
+    /// Sets the MCP configuration status sink. Called once by `ChatEngine` at
+    /// startup. The handler receives the full `MCPConfigurationState` snapshot
+    /// whenever a server's status changes during `configure`/`reconfigure`.
+    func setStatusHandler(_ handler: @escaping @Sendable (MCPConfigurationState) -> Void) {
+        self.statusHandler = handler
+    }
+
     private func reportError(_ message: String) {
         errorHandler?(message)
+    }
+
+    /// Pushes a configuration status snapshot to the status sink (if set).
+    private func reportStatus(_ state: MCPConfigurationState) {
+        statusHandler?(state)
     }
 
     /// Maps an MCP progress token back to the originating call's
@@ -119,7 +147,7 @@ actor MCPManager {
         progressHandler?(call.chatFilename, call.callID, text)
     }
 
-    // MARK: - Reload / diff
+    // MARK: - Run-policy helpers
 
     /// Returns true if the server should be kept alive continuously (always-on
     /// or http/nil policy). Only stdio on-demand servers are started lazily.
@@ -127,124 +155,215 @@ actor MCPManager {
         server.runPolicy != .onDemand
     }
 
-    /// Reconciles the active connection set against `servers`: disconnects
-    /// removed servers (terminating any spawned stdio subprocesses), connects
-    /// added/changed ones according to their run policy. Idempotent.
+    // MARK: - Configuration flow
+
+    /// Full configuration pass: connects stdio servers one by one, queries all
+    /// servers for their tool lists in parallel, discards servers that fail,
+    /// stops on-demand stdio servers, and reports live status via
+    /// `statusHandler`. Called on app start (via `ChatEngine.start()`) and
+    /// from the "File > Reload MCPs…" menu item (after a full reset).
     ///
-    /// Run policy handling:
-    /// - `alwaysOn` servers are (re)connected immediately here.
-    /// - `onDemand` servers are NOT auto-started; they are started lazily by
-    ///   `ensureConnected` when a chat actually needs them. If an on-demand
-    ///   server's config changed (including a run-policy change), it is
-    ///   disconnected here and will be restarted on the next request. If the
-    ///   config changed during the idle timeout period, the server is simply
-    ///   shut down until the next request.
-    func reload(_ servers: [MCPServer]) async {
-        debugLog("MCP", "reload — \(servers.count) server(s) configured")
+    /// If `servers` is empty, this is a no-op (the overlay is skipped by the
+    /// caller). Returns the final configuration state so the caller can emit
+    /// it once more after the 1-second display delay.
+    func configure(_ servers: [MCPServer]) async -> MCPConfigurationState {
+        debugLog("MCP", "configure — \(servers.count) server(s) configured")
+        // Full reset: clear all known state so we start from a clean slate.
+        await resetAll()
+
         let newByName = Dictionary(servers.map { ($0.name, $0) }, uniquingKeysWith: { _, b in b })
-        let newNames = Set(newByName.keys)
         knownServers = newByName
 
-        // Disconnect removed servers (their config file was deleted or renamed).
-        // This terminates any spawned stdio subprocess so we don't leak orphans.
-        let currentNames = Set(connections.keys)
-        for name in currentNames where !newNames.contains(name) {
-            await disconnect(name: name)
-        }
-        // Cancel any pending idle-shutdown tasks for servers that no longer
-        // exist on disk, and drop their activity bookkeeping.
-        for name in idleTasks.keys where !newNames.contains(name) {
-            idleTasks.removeValue(forKey: name)?.cancel()
-            lastActivity.removeValue(forKey: name)
-        }
-        // Clean up stale `unavailable` entries for servers that no longer exist
-        // on disk. These have no process to terminate, but leaving them would
-        // prevent a same-named server from being retried after a re-create.
-        for name in unavailable where !newNames.contains(name) {
-            unavailable.remove(name)
-        }
-        // Reconcile each known server.
+        // Build the initial status snapshot: all servers pending.
+        var state = MCPConfigurationState(
+            isConfiguring: true,
+            entries: servers.map {
+                MCPConfigurationEntry(name: $0.name, status: .pending, toolCount: nil, errorMessage: nil)
+            }
+        )
+        reportStatus(state)
+
+        // Phase 1: start stdio servers one by one. We connect each in turn so
+        // startup errors are attributable and we don't fork a burst of
+        // subprocesses simultaneously. HTTP servers don't need a startup
+        // phase (they connect on first request), but we mark them inProgress
+        // here for the overlay.
         for server in servers {
-            if let existing = connections[server.name] {
-                if existing.server != server {
-                    // Config changed (possibly including the run policy). Tear
-                    // down the old connection. Always-on servers are restarted
-                    // immediately; on-demand servers are left disconnected and
-                    // will be started on the next request that needs them.
-                    await disconnect(name: server.name)
-                    if isAlwaysOn(server) {
-                        await connect(server)
+            // Mark this server in-progress.
+            state.set(name: server.name, status: .inProgress)
+            reportStatus(state)
+
+            if server.transport == .stdio {
+                // Connect the stdio server. On failure, discard it and mark
+                // failed; the tool-list query phase will skip it.
+                await connect(server)
+                if connections[server.name] == nil {
+                    state.set(name: server.name, status: .failed, toolCount: nil,
+                              errorMessage: "stdio server failed to start")
+                    reportStatus(state)
+                }
+            }
+            // HTTP servers: connection is established during the listTools
+            // call below; stay inProgress.
+        }
+
+        // Phase 2: query all servers for their tool lists in parallel. For
+        // HTTP servers this is the first (and only) contact. For stdio servers
+        // that started successfully, this queries the live process.
+        await withTaskGroup(of: (String, [MCPTool]?).self) { group in
+            for server in servers {
+                let name = server.name
+                // Skip stdio servers that failed to start.
+                if server.transport == .stdio && connections[name] == nil {
+                    continue
+                }
+                group.addTask { [weak self] in
+                    guard let self else { return (name, nil) }
+                    // For http servers, connect first (lazily) so the listTools
+                    // call has a live client. connect() is idempotent.
+                    if server.transport == .http {
+                        await self.connect(server)
+                        if await self.connections[name] == nil {
+                            return (name, nil)
+                        }
+                    }
+                    do {
+                        let tools = try await self.queryTools(for: name)
+                        return (name, tools)
+                    } catch {
+                        debugLog("MCP", "configure listTools failed — server=\"\(name)\": \(error.localizedDescription)")
+                        return (name, nil)
                     }
                 }
-            } else {
-                // Not currently connected.
-                if isAlwaysOn(server) {
-                    // (Re)connect always-on servers not yet connected or
-                    // previously failed.
-                    if unavailable.contains(server.name) || !connections.keys.contains(server.name) {
-                        await connect(server)
-                    }
+            }
+            for await (name, tools) in group {
+                if let tools {
+                    // Success: cache the tools and mark success.
+                    toolsCache[name] = tools
+                    state.set(name: name, status: .success, toolCount: tools.count, errorMessage: nil)
+                } else {
+                    // Failure: discard the server (disconnect if connected)
+                    // and mark failed.
+                    await disconnect(name: name)
+                    toolsCache.removeValue(forKey: name)
+                    state.set(name: name, status: .failed, toolCount: nil,
+                              errorMessage: "failed to list tools")
                 }
-                // on-demand servers are started lazily via ensureConnected.
+                reportStatus(state)
             }
         }
+
+        // Phase 3: stop on-demand stdio servers. They're not needed until a
+        // chat request activates them; keeping them alive wastes resources.
+        for server in servers where server.transport == .stdio && server.runPolicy == .onDemand {
+            if connections[server.name] != nil {
+                debugLog("MCP", "configure — stopping on-demand stdio server \"\(server.name)\" after config")
+                await disconnect(name: server.name)
+            }
+        }
+
+        state.isConfiguring = false
+        reportStatus(state)
+        debugLog("MCP", "configure complete — \(toolsCache.count) server(s) healthy, \(servers.count - toolsCache.count) failed")
+        return state
     }
 
-    /// Ensures an on-demand server is connected before a tool operation. If
-    /// the server is already connected, this just refreshes its idle timer.
-    /// If not, it looks up the current config from `knownServers` and starts
-    /// it. Called by `listTools`/`callTool` for on-demand servers. No-op for
-    /// always-on servers (they are kept alive by `reload`).
-    private func ensureConnected(_ name: String) async {
-        guard let server = knownServers[name] else { return }
-        if connections[name] != nil {
-            touchActivity(name)
-            return
+    /// Reconfigures a single server after its config was created or edited.
+    /// Disconnects the old connection (if any), starts the stdio server (if
+    /// stdio), queries tools, and stops on-demand stdio servers. Reports live
+    /// status via `statusHandler` for just this server. Other servers are
+    /// unaffected.
+    func reconfigure(_ server: MCPServer) async -> MCPConfigurationState {
+        debugLog("MCP", "reconfigure — server=\"\(server.name)\", transport=\(server.transport)")
+        knownServers[server.name] = server
+
+        var entry = MCPConfigurationEntry(name: server.name, status: .inProgress, toolCount: nil, errorMessage: nil)
+        // Start with a single-entry in-progress state.
+        var state = MCPConfigurationState(isConfiguring: true, entries: [entry])
+        reportStatus(state)
+
+        // Tear down any existing connection for this server (config changed).
+        await disconnect(name: server.name)
+
+        if server.transport == .stdio {
+            await connect(server)
+            if connections[server.name] == nil {
+                entry.status = .failed
+                entry.errorMessage = "stdio server failed to start"
+                state.entries[0] = entry
+                state.isConfiguring = false
+                reportStatus(state)
+                return state
+            }
+        } else {
+            // HTTP: connect lazily.
+            await connect(server)
+            if connections[server.name] == nil {
+                entry.status = .failed
+                entry.errorMessage = "http server failed to connect"
+                state.entries[0] = entry
+                state.isConfiguring = false
+                reportStatus(state)
+                return state
+            }
         }
-        // Start (or retry) the on-demand server now.
-        if unavailable.contains(name) {
-            unavailable.remove(name)
+
+        // Query tools.
+        do {
+            let tools = try await queryTools(for: server.name)
+            toolsCache[server.name] = tools
+            entry.status = .success
+            entry.toolCount = tools.count
+            entry.errorMessage = nil
+        } catch {
+            debugLog("MCP", "reconfigure listTools failed — server=\"\(server.name)\": \(error.localizedDescription)")
+            await disconnect(name: server.name)
+            toolsCache.removeValue(forKey: server.name)
+            entry.status = .failed
+            entry.errorMessage = "failed to list tools"
         }
-        await connect(server)
-        touchActivity(name)
+        state.entries[0] = entry
+
+        // Stop on-demand stdio servers after config.
+        if server.transport == .stdio && server.runPolicy == .onDemand {
+            await disconnect(name: server.name)
+        }
+
+        state.isConfiguring = false
+        reportStatus(state)
+        debugLog("MCP", "reconfigure complete — server=\"\(server.name)\"")
+        return state
     }
 
-    /// Records the current time as the last activity for an on-demand server
-    /// and (re)schedules its idle-shutdown task.
-    private func touchActivity(_ name: String) {
-        lastActivity[name] = Date()
-        // Cancel any previously scheduled idle shutdown and schedule a fresh one.
+    /// Disconnects and forgets a server that was removed from disk. Clears its
+    /// cached tools and known config.
+    func forget(_ name: String) async {
+        debugLog("MCP", "forget — server=\"\(name)\"")
+        await disconnect(name: name)
+        knownServers.removeValue(forKey: name)
+        toolsCache.removeValue(forKey: name)
+        lastActivity.removeValue(forKey: name)
         idleTasks.removeValue(forKey: name)?.cancel()
-        let task = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64((self?.idleTimeout ?? 600) * 1_000_000_000))
-            guard let self else { return }
-            // Re-check on the actor: only shut down if still on-demand and the
-            // timeout has genuinely elapsed (no newer activity superseded this).
-            await self.handleIdleTimeout(name)
-        }
-        idleTasks[name] = task
     }
 
-    /// Actor-isolated idle-timeout handler. If the server is still on-demand
-    /// and no activity has occurred since the timer was scheduled, disconnect
-    /// it. Otherwise the timer is stale and ignored.
-    private func handleIdleTimeout(_ name: String) async {
-        guard let last = lastActivity[name] else { return }
-        let elapsed = Date().timeIntervalSince(last)
-        guard elapsed >= idleTimeout else { return }
-        // Only auto-shut-down on-demand servers.
-        if let server = knownServers[name], server.runPolicy == .onDemand {
-            debugLog("MCP", "idle timeout — shutting down on-demand server \"\(name)\" after \(Int(elapsed))s of inactivity")
-            await disconnect(name: name)
-            lastActivity.removeValue(forKey: name)
-            idleTasks.removeValue(forKey: name)
-        }
+    /// Full reset: disconnects all servers and clears all caches. Used before
+    /// a fresh `configure` pass (e.g. "File > Reload MCPs…").
+    func resetAll() async {
+        debugLog("MCP", "resetAll — clearing all connections and caches")
+        await disconnectAll()
+        knownServers.removeAll()
+        toolsCache.removeAll()
+        lastActivity.removeAll()
+        for task in idleTasks.values { task.cancel() }
+        idleTasks.removeAll()
     }
 
     // MARK: - Connect / disconnect
 
     /// Builds the transport and initializes the MCP client for `server`.
-    /// Failures are recorded in `unavailable` and reported via `errorHandler`.
+    /// Failures are reported via `errorHandler` and the server is simply left
+    /// disconnected (no entry in `connections`). Never throws to the caller;
+    /// the configuration flow inspects `connections` to determine success.
     func connect(_ server: MCPServer) async {
         // Don't retry if already connected with the same config.
         if let existing = connections[server.name], existing.server == server { return }
@@ -320,10 +439,8 @@ actor MCPManager {
                 throw error
             }
             connections[server.name] = Connection(server: server, client: client, process: process, initResult: initResult)
-            unavailable.remove(server.name)
             debugLog("MCP", "connected — server=\"\(server.name)\", serverName=\"\(initResult.serverInfo.name)\", serverVersion=\"\(initResult.serverInfo.version)\", protocolVersion=\"\(initResult.protocolVersion)\", capabilities=\(capabilitySummary(initResult.capabilities))")
         } catch {
-            unavailable.insert(server.name)
             debugLog("MCP", "connect failed — server=\"\(server.name)\": \(error.localizedDescription)")
             reportError("MCP server \"\(server.name)\" failed to connect: \(error.localizedDescription)")
         }
@@ -343,7 +460,8 @@ actor MCPManager {
 
     /// Disconnects and tears down the client for `name`. Closes the MCP
     /// client (which closes the transport pipes) and terminates any spawned
-    /// stdio subprocess so we don't leak orphaned processes.
+    /// stdio subprocess so we don't leak orphaned processes. No-op if the
+    /// server isn't connected.
     func disconnect(name: String) async {
         // Cancel any pending idle-shutdown task for this server.
         idleTasks.removeValue(forKey: name)?.cancel()
@@ -359,10 +477,9 @@ actor MCPManager {
             process.waitUntilExit()
             debugLog("MCP", "stdio server \"\(name)\" terminated — pid=\(process.processIdentifier), exitStatus=\(process.terminationStatus), reason=\(process.terminationReason.rawValue)")
         }
-        unavailable.remove(name)
     }
 
-    /// Disconnects all servers (e.g. on app shutdown).
+    /// Disconnects all servers (e.g. on app shutdown or full reset).
     func disconnectAll() async {
         // Cancel all pending idle-shutdown tasks.
         for task in idleTasks.values { task.cancel() }
@@ -375,43 +492,117 @@ actor MCPManager {
         }
     }
 
-    // MARK: - Tools
+    // MARK: - Tool list (configuration-time query)
 
-    /// Lists the tools exposed by `server`. Throws if the server is not
-    /// connected or the call fails. For on-demand servers this first ensures
-    /// the server is started (and refreshes its idle timer).
-    func listTools(for server: String) async throws -> [MCPTool] {
-        // Start on-demand servers lazily before listing tools.
-        if let known = knownServers[server], known.runPolicy == .onDemand {
-            await ensureConnected(server)
-        }
+    /// Queries the live tool list from a connected server, paginating through
+    /// all cursors. Throws on any failure. Used by the configuration flow
+    /// (`configure`/`reconfigure`) to populate `toolsCache`. Unlike
+    /// `cachedTools`, this always hits the live server.
+    private func queryTools(for server: String) async throws -> [MCPTool] {
         guard let conn = connections[server] else {
             throw MCPManagerError.unavailable(server)
         }
-        do {
-            var tools: [MCPTool] = []
-            var cursor: String? = nil
-            repeat {
-                let (batch, next) = try await conn.client.listTools(cursor: cursor)
-                for tool in batch {
-                    let schemaData = try JSONEncoder().encode(tool.inputSchema)
-                    let schemaString = String(data: schemaData, encoding: .utf8) ?? "{}"
-                    tools.append(MCPTool(
-                        name: tool.name,
-                        description: tool.description,
-                        inputSchema: schemaString
-                    ))
-                }
-                cursor = next
-            } while cursor != nil
-            debugLog("MCP", "listTools — server=\"\(server)\", count=\(tools.count)")
-            return tools
-        } catch {
-            unavailable.insert(server)
-            debugLog("MCP", "listTools failed — server=\"\(server)\" now unavailable, error=\(error), type=\(String(describing: error))")
-            throw MCPManagerError.toolListFailed(server, error.localizedDescription)
+        var tools: [MCPTool] = []
+        var cursor: String? = nil
+        repeat {
+            let (batch, next) = try await conn.client.listTools(cursor: cursor)
+            for tool in batch {
+                let schemaData = try JSONEncoder().encode(tool.inputSchema)
+                let schemaString = String(data: schemaData, encoding: .utf8) ?? "{}"
+                tools.append(MCPTool(
+                    name: tool.name,
+                    description: tool.description,
+                    inputSchema: schemaString
+                ))
+            }
+            cursor = next
+        } while cursor != nil
+        debugLog("MCP", "queryTools — server=\"\(server)\", count=\(tools.count)")
+        return tools
+    }
+
+    // MARK: - Cached tools (request-time read)
+
+    /// Returns the cached tool list for `server`, or nil if the server has no
+    /// cached tools (it failed configuration or was never configured). Used by
+    /// `ChatEngine.gatherTools` during chat requests so we don't re-query
+    /// servers on every LLM turn.
+    func cachedTools(for server: String) -> [MCPTool]? {
+        toolsCache[server]
+    }
+
+    /// Connects to `server` and queries its tool list, returning the tools.
+    /// Throws on any failure (connect or listTools). Used by the MCP wizard's
+    /// connection test step. The caller is responsible for disconnecting the
+    /// transient connection afterwards (via `disconnect(name:)`).
+    func testConnection(_ server: MCPServer) async throws -> [MCPTool] {
+        // Tear down any existing connection with this name first so we test
+        // the fresh config.
+        await disconnect(name: server.name)
+        await connect(server)
+        guard connections[server.name] != nil else {
+            throw MCPManagerError.unavailable(server.name)
+        }
+        return try await queryTools(for: server.name)
+    }
+
+    // MARK: - On-demand server lifecycle
+
+    /// Ensures an on-demand stdio server is connected before a chat request.
+    /// If the server is already connected, this refreshes its idle timer. If
+    /// not, it looks up the current config from `knownServers` and starts it.
+    /// No-op for always-on / http servers. Called by `ChatEngine` before
+    /// building the request when the chat has on-demand MCP servers active.
+    func ensureOnDemandRunning(_ names: [String]) async {
+        for name in names {
+            guard let server = knownServers[name], server.runPolicy == .onDemand else { continue }
+            if connections[name] != nil {
+                touchActivity(name)
+                continue
+            }
+            // If the server was configured successfully (it's in toolsCache),
+            // start it now. Servers that failed configuration are skipped;
+            // their cached tools are nil and gatherTools already excluded them.
+            guard toolsCache[name] != nil else { continue }
+            debugLog("MCP", "ensureOnDemandRunning — starting on-demand server \"\(name)\"")
+            await connect(server)
+            touchActivity(name)
         }
     }
+
+    /// Records the current time as the last activity for an on-demand server
+    /// and (re)schedules its idle-shutdown task.
+    private func touchActivity(_ name: String) {
+        lastActivity[name] = Date()
+        // Cancel any previously scheduled idle shutdown and schedule a fresh one.
+        idleTasks.removeValue(forKey: name)?.cancel()
+        let task = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64((self?.idleTimeout ?? 600) * 1_000_000_000))
+            guard let self else { return }
+            // Re-check on the actor: only shut down if still on-demand and the
+            // timeout has genuinely elapsed (no newer activity superseded this).
+            await self.handleIdleTimeout(name)
+        }
+        idleTasks[name] = task
+    }
+
+    /// Actor-isolated idle-timeout handler. If the server is still on-demand
+    /// and no activity has occurred since the timer was scheduled, disconnect
+    /// it. Otherwise the timer is stale and ignored.
+    private func handleIdleTimeout(_ name: String) async {
+        guard let last = lastActivity[name] else { return }
+        let elapsed = Date().timeIntervalSince(last)
+        guard elapsed >= idleTimeout else { return }
+        // Only auto-shut-down on-demand servers.
+        if let server = knownServers[name], server.runPolicy == .onDemand {
+            debugLog("MCP", "idle timeout — shutting down on-demand server \"\(name)\" after \(Int(elapsed))s of inactivity")
+            await disconnect(name: name)
+            lastActivity.removeValue(forKey: name)
+            idleTasks.removeValue(forKey: name)
+        }
+    }
+
+    // MARK: - Tool calling
 
     /// Calls a tool on `server` with JSON-encoded `arguments` and maps the
     /// result into our `ToolResult`. `callID` is the model-assigned tool call
@@ -419,14 +610,26 @@ actor MCPManager {
     /// `chatFilename` identifies the chat that owns this call so progress
     /// notifications can be routed to that chat's live `tool`-role message
     /// directly. Non-text content is summarized.
+    ///
+    /// If the server is unreachable, the error is returned as the RESULT
+    /// content (with `isError: false` per spec — the tool call didn't
+    /// "fail" from the model's perspective, the server was just momentarily
+    /// unreachable). The server is NOT permanently disabled; the next tool
+    /// call will retry the connection. On-demand stdio servers are started
+    /// lazily here if needed.
     func callTool(server: String, name: String, arguments: String, callID: String, chatFilename: String) async -> ToolResult {
         debugLog("MCP", "callTool — server=\"\(server)\", tool=\"\(name)\", callID=\(callID), chat=\(chatFilename)")
-        // Start on-demand servers lazily before calling tools.
+        // Start on-demand stdio servers lazily before calling tools.
         if let known = knownServers[server], known.runPolicy == .onDemand {
-            await ensureConnected(server)
+            await ensureOnDemandRunning([server])
         }
         guard let conn = connections[server] else {
-            return ToolResult(callID: callID, content: "MCP server \"\(server)\" is not available.", isError: true)
+            // Server unreachable. Return a clear error as the RESULT field.
+            // isError is false per spec: the tool call itself didn't error,
+            // the server was just unreachable. The LLM sees the message and
+            // can retry on the next call.
+            debugLog("MCP", "callTool — server \"\(server)\" unreachable, returning error in RESULT")
+            return ToolResult(callID: callID, content: "MCP server \"\(server)\" is currently unreachable. Please retry.", isError: false)
         }
         // Parse the raw JSON arguments string into an MCP `Value`.
         let argsValue: [String: Value]?
@@ -480,22 +683,31 @@ actor MCPManager {
                     return "[resource link: \(name) at \(uri)]"
                 }
             }.joined(separator: "\n")
+            // Per spec: if the tool itself errored and MCP returned an error,
+            // this is normal — we provide the error text as the RESULT field.
+            // The `isError` flag from MCP is preserved so the provider can
+            // surface it appropriately. We do NOT mark the server as failed.
+            debugLog("MCP", "callTool result — server=\"\(server)\", tool=\"\(name)\", isError=\(isError ?? false), contentSize=\(text.count)")
             return ToolResult(callID: callID, content: text, isError: isError ?? false)
         } catch is CancellationError {
             debugLog("MCP", "callTool cancelled — server=\"\(server)\", tool=\"\(name)\", callID=\(callID)")
             return ToolResult(callID: callID, content: "Tool call was cancelled.", isError: true)
         } catch {
-            unavailable.insert(server)
+            // Server errored during the call (transport failure, timeout, etc).
+            // Per spec: return the error as the RESULT field. We do NOT
+            // permanently disable the server — the next tool call will retry.
+            // Disconnect so a subsequent call reconnects cleanly.
             debugLog("MCP", "callTool failed — server=\"\(server)\", tool=\"\(name)\", callID=\(callID), error=\(error), type=\(String(describing: error))")
-            return ToolResult(callID: callID, content: "Tool call failed: \(error.localizedDescription)", isError: true)
+            await disconnect(name: server)
+            return ToolResult(callID: callID, content: "MCP server \"\(server)\" error during tool call: \(error.localizedDescription). Please retry.", isError: false)
         }
     }
 
     // MARK: - Helpers
 
-    /// Whether a server is currently connected and available.
-    func isAvailable(_ server: String) -> Bool {
-        connections[server] != nil && !unavailable.contains(server)
+    /// Whether a server is currently connected.
+    func isConnected(_ server: String) -> Bool {
+        connections[server] != nil
     }
 
     /// Extracts a `FileDescriptor` from a `FileHandle`. The SDK's `StdioTransport`
@@ -504,6 +716,19 @@ actor MCPManager {
     private func fileDescriptor(for handle: FileHandle) throws -> FileDescriptor {
         // FileHandle.fileDescriptor is the raw Int32 fd.
         return FileDescriptor(rawValue: handle.fileDescriptor)
+    }
+}
+
+// MARK: - MCPConfigurationState mutation helper
+
+extension MCPConfigurationState {
+    /// Updates the entry for `name` with a new status (and optional tool count
+    /// / error message). No-op if the entry doesn't exist.
+    mutating func set(name: String, status: MCPConfigStatus, toolCount: Int? = nil, errorMessage: String? = nil) {
+        guard let idx = entries.firstIndex(where: { $0.name == name }) else { return }
+        entries[idx].status = status
+        if let toolCount { entries[idx].toolCount = toolCount }
+        if let errorMessage { entries[idx].errorMessage = errorMessage }
     }
 }
 

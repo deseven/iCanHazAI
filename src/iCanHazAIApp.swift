@@ -67,6 +67,15 @@ struct iCanHazAIApp: App {
                 }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
             }
+            // "File > Reload MCPs…" — resets all configured MCPs and their
+            // tools cache, then re-runs the full configuration pass. Shows the
+            // configuration overlay while in progress.
+            CommandGroup(after: .newItem) {
+                Button("Reload MCPs…") {
+                    AppViewModel.shared?.reloadMCPs()
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+            }
             CommandGroup(replacing: .appSettings) {
                 Button("Preferences...") {
                     PreferencesView.show()

@@ -517,12 +517,9 @@ struct MCPWizardView: View {
 
         let server = buildServer(name: tempServerName)
         Task {
-            // Tear down any leftover transient connection from a previous run,
-            // then (re)connect and list tools.
-            await MCPManager.shared.disconnect(name: tempServerName)
-            await MCPManager.shared.connect(server)
             do {
-                let tools = try await MCPManager.shared.listTools(for: tempServerName)
+                // testConnection connects, lists tools, and throws on failure.
+                let tools = try await MCPManager.shared.testConnection(server)
                 await MainActor.run {
                     self.testTools = tools
                     self.isTesting = false

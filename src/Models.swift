@@ -200,10 +200,52 @@ enum EngineEvent: Sendable {
     case connectionsChanged([Connection])
     /// The set of configured MCP servers changed (load, add, edit, delete).
     case mcpsChanged([MCPServer])
+    /// The live MCP configuration status changed (a server's connect/listTools
+    /// step started, succeeded, or failed). The UI uses this to drive the
+    /// configuration overlay. Carries the full snapshot so the overlay always
+    /// reflects the current state.
+    case mcpConfiguration(MCPConfigurationState)
     /// `config.toml` was reloaded from disk (external edit picked up via FSEvents).
     /// The UI should refresh its cached preferences from `ConfigManager`.
     case configChanged
     case error(String)
+}
+
+// MARK: - MCP configuration status
+
+/// The status of a single MCP server during the configuration flow.
+enum MCPConfigStatus: String, Sendable, Equatable {
+    /// Not yet started (queued).
+    case pending
+    /// Currently connecting / listing tools.
+    case inProgress
+    /// Connected and tools listed successfully.
+    case success
+    /// Failed to connect or list tools; the server was discarded.
+    case failed
+}
+
+/// A single row in the MCP configuration overlay: the server name and its
+/// current status. `toolCount` is shown for successful servers.
+struct MCPConfigurationEntry: Identifiable, Sendable, Equatable {
+    var id: String { name }
+    let name: String
+    var status: MCPConfigStatus
+    /// Number of tools discovered, for successful entries. Nil otherwise.
+    var toolCount: Int?
+    /// Human-readable error message for failed entries. Nil otherwise.
+    var errorMessage: String?
+}
+
+/// The full state of an MCP configuration pass. Drives the overlay UI.
+struct MCPConfigurationState: Sendable, Equatable {
+    /// Whether a configuration pass is currently in progress. The overlay is
+    /// shown while this is true (and there is at least one entry).
+    var isConfiguring: Bool
+    /// One entry per configured server, in the order they were started.
+    var entries: [MCPConfigurationEntry]
+
+    static let empty = MCPConfigurationState(isConfiguring: false, entries: [])
 }
 
 // MARK: - Role

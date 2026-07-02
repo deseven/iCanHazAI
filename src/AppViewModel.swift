@@ -29,6 +29,10 @@ final class AppViewModel: ObservableObject {
     @Published var roles: [Role] = []
     @Published var connections: [Connection] = []
     @Published var mcps: [MCPServer] = []
+    /// Live MCP configuration status, mirrored from the engine. Drives the
+    /// configuration overlay. The overlay observes this and adds a 1-second
+    /// display delay after configuration completes.
+    @Published var mcpConfiguration: MCPConfigurationState = .empty
     @Published var selectedChatID: String?
     @Published var errorMessage: String?
     /// Whether the currently selected chat is scrolled to the bottom. Updated
@@ -307,6 +311,8 @@ final class AppViewModel: ObservableObject {
             }
         case .mcpsChanged(let mcps):
             self.mcps = mcps
+        case .mcpConfiguration(let state):
+            mcpConfiguration = state
         case .configChanged:
             // config.toml was reloaded from disk (external edit picked up via
             // FSEvents). Refresh the cached preferences so the UI stays in sync.
@@ -493,6 +499,13 @@ final class AppViewModel: ObservableObject {
     func setActiveMCPs(_ names: [String]?) {
         guard let filename = selectedChatID else { return }
         Task { await engine.setActiveMCPs(filename: filename, names: names) }
+    }
+
+    /// Triggers a full MCP configuration pass ("File > Reload MCPs…"). Resets
+    /// all configured MCPs and their tools cache, then re-connects and
+    /// re-queries every server. The overlay is shown while in progress.
+    func reloadMCPs() {
+        Task { await engine.configureMCPs() }
     }
 
     /// Selects a chat, prunes other empty chats, and clears its unread marker.

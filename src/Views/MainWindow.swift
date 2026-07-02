@@ -38,6 +38,12 @@ struct MainWindow: View {
             }
             .navigationTitle(store.selectedChatItem?.displayTitle ?? "")
         }
+        // MCP configuration overlay: a half-transparent layer shown over the
+        // whole window while MCP servers are being (re)configured. Blocks
+        // interaction with the underlying UI during configuration.
+        .overlay {
+            MCPConfigurationOverlay()
+        }
         .onAppear {
             columnVisibility = store.chatListSidebarVisible ? .all : .detailOnly
         }
