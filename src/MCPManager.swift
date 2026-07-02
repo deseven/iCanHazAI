@@ -636,6 +636,14 @@ actor MCPManager {
         knownServers[server]
     }
 
+    /// Resolves a tool prefix back to the server name that owns it. Used by
+    /// `ChatEngine.executeToolCall` to route a model-issued tool call (which
+    /// carries the `{prefix}_{tool}` namespaced name) to the originating server.
+    /// Returns nil if no configured server uses that prefix.
+    func serverName(forPrefix prefix: String) -> String? {
+        knownServers.values.first(where: { $0.prefix == prefix })?.name
+    }
+
     /// Connects to `server` and queries its tool list, returning the tools
     /// and the server's reported name (from the MCP `initialize` response's
     /// `serverInfo.name`). Throws on any failure (connect or listTools). Used

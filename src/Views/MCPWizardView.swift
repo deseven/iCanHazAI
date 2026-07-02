@@ -94,6 +94,9 @@ struct MCPWizardView: View {
 
     // Step 4 — name
     @State private var serverName: String = ""
+    /// Lowercase-alphanumeric prefix used to namespace this server's tools
+    /// for the LLM (e.g. `gdocs_search`). Required, unique across servers.
+    @State private var prefix: String = ""
 
     // Step 5 — finish
     /// The URL of the saved server file, set when we write it on entering the
@@ -108,6 +111,7 @@ struct MCPWizardView: View {
         case endpoint
         case token
         case serverName
+        case prefix
         case toolFilter
     }
 
@@ -229,7 +233,7 @@ struct MCPWizardView: View {
             guard let tools = testTools, !tools.isEmpty else { return false }
             return !selectedTools.isEmpty
         case .name:
-            return nameValid
+            return nameValid && prefixValid
         case .finish:
             return true
         }
@@ -251,6 +255,30 @@ struct MCPWizardView: View {
         guard !name.isEmpty else { return false }
         let url = EnvironmentManager.shared.mcpsURL.appendingPathComponent("\(name).toml")
         return !FileManager.default.fileExists(atPath: url.path)
+    }
+
+    /// Whether the prefix is non-empty, lowercase-alphanumeric, and unique
+    /// across existing servers. The prefix namespaces tool names sent to the
+    /// LLM, so it must match `^[a-z0-9]+$` and not collide with another server.
+    private var prefixValid: Bool {
+        let p = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !p.isEmpty else { return false }
+        return prefixError == nil
+    }
+
+    /// Validation error for the current prefix, or nil if it's valid/empty.
+    private var prefixError: String? {
+        let p = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !p.isEmpty else { return nil }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789")
+        if !p.unicodeScalars.allSatisfy({ allowed.contains($0) }) {
+            return "Use only lowercase letters and digits (a–z, 0–9)."
+        }
+        let existing = EnvironmentManager.shared.loadMCPs()
+        if existing.contains(where: { $0.prefix == p }) {
+            return "Another server already uses this prefix."
+        }
+        return nil
     }
 
     // MARK: - Step transitions
@@ -296,6 +324,7 @@ struct MCPWizardView: View {
         }
         if step < .name {
             serverName = ""
+            prefix = ""
         }
         if step < .finish {
             savedFileURL = nil
@@ -629,6 +658,7 @@ struct MCPWizardView: View {
         }
         return MCPServer(
             name: name,
+            prefix: prefix.trimmingCharacters(in: .whitespacesAndNewlines),
             transport: transport,
             runPolicy: transport == .stdio ? runPolicy : nil,
             command: transport == .stdio ? command : nil,
@@ -676,7 +706,7 @@ struct MCPWizardView: View {
 
     private var nameStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Choose a name for this MCP server. It determines the config file name on disk.")
+            Text("Choose a name and a tool prefix for this MCP server.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -697,11 +727,33 @@ struct MCPWizardView: View {
                 }
             }
 
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Tool Prefix")
+                    .font(.headline)
+                TextField("gdocs", text: $prefix)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($focusedField, equals: .prefix)
+                    .onSubmit { goNext() }
+                    .autocorrectionDisabled()
+                let p = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+                Text("Tools are exposed to the model as \(p.isEmpty ? "prefix" : p)_<tool>.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !prefix.isEmpty, let err = prefixError {
+                    Text(err)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+
             Spacer()
         }
         .onAppear {
             if serverName.isEmpty {
                 serverName = defaultServerName()
+            }
+            if prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                prefix = defaultPrefix()
             }
         }
     }
@@ -716,6 +768,7 @@ struct MCPWizardView: View {
 
             summaryRow("Transport", transport == .stdio ? "stdio" : "streamable http")
             summaryRow("Name", sanitizedFilename(serverName))
+            summaryRow("Prefix", prefix.trimmingCharacters(in: .whitespacesAndNewlines))
             switch transport {
             case .stdio:
                 summaryRow("Command", command)
@@ -803,6 +856,36 @@ struct MCPWizardView: View {
                 return sanitizedFilename(host)
             }
             return "mcp-server"
+        }
+    }
+
+    /// Default prefix derived from the server's reported name, command, or
+    /// endpoint host — lowercased and stripped to `[a-z0-9]`. Falls back to
+    /// "mcp" if nothing usable remains. The user can still edit it.
+    private func defaultPrefix() -> String {
+        func slugify(_ s: String) -> String {
+            s.lowercased().unicodeScalars
+                .filter("abcdefghijklmnopqrstuvwxyz0123456789".contains)
+                .map(String.init)
+                .joined()
+        }
+        if let reported = reportedServerName, !reported.isEmpty {
+            let slug = slugify(reported)
+            if !slug.isEmpty { return slug }
+        }
+        switch transport {
+        case .stdio:
+            let base = command.trimmingCharacters(in: .whitespacesAndNewlines)
+            if base.isEmpty { return "mcp" }
+            let last = base.contains("/") ? (base as NSString).lastPathComponent : base
+            let slug = slugify(last)
+            return slug.isEmpty ? "mcp" : slug
+        case .http:
+            if let url = URL(string: endpoint), let host = url.host {
+                let slug = slugify(host)
+                return slug.isEmpty ? "mcp" : slug
+            }
+            return "mcp"
         }
     }
 

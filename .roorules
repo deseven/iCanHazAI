@@ -1,11 +1,28 @@
-This project is a macOS app for AI chat with agentic capabilities. It uses Swift and a simple build system (`build.sh`). The UI is in the code, there are no XIBs. The app is currently in active development, so no backwards compatibility is required if we're changing something.
+# Project Overview
+This is a macOS app for AI chat with agentic capabilities. It's written in Swift and uses a simple build system (`build.sh`). The UI is defined entirely in code — there are no XIBs or Storyboards.
 
-The documentation for some of the libraries that we are using is located in `lib-docs`. The dependencies themselves are under `.build`.
+The app is under active development, so backwards compatibility is not a concern when making changes.
 
-For chat rendering we're using webview with web app from `chatrenderer`.
+# Target Platform
+macOS 15 or higher. Feel free to use modern APIs and UI components available on this version.
 
-Modern UI stuff could be used since we're targeting macOS 15 or higher. Feel free to do research using one-liners with `swift -e` or writing temp swift files using the included tool and launching them if it's more than one line.
+# Dependencies
+Dependencies and their documentation live under `.build/checkouts`.
 
-Use `build.sh` to build the project (including the `chatrenderer`) and return for possible compilation errors. No need to call it with `tail`, `head` or `2>&1` - the output is not long and the errors will be in stdout.
+# Chat Rendering
+Chat messages are rendered using a webview that loads the web app from `chatrenderer`.
 
-Don't overthink. Ask if something is unclear. If encountered a difficult problem first explain it and ask advice from the user.
+# Building
+Use `build.sh` to build the project (this also builds `chatrenderer`). Check the output for compilation errors — no need to pipe through `tail`, `head`, or `2>&1`, as the output is short and errors appear in stdout.
+
+# Research & Experimentation
+For quick research, use one-liners with `swift -e`. For anything longer, write a temporary Swift file and run it.
+
+# Code Style
+Keep comments minimal. Don't describe the obvious — focus only on:
+- Complex or non-obvious behavior
+- Architectural decisions
+- Things genuinely worth noting
+
+# General Guidance
+Don't overthink. If something is unclear, ask. If you hit a difficult problem, explain it first and ask for advice before proceeding.

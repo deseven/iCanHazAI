@@ -88,9 +88,6 @@ actor ChatEngine {
     private var emitDirty = false
     private let emitCoalesceInterval: UInt64 = 50_000_000 // 50ms in nanoseconds
 
-    /// Filename of the chat whose last assistant message can be retried.
-    private var lastRetryableFilename: String?
-
     /// Filenames of chats for which a name-generation request is in flight.
     /// Prevents duplicate concurrent naming attempts for the same chat.
     private var namingInProgress: Set<String> = []
@@ -541,7 +538,6 @@ actor ChatEngine {
             streamTasks[filename] = nil
             env.deleteAllImages(for: filename)
             records.removeAll(where: { $0.filename == filename })
-            if lastRetryableFilename == filename { lastRetryableFilename = nil }
             if selectedFilename == filename { selectedFilename = nil }
             emit(.chatsChanged(records))
         default:
@@ -852,7 +848,6 @@ actor ChatEngine {
         env.deleteChat(filename: filename)
         env.deleteAllImages(for: filename)
         records.removeAll(where: { $0.filename == filename })
-        if lastRetryableFilename == filename { lastRetryableFilename = nil }
         if selectedFilename == filename { selectedFilename = nil }
         emit(.chatsChanged(records))
     }
@@ -879,7 +874,6 @@ actor ChatEngine {
             // Suppress the FSEvent for each file we're removing.
             markSelfWrite(path: env.chatsURL.appendingPathComponent(record.filename).path)
             env.deleteChat(filename: record.filename)
-            if lastRetryableFilename == record.filename { lastRetryableFilename = nil }
         }
         records.removeAll(where: { toRemove.contains($0) })
     }
@@ -967,7 +961,6 @@ actor ChatEngine {
         }
         sortAndEmit()
 
-        lastRetryableFilename = filename
         runToolLoop(for: filename, connection: connection, messages: messages)
 
         // Fire-and-forget: try to generate a chat name via the utility connection
@@ -977,10 +970,17 @@ actor ChatEngine {
         return true
     }
 
-    /// Retries the last request for the given chat.
+    /// Retries (regenerates) the last assistant turn for the given chat.
+    ///
+    /// This is fully data-driven: it works from any chat state (including chats
+    /// reloaded from disk after an app restart) and does not depend on any
+    /// in-memory "retryable" flag. The request is rebuilt from the chat's
+    /// current role + message history: everything after the last user message
+    /// (the previous assistant response, any tool calls/results) is dropped, a
+    /// fresh placeholder assistant message is appended, and the tool loop is
+    /// re-run — equivalent to the user just re-sending their last message.
     func retryLastMessage(filename: String) async {
         guard !isStreaming(filename: filename) else { return }
-        guard lastRetryableFilename == filename else { return }
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         let chat = records[idx].chat
         guard let connectionID = chat.connection,
@@ -988,30 +988,28 @@ actor ChatEngine {
             emit(.error("Please select a connection in the status bar."))
             return
         }
+        // Find the last user message. Everything after it is the assistant's
+        // previous turn (response, tool calls, tool results) and is discarded
+        // so we regenerate from the last user message forward.
+        guard let lastUserIdx = chat.messages.lastIndex(where: { $0.role == .user }) else { return }
 
-        // Reset the failed assistant message (the last one) to an empty placeholder.
         var updatedChat = chat
-        if let lastIdx = updatedChat.messages.indices.last, updatedChat.messages[lastIdx].role == .assistant {
-            updatedChat.messages[lastIdx].content = ""
-            updatedChat.messages[lastIdx].thinking = nil
-            updatedChat.messages[lastIdx].error = nil
-            updatedChat.messages[lastIdx].connectionName = connection.displayName
-        } else {
-            updatedChat.messages.append(ChatMessage(role: .assistant, content: "", connectionName: connection.displayName))
-        }
+        // Truncate back to (and including) the last user message.
+        updatedChat.messages = Array(chat.messages[0...lastUserIdx])
+        // Append a fresh placeholder assistant message for the new response.
+        updatedChat.messages.append(ChatMessage(role: .assistant, content: "", connectionName: connection.displayName))
         records[idx].chat = updatedChat
         emit(.chatsChanged(records))
 
-        // Rebuild the message history excluding the placeholder assistant message.
+        // Rebuild the request history: system prompt (from the selected role)
+        // followed by all messages up to (and including) the last user message.
         var messages: [ChatMessage] = []
         if let roleName = updatedChat.role,
            let role = roles.first(where: { $0.name == roleName }) {
             let caps = await renderingCapabilities()
             messages.append(ChatMessage(role: .system, content: role.content + caps))
         }
-        for msg in updatedChat.messages.dropLast() {
-            messages.append(msg)
-        }
+        messages.append(contentsOf: updatedChat.messages.dropLast())
 
         runToolLoop(for: filename, connection: connection, messages: messages)
     }
@@ -1166,7 +1164,8 @@ actor ChatEngine {
             // Apply the per-server tool allowlist. An empty/nil list means all
             // tools are allowed; otherwise only tools whose name matches an
             // entry are advertised to the LLM.
-            let allowlist = await MCPManager.shared.serverConfig(for: serverName)?.tools ?? []
+            let serverConfig = await MCPManager.shared.serverConfig(for: serverName)
+            let allowlist = serverConfig?.tools ?? []
             let allowSet = Set(allowlist)
             let filtered: [MCPTool]
             if allowSet.isEmpty {
@@ -1175,9 +1174,14 @@ actor ChatEngine {
                 filtered = tools.filter { allowSet.contains($0.name) }
             }
             perServerCounts.append((serverName, filtered.count))
+            // The prefix namespaces the tool name sent to the model. It is
+            // required config, so a server with cached tools always has one;
+            // fall back to the server name only as a defensive default.
+            let prefix = serverConfig?.prefix ?? serverName
             defs.append(contentsOf: filtered.map { tool in
                 ToolDefinition(
                     serverName: serverName,
+                    prefix: prefix,
                     name: tool.name,
                     description: tool.description,
                     inputSchema: tool.inputSchema
@@ -1230,14 +1234,19 @@ actor ChatEngine {
         let approval = await approveToolCall(chatFilename: filename, call: call)
         switch approval {
         case .allow:
-            // Resolve the server + tool name from the namespaced call name.
+            // Resolve the prefix + tool name from the namespaced call name,
+            // then map the prefix back to the owning server.
             guard let parsed = ToolDefinition.parse(call.name) else {
                 debugLog("Tool", "could not parse tool name \"\(call.name)\" — chat=\(filename)")
                 return ToolResult(callID: call.id, content: "Could not parse tool name \"\(call.name)\".", isError: true)
             }
-            debugLog("Tool", "executing \(parsed.server)/\(parsed.tool) — callID=\(call.id), chat=\(filename)")
-            let result = await MCPManager.shared.callTool(server: parsed.server, name: parsed.tool, arguments: call.arguments, callID: call.id, chatFilename: filename)
-            debugLog("Tool", "result \(parsed.server)/\(parsed.tool) — isError=\(result.isError), contentSize=\(result.content.count), chat=\(filename)")
+            guard let serverName = await MCPManager.shared.serverName(forPrefix: parsed.prefix) else {
+                debugLog("Tool", "no server found for prefix \"\(parsed.prefix)\" — chat=\(filename)")
+                return ToolResult(callID: call.id, content: "No MCP server found for tool prefix \"\(parsed.prefix)\".", isError: true)
+            }
+            debugLog("Tool", "executing \(serverName)/\(parsed.tool) — callID=\(call.id), chat=\(filename)")
+            let result = await MCPManager.shared.callTool(server: serverName, name: parsed.tool, arguments: call.arguments, callID: call.id, chatFilename: filename)
+            debugLog("Tool", "result \(serverName)/\(parsed.tool) — isError=\(result.isError), contentSize=\(result.content.count), chat=\(filename)")
             return result
         case .deny(let reason):
             debugLog("Tool", "denied callID=\(call.id) — \(reason), chat=\(filename)")

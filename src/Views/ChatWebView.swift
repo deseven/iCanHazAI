@@ -142,6 +142,10 @@ final class ChatWebViewModel: ObservableObject {
     private var lastMessageIds: [String] = []
     private var store: AppViewModel?
     private var themeObservation: NSKeyValueObservation?
+    /// Retains the navigation delegate that intercepts link clicks and opens
+    /// external http(s) URLs in the user's default system browser instead of
+    /// trying (and failing) to navigate the web view to them.
+    private let navigationDelegate = ChatWebViewNavigationDelegate()
     /// Feature flags passed to the renderer via URL query params so it only
     /// loads the (large) Mermaid/KaTeX bundles when enabled.
     private var mermaidEnabled: Bool = false
@@ -160,7 +164,7 @@ final class ChatWebViewModel: ObservableObject {
         config.setURLSchemeHandler(imageSchemeHandler, forURLScheme: ImageSchemeHandler.scheme)
 
         webView = WKWebView(frame: .zero, configuration: config)
-        webView.navigationDelegate = nil
+        webView.navigationDelegate = navigationDelegate
         webView.underPageBackgroundColor = .clear
         webView.setValue(false, forKey: "drawsBackground")
         webView.allowsBackForwardNavigationGestures = false
@@ -430,6 +434,28 @@ final class ChatWebViewModel: ObservableObject {
 }
 
 // MARK: - Bridge message handler
+
+/// Intercepts link clicks in the chat renderer and opens external http(s)
+/// URLs in the user's default system browser. The renderer marks links with
+/// `target="_blank"`, so without this delegate the clicks are dropped silently.
+/// In-page file loads and the custom `ichai://` image scheme are allowed
+/// through unchanged.
+private final class ChatWebViewNavigationDelegate: NSObject, WKNavigationDelegate {
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
+    ) {
+        if let url = navigationAction.request.url,
+           let scheme = url.scheme?.lowercased(),
+           scheme == "http" || scheme == "https" {
+            NSWorkspace.shared.open(url)
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.allow)
+    }
+}
 
 /// A thin `WKScriptMessageHandler` that forwards to the view model. We use a
 /// separate class (rather than making the view model conform) so the web view

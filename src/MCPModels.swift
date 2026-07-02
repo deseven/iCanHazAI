@@ -30,6 +30,13 @@ enum MCPRunPolicy: String, Codable, Sendable {
 struct MCPServer: Identifiable, Equatable, Sendable {
     var id: String { name }
     let name: String
+    /// Short, lowercase-alphanumeric identifier used to namespace this server's
+    /// tools for the LLM (e.g. a tool `search` under prefix `gdocs` becomes
+    /// `gdocs_search`). Must match `^[a-z0-9]+$` and be unique across servers.
+    /// Required because provider APIs reject tool names containing spaces or
+    /// punctuation (the server `name` is filesystem-derived and may contain
+    /// such characters).
+    let prefix: String
     let transport: MCPTransport
     /// When the server process is started/stopped. Only meaningful for stdio
     /// servers (where we own the subprocess); nil for http servers. Defaults
@@ -54,6 +61,7 @@ struct MCPServer: Identifiable, Equatable, Sendable {
 /// Mirrors `ConnectionConfig` with snake_case keys.
 struct MCPConfig: Codable {
     var transport: String
+    var prefix: String
     var runPolicy: String?
     var command: String?
     var args: [String]?
@@ -63,6 +71,7 @@ struct MCPConfig: Codable {
 
     enum CodingKeys: String, CodingKey {
         case transport
+        case prefix
         case runPolicy
         case command
         case args
@@ -84,6 +93,7 @@ extension MCPServer {
         }
         self.init(
             name: name,
+            prefix: config.prefix,
             transport: transport,
             runPolicy: runPolicy,
             command: config.command,
@@ -99,6 +109,7 @@ extension MCPServer {
     var config: MCPConfig {
         MCPConfig(
             transport: transport.rawValue,
+            prefix: prefix,
             runPolicy: transport == .stdio ? runPolicy?.rawValue : nil,
             command: command,
             args: args,
@@ -136,26 +147,29 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
 /// A tool exposed by an MCP server, in a provider-agnostic shape ready to be
 /// mapped onto OpenAI/Anthropic tool definitions by `ChatService`.
 ///
-/// The `namespacedName` (`{server}_{tool}`) is what the model sees and
-/// calls back; it guarantees uniqueness across servers. `ToolDefinition.parse`
-/// recovers the server + tool name from a call.
+/// The `namespacedName` (`{prefix}_{tool}`) is what the model sees and calls
+/// back; it guarantees uniqueness across servers and keeps the name within the
+/// `^[a-zA-Z0-9_-]+$` pattern required by provider APIs. `ToolDefinition.parse`
+/// recovers the prefix + tool name from a call; the prefix is then resolved
+/// back to a server name via `MCPManager.serverName(forPrefix:)`.
 struct ToolDefinition: Sendable, Equatable {
     let serverName: String
+    let prefix: String
     let name: String
     let description: String?
     /// Raw JSON string of the tool's input schema (a JSON Schema object).
     let inputSchema: String
 
-    /// The namespaced name sent to the model: `{server}_{tool}`.
-    var namespacedName: String { "\(serverName)_\(name)" }
+    /// The namespaced name sent to the model: `{prefix}_{tool}`.
+    var namespacedName: String { "\(prefix)_\(name)" }
 
-    /// Parses a namespaced tool name back into (server, tool).
-    /// Returns nil if the name doesn't follow the `{server}_{tool}` format.
-    static func parse(_ namespacedName: String) -> (server: String, tool: String)? {
+    /// Parses a namespaced tool name back into (prefix, tool).
+    /// Returns nil if the name doesn't follow the `{prefix}_{tool}` format.
+    static func parse(_ namespacedName: String) -> (prefix: String, tool: String)? {
         guard let range = namespacedName.range(of: "_") else { return nil }
-        let server = String(namespacedName[namespacedName.startIndex..<range.lowerBound])
+        let prefix = String(namespacedName[namespacedName.startIndex..<range.lowerBound])
         let tool = String(namespacedName[range.upperBound...])
-        guard !server.isEmpty, !tool.isEmpty else { return nil }
-        return (server, tool)
+        guard !prefix.isEmpty, !tool.isEmpty else { return nil }
+        return (prefix, tool)
     }
 }
