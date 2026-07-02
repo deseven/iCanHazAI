@@ -1157,8 +1157,19 @@ actor ChatEngine {
                 perServerCounts.append((serverName, 0))
                 continue
             }
-            perServerCounts.append((serverName, tools.count))
-            defs.append(contentsOf: tools.map { tool in
+            // Apply the per-server tool allowlist. An empty/nil list means all
+            // tools are allowed; otherwise only tools whose name matches an
+            // entry are advertised to the LLM.
+            let allowlist = await MCPManager.shared.serverConfig(for: serverName)?.tools ?? []
+            let allowSet = Set(allowlist)
+            let filtered: [MCPTool]
+            if allowSet.isEmpty {
+                filtered = tools
+            } else {
+                filtered = tools.filter { allowSet.contains($0.name) }
+            }
+            perServerCounts.append((serverName, filtered.count))
+            defs.append(contentsOf: filtered.map { tool in
                 ToolDefinition(
                     serverName: serverName,
                     name: tool.name,

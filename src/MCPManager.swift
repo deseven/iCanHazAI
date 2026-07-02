@@ -675,6 +675,14 @@ actor MCPManager {
         toolsCache[server]
     }
 
+    /// Returns the known config for `server` (as last loaded from disk), or
+    /// nil if the server isn't configured. Used by `ChatEngine.gatherTools` to
+    /// read the per-server tool allowlist (`tools`) so only allowed tools are
+    /// advertised to the LLM.
+    func serverConfig(for server: String) -> MCPServer? {
+        knownServers[server]
+    }
+
     /// Connects to `server` and queries its tool list, returning the tools
     /// and the server's reported name (from the MCP `initialize` response's
     /// `serverInfo.name`). Throws on any failure (connect or listTools). Used

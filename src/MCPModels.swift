@@ -44,6 +44,10 @@ struct MCPServer: Identifiable, Equatable, Sendable {
     var endpoint: String?
     /// http: optional bearer token.
     var token: String?
+    /// Allowlist of tool names exposed by this server. When non-empty, only
+    /// tools whose `name` matches an entry here are advertised to the LLM and
+    /// callable. An empty array (or nil) means all tools are allowed.
+    var tools: [String]?
 }
 
 /// Raw structure decoded from an MCP server TOML file.
@@ -55,6 +59,7 @@ struct MCPConfig: Codable {
     var args: [String]?
     var endpoint: String?
     var token: String?
+    var tools: [String]?
 
     enum CodingKeys: String, CodingKey {
         case transport
@@ -63,6 +68,7 @@ struct MCPConfig: Codable {
         case args
         case endpoint
         case token
+        case tools
     }
 }
 
@@ -84,7 +90,8 @@ extension MCPServer {
             command: config.command,
             args: config.args,
             endpoint: config.endpoint,
-            token: config.token
+            token: config.token,
+            tools: config.tools
         )
     }
 
@@ -97,7 +104,8 @@ extension MCPServer {
             command: command,
             args: args,
             endpoint: endpoint,
-            token: token
+            token: token,
+            tools: tools
         )
     }
 }

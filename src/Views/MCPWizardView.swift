@@ -22,7 +22,7 @@ struct MCPWizardView: View {
     private enum Step: Int, CaseIterable, Identifiable, Comparable {
         case type
         case parameters
-        case test
+        case tools
         case name
         case finish
 
@@ -32,7 +32,7 @@ struct MCPWizardView: View {
             switch self {
             case .type:       return "Transport"
             case .parameters: return "Parameters"
-            case .test:       return "Test"
+            case .tools:      return "Tools"
             case .name:       return "Name"
             case .finish:     return "Finish"
             }
@@ -67,15 +67,15 @@ struct MCPWizardView: View {
     /// http: optional bearer token.
     @State private var token: String = ""
 
-    // Step 3 — test
-    /// Whether the listTools test request is in flight.
+    // Step 3 — tools
+    /// Whether the listTools request is in flight.
     @State private var isTesting: Bool = false
     /// The in-flight test `Task`, tracked so it can be cancelled when the
     /// wizard is closed mid-test (otherwise the spawned stdio subprocess would
     /// be orphaned, since `testConnection` would still be awaiting a handshake
     /// that never completes).
     @State private var testTask: Task<Void, Never>?
-    /// Tools returned by the server, once the test completes.
+    /// Tools returned by the server, once the connection test completes.
     @State private var testTools: [MCPTool]?
     /// The error from the test, if it failed.
     @State private var testError: String?
@@ -83,6 +83,14 @@ struct MCPWizardView: View {
     /// response (`serverInfo.name`). Used to pre-fill the Name step. Nil if
     /// the test hasn't completed or the server didn't report a name.
     @State private var reportedServerName: String?
+    /// The set of tool names the user has selected. Independent of the filter:
+    /// filtering only affects what's visible, not what's selected. An empty
+    /// set means "no selection yet" (the user can't proceed); once saved, an
+    /// all-selected state is serialized as an empty array (allow all).
+    @State private var selectedTools: Set<String> = []
+    /// The current filter text for the tools list. Matches against tool name
+    /// and description (case-insensitive).
+    @State private var toolFilter: String = ""
 
     // Step 4 — name
     @State private var serverName: String = ""
@@ -100,6 +108,7 @@ struct MCPWizardView: View {
         case endpoint
         case token
         case serverName
+        case toolFilter
     }
 
     @FocusState private var focusedField: Field?
@@ -119,7 +128,7 @@ struct MCPWizardView: View {
                 switch step {
                 case .type:       typeStep
                 case .parameters: parametersStep
-                case .test:       testStep
+                case .tools:      toolsStep
                 case .name:       nameStep
                 case .finish:     finishStep
                 }
@@ -137,6 +146,8 @@ struct MCPWizardView: View {
             switch newStep {
             case .parameters:
                 focusedField = transport == .stdio ? .command : .endpoint
+            case .tools:
+                focusedField = .toolFilter
             case .name:
                 focusedField = .serverName
             default:
@@ -210,9 +221,13 @@ struct MCPWizardView: View {
             return true
         case .parameters:
             return parametersValid
-        case .test:
-            // Allow moving on regardless of test result, but not while in flight.
-            return !isTesting
+        case .tools:
+            // Can't proceed while the connection test is in flight, and at
+            // least one tool must be selected.
+            if isTesting { return false }
+            if testError != nil { return false }
+            guard let tools = testTools, !tools.isEmpty else { return false }
+            return !selectedTools.isEmpty
         case .name:
             return nameValid
         case .finish:
@@ -266,6 +281,8 @@ struct MCPWizardView: View {
         testTools = nil
         testError = nil
         reportedServerName = nil
+        selectedTools.removeAll()
+        toolFilter = ""
     }
 
     /// Resets all wizard state that belongs to steps after the given step.
@@ -276,7 +293,7 @@ struct MCPWizardView: View {
             endpoint = ""
             token = ""
         }
-        if step < .test {
+        if step < .tools {
             resetTestState()
         }
         if step < .name {
@@ -437,11 +454,31 @@ struct MCPWizardView: View {
         }
     }
 
-    // MARK: - Step 3: Test
+    // MARK: - Step 3: Tools
 
-    private var testStep: some View {
+    /// The tools that match the current filter text. Matching is
+    /// case-insensitive against both the tool name and its description.
+    /// Filtering does not affect `selectedTools` — only what's visible.
+    private var filteredTools: [MCPTool] {
+        guard let tools = testTools else { return [] }
+        let q = toolFilter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return tools }
+        return tools.filter { tool in
+            if tool.name.lowercased().contains(q) { return true }
+            if let desc = tool.description, desc.lowercased().contains(q) { return true }
+            return false
+        }
+    }
+
+    /// Whether all currently-known tools are selected.
+    private var allSelected: Bool {
+        guard let tools = testTools, !tools.isEmpty else { return false }
+        return tools.allSatisfy { selectedTools.contains($0.name) }
+    }
+
+    private var toolsStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("We'll connect to the server and list its tools. You can continue regardless of the result.")
+            Text("We'll connect to the server and list its tools. Select which tools the model is allowed to use.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -493,22 +530,63 @@ struct MCPWizardView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if let tools = testTools, !tools.isEmpty {
+                // Filter input + Select All/None toggle.
+                HStack(spacing: 8) {
+                    TextField("Filter tools…", text: $toolFilter)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($focusedField, equals: .toolFilter)
+                    Button(allSelected ? "Select None" : "Select All") {
+                        if allSelected {
+                            selectedTools.removeAll()
+                        } else {
+                            for t in tools { selectedTools.insert(t.name) }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                }
+
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(tools.enumerated()), id: \.offset) { _, tool in
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(tool.name)
-                                    .font(.callout)
-                                    .fontWeight(.medium)
-                                if let desc = tool.description, !desc.isEmpty {
-                                    Text(desc)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                        ForEach(Array(filteredTools.enumerated()), id: \.offset) { _, tool in
+                            let isSelected = selectedTools.contains(tool.name)
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                                    .padding(.top, 2)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(tool.name)
+                                        .font(.callout)
+                                        .fontWeight(.medium)
+                                    if let desc = tool.description, !desc.isEmpty {
+                                        Text(desc)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
+                                Spacer()
                             }
                             .padding(.vertical, 5)
                             .padding(.horizontal, 8)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                if isSelected {
+                                    selectedTools.remove(tool.name)
+                                } else {
+                                    selectedTools.insert(tool.name)
+                                }
+                            }
+                            .background(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .fill(isSelected ? Color.accentColor.opacity(0.1) : Color.clear)
+                            )
+                        }
+                        if filteredTools.isEmpty {
+                            Text("No tools match “\(toolFilter)”.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -518,6 +596,10 @@ struct MCPWizardView: View {
                     RoundedRectangle(cornerRadius: 6)
                         .stroke(Color.secondary.opacity(0.2))
                 )
+
+                Text("Selected \(selectedTools.count) tool\(selectedTools.count == 1 ? "" : "s") out of \(tools.count).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Spacer()
@@ -531,15 +613,33 @@ struct MCPWizardView: View {
 
     /// Builds an `MCPServer` from the current wizard state. `runPolicy` is
     /// only set for stdio servers; http servers have no run policy.
-    private func buildServer(name: String) -> MCPServer {
-        MCPServer(
+    ///
+    /// `includeTools` controls whether the selected-tool allowlist is attached.
+    /// The transient test connection is built without it (so all tools are
+    /// listed during the test); the saved server carries the user's selection.
+    /// Per spec, an all-selected state is serialized as an empty array (allow
+    /// all), and a partial selection is the list of chosen tool names.
+    private func buildServer(name: String, includeTools: Bool = false) -> MCPServer {
+        var tools: [String]? = nil
+        if includeTools, let available = testTools, !available.isEmpty {
+            if selectedTools.count == available.count {
+                // All selected → empty array (allow all).
+                tools = []
+            } else {
+                tools = available
+                    .map { $0.name }
+                    .filter { selectedTools.contains($0) }
+            }
+        }
+        return MCPServer(
             name: name,
             transport: transport,
             runPolicy: transport == .stdio ? runPolicy : nil,
             command: transport == .stdio ? command : nil,
             args: transport == .stdio ? splitArgs(args) : nil,
             endpoint: transport == .http ? endpoint : nil,
-            token: transport == .http && !token.isEmpty ? token : nil
+            token: transport == .http && !token.isEmpty ? token : nil,
+            tools: tools
         )
     }
 
@@ -634,6 +734,13 @@ struct MCPWizardView: View {
                 summaryRow("Endpoint", endpoint)
                 summaryRow("Token", token.isEmpty ? "none" : "set")
             }
+            if let available = testTools, !available.isEmpty {
+                if selectedTools.count == available.count {
+                    summaryRow("Tools", "all (\(available.count))")
+                } else {
+                    summaryRow("Tools", "\(selectedTools.count) of \(available.count)")
+                }
+            }
 
             Spacer()
 
@@ -723,7 +830,7 @@ struct MCPWizardView: View {
     /// FSEvent triggers `MCPManager`/`ChatEngine` reload — no manual refresh.
     private func saveServer() {
         let name = sanitizedFilename(serverName)
-        let server = buildServer(name: name)
+        let server = buildServer(name: name, includeTools: true)
         EnvironmentManager.shared.saveMCP(server)
         savedFileURL = EnvironmentManager.shared.mcpsURL.appendingPathComponent("\(name).toml")
     }
