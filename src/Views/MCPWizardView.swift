@@ -70,10 +70,19 @@ struct MCPWizardView: View {
     // Step 3 — test
     /// Whether the listTools test request is in flight.
     @State private var isTesting: Bool = false
+    /// The in-flight test `Task`, tracked so it can be cancelled when the
+    /// wizard is closed mid-test (otherwise the spawned stdio subprocess would
+    /// be orphaned, since `testConnection` would still be awaiting a handshake
+    /// that never completes).
+    @State private var testTask: Task<Void, Never>?
     /// Tools returned by the server, once the test completes.
     @State private var testTools: [MCPTool]?
     /// The error from the test, if it failed.
     @State private var testError: String?
+    /// The server name reported by the MCP server in its `initialize`
+    /// response (`serverInfo.name`). Used to pre-fill the Name step. Nil if
+    /// the test hasn't completed or the server didn't report a name.
+    @State private var reportedServerName: String?
 
     // Step 4 — name
     @State private var serverName: String = ""
@@ -248,10 +257,15 @@ struct MCPWizardView: View {
     }
 
     /// Clears the connection test results so the test re-runs from scratch.
+    /// Cancels any in-flight test task first so we don't leave a dangling
+    /// subprocess.
     private func resetTestState() {
+        testTask?.cancel()
+        testTask = nil
         isTesting = false
         testTools = nil
         testError = nil
+        reportedServerName = nil
     }
 
     /// Resets all wizard state that belongs to steps after the given step.
@@ -274,8 +288,11 @@ struct MCPWizardView: View {
     }
 
     private func closeWindow() {
-        // Best-effort cleanup of a transient test connection left behind if the
-        // user cancels mid-test.
+        // Cancel any in-flight test so the spawned subprocess is torn down
+        // (testConnection's race will throw CancellationError, and the cleanup
+        // in connectAndListTools kills the process). Then disconnect any
+        // transient connection that may have been left behind.
+        testTask?.cancel()
         Task { await MCPManager.shared.disconnect(name: tempServerName) }
         NSApp.windows.first(where: { $0.identifier?.rawValue == "mcp-wizard" })?.close()
     }
@@ -445,9 +462,6 @@ struct MCPWizardView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                    } else if let err = testError {
-                        Text(err)
-                            .foregroundStyle(.red)
                     } else if let tools = testTools {
                         Text("\(tools.count) available")
                             .foregroundStyle(.secondary)
@@ -455,6 +469,25 @@ struct MCPWizardView: View {
                         Text("—")
                             .foregroundStyle(.secondary)
                     }
+                }
+
+                if let err = testError {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                            .padding(.top, 2)
+                        Text(err)
+                            .font(.callout)
+                            .foregroundStyle(.red)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.red.opacity(0.08))
+                    )
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -510,18 +543,26 @@ struct MCPWizardView: View {
         )
     }
 
-    /// Runs the listTools test once when the step appears.
+    /// Runs the listTools test once when the step appears. The in-flight task
+    /// is stored in `testTask` so it can be cancelled if the wizard is closed
+    /// mid-test (preventing an orphaned subprocess).
     private func runTestIfNeeded() {
         guard !isTesting && testTools == nil && testError == nil else { return }
         isTesting = true
 
         let server = buildServer(name: tempServerName)
-        Task {
+        testTask = Task {
             do {
                 // testConnection connects, lists tools, and throws on failure.
-                let tools = try await MCPManager.shared.testConnection(server)
+                // It also returns the server's reported name (serverInfo.name).
+                let result = try await MCPManager.shared.testConnection(server)
                 await MainActor.run {
-                    self.testTools = tools
+                    self.testTools = result.tools
+                    self.reportedServerName = result.serverName
+                    self.isTesting = false
+                }
+            } catch is CancellationError {
+                await MainActor.run {
                     self.isTesting = false
                 }
             } catch {
@@ -532,6 +573,9 @@ struct MCPWizardView: View {
             }
             // Clean up the transient connection so it doesn't linger.
             await MCPManager.shared.disconnect(name: tempServerName)
+            await MainActor.run {
+                self.testTask = nil
+            }
         }
     }
 
@@ -641,8 +685,15 @@ struct MCPWizardView: View {
         return args
     }
 
-    /// Default name derived from the command or endpoint host.
+    /// Default name derived from the server's reported name (preferred, from
+    /// the MCP `initialize` response's `serverInfo.name`), falling back to the
+    /// command name or endpoint host. The result is sanitized for filesystem use.
     private func defaultServerName() -> String {
+        // Prefer the name the server reported during the test connection.
+        if let reported = reportedServerName, !reported.isEmpty {
+            let sanitized = sanitizedFilename(reported)
+            if !sanitized.isEmpty { return sanitized }
+        }
         switch transport {
         case .stdio:
             let base = command.trimmingCharacters(in: .whitespacesAndNewlines)
