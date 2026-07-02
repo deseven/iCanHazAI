@@ -133,6 +133,38 @@ do_compile_x86_64() {
     swift build -c "$buildConfig" --arch x86_64
 }
 
+# Build the four bundled stdio MCP servers (UtilsMCP, FilesystemMCP, CodeMCP,
+# ShellMCP) for arm64 and copy the binaries into the app bundle under
+# Contents/Resources/MCPServers/. Each server is an independent SwiftPM
+# package under mcps/.
+do_build_mcps() {
+    local mcpDir="$loc/mcps"
+    local outDir="$loc/dist/$name.app/Contents/Resources/MCPServers"
+    mkdir -p "$outDir"
+
+    for srv in UtilsMCP FilesystemMCP CodeMCP ShellMCP; do
+        ( cd "$mcpDir/$srv" && swift build -c "$buildConfig" --arch arm64 ) || return 1
+        cp "$mcpDir/$srv/.build/arm64-apple-macosx/$buildConfig/$srv" "$outDir/$srv"
+    done
+}
+
+# Build the four MCP servers as universal (arm64 + x86_64) binaries via lipo,
+# mirroring the app's universal-binary flow for non-dev modes.
+do_build_mcps_universal() {
+    local mcpDir="$loc/mcps"
+    local outDir="$loc/dist/$name.app/Contents/Resources/MCPServers"
+    mkdir -p "$outDir"
+
+    for srv in UtilsMCP FilesystemMCP CodeMCP ShellMCP; do
+        ( cd "$mcpDir/$srv" && swift build -c "$buildConfig" --arch arm64 ) || return 1
+        ( cd "$mcpDir/$srv" && swift build -c "$buildConfig" --arch x86_64 ) || return 1
+        lipo -create \
+            "$mcpDir/$srv/.build/arm64-apple-macosx/$buildConfig/$srv" \
+            "$mcpDir/$srv/.build/x86_64-apple-macosx/$buildConfig/$srv" \
+            -output "$outDir/$srv"
+    done
+}
+
 do_create_universal() {
     lipo -create \
         "$loc/.build/arm64-apple-macosx/$buildConfig/$name" \
@@ -244,9 +276,9 @@ do_upload() {
 
 # ── Calculate total steps per mode ───────────────────────────────────
 case "$mode" in
-    dev)         totalSteps=6 ;;
+    dev)         totalSteps=7 ;;
     dev-release)
-        totalSteps=10
+        totalSteps=11
         if [ "$can_notarize" = true ]; then
             totalSteps=$((totalSteps + 2))
         fi
@@ -255,7 +287,7 @@ case "$mode" in
         fi
         ;;
     release)
-        totalSteps=10
+        totalSteps=11
         if [ "$can_sign" = true ]; then
             totalSteps=$((totalSteps + 1))
         fi
@@ -284,6 +316,12 @@ if [ "$mode" != "dev" ]; then
 fi
 
 run_step "Creating APP bundle..."                 "failed to create app bundle"              do_create_bundle
+
+if [ "$mode" = "dev" ]; then
+    run_step "Building bundled MCP servers..."     "failed to build bundled MCP servers"      do_build_mcps
+else
+    run_step "Building bundled MCP servers..."     "failed to build bundled MCP servers"      do_build_mcps_universal
+fi
 run_step "Code-signing APP bundle..."             "failed to code-sign app bundle"           do_codesign
 
 if [ "$mode" != "dev" ]; then
