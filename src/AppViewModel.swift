@@ -102,8 +102,6 @@ final class AppViewModel: ObservableObject {
 
     deinit {
         subscription?.cancel()
-        // The local event monitor is torn down by the system when the app
-        // terminates, since AppViewModel is a singleton.
     }
 
     // MARK: - Preferences sync
@@ -133,8 +131,6 @@ final class AppViewModel: ObservableObject {
             preferencesChatRendererDebugEnabled = cd
             preferencesExpandThinking = et
             preferencesExpandToolUse = eu
-            // Sync the app debug flag into the logger so debugLog() calls
-            // take effect immediately after preferences are loaded.
             DebugLogger.setEnabled(ad)
             if let ls { chatListSidebarVisible = ls }
             if let rs { chatInfoSidebarVisible = rs }
@@ -254,8 +250,6 @@ final class AppViewModel: ObservableObject {
     private func startListening() {
         subscription = Task { [weak self] in
             guard let self else { return }
-            // Ensure the engine is started before subscribing so the initial
-            // snapshot reflects loaded data rather than an empty state.
             await self.engine.start()
             let stream = await self.engine.subscribe()
             for await event in stream {
@@ -269,18 +263,14 @@ final class AppViewModel: ObservableObject {
         switch event {
         case .chatsChanged(let records):
             chatItems = records
-            // Project a cheap, message-free summary for the sidebar so it
-            // doesn't re-diff full message arrays on every token of any chat.
             chatSummaries = records.map(ChatSummary.init)
-            // Preserve selection if still present, otherwise pick the first.
             if let selected = selectedChatID, records.contains(where: { $0.id == selected }) {
                 // keep selection
             } else {
                 selectedChatID = records.first?.id
             }
-            // If the user is viewing the selected chat and is scrolled to the
-            // bottom, suppress the unread marker — they've already seen the
-            // latest content (e.g. a stream that just finished).
+            // Suppress the unread marker if the user is already viewing the
+            // selected chat scrolled to the bottom.
             if selectedChatAtBottom,
                let selected = selectedChatID,
                let item = records.first(where: { $0.id == selected }),
@@ -288,12 +278,9 @@ final class AppViewModel: ObservableObject {
                !item.isStreaming {
                 Task { await engine.markViewed(filename: selected) }
             }
-            // React to this event synchronously: push the snapshot in the same
-            // main-actor turn that processes it. This is event-driven (not a
-            // polling/waiting hack) — it guarantees the web view reflects
-            // tool-call state before the engine actor resumes to execute the
-            // tool, closing the timing gap where the tool-call block would
-            // otherwise only appear after execution.
+            // Push the snapshot synchronously in the same main-actor turn so
+            // the web view reflects tool-call state before the engine resumes
+            // to execute the tool.
             chatWebViewModel?.pushSnapshot()
         case .rolesChanged(let roles):
             self.roles = roles
@@ -301,8 +288,6 @@ final class AppViewModel: ObservableObject {
         case .connectionsChanged(let connections):
             self.connections = connections
             refreshPreferences()
-            // On the first connections snapshot, if there are no connections
-            // at all, automatically open the New Connection wizard.
             if !didCheckInitialConnections {
                 didCheckInitialConnections = true
                 if connections.isEmpty {
@@ -314,8 +299,6 @@ final class AppViewModel: ObservableObject {
         case .mcpConfiguration(let state):
             mcpConfiguration = state
         case .configChanged:
-            // config.toml was reloaded from disk (external edit picked up via
-            // FSEvents). Refresh the cached preferences so the UI stays in sync.
             refreshPreferences()
         case .error(let message):
             errorMessage = message
@@ -330,8 +313,6 @@ final class AppViewModel: ObservableObject {
     func refreshAfterWizard() {
         refreshPreferences()
         Task {
-            // Give the engine a moment to pick up the new connection file via
-            // FSEvents before reading the config.
             try? await Task.sleep(for: .milliseconds(300))
             await promptForDefaultIfNeeded()
             await promptForUtilityIfNeeded()
@@ -383,7 +364,6 @@ final class AppViewModel: ObservableObject {
         alert.informativeText = message
         alert.addButton(withTitle: "Set as Default")
         alert.addButton(withTitle: "Not Now")
-        // Repurpose the first button title per caller context.
         alert.buttons.first?.title = "Use This Connection"
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
@@ -510,8 +490,6 @@ final class AppViewModel: ObservableObject {
 
     /// Selects a chat, prunes other empty chats, and clears its unread marker.
     func selectChat(_ filename: String) {
-        // Track the previous chat for Ctrl+Tab quick-switch, but not during
-        // a Ctrl+Tab cycling session (to avoid overwriting the origin).
         if !ctrlTabSessionActive, let current = selectedChatID, current != filename {
             previousChatID = current
         }
@@ -531,7 +509,6 @@ final class AppViewModel: ObservableObject {
             matching: [.keyDown, .flagsChanged]
         ) { [weak self] event in
             guard let self else { return event }
-            // Only handle events destined for the main window.
             guard let window = event.window,
                   window == NSApplication.shared.mainWindow else {
                 return event
@@ -545,7 +522,6 @@ final class AppViewModel: ObservableObject {
                     return nil // Swallow the event
                 }
             case .flagsChanged:
-                // Detect when Ctrl is released to end the session.
                 if self.ctrlTabSessionActive,
                    !event.modifierFlags.contains(.control) {
                     self.endCtrlTabSession()
@@ -563,12 +539,9 @@ final class AppViewModel: ObservableObject {
         guard !items.isEmpty else { return }
 
         if !ctrlTabSessionActive {
-            // Start a new Ctrl+Tab session.
             ctrlTabSessionActive = true
             ctrlTabOriginID = selectedChatID
 
-            // First press: go to the previous chat if available, otherwise
-            // go to the next chat in the list.
             if let prev = previousChatID,
                let idx = items.firstIndex(where: { $0.id == prev }) {
                 ctrlTabCurrentIndex = idx
@@ -579,7 +552,6 @@ final class AppViewModel: ObservableObject {
                 ctrlTabCurrentIndex = 0
             }
         } else {
-            // Continuing the session: cycle to the next chat.
             ctrlTabCurrentIndex = (ctrlTabCurrentIndex + 1) % items.count
         }
 
@@ -594,7 +566,6 @@ final class AppViewModel: ObservableObject {
     /// Ends the Ctrl+Tab session, finalising the switch.
     private func endCtrlTabSession() {
         ctrlTabSessionActive = false
-        // Update previousChatID so the next single Ctrl+Tab toggles back.
         if let origin = ctrlTabOriginID, let current = selectedChatID, origin != current {
             previousChatID = origin
         }

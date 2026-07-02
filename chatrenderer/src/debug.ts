@@ -33,13 +33,10 @@ export function debugLog(topic: string, message: unknown): void {
     typeof message === "string" ? message : JSON.stringify(message);
   const line = `[${ts}] [${topic}] ${text}`;
 
-  // Always mirror to the console for dev inspection.
-  console.log(line);
 
   const overlay = document.getElementById(DEBUG_OVERLAY_ID);
   if (overlay) {
     overlay.textContent += line + "\n";
-    // Autoscroll to the bottom so the latest output is always visible.
     overlay.scrollTop = overlay.scrollHeight;
   }
 }
@@ -54,8 +51,6 @@ export function debugLog(topic: string, message: unknown): void {
 export function setupDebugOverlay(): void {
   if (!debugEnabled) return;
 
-  // The <pre> element is declared in index.html; if it's missing for any
-  // reason, create it on the fly.
   let overlay = document.getElementById(DEBUG_OVERLAY_ID) as HTMLPreElement | null;
   if (!overlay) {
     overlay = document.createElement("pre");
@@ -63,8 +58,6 @@ export function setupDebugOverlay(): void {
     document.body.insertBefore(overlay, document.body.firstChild);
   }
 
-  // Build a header bar with a toggle. The header sits above the textarea and
-  // collapses/expands the content area.
   const wrapper = document.createElement("div");
   wrapper.id = "__debug_wrapper__";
   wrapper.className = "debug-wrapper";
@@ -78,10 +71,8 @@ export function setupDebugOverlay(): void {
   const content = document.createElement("div");
   content.className = "debug-content debug-collapsed";
 
-  // Move the existing <pre> into the content area.
   overlay.remove();
   content.appendChild(overlay);
-  // The overlay is now visible (display controlled by the content wrapper).
   overlay.style.display = "block";
 
   header.addEventListener("click", () => {
@@ -89,7 +80,6 @@ export function setupDebugOverlay(): void {
     header.setAttribute("aria-expanded", collapsed ? "false" : "true");
     header.textContent = (collapsed ? "▸" : "▾") + " Debug";
     if (!collapsed) {
-      // When expanding, jump to the latest output.
       overlay.scrollTop = overlay.scrollHeight;
     }
   });

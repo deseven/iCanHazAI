@@ -273,7 +273,6 @@ actor ConfigManager {
             debugLog("Config", "failed to decode config on reload: \(error.localizedDescription) — keeping current state")
             return
         }
-        // Reset lastWritten so the next persist() comparison is accurate.
         lastWritten = nil
         validateAndSave()
     }
@@ -283,15 +282,12 @@ actor ConfigManager {
     private var lastWritten: AppConfig?
     private func persist() {
         guard config != lastWritten else { return }
-        // Register the config file path with the engine's per-path suppression
-        // registry before writing, so the resulting FSEvents burst is ignored.
         willWriteConfig?()
         debugLog("FileWrite", "writing config.toml")
         let encoder = TOMLEncoder()
         encoder.outputFormatting = .sortedKeys
         encoder.keyEncodingStrategy = .convertToSnakeCase
         guard let data = try? encoder.encode(config) else { return }
-        // Ensure the parent directory exists.
         let dir = fileURL.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try? data.write(to: fileURL, options: .atomic)

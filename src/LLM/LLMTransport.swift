@@ -122,8 +122,6 @@ enum LLMTransport {
 
         let (bytes, response) = try await session.bytes(for: request)
 
-        // Check the HTTP status before consuming the stream. On error, drain
-        // the body and parse it via the provider's error shape.
         if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
             let body = try await drainBytes(bytes)
             throw provider.parseError(body, statusCode: http.statusCode)
@@ -133,8 +131,6 @@ enum LLMTransport {
         var finishReason: String?
         let accumulator = ToolCallAccumulator()
 
-        // Iterate over SSE lines. `bytes.lines` yields one line at a time
-        // (no trailing newline), which is exactly what the SSE parser wants.
         for try await line in bytes.lines {
             try Task.checkCancellation()
             guard let payload = SSEParser.parsePayload(line) else { continue }
@@ -155,7 +151,6 @@ enum LLMTransport {
             }
         }
 
-        // Materialize accumulated tool calls and emit each as a final chunk.
         let toolCalls = accumulator.materialize()
         for call in toolCalls {
             await onChunk(.toolCall(call))

@@ -43,11 +43,9 @@ struct MCPConfigurationOverlay: View {
     /// each server's status.
     private var content: some View {
         ZStack {
-            // Half-transparent dimming layer over the whole window.
             Color.black.opacity(0.35)
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
-            // Centered status card.
             VStack(alignment: .leading, spacing: 10) {
                 Text("Configuring MCP servers")
                     .font(.headline)
@@ -103,13 +101,10 @@ struct MCPConfigurationOverlay: View {
     private func handle(_ state: MCPConfigurationState) {
         let hasEntries = !state.entries.isEmpty
         if state.isConfiguring && hasEntries {
-            // Still in progress: ensure visible, cancel any pending hide.
             hideTask?.cancel()
             hideTask = nil
             visible = true
         } else if hasEntries {
-            // Just finished: keep visible for 1 second so the user can read
-            // the results, then hide.
             hideTask?.cancel()
             hideTask = Task { @MainActor in
                 try? await Task.sleep(for: .seconds(1))
@@ -117,7 +112,6 @@ struct MCPConfigurationOverlay: View {
                 visible = false
             }
         } else {
-            // No entries (no MCPs configured): hide immediately.
             hideTask?.cancel()
             hideTask = nil
             visible = false

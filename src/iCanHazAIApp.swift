@@ -24,8 +24,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         debugLog("App", "applicationWillTerminate — disconnecting MCP servers")
-        // Disconnect all MCP servers (terminates stdio subprocesses) so we
-        // don't leave orphaned processes behind on quit.
         Task { await MCPManager.shared.disconnectAll() }
     }
 }
@@ -43,7 +41,6 @@ struct iCanHazAIApp: App {
                 .environmentObject(viewModel)
                 .frame(minWidth: 800, minHeight: 500)
                 .onAppear {
-                    // Ensure the main window is brought to front immediately on launch.
                     NSApplication.shared.activate(ignoringOtherApps: true)
                     if let window = NSApplication.shared.windows.first(where: { $0.contentViewController is NSHostingController<AnyView> }) ?? NSApplication.shared.windows.first {
                         window.makeKeyAndOrderFront(nil)
@@ -54,8 +51,6 @@ struct iCanHazAIApp: App {
         }
         .windowToolbarStyle(.unified)
         .commands {
-            // Replace the default "New Window" item (Cmd+N) to prevent
-            // creating multiple main windows.
             CommandGroup(replacing: .newItem) {
                 Button("New Chat") {
                     AppViewModel.shared?.createNewChat()
@@ -74,9 +69,6 @@ struct iCanHazAIApp: App {
                 }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
             }
-            // "File > Reload MCPs…" — resets all configured MCPs and their
-            // tools cache, then re-runs the full configuration pass. Shows the
-            // configuration overlay while in progress.
             CommandGroup(after: .newItem) {
                 Button("Reload MCPs…") {
                     AppViewModel.shared?.reloadMCPs()
@@ -120,7 +112,6 @@ struct iCanHazAIApp: App {
         let config = ConfigManager.shared
         var debounceTask: Task<Void, Never>?
 
-        // Use a dedicated delegate object to intercept resize/move events.
         let tracker = WindowFrameTracker { frame in
             debounceTask?.cancel()
             debounceTask = Task {
@@ -131,7 +122,6 @@ struct iCanHazAIApp: App {
                 await config.setWindow(wc)
             }
         }
-        // Keep the tracker alive by associating it with the window.
         objc_setAssociatedObject(window, "frameTracker", tracker, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         tracker.attach(to: window)
     }
@@ -154,8 +144,6 @@ private final class WindowFrameTracker: NSObject, NSWindowDelegate {
     func attach(to window: NSWindow) {
         self.window = window
         window.delegate = self
-        // Also observe live resize notifications since the delegate's
-        // `windowDidResize` only fires after resize ends.
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(frameDidChange),

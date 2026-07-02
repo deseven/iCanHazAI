@@ -69,7 +69,6 @@ final class ImageSchemeHandler: NSObject, WKURLSchemeHandler {
     }
 
     func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {
-        // Nothing to cancel; the handler is synchronous.
     }
 
     // MARK: - Helpers

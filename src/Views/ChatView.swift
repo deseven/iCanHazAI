@@ -13,10 +13,8 @@ struct ChatView: View {
     /// Natural content height of the editor, clamped to [1, 5] lines.
     @State private var editorHeight: CGFloat = ChatView.lineHeight
     @FocusState private var isInputFocused: Bool
-    /// Monotonic counter bumped whenever we want the editor to (re)claim focus.
-    /// SwiftUI re-runs `updateNSView` when this value changes, which lets us
-    /// force focus even when `isInputFocused` is already `true` (e.g. switching
-    /// chats). This replaces the old weak-ref `InputFocusController`.
+    /// Monotonic counter bumped to force `updateNSView` to re-run and re-claim
+    /// focus, even when `isInputFocused` is already `true` (e.g. switching chats).
     @State private var focusToken: Int = 0
 
     /// Height of a single text line (font + insets). Computed from the actual
@@ -33,27 +31,18 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Custom header bar with pickers — lives inside ChatView so it
-            // naturally shrinks when the inspector panel is open.
             ChatHeaderBar {
                 store.chatInfoSidebarVisible.toggle()
             }
 
             Divider()
 
-            // Chat content: rendered by the persistent web view.
             ChatWebView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
 
-            // Input container — rounded bordered box that grows up to 5 lines.
-            // Attach button (left) and send button (right) sit in a top-aligned
-            // row with the editor, so they stay put as the editor expands.
             HStack(alignment: .top, spacing: 0) {
-                // Attach button (left). Top-aligned so it doesn't drift down
-                // when the editor grows. Top padding matches the editor's
-                // vertical padding so the icon centers on the first line.
                 if store.selectedChatSupportsImageInput {
                     Button(action: { filePicker = true }) {
                         Image(systemName: "paperclip")
@@ -68,8 +57,6 @@ struct ChatView: View {
                     .padding(.top, 6)
                 }
 
-                // Editor + pending image chips. The editor's height is driven
-                // by its content (clamped to 5 lines); beyond that it scrolls.
                 VStack(spacing: 4) {
                     if !pendingImages.isEmpty {
                         ScrollView(.horizontal, showsIndicators: false) {
@@ -100,8 +87,6 @@ struct ChatView: View {
                 }
                 .padding(.vertical, 6)
 
-                // Send button (right). Top-aligned; top padding matches the
-                // editor's vertical padding so the icon centers on line one.
                 Button(action: handleSendOrStop) {
                     Image(systemName: store.isStreaming ? "stop.circle.fill" : "arrow.up.circle.fill")
                         .font(.system(size: 22))
@@ -133,7 +118,6 @@ struct ChatView: View {
             )
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            // Drag-and-drop images onto the input area.
             .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
                 handleDrop(providers: providers)
             }
@@ -147,8 +131,6 @@ struct ChatView: View {
             pendingImages = []
             editorHeight = ChatView.lineHeight
             isInputFocused = true
-            // Bump the token so updateNSView re-runs and re-claims first
-            // responder, even though isInputFocused is already true.
             focusToken &+= 1
         }
         .fileImporter(
@@ -170,8 +152,6 @@ struct ChatView: View {
                 break
             }
         }
-        // Edit sheet — driven by the web view bridge setting
-        // `pendingEditMessageID`.
         .sheet(item: Binding(
             get: { store.pendingEditMessageID.map { PendingID(id: $0) } },
             set: { if $0 == nil { store.pendingEditMessageID = nil } }
@@ -188,8 +168,6 @@ struct ChatView: View {
                 )
             }
         }
-        // Delete confirmation — driven by the web view bridge setting
-        // `pendingDeleteMessageID`.
         .sheet(item: Binding(
             get: { store.pendingDeleteMessageID.map { PendingID(id: $0) } },
             set: { if $0 == nil { store.pendingDeleteMessageID = nil } }
@@ -210,9 +188,7 @@ struct ChatView: View {
     /// Whether the send/stop button should be disabled.
     private var sendDisabled: Bool {
         if store.isStreaming { return false }
-        // Disallow sending when there's no usable connection selected.
         if !store.selectedChatHasConnection { return true }
-        // Allow sending image-only messages (no text) when images are attached.
         if !pendingImages.isEmpty { return false }
         return inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -316,11 +292,9 @@ struct ChatView: View {
     }
 
     private func send() {
-        // Disallow sending when no connection is selected instead of silently dropping.
         guard store.selectedChatHasConnection else { return }
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         let images = pendingImages
-        // Allow image-only messages (no text) when images are attached.
         guard (!text.isEmpty || !images.isEmpty), !store.isStreaming else { return }
         inputText = ""
         pendingImages = []
@@ -372,8 +346,6 @@ struct ChatView: View {
             if added { return true }
         }
 
-        // 2. Direct image data (e.g. screenshot copy, image copied from a
-        //    browser). These pasteboards carry no file URL.
         if let tiff = pb.data(forType: .tiff),
            let img = ImageManager.intake(data: tiff, originalName: nil) {
             pendingImages.append(img)
@@ -385,8 +357,6 @@ struct ChatView: View {
             return true
         }
 
-        // 3. NSImage objects (e.g. a photo copied from Photos.app) that don't
-        //    expose TIFF/PNG data types directly.
         if let images = pb.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage] {
             for image in images {
                 if let img = ImageManager.intake(nsImage: image, originalName: nil) {
@@ -450,25 +420,18 @@ private struct ChatInputEditor: NSViewRepresentable {
         tv.drawsBackground = false
         tv.isHorizontallyResizable = false
         tv.isVerticallyResizable = true
-        // Insets: a bit of horizontal breathing room, minimal vertical.
         tv.textContainerInset = NSSize(width: 4, height: 4)
         tv.imagePasteHandler = { onImagePaste() }
         tv.returnHandler = onReturn
         tv.contentHeightChanged = onHeightChange
-        // Apply initial text.
         tv.string = text
 
-        // Configure the text container so the text view tracks the scroll
-        // view's width and lays out properly inside it.
         if let tc = tv.textContainer {
             tc.widthTracksTextView = false
             tc.heightTracksTextView = false
             tc.size = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         }
 
-        // Wrap the text view in a scroll view so that once the content
-        // exceeds the (SwiftUI-capped) frame height, the text scrolls
-        // internally instead of overflowing the component borders.
         let scrollView = NSScrollView()
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
@@ -477,29 +440,18 @@ private struct ChatInputEditor: NSViewRepresentable {
         scrollView.borderType = .noBorder
         scrollView.contentView = FlippedClipView()
         scrollView.documentView = tv
-        // Make the text view fill the scroll view's width and grow vertically
-        // with its content. autoresizingMask keeps the width in sync as the
-        // scroll view is resized by SwiftUI.
         tv.autoresizingMask = [.width]
-        // Give it a non-zero initial height so it can receive focus/clicks;
-        // reportContentHeight() will correct it to the content height.
         tv.frame = NSRect(x: 0, y: 0, width: scrollView.bounds.width, height: ChatView.lineHeight)
-        // Trigger an initial layout + height report now that the text view is
-        // wired into the scroll view.
         DispatchQueue.main.async { tv.reportContentHeight() }
         return scrollView
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let tv = nsView.documentView as? ChatInputTextView else { return }
-        // Sync external text changes (e.g. cleared after send).
         if tv.string != text {
             tv.string = text
-            // Force a height report so SwiftUI can collapse the editor after send.
             tv.reportContentHeight()
         }
-        // Sync focus state. The focusToken forces this branch to re-run even
-        // when isFocused is already true (e.g. switching chats).
         if isFocused.wrappedValue, tv.window?.firstResponder !== tv {
             tv.window?.makeFirstResponder(tv)
         }
@@ -550,8 +502,6 @@ private final class ChatInputTextView: NSTextView {
     /// the enclosing scroll view can clip and scroll it.
     func reportContentHeight() {
         guard let lm = layoutManager, let tc = textContainer else { return }
-        // Keep the container width in sync with the (possibly resized) frame
-        // so wrapping matches the visible width.
         tc.size = NSSize(width: bounds.width - textContainerInset.width * 2,
                          height: CGFloat.greatestFiniteMagnitude)
         lm.ensureLayout(for: tc)
@@ -567,8 +517,6 @@ private final class ChatInputTextView: NSTextView {
             f.size.height = total
             frame = f
         }
-        // If the content fits within the visible scroll area, reset the
-        // scroll origin to the top so no stale scrollbar lingers.
         if let clip = enclosingScrollView?.contentView as? FlippedClipView {
             let visible = clip.bounds.height
             if total <= visible {
@@ -578,7 +526,6 @@ private final class ChatInputTextView: NSTextView {
         contentHeightChanged?(total)
     }
 
-    // Keep the text container width in sync when the scroll view is resized.
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
         reportContentHeight()
@@ -587,14 +534,11 @@ private final class ChatInputTextView: NSTextView {
     // MARK: Paste / key overrides
 
     override func paste(_ sender: Any?) {
-        // Check the pasteboard for image content first. If an image is found
-        // and consumed, don't fall through to text pasting.
         if imagePasteHandler?() == true { return }
         super.paste(sender)
     }
 
     override func keyDown(with event: NSEvent) {
-        // Intercept Return (without Shift) for send.
         if event.keyCode == 36, !event.modifierFlags.contains(.shift) {
             if let handler = returnHandler, handler() { return }
         }
@@ -655,8 +599,6 @@ private struct ImageChip: View {
 /// Uniform type identifiers accepted by the image file picker.
 enum ImagePickerTypes {
     static var supported: [UTType] {
-        // Map our supported UTI strings to UTType values, falling back to
-        // generic image types if a specific one isn't available.
         var types: [UTType] = []
         for uti in ImageProcessor.supportedTypeIdentifiers {
             if let t = UTType(uti) {

@@ -172,7 +172,6 @@ struct ConnectionWizardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Step indicator
             stepIndicator
                 .padding(.horizontal, 20)
                 .padding(.top, 16)
@@ -180,7 +179,6 @@ struct ConnectionWizardView: View {
 
             Divider()
 
-            // Step content
             Group {
                 switch step {
                 case .provider:    providerStep
@@ -196,7 +194,6 @@ struct ConnectionWizardView: View {
 
             Divider()
 
-            // Navigation buttons
             navigationBar
                 .padding(12)
         }
@@ -289,11 +286,9 @@ struct ConnectionWizardView: View {
         case .provider:
             return true
         case .credentials:
-            // For "Other" an endpoint is required.
             if providerPreset.showsEndpoint && endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return false
             }
-            // All known providers require an API key; only "Other" makes it optional.
             if providerPreset != .other && token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return false
             }
@@ -301,7 +296,6 @@ struct ConnectionWizardView: View {
         case .model:
             return !selectedModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .test:
-            // Allow moving on regardless of test result, but not while in flight.
             return !isTesting
         case .name:
             return !connectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -316,15 +310,11 @@ struct ConnectionWizardView: View {
         guard let n = step.next else { return }
         switch step {
         case .credentials:
-            // Fetch the model list before advancing.
             fetchModelsThenAdvance()
         case .model:
-            // Reset the connection test state so it re-runs with the newly
-            // selected model when the test step appears.
             resetTestState()
             step = n
         case .name:
-            // Save the connection file before showing the finish step.
             saveConnection()
             step = n
         default:
@@ -777,7 +767,6 @@ struct ConnectionWizardView: View {
     /// Replaces characters that are unsafe in a filename.
     private func sanitizedFilename(_ s: String) -> String {
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Replace path separators and other filesystem-unfriendly characters.
         let invalid = CharacterSet(charactersIn: "/\\:*?\"<>|")
         return trimmed
             .components(separatedBy: invalid)

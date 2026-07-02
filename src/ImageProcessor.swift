@@ -120,7 +120,6 @@ enum ImageProcessor {
             return nil
         }
 
-        // Load the full-size image at index 0.
         guard let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
             return nil
         }
@@ -130,16 +129,13 @@ enum ImageProcessor {
         // Everything else (JPEG, WebP lossy) → JPEG.
         let lossless = isLosslessUTI(uti as String)
 
-        // Resize if needed.
         let resized = resize(cgImage: cgImage, maxSide: maxSide) ?? cgImage
 
-        // Re-encode.
         if lossless {
             if let png = encode(resized, type: "public.png") {
                 return Processed(data: png, ext: "png")
             }
         }
-        // Fallback / lossy path: JPEG.
         if let jpg = encode(resized, type: "public.jpeg", quality: jpegQuality) {
             return Processed(data: jpg, ext: "jpg")
         }
@@ -207,7 +203,6 @@ enum ImageProcessor {
         if type == "public.jpeg" {
             props[kCGImageDestinationLossyCompressionQuality] = quality
         } else if type == "public.png" {
-            // Request maximum lossless compression.
             props[kCGImagePropertyPNGCompressionFilter] = true
         }
         CGImageDestinationAddImage(dest, cgImage, props as CFDictionary)

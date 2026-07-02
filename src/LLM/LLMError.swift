@@ -23,8 +23,6 @@ struct LLMError: Error, LocalizedError, Sendable {
     let provider: ConnectionProvider
 
     var errorDescription: String? {
-        // Prefer the parsed provider message; fall back to the raw body; then
-        // to a generic status-code description.
         if let message = providerMessage, !message.isEmpty {
             return "\(providerLabel) API error (\(statusCode)): \(message)"
         }

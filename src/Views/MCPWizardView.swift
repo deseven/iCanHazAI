@@ -259,11 +259,9 @@ struct MCPWizardView: View {
         guard let n = step.next else { return }
         switch step {
         case .parameters:
-            // Reset the test state so it re-runs with the current params.
             resetTestState()
             step = n
         case .name:
-            // Save the server file before showing the finish step.
             saveServer()
             step = n
         default:
@@ -530,7 +528,6 @@ struct MCPWizardView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if let tools = testTools, !tools.isEmpty {
-                // Filter input + Select All/None toggle.
                 HStack(spacing: 8) {
                     TextField("Filter tools…", text: $toolFilter)
                         .textFieldStyle(.roundedBorder)
@@ -623,7 +620,6 @@ struct MCPWizardView: View {
         var tools: [String]? = nil
         if includeTools, let available = testTools, !available.isEmpty {
             if selectedTools.count == available.count {
-                // All selected → empty array (allow all).
                 tools = []
             } else {
                 tools = available
@@ -653,8 +649,6 @@ struct MCPWizardView: View {
         let server = buildServer(name: tempServerName)
         testTask = Task {
             do {
-                // testConnection connects, lists tools, and throws on failure.
-                // It also returns the server's reported name (serverInfo.name).
                 let result = try await MCPManager.shared.testConnection(server)
                 await MainActor.run {
                     self.testTools = result.tools
@@ -671,7 +665,6 @@ struct MCPWizardView: View {
                     self.isTesting = false
                 }
             }
-            // Clean up the transient connection so it doesn't linger.
             await MCPManager.shared.disconnect(name: tempServerName)
             await MainActor.run {
                 self.testTask = nil
@@ -775,7 +768,6 @@ struct MCPWizardView: View {
     private func splitArgs(_ s: String) -> [String] {
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
-        // Simple shell-like split: respect double quotes, no escape handling.
         var args: [String] = []
         var current = ""
         var inQuotes = false
@@ -796,7 +788,6 @@ struct MCPWizardView: View {
     /// the MCP `initialize` response's `serverInfo.name`), falling back to the
     /// command name or endpoint host. The result is sanitized for filesystem use.
     private func defaultServerName() -> String {
-        // Prefer the name the server reported during the test connection.
         if let reported = reportedServerName, !reported.isEmpty {
             let sanitized = sanitizedFilename(reported)
             if !sanitized.isEmpty { return sanitized }
@@ -805,7 +796,6 @@ struct MCPWizardView: View {
         case .stdio:
             let base = command.trimmingCharacters(in: .whitespacesAndNewlines)
             if base.isEmpty { return "mcp-server" }
-            // Use the last path component of an absolute path, or the bare name.
             let last = base.contains("/") ? (base as NSString).lastPathComponent : base
             return sanitizedFilename(last)
         case .http:

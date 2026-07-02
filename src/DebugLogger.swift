@@ -72,8 +72,6 @@ enum DebugLogger {
     static func debugLog(topic: String, message: String) {
         guard enabled else { return }
         let stamp = formatterQueue.sync { formatter.string(from: Date()) }
-        // Print to stdout so it shows up in Console.app and the terminal
-        // when the app is launched from the command line.
         print("[\(stamp)] [\(topic)] \(message)")
     }
 }

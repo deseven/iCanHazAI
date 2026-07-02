@@ -45,14 +45,12 @@ enum JSONC {
                 continue
             }
 
-            // Not inside a string.
             if ch == "\"" {
                 inString = true
                 output.append(ch)
                 i = next
                 continue
             }
-            // Line comment `//` → skip to end of line.
             if ch == "/", next < end, source[next] == "/" {
                 i = next
                 while i < end, source[i] != "\n" {
@@ -60,10 +58,8 @@ enum JSONC {
                 }
                 continue
             }
-            // Block comment `/* ... */` → skip to closing `*/`.
             if ch == "/", next < end, source[next] == "*" {
                 i = next
-                // Advance past `*`.
                 i = source.index(after: i)
                 while i < end {
                     if source[i] == "*", source.index(after: i) < end, source[source.index(after: i)] == "/" {
@@ -118,14 +114,11 @@ enum JSONC {
             }
 
             if ch == "," {
-                // Look ahead (skipping whitespace) for `}` or `]`.
                 var j = next
                 while j < end, source[j].isWhitespace {
                     j = source.index(after: j)
                 }
                 if j < end, (source[j] == "}" || source[j] == "]") {
-                    // Drop the comma; preserve following whitespace by not
-                    // emitting the comma here.
                     i = next
                     continue
                 }

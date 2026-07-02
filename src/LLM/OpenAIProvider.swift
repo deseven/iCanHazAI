@@ -46,14 +46,10 @@ struct OpenAIProvider: LLMProvider {
             "messages": messages.map { openAIMessage($0, chatFilename: chatFilename) },
         ]
 
-        // Tools — each MCP tool becomes a function tool whose name is the
-        // namespaced `{server}_{tool}` identifier. The input schema is
-        // parsed from the MCP tool's JSON string and embedded verbatim.
         if let tools, !tools.isEmpty {
             body["tools"] = tools.map { def -> [String: Any] in
                 var function: [String: Any] = ["name": def.namespacedName]
                 if let desc = def.description { function["description"] = desc }
-                // Parse the raw JSON Schema string into an object.
                 if let schemaData = def.inputSchema.data(using: .utf8),
                    let schema = try? JSONSerialization.jsonObject(with: schemaData) {
                     function["parameters"] = schema
@@ -65,7 +61,6 @@ struct OpenAIProvider: LLMProvider {
             }
         }
 
-        // Merge provider-specific requestParameters into the root.
         if let params = connection.requestParameters {
             for (key, value) in params {
                 body[key] = value.anyValue
@@ -80,11 +75,9 @@ struct OpenAIProvider: LLMProvider {
 
     /// Maps a [`ChatMessage`](src/Models.swift) to the OpenAI message JSON shape.
     private func openAIMessage(_ msg: ChatMessage, chatFilename: String) -> [String: Any] {
-        // User message with images → multipart content (text + image_url parts).
         if msg.role == .user, let images = msg.images, !images.isEmpty {
             return openAIImageMessage(msg, images: images, chatFilename: chatFilename)
         }
-        // Assistant message with tool calls → assistant message carrying tool_calls.
         if msg.role == .assistant, let calls = msg.toolCalls, !calls.isEmpty {
             var dict: [String: Any] = ["role": "assistant"]
             if !msg.content.isEmpty {
@@ -104,11 +97,7 @@ struct OpenAIProvider: LLMProvider {
             }
             return dict
         }
-        // Tool-result message → tool role message with tool_call_id.
         if msg.role == .tool, let results = msg.toolResults, !results.isEmpty {
-            // OpenAI expects one tool message per tool_call_id. If a single
-            // ChatMessage carries multiple results (unusual), we emit the
-            // first; the loop normally creates one message per result.
             let r = results[0]
             return [
                 "role": "tool",
@@ -116,7 +105,6 @@ struct OpenAIProvider: LLMProvider {
                 "tool_call_id": r.callID,
             ] as [String: Any]
         }
-        // Plain message.
         return [
             "role": msg.role.rawValue,
             "content": msg.content,
@@ -131,7 +119,6 @@ struct OpenAIProvider: LLMProvider {
         chatFilename: String
     ) -> [String: Any] {
         var parts: [[String: Any]] = []
-        // Text first (if any), then images.
         if !msg.content.isEmpty {
             parts.append(["type": "text", "text": msg.content])
         }
@@ -156,7 +143,6 @@ struct OpenAIProvider: LLMProvider {
         var chunks: [StreamChunk] = []
         for choice in choices {
             guard let delta = choice["delta"] as? [String: Any] else { continue }
-            // Content.
             if let content = delta["content"] as? String {
                 chunks.append(.content(content))
             }
@@ -181,11 +167,9 @@ struct OpenAIProvider: LLMProvider {
                         if let a = fn["arguments"] as? String { argsDelta = a }
                     }
                     accumulator.addDelta(index: index, id: id, name: name, argumentsDelta: argsDelta)
-                    // Emit the incremental delta for live UI updates.
                     chunks.append(.toolCallDelta(index: index, id: id, name: name, argumentsDelta: argsDelta ?? ""))
                 }
             }
-            // Finish reason (emitted on the final chunk).
             if let reason = choice["finish_reason"] as? String {
                 chunks.append(.finishReason(reason))
             }

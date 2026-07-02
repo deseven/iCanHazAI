@@ -11,7 +11,6 @@ struct ChatInfoSidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header — mirrors the left sidebar's "Chats" header.
             HStack {
                 Text("Chat Info")
                     .font(.headline)

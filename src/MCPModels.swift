@@ -76,7 +76,6 @@ extension MCPServer {
     /// Builds an `MCPServer` from a decoded `MCPConfig` and a name (from the filename).
     init(name: String, config: MCPConfig) {
         let transport = MCPTransport(rawValue: config.transport) ?? .stdio
-        // run_policy only applies to stdio servers. For http it is ignored.
         let runPolicy: MCPRunPolicy?
         if transport == .stdio {
             runPolicy = MCPRunPolicy(rawValue: config.runPolicy ?? "") ?? .alwaysOn
@@ -153,7 +152,6 @@ struct ToolDefinition: Sendable, Equatable {
     /// Parses a namespaced tool name back into (server, tool).
     /// Returns nil if the name doesn't follow the `{server}_{tool}` format.
     static func parse(_ namespacedName: String) -> (server: String, tool: String)? {
-        // Split on the first "_" to separate server from tool name.
         guard let range = namespacedName.range(of: "_") else { return nil }
         let server = String(namespacedName[namespacedName.startIndex..<range.lowerBound])
         let tool = String(namespacedName[range.upperBound...])

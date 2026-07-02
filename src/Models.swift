@@ -151,9 +151,6 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
 enum TokenEstimator {
     static func estimate(_ text: String) -> Int {
         guard !text.isEmpty else { return 0 }
-        // ~4 characters per token is the commonly cited heuristic for English
-        // text on GPT-family tokenizers. Round up so the counter never reads 0
-        // for non-empty content.
         return max(1, (text.count + 3) / 4)
     }
 }
@@ -162,12 +159,9 @@ enum TokenEstimator {
 
 /// A cheap, message-free projection of a `ChatRecord` for the sidebar list.
 /// The sidebar only needs a handful of scalars (title, streaming/unread/error
-/// flags, sort key) — it never inspects `chat.messages`. Previously the sidebar
-/// observed the full `[ChatRecord]` (all chats, all messages, all tokens) on
-/// every coalesced flush, so a busy chat's per-token emits forced the sidebar
-/// to re-diff full message arrays for every chat. `ChatSummary` is a value type
-/// with no message data, so diffing it is O(1)-per-chat and the sidebar stops
-/// touching message arrays on tokens.
+/// flags, sort key) — it never inspects `chat.messages`. Diffing it is
+/// O(1)-per-chat, so a busy chat's per-token emits don't force the sidebar
+/// to re-diff full message arrays for every chat.
 struct ChatSummary: Identifiable, Equatable, Sendable {
     var id: String { filename }
     let filename: String

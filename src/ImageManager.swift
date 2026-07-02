@@ -72,7 +72,6 @@ enum ImageManager {
     /// Extracts image data from a pasteboard, returning the first supported
     /// image found. Handles both file URLs and direct image representations.
     static func imageFromPasteboard(_ pb: NSPasteboard) -> (data: Data, name: String?)? {
-        // File URLs first (e.g. dragged image files).
         if let urls = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] {
             for url in urls {
                 if ImageProcessor.isSupportedFile(url),
@@ -81,7 +80,6 @@ enum ImageManager {
                 }
             }
         }
-        // Direct image data (e.g. screenshot copy).
         if let png = pb.data(forType: .png) {
             return (png, nil)
         }

@@ -51,8 +51,6 @@ struct RenameChatSheet: View {
                 .focused($isFocused)
                 .onAppear {
                     text = initialText
-                    // Focus the field and select all its text so the user can
-                    // immediately type over it or edit part of it.
                     isFocused = true
                     DispatchQueue.main.async {
                         NSApp.sendAction(#selector(NSText.selectAll(_:)), to: nil, from: nil)

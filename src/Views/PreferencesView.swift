@@ -43,7 +43,6 @@ struct PreferencesView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            // Vertical tab list
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Tab.allCases) { tab in
                     Button {
@@ -72,7 +71,6 @@ struct PreferencesView: View {
 
             Divider()
 
-            // Tab content
             Group {
                 switch selectedTab {
                 case .general:

@@ -9,13 +9,9 @@ struct MainWindow: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            // Left sidebar: chat selector.
             ChatSidebar()
                 .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 320)
         } detail: {
-            // Detail: chat + optional right info panel side by side.
-            // Using a stable HStack avoids layout thrashing and scroll
-            // artifacts that happen when swapping between 2-col/3-col layouts.
             HStack(spacing: 0) {
                 if store.selectedChatItem != nil {
                     ChatView()
@@ -38,9 +34,6 @@ struct MainWindow: View {
             }
             .navigationTitle(store.selectedChatItem?.displayTitle ?? "")
         }
-        // MCP configuration overlay: a half-transparent layer shown over the
-        // whole window while MCP servers are being (re)configured. Blocks
-        // interaction with the underlying UI during configuration.
         .overlay {
             MCPConfigurationOverlay()
         }

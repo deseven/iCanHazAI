@@ -94,8 +94,6 @@ struct ChatWebView: View {
             .onChange(of: store.isStreaming) { _, _ in
                 model.pushSnapshot()
             }
-            // Reload the web view when chat rendering features change so the
-            // renderer re-evaluates which optional dependencies to load.
             .onChange(of: store.preferencesMermaidEnabled) { _, _ in
                 model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
             }
@@ -105,18 +103,12 @@ struct ChatWebView: View {
             .onChange(of: store.preferencesChatRendererDebugEnabled) { _, _ in
                 model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
             }
-            // Reload the web view when the default expansion behaviour changes
-            // so the renderer re-applies the expanded/collapsed defaults.
             .onChange(of: store.preferencesExpandThinking) { _, _ in
                 model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
             }
             .onChange(of: store.preferencesExpandToolUse) { _, _ in
                 model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
             }
-            // Observe a lightweight signature of the selected chat's messages
-            // (count + total content length + total thinking length). This
-            // catches new messages, edits, deletes, and streaming token updates
-            // without observing every individual message.
             .onChange(of: chatContentSignature) { _, _ in
                 model.pushSnapshot()
             }
@@ -162,31 +154,21 @@ final class ChatWebViewModel: ObservableObject {
         let config = WKWebViewConfiguration()
         let userContentController = WKUserContentController()
         config.userContentController = userContentController
-        // Allow local file access for the bundled web assets.
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
         config.setValue(true, forKey: "allowUniversalAccessFromFileURLs")
 
-        // Register the custom `ichai://` scheme handler so the renderer can
-        // load chat images by UUID without base64 in the DOM.
         config.setURLSchemeHandler(imageSchemeHandler, forURLScheme: ImageSchemeHandler.scheme)
 
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = nil
-        // Transparent background so the SwiftUI material shows through.
         webView.underPageBackgroundColor = .clear
         webView.setValue(false, forKey: "drawsBackground")
-        // Suppress the default context menu / text selection callouts we don't want.
         webView.allowsBackForwardNavigationGestures = false
 
-        // Register the JS -> Swift bridge. The view model is the message handler.
         userContentController.add(MessageHandlerBridge(target: self), name: "bridge")
     }
 
     deinit {
-        // KVO observation is cleaned up automatically; the script message
-        // handler is retained by the web view's configuration which is freed
-        // when the web view deallocates. We avoid touching main-actor isolated
-        // properties here (deinit is nonisolated).
         themeObservation?.invalidate()
     }
 
@@ -197,8 +179,6 @@ final class ChatWebViewModel: ObservableObject {
     /// by `build.sh`; there is no dev fallback. Feature flags are passed via
     /// URL query params so the renderer only loads Mermaid/KaTeX when enabled.
     private func loadPage() {
-        // Feature flags are presence-based query params, e.g.
-        // `?withMermaid&withKatex&withDebug`. Only enabled features are included.
         var parts: [String] = []
         if mermaidEnabled { parts.append("withMermaid") }
         if katexEnabled { parts.append("withKatex") }
@@ -230,9 +210,6 @@ final class ChatWebViewModel: ObservableObject {
     /// Connects this model to the app view model and starts pushing snapshots.
     func bind(store: AppViewModel) {
         self.store = store
-        // Register this view model with the store so `apply(.chatsChanged)`
-        // can push snapshots synchronously, before the engine proceeds to
-        // execute tool calls.
         store.chatWebViewModel = self
         mermaidEnabled = store.preferencesMermaidEnabled
         katexEnabled = store.preferencesKatexEnabled
@@ -245,7 +222,6 @@ final class ChatWebViewModel: ObservableObject {
     }
 
     func unbind() {
-        // Clear the store's reference so it no longer pushes snapshots here.
         if store?.chatWebViewModel === self {
             store?.chatWebViewModel = nil
         }
@@ -274,7 +250,6 @@ final class ChatWebViewModel: ObservableObject {
     // MARK: - Theme
 
     private func observeTheme() {
-        // Observe the effective appearance and push theme changes.
         themeObservation = NSApp.observe(\.effectiveAppearance, options: [.initial, .new]) { [weak self] _, _ in
             Task { @MainActor in
                 self?.pushTheme()
@@ -299,8 +274,6 @@ final class ChatWebViewModel: ObservableObject {
         guard let store else { return }
         guard let item = store.selectedChatItem else { return }
 
-        // Keep the image scheme handler pointed at the current chat so
-        // `ichai://` URLs resolve to the right image folder.
         ImageSchemeHandler.currentChatFilename = item.filename
 
         let chatId = item.id
@@ -313,7 +286,6 @@ final class ChatWebViewModel: ObservableObject {
         let currentMessages = Self.projectToolResults(item.chat.messages)
         let currentIds = currentMessages.map(\.id)
 
-        // Chat switched: send a full snapshot and reset diff state.
         if chatId != renderedChatId {
             renderedChatId = chatId
             lastStreamingState = isStreaming
@@ -324,12 +296,9 @@ final class ChatWebViewModel: ObservableObject {
             return
         }
 
-        // Same chat — handle streaming state change first.
         if isStreaming != lastStreamingState {
             lastStreamingState = isStreaming
             if !isStreaming {
-                // Streaming ended: send a full snapshot so the web view
-                // re-renders the final content as block markdown.
                 lastMessages = Dictionary(uniqueKeysWithValues: currentMessages.map { ($0.id, $0) })
                 lastMessageIds = currentIds
                 let snapshot = ChatSnapshotData(chatId: chatId, messages: currentMessages, isStreaming: false)
@@ -340,27 +309,21 @@ final class ChatWebViewModel: ObservableObject {
             }
         }
 
-        // Diff messages and send incremental updates.
         let oldIds = Set(lastMessageIds)
         let newIds = Set(currentIds)
 
-        // Deleted messages.
         for id in lastMessageIds where !newIds.contains(id) {
             sendHostMessage(.deleteMessage(chatId: chatId, messageId: id))
         }
 
-        // Added or updated messages.
         for (index, msg) in currentMessages.enumerated() {
             if !oldIds.contains(msg.id) {
-                // New message.
                 sendHostMessage(.addMessage(chatId: chatId, message: msg, index: index))
             } else if let old = lastMessages[msg.id], old != msg {
-                // Content changed (streaming token, edit, error).
                 sendHostMessage(.updateMessage(chatId: chatId, message: msg))
             }
         }
 
-        // Update diff state.
         lastMessages = Dictionary(uniqueKeysWithValues: currentMessages.map { ($0.id, $0) })
         lastMessageIds = currentIds
     }
@@ -374,13 +337,9 @@ final class ChatWebViewModel: ObservableObject {
     /// message per result).
     static func projectToolResults(_ messages: [ChatMessage]) -> [ChatMessageData] {
         var out: [ChatMessageData] = []
-        // Index of the last assistant message in `out`, so we can fold
-        // subsequent tool results onto it.
         var lastAssistantOutIndex: Int? = nil
         for msg in messages {
             if msg.role == .tool, let results = msg.toolResults, !results.isEmpty {
-                // Fold each result onto the preceding assistant message's
-                // toolResults, matched by callID.
                 if let aIdx = lastAssistantOutIndex {
                     var folded = out[aIdx].toolResults ?? []
                     for r in results {
@@ -392,7 +351,6 @@ final class ChatWebViewModel: ObservableObject {
                     }
                     out[aIdx].toolResults = folded
                 }
-                // Drop the `tool`-role message from the wire list.
                 continue
             }
             var data = msg.webData
@@ -417,15 +375,12 @@ final class ChatWebViewModel: ObservableObject {
     // MARK: - JS communication
 
     private func sendHostMessage(_ message: HostMessageData) {
-        // If the web view hasn't reported ready yet, queue the message. It will
-        // be flushed once the page loads and calls `ready`.
         if !webReady {
             pendingMessages.append(message)
             return
         }
         guard let json = try? JSONEncoder().encode(message),
               let jsonString = String(data: json, encoding: .utf8) else { return }
-        // The web view's `chatHost.postMessage` expects a JSON string.
         let escaped = jsonString.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "'", with: "\\'")
         let js = "window.chatHost && window.chatHost.postMessage('\(escaped)');"
@@ -441,7 +396,6 @@ final class ChatWebViewModel: ObservableObject {
         case .copy(let messageId):
             copyMessage(messageId)
         case .edit(let messageId):
-            // Defer to the view's edit sheet via a published flag.
             store.pendingEditMessageID = UUID(uuidString: messageId)
         case .delete(let messageId):
             store.pendingDeleteMessageID = UUID(uuidString: messageId)
@@ -450,14 +404,11 @@ final class ChatWebViewModel: ObservableObject {
         case .scrollState(let atBottom):
             store.selectedChatAtBottom = atBottom
         case .ready:
-            // Web view is ready. Flush any queued messages, then force a full
-            // snapshot + theme so the initial state is always delivered.
             webReady = true
             for msg in pendingMessages {
                 sendHostMessage(msg)
             }
             pendingMessages.removeAll()
-            // Reset diff state so the next pushSnapshot sends a full snapshot.
             renderedChatId = nil
             lastMessages = [:]
             lastMessageIds = []
@@ -465,9 +416,6 @@ final class ChatWebViewModel: ObservableObject {
             pushSnapshot()
             pushTheme()
         case .requestOlder:
-            // Infinite scroll: the host owns the full history already (all
-            // messages are in the snapshot), so there's nothing to load. This
-            // hook is here for future pagination if chats grow very large.
             break
         }
     }

@@ -89,8 +89,6 @@ struct ChunkCoalescer {
             entry.arguments += argsDelta
             toolCallBuffers[index] = entry
         default:
-            // Non-text chunks are not coalesced; flush buffers first so order
-            // is preserved, then emit directly.
             await flush(force: true)
             await onChunk(chunk)
             return
@@ -177,9 +175,6 @@ final class ChatService: @unchecked Sendable {
         debugLog("LLM", "request start — provider=\(connection.provider.rawValue), model=\(connection.model), messages=\(messages.count), tools=\(toolCount), chat=\(chatFilename)")
         let started = Date()
 
-        // The coalescer is a mutable value type; wrap it in a sendable box so
-        // it can be captured and mutated from the transport's @Sendable
-        // onChunk closure.
         let box = CoalescerBox(onChunk: onChunk)
         let result: StreamResult
         do {

@@ -28,11 +28,8 @@ enum SSEParser {
     ///   `[DONE]` sentinel — callers should check `line == doneSentinel` or use
     ///   `parsePayload(_:)` instead.
     static func parseLine(_ line: String) -> Data? {
-        // Comments and empty lines are ignored.
         guard !line.isEmpty, !line.hasPrefix(":") else { return nil }
-        // We only consume `data:` fields.
         guard line.hasPrefix("data:") else { return nil }
-        // Strip the `data:` prefix and a single optional leading space.
         var payload = String(line.dropFirst("data:".count))
         if payload.hasPrefix(" ") { payload.removeFirst() }
         return payload.data(using: .utf8)

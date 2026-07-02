@@ -66,28 +66,20 @@ struct AnthropicProvider: LLMProvider {
         ]
         if let systemText { body["system"] = systemText }
 
-        // Tools — each MCP tool becomes a function tool whose name is the
-        // namespaced `{server}_{tool}` identifier. The input schema is
-        // parsed from the MCP tool's JSON string and embedded verbatim.
         if let tools, !tools.isEmpty {
             body["tools"] = tools.map { def in
                 var tool: [String: Any] = ["name": def.namespacedName]
                 if let desc = def.description { tool["description"] = desc }
-                // Parse the raw JSON Schema string into an object and embed
-                // verbatim under `input_schema`.
                 if let schemaData = def.inputSchema.data(using: .utf8),
                    let schema = try? JSONSerialization.jsonObject(with: schemaData) {
                     tool["input_schema"] = schema
                 } else {
-                    // Fallback: a permissive object schema so the tool is
-                    // still exposed.
                     tool["input_schema"] = ["type": "object"] as [String: Any]
                 }
                 return tool
             }
         }
 
-        // Merge provider-specific requestParameters into the root.
         if let params = connection.requestParameters {
             for (key, value) in params {
                 body[key] = value.anyValue
@@ -108,23 +100,17 @@ struct AnthropicProvider: LLMProvider {
 
     /// Maps a [`ChatMessage`](src/Models.swift) to the Anthropic message JSON shape.
     private func anthropicMessage(_ msg: ChatMessage, chatFilename: String) -> [String: Any] {
-        // Role: user and tool both map to `user`; assistant stays `assistant`.
         let role = (msg.role == .user || msg.role == .tool) ? "user" : "assistant"
 
-        // User message with images → content blocks (text + image).
         if msg.role == .user, let images = msg.images, !images.isEmpty {
             return anthropicImageMessage(msg, images: images, role: role, chatFilename: chatFilename)
         }
-        // Assistant message with tool calls → content blocks (text + tool_use).
         if msg.role == .assistant, let calls = msg.toolCalls, !calls.isEmpty {
             var blocks: [[String: Any]] = []
             if !msg.content.isEmpty {
                 blocks.append(["type": "text", "text": msg.content])
             }
             for call in calls {
-                // Parse the arguments JSON string into a raw object. If it
-                // fails, fall back to an empty object so the call still
-                // serializes.
                 var input: Any = [String: Any]()
                 if let data = call.arguments.data(using: .utf8),
                    let parsed = try? JSONSerialization.jsonObject(with: data) {
@@ -139,7 +125,6 @@ struct AnthropicProvider: LLMProvider {
             }
             return ["role": role, "content": blocks] as [String: Any]
         }
-        // Tool-result message → user message with tool_result block(s).
         if msg.role == .tool, let results = msg.toolResults, !results.isEmpty {
             var blocks: [[String: Any]] = []
             for r in results {
@@ -151,7 +136,6 @@ struct AnthropicProvider: LLMProvider {
             }
             return ["role": role, "content": blocks] as [String: Any]
         }
-        // Plain message.
         return ["role": role, "content": msg.content] as [String: Any]
     }
 
@@ -191,16 +175,12 @@ struct AnthropicProvider: LLMProvider {
         var chunks: [StreamChunk] = []
         switch type {
         case "content_block_start":
-            // A new content block is starting. If it's a tool_use block,
-            // capture its id + name keyed by index.
             if let block = json["content_block"] as? [String: Any],
                (block["type"] as? String) == "tool_use",
                let index = json["index"] as? Int,
                let id = block["id"] as? String,
                let name = block["name"] as? String {
                 accumulator.addDelta(index: index, id: id, name: name, argumentsDelta: nil)
-                // Emit an initial delta so the UI can show the tool call
-                // block appearing (with empty arguments).
                 chunks.append(.toolCallDelta(index: index, id: id, name: name, argumentsDelta: ""))
             }
         case "content_block_delta":
@@ -209,7 +189,6 @@ struct AnthropicProvider: LLMProvider {
                 if deltaType == "thinking_delta", let thinking = delta["thinking"] as? String {
                     chunks.append(.thinking(thinking))
                 } else if deltaType == "input_json_delta", let partial = delta["partial_json"] as? String {
-                    // Accumulate tool-use input JSON fragments.
                     if let index = json["index"] as? Int {
                         accumulator.addDelta(index: index, id: nil, name: nil, argumentsDelta: partial)
                         chunks.append(.toolCallDelta(index: index, id: nil, name: nil, argumentsDelta: partial))
@@ -219,7 +198,6 @@ struct AnthropicProvider: LLMProvider {
                 }
             }
         case "message_delta":
-            // The stop_reason arrives in the message_delta event.
             if let delta = json["delta"] as? [String: Any],
                let reason = delta["stop_reason"] as? String {
                 chunks.append(.finishReason(reason))
@@ -237,7 +215,6 @@ struct AnthropicProvider: LLMProvider {
               let content = json["content"] as? [[String: Any]] else {
             return ""
         }
-        // Extract text from the first text content block.
         for block in content {
             if (block["type"] as? String) == "text", let text = block["text"] as? String {
                 return text

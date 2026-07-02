@@ -129,9 +129,6 @@ const md = new MarkdownIt({
   linkify: true,
   typographer: true,
   highlight(str: string, lang?: string): string {
-    // Mermaid diagrams are rendered client-side: emit a container that the
-    // renderer scans for after each render pass (see renderMermaidIn). Only
-    // active when the mermaid feature flag is enabled.
     if (features.mermaid && lang === "mermaid") {
       return (
         '<div class="mermaid" data-mermaid="' +
@@ -231,8 +228,6 @@ function loadScript(src: string): Promise<void> {
   });
 }
 
-// Open links in a new window (the host app intercepts external navigation anyway,
-// but this is a sensible default for a chat view).
 const defaultLinkOpen = md.renderer.rules.link_open;
 
 md.renderer.rules.link_open = function (
@@ -268,7 +263,6 @@ export function renderMarkdown(src: string): string {
   const trimmed = src.trim();
   if (!trimmed) return "";
   let html = md.render(src);
-  // Convert GFM task list items: <li>[ ] text</li> / <li>[x] text</li>
   html = html.replace(
     /<li>\s*\[([ xX])\]\s*/g,
     (_m, check: string) => {
@@ -301,8 +295,6 @@ export function renderInline(src: string): string {
 // scan the rendered container after it is inserted into the DOM, calling
 // mermaid.run() on any unprocessed elements.
 
-// Mermaid is loaded via a <script> tag (see loadScript). The bundle attaches
-// its export to `window.__mermaid`.
 let mermaidReady: Promise<void> | null = null;
 
 function loadMermaid(): Promise<void> {

@@ -15,7 +15,6 @@ struct ChatSidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header with new chat button
             HStack {
                 Text("Chats")
                     .font(.headline)
@@ -35,9 +34,6 @@ struct ChatSidebar: View {
 
             Divider()
 
-            // Chat list. Observes the cheap `chatSummaries` projection (no
-            // message arrays) so per-token emits from a busy chat don't force
-            // the sidebar to re-diff full message arrays for every chat.
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(store.chatSummaries) { item in
@@ -51,14 +47,9 @@ struct ChatSidebar: View {
                         .onTapGesture {
                             store.selectChat(item.id)
                         }
-                        // Right-click / control-click context menu.
                         .contextMenu {
                             Button("Rename") {
                                 renamingFilename = item.id
-                                // Fetch the current title from the full record
-                                // (the summary carries displayTitle, but the
-                                // rename sheet wants the raw user-defined
-                                // title, which may differ from displayTitle).
                                 renameText = store.chatItems.first(where: { $0.id == item.id })?.chat.title ?? ""
                             }
                             Button("Delete", role: .destructive) {
@@ -77,7 +68,6 @@ struct ChatSidebar: View {
             }
         }
         .background(.regularMaterial)
-        // Rename sheet
         .sheet(item: Binding(
             get: { renamingFilename.map(ChatRenameTarget.init) },
             set: { newValue in renamingFilename = newValue?.filename }
@@ -91,7 +81,6 @@ struct ChatSidebar: View {
                 }
             )
         }
-        // Delete confirmation
         .sheet(item: Binding(
             get: { deletingFilename.map(ChatDeleteTarget.init) },
             set: { newValue in deletingFilename = newValue?.filename }

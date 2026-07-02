@@ -30,7 +30,6 @@ export function sendToHost(msg: BridgeMessage): void {
   if (bridge) {
     bridge.postMessage(msg);
   } else if (typeof window !== "undefined") {
-    // Dev fallback: log so we can see actions in the browser console.
     console.log("[bridge -> host]", msg);
   }
 }

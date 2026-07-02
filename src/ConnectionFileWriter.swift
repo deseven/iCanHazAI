@@ -32,28 +32,22 @@ enum ConnectionFileWriter {
         output += "// Edit this file to customise advanced options.\n"
         output += "{\n"
 
-        // baseUrl (optional). Omit the commented-out example for Anthropic —
-        // nobody uses the Anthropic API except via the default endpoint.
+        // Omit the commented-out example for Anthropic — it always uses the default endpoint.
         if let baseUrl = baseUrl, !baseUrl.isEmpty {
             output += "    \"baseUrl\": \(jsonString(baseUrl)),\n"
         } else if provider == .openai {
             output += "    // \"baseUrl\": \"https://api.openai.com/v1\",\n"
         }
 
-        // apiKey (optional)
         if let apiKey = apiKey, !apiKey.isEmpty {
             output += "    \"apiKey\": \(jsonString(apiKey)),\n"
         } else {
             output += "    // \"apiKey\": \"sk-...\",\n"
         }
 
-        // model (required)
         output += "    \"model\": \(jsonString(model)),\n"
-
-        // imageInput
         output += "    \"imageInput\": \(imageInput),\n"
 
-        // requestParameters with provider-specific examples
         output += "\n    // Extra parameters inserted into every request body's root.\n"
         output += "    // Uncomment and edit any of the examples below to enable them.\n"
         output += "    \"requestParameters\": {\n"

@@ -201,13 +201,11 @@ actor MCPManager {
     /// it once more after the 1-second display delay.
     func configure(_ servers: [MCPServer]) async -> MCPConfigurationState {
         debugLog("MCP", "configure — \(servers.count) server(s) configured")
-        // Full reset: clear all known state so we start from a clean slate.
         await resetAll()
 
         let newByName = Dictionary(servers.map { ($0.name, $0) }, uniquingKeysWith: { _, b in b })
         knownServers = newByName
 
-        // Build the initial status snapshot: all servers pending.
         var state = MCPConfigurationState(
             isConfiguring: true,
             entries: servers.map {
@@ -216,13 +214,6 @@ actor MCPManager {
         )
         reportStatus(state)
 
-        // Connect + listTools for every server in parallel. `connectAndListTools`
-        // spawns the stdio subprocess (with a startup grace period + process
-        // liveness guard so a misconfigured/crashing server is reported with
-        // its stderr instead of hanging), performs the MCP handshake, and
-        // queries the tool list. HTTP servers connect lazily inside the same
-        // call. Failures carry a descriptive reason (exit code + stderr for
-        // stdio) which we surface in the overlay.
         await withTaskGroup(of: (String, [MCPTool]?, String?).self) { group in
             for server in servers {
                 let name = server.name
@@ -240,12 +231,9 @@ actor MCPManager {
             }
             for await (name, tools, errorReason) in group {
                 if let tools {
-                    // Success: cache the tools and mark success.
                     toolsCache[name] = tools
                     state.set(name: name, status: .success, toolCount: tools.count, errorMessage: nil)
                 } else {
-                    // Failure: discard the server (disconnect if connected)
-                    // and mark failed with the descriptive reason.
                     await disconnect(name: name)
                     toolsCache.removeValue(forKey: name)
                     state.set(name: name, status: .failed, toolCount: nil,
@@ -255,8 +243,7 @@ actor MCPManager {
             }
         }
 
-        // Phase 3: stop on-demand stdio servers. They're not needed until a
-        // chat request activates them; keeping them alive wastes resources.
+        // Stop on-demand stdio servers; they're not needed until a chat request activates them.
         for server in servers where server.transport == .stdio && server.runPolicy == .onDemand {
             if connections[server.name] != nil {
                 debugLog("MCP", "configure — stopping on-demand stdio server \"\(server.name)\" after config")
@@ -280,16 +267,11 @@ actor MCPManager {
         knownServers[server.name] = server
 
         var entry = MCPConfigurationEntry(name: server.name, status: .inProgress, toolCount: nil, errorMessage: nil)
-        // Start with a single-entry in-progress state.
         var state = MCPConfigurationState(isConfiguring: true, entries: [entry])
         reportStatus(state)
 
-        // Tear down any existing connection for this server (config changed).
         await disconnect(name: server.name)
 
-        // Connect + listTools with the stdio liveness guard (startup grace
-        // period + process-death race) so a misconfigured or crashing server
-        // is reported with its stderr reason instead of hanging.
         do {
             let tools = try await connectAndListTools(server)
             toolsCache[server.name] = tools
@@ -305,7 +287,6 @@ actor MCPManager {
         }
         state.entries[0] = entry
 
-        // Stop on-demand stdio servers after config.
         if server.transport == .stdio && server.runPolicy == .onDemand {
             await disconnect(name: server.name)
         }
@@ -353,7 +334,6 @@ actor MCPManager {
     /// [`connectAndListTools`](src/MCPManager.swift) instead, which performs
     /// full liveness checking and captures stderr.
     func connect(_ server: MCPServer) async {
-        // Don't retry if already connected with the same config.
         if let existing = connections[server.name], existing.server == server { return }
         debugLog("MCP", "connect — server=\"\(server.name)\", transport=\(server.transport)")
 
@@ -368,7 +348,6 @@ actor MCPManager {
                 let proc = Process()
                 proc.executableURL = URL(fileURLWithPath: command)
                 if command.contains("/") == false {
-                    // Resolve via PATH if not an absolute path.
                     proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
                     proc.arguments = [command] + (server.args ?? [])
                 } else {
@@ -378,14 +357,10 @@ actor MCPManager {
                 let stdout = Pipe()
                 proc.standardInput = stdin
                 proc.standardOutput = stdout
-                // Discard stderr for the lightweight connect path; the
-                // configuration path captures it for error reporting.
                 proc.standardError = Pipe()
                 try proc.run()
                 process = proc
                 debugLog("MCP", "stdio server \"\(server.name)\" started — pid=\(proc.processIdentifier), command=\(command) args=\(server.args ?? [])")
-                // StdioTransport reads from `output` (server stdout) and writes to
-                // `input` (server stdin). We pass the pipe file handles' descriptors.
                 let inputFD = try fileDescriptor(for: stdout.fileHandleForReading)
                 let outputFD = try fileDescriptor(for: stdin.fileHandleForWriting)
                 transport = StdioTransport(input: inputFD, output: outputFD)
@@ -408,13 +383,6 @@ actor MCPManager {
             }
 
             let client = Client(name: "iCanHazAI", version: "1.0.0")
-            // Register a progress-notification handler for this client. The
-            // server emits `notifications/progress` (with the progress token we
-            // attached to the `tools/call` request) to stream incremental tool
-            // output. We map the token back to the model-assigned `callID`
-            // via `progressTokenToCallID` and forward the human-readable
-            // `message` (falling back to a numeric progress value) to the
-            // engine's progress sink so it can update the live tool result.
             await client.onNotification(ProgressNotification.self) { [weak self] message in
                 guard let self else { return }
                 let params = message.params
@@ -458,7 +426,6 @@ actor MCPManager {
     /// is returned. On failure the process is killed and a descriptive error
     /// (carrying stderr) is thrown; `connections` is left without an entry.
     func connectAndListTools(_ server: MCPServer) async throws -> [MCPTool] {
-        // Don't re-run if already connected with the same config.
         if let existing = connections[server.name], existing.server == server {
             return try await queryTools(for: server.name)
         }
@@ -535,7 +502,6 @@ actor MCPManager {
                 proc.terminationHandler = { p in
                     box.setTerminated(status: p.terminationStatus, reason: p.terminationReason)
                 }
-                // 1) Startup grace period.
                 let grace: UInt64 = UInt64(startupGrace * 1_000_000_000)
                 try await Task.sleep(nanoseconds: grace)
                 if box.hasTerminated() {
@@ -544,14 +510,11 @@ actor MCPManager {
                     proc.terminationHandler = nil
                     throw err
                 }
-                // 2) Connect directly. If the process dies during the handshake,
-                //    the termination handler fires and we throw below.
                 let initResult: Initialize.Result
                 do {
                     initResult = try await client.connect(transport: transport)
                 } catch {
                     proc.terminationHandler = nil
-                    // If the process exited, prefer the stderr-based error.
                     if box.hasTerminated() {
                         let err = box.makeError(serverName: server.name, stderrPipe: stderrPipe)
                         debugLog("MCP", "stdio server \"\(server.name)\" died during handshake — \(err.localizedDescription)")
@@ -573,15 +536,10 @@ actor MCPManager {
                 return try await queryTools(for: server.name)
             }
         } catch {
-            // Clean up: tear down the client and kill the subprocess so we
-            // don't leak a half-initialized connection or an orphan process.
             debugLog("MCP", "connectAndListTools failed — server=\"\(server.name)\": \(error.localizedDescription)")
             if connections[server.name] != nil {
                 await disconnect(name: server.name)
             } else {
-                // The connection was never stored (handshake/listTools threw
-                // before we recorded it). Tear down the client + process
-                // directly.
                 await client.disconnect()
                 process?.terminate()
                 process?.waitUntilExit()
@@ -607,7 +565,6 @@ actor MCPManager {
     /// stdio subprocess so we don't leak orphaned processes. No-op if the
     /// server isn't connected.
     func disconnect(name: String) async {
-        // Cancel any pending idle-shutdown task for this server.
         idleTasks.removeValue(forKey: name)?.cancel()
         lastActivity.removeValue(forKey: name)
         guard let conn = connections.removeValue(forKey: name) else { return }
@@ -615,9 +572,6 @@ actor MCPManager {
         await conn.client.disconnect()
         if let process = conn.process {
             process.terminate()
-            // Give the subprocess a moment to exit, then reap it so we don't
-            // leave a zombie. `waitUntilExit` blocks the actor briefly, but
-            // termination is infrequent and the delay is typically <100ms.
             process.waitUntilExit()
             debugLog("MCP", "stdio server \"\(name)\" terminated — pid=\(process.processIdentifier), exitStatus=\(process.terminationStatus), reason=\(process.terminationReason.rawValue)")
         }
@@ -625,7 +579,6 @@ actor MCPManager {
 
     /// Disconnects all servers (e.g. on app shutdown or full reset).
     func disconnectAll() async {
-        // Cancel all pending idle-shutdown tasks.
         for task in idleTasks.values { task.cancel() }
         idleTasks.removeAll()
         lastActivity.removeAll()
@@ -694,12 +647,8 @@ actor MCPManager {
     /// crashing stdio server is reported with its stderr reason (exit code +
     /// error text) instead of hanging the wizard's Test step forever.
     func testConnection(_ server: MCPServer) async throws -> (tools: [MCPTool], serverName: String?) {
-        // Tear down any existing connection with this name first so we test
-        // the fresh config.
         await disconnect(name: server.name)
         let tools = try await connectAndListTools(server)
-        // The connection was stored by connectAndListTools; read the server's
-        // reported name from the initResult before the caller disconnects it.
         let reportedName = connections[server.name]?.initResult.serverInfo.name
         return (tools, reportedName)
     }
@@ -718,9 +667,6 @@ actor MCPManager {
                 touchActivity(name)
                 continue
             }
-            // If the server was configured successfully (it's in toolsCache),
-            // start it now. Servers that failed configuration are skipped;
-            // their cached tools are nil and gatherTools already excluded them.
             guard toolsCache[name] != nil else { continue }
             debugLog("MCP", "ensureOnDemandRunning — starting on-demand server \"\(name)\"")
             await connect(server)
@@ -732,13 +678,10 @@ actor MCPManager {
     /// and (re)schedules its idle-shutdown task.
     private func touchActivity(_ name: String) {
         lastActivity[name] = Date()
-        // Cancel any previously scheduled idle shutdown and schedule a fresh one.
         idleTasks.removeValue(forKey: name)?.cancel()
         let task = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64((self?.idleTimeout ?? 600) * 1_000_000_000))
             guard let self else { return }
-            // Re-check on the actor: only shut down if still on-demand and the
-            // timeout has genuinely elapsed (no newer activity superseded this).
             await self.handleIdleTimeout(name)
         }
         idleTasks[name] = task
@@ -751,7 +694,6 @@ actor MCPManager {
         guard let last = lastActivity[name] else { return }
         let elapsed = Date().timeIntervalSince(last)
         guard elapsed >= idleTimeout else { return }
-        // Only auto-shut-down on-demand servers.
         if let server = knownServers[name], server.runPolicy == .onDemand {
             debugLog("MCP", "idle timeout — shutting down on-demand server \"\(name)\" after \(Int(elapsed))s of inactivity")
             await disconnect(name: name)
@@ -841,20 +783,12 @@ actor MCPManager {
                     return "[resource link: \(name) at \(uri)]"
                 }
             }.joined(separator: "\n")
-            // Per spec: if the tool itself errored and MCP returned an error,
-            // this is normal — we provide the error text as the RESULT field.
-            // The `isError` flag from MCP is preserved so the provider can
-            // surface it appropriately. We do NOT mark the server as failed.
             debugLog("MCP", "callTool result — server=\"\(server)\", tool=\"\(name)\", isError=\(isError ?? false), contentSize=\(text.count)")
             return ToolResult(callID: callID, content: text, isError: isError ?? false)
         } catch is CancellationError {
             debugLog("MCP", "callTool cancelled — server=\"\(server)\", tool=\"\(name)\", callID=\(callID)")
             return ToolResult(callID: callID, content: "Tool call was cancelled.", isError: true)
         } catch {
-            // Server errored during the call (transport failure, timeout, etc).
-            // Per spec: return the error as the RESULT field. We do NOT
-            // permanently disable the server — the next tool call will retry.
-            // Disconnect so a subsequent call reconnects cleanly.
             debugLog("MCP", "callTool failed — server=\"\(server)\", tool=\"\(name)\", callID=\(callID), error=\(error), type=\(String(describing: error))")
             await disconnect(name: server)
             return ToolResult(callID: callID, content: "MCP server \"\(server)\" error during tool call: \(error.localizedDescription). Please retry.", isError: false)
@@ -868,11 +802,7 @@ actor MCPManager {
         connections[server] != nil
     }
 
-    /// Extracts a `FileDescriptor` from a `FileHandle`. The SDK's `StdioTransport`
-    /// uses `SystemPackage.FileDescriptor`, which on Darwin is backed by the
-    /// raw file descriptor integer.
     private func fileDescriptor(for handle: FileHandle) throws -> FileDescriptor {
-        // FileHandle.fileDescriptor is the raw Int32 fd.
         return FileDescriptor(rawValue: handle.fileDescriptor)
     }
 }
@@ -896,12 +826,9 @@ enum MCPManagerError: Error, LocalizedError {
     case invalidConfig(String, String)
     case unavailable(String)
     case toolListFailed(String, String)
-    /// The stdio subprocess exited before the MCP `initialize` handshake (or
-    /// the subsequent `listTools` query) completed. Carries the server name,
-    /// the process exit status, and any text captured from the subprocess's
-    /// stderr. Used by [`connectAndListTools`](src/MCPManager.swift) so a
-    /// misconfigured or crashing stdio server is reported with its actual
-    /// failure reason instead of hanging forever.
+    /// The stdio subprocess exited before the MCP handshake/listTools completed.
+    /// Carries the server name, exit status, and captured stderr so a crashing
+    /// server is reported with its actual failure reason.
     case stdioExitedEarly(String, Int, String)
 
     var errorDescription: String? {
@@ -922,11 +849,9 @@ enum MCPManagerError: Error, LocalizedError {
     }
 }
 
-/// A lock-protected box that records the exit status of a stdio subprocess.
-/// Used by [`connectAndListTools`](src/MCPManager.swift) to detect when the
-/// process dies during the startup grace period or the MCP handshake, so a
-/// misconfigured or crashing server is reported with its stderr reason instead
-/// of hanging forever.
+/// A lock-protected box that records the exit status of a stdio subprocess,
+/// used by `connectAndListTools` to detect process death during the startup
+/// grace period or MCP handshake.
 private final class TerminationBox: @unchecked Sendable {
     private let queue = DispatchQueue(label: "iCanHazAI.mcp.terminationBox")
     private var _terminated: (status: Int32, reason: Process.TerminationReason)?
@@ -935,15 +860,13 @@ private final class TerminationBox: @unchecked Sendable {
         queue.sync { _terminated = (status, reason) }
     }
 
-    /// Whether the process has already terminated. Used after the startup
-    /// grace period to fail fast without attempting the handshake.
     func hasTerminated() -> Bool {
         queue.sync { _terminated != nil }
     }
 
     /// Builds a descriptive error from the recorded termination (exit code +
     /// drained stderr). Falls back to an unknown-status early exit if the
-    /// termination wasn't recorded (e.g. the race was cancelled).
+    /// termination wasn't recorded.
     func makeError(serverName: String, stderrPipe: Pipe?) -> Error {
         let terminated = queue.sync { _terminated }
         let status = terminated?.status ?? -1
@@ -951,17 +874,12 @@ private final class TerminationBox: @unchecked Sendable {
         return MCPManagerError.stdioExitedEarly(serverName, Int(status), stderr)
     }
 
-    /// Reads whatever the subprocess wrote to stderr (best-effort,
-    /// non-blocking) and returns it as a UTF-8 string. Used to surface the
-    /// server's own error text (e.g. "command not found", a stack trace) in
-    /// the failure reason. Exposed as a static method so it can be called from
-    /// [`connectAndListTools`](src/MCPManager.swift) for the timeout case
-    /// without a `TerminationBox` instance.
+    /// Reads whatever the subprocess wrote to stderr (best-effort, non-blocking)
+    /// and returns it as a UTF-8 string, to surface the server's own error text
+    /// in the failure reason.
     static func drainStderr(_ pipe: Pipe?) -> String {
         guard let pipe else { return "" }
         let handle = pipe.fileHandleForReading
-        // Read available data without blocking. `availableData` returns
-        // whatever the pipe buffer currently holds (empty if nothing yet).
         let data = handle.availableData
         if data.isEmpty { return "" }
         return String(data: data, encoding: .utf8) ?? ""
