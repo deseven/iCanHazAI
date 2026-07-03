@@ -190,7 +190,11 @@ struct ChatView: View {
         if store.isStreaming { return false }
         if !store.selectedChatHasConnection { return true }
         if !pendingImages.isEmpty { return false }
-        return inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return false }
+        // Empty input is allowed when the last message is from the user —
+        // pressing send triggers the assistant reply on that message.
+        return !store.selectedChatLastMessageIsFromUser
     }
 
     /// A header bar that sits at the top of the chat content area (below the
@@ -295,7 +299,14 @@ struct ChatView: View {
         guard store.selectedChatHasConnection else { return }
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         let images = pendingImages
-        guard (!text.isEmpty || !images.isEmpty), !store.isStreaming else { return }
+        guard !store.isStreaming else { return }
+        // Empty input with no images: if the last message is from the user,
+        // trigger a regenerate of the assistant reply on that message.
+        if text.isEmpty && images.isEmpty {
+            guard store.selectedChatLastMessageIsFromUser else { return }
+            store.retryLastMessage()
+            return
+        }
         inputText = ""
         pendingImages = []
         editorHeight = ChatView.lineHeight

@@ -1065,6 +1065,23 @@ actor ChatEngine {
 
                 // No tool calls → the loop is done; finalize the stream.
                 if result.toolCalls.isEmpty {
+                    // If the model produced no usable content (and no tool
+                    // calls), treat it as an error so the user can retry
+                    // rather than being left with a blank response.
+                    if result.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        let message: String
+                        if result.finishReason == "max_tokens" {
+                            // Anthropic reports max_tokens when the model
+                            // exhausted its token budget on (omitted) thinking
+                            // before emitting any visible content.
+                            message = "The model reached the token limit before producing any output. It likely spent all its tokens on internal thinking. Try increasing max_tokens, then retry."
+                        } else {
+                            message = "The model produced no output. The provider may be overloaded — please try again."
+                        }
+                        recordError(message, filename: filename)
+                        finishStream(filename: filename)
+                        return
+                    }
                     finishStream(filename: filename)
                     return
                 }
@@ -1102,7 +1119,7 @@ actor ChatEngine {
                     appendToolResult(toolResult, filename: filename)
                     // Mirror into the working history so the next stream
                     // request includes it.
-                    history.append(ChatMessage(role: .tool, content: toolResult.content, toolResults: [toolResult]))
+                    history.append(ChatMessage(role: .tool, content: "", toolResults: [toolResult]))
                 }
 
                 // Create a new assistant message for the model's follow-up
@@ -1276,10 +1293,10 @@ actor ChatEngine {
             chat.messages[$0].role == .tool
                 && chat.messages[$0].toolResults?.contains(where: { $0.callID == result.callID }) ?? false
         }) {
-            chat.messages[tIdx] = ChatMessage(role: .tool, content: result.content, toolResults: [result])
+            chat.messages[tIdx] = ChatMessage(role: .tool, content: "", toolResults: [result])
         } else {
             // No placeholder yet — append a new `tool`-role message.
-            chat.messages.append(ChatMessage(role: .tool, content: result.content, toolResults: [result]))
+            chat.messages.append(ChatMessage(role: .tool, content: "", toolResults: [result]))
         }
         records[idx].chat = chat
         // In-memory only during streaming; persisted once by `finishStream`.
@@ -1315,7 +1332,7 @@ actor ChatEngine {
         // placeholder now so the user sees output immediately. It will be
         // replaced by the final result when the call completes.
         let placeholder = ToolResult(callID: callID, content: partial + "\n", isError: false, isStreaming: true)
-        chat.messages.append(ChatMessage(role: .tool, content: placeholder.content, toolResults: [placeholder]))
+        chat.messages.append(ChatMessage(role: .tool, content: "", toolResults: [placeholder]))
         records[idx].chat = chat
         // In-memory only during streaming; persisted once by `finishStream`.
         scheduleCoalescedEmit()
@@ -1541,10 +1558,19 @@ actor ChatEngine {
 
     /// Deletes a single message from the message tree by id. Persists the
     /// updated chat to disk and removes any image files owned by the message.
+    ///
+    /// When deleting an assistant message that issued tool calls, the
+    /// following `tool`-role result messages whose `callID` matches one of the
+    /// assistant's tool calls are removed as well — they are view projections
+    /// of that assistant turn and would otherwise be orphaned (folded onto a
+    /// now-deleted message and silently dropped by the renderer).
     func deleteMessage(filename: String, messageID: UUID) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         var chat = records[idx].chat
         guard let msgIdx = chat.messages.firstIndex(where: { $0.id == messageID }) else { return }
+        // Collect the callIDs of tool calls issued by the deleted assistant
+        // message so we can also remove their result messages.
+        let callIDs: Set<String> = Set(chat.messages[msgIdx].toolCalls?.map(\.id) ?? [])
         // Clean up image files owned by the deleted message.
         if let images = chat.messages[msgIdx].images {
             for img in images {
@@ -1552,6 +1578,24 @@ actor ChatEngine {
             }
         }
         chat.messages.remove(at: msgIdx)
+        // Remove any following tool-result messages whose callID belongs to the
+        // deleted assistant message. They are consecutive (the tool loop
+        // appends results right after the assistant message), so we scan
+        // forward from the removal point and stop at the first non-matching
+        // message.
+        if !callIDs.isEmpty {
+            var i = msgIdx
+            while i < chat.messages.count {
+                let m = chat.messages[i]
+                if m.role == .tool,
+                   let results = m.toolResults,
+                   results.contains(where: { callIDs.contains($0.callID) }) {
+                    chat.messages.remove(at: i)
+                    continue
+                }
+                break
+            }
+        }
         saveChat(chat, filename: filename)
         emit(.chatsChanged(records))
     }

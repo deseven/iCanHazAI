@@ -403,6 +403,14 @@ final class AppViewModel: ObservableObject {
         return true
     }
 
+    /// Whether the last message in the selected chat is from the user. Used to
+    /// allow pressing send with empty input to trigger an assistant reply on
+    /// that last user message (e.g. after the agent's answer was removed).
+    var selectedChatLastMessageIsFromUser: Bool {
+        guard let item = selectedChatItem else { return false }
+        return item.chat.messages.last?.role == .user
+    }
+
     /// Whether the selected chat's connection supports image input. Used to
     /// gate the attach button and drag-and-drop in the input area.
     var selectedChatSupportsImageInput: Bool {

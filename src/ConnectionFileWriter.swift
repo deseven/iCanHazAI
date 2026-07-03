@@ -62,7 +62,7 @@ enum ConnectionFileWriter {
             output += "        // \"seed\": 42,\n"
             output += "        // \"thinking\": { \"type\": \"disabled\" }\n"
         case .anthropic:
-            output += "        // \"max_tokens\": 4096,\n"
+            output += "        \"max_tokens\": 65000,\n"
             output += "        // \"temperature\": 1.0,\n"
             output += "        // \"top_p\": 1.0,\n"
             output += "        // \"top_k\": 40,\n"
