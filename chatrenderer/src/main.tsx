@@ -14,6 +14,7 @@
 //    on every token or edit.
 import { render } from "preact";
 import { useEffect, useRef, useState, useCallback } from "preact/hooks";
+import { ChevronDown } from "lucide-preact";
 import type { ChatMessage, ChatSnapshot, HostMessage } from "./types";
 import { setHostSubscriber, sendToHost } from "./bridge";
 import { MessageItem } from "./components/Message";
@@ -45,6 +46,10 @@ function ChatApp() {
   const loadingOlderRef = useRef(false);
   /** Bump counter to trigger the autoscroll effect after incremental updates. */
   const [tick, setTick] = useState(0);
+  /** Whether the scroll-to-bottom button should be visible. */
+  const [showScrollButton, setShowScrollButton] = useState(false);
+  /** Distance from bottom (px) beyond which the button appears. */
+  const SCROLL_BUTTON_THRESHOLD = 300;
 
   // ── Host message handling ───────────────────────────────────────────
   useEffect(() => {
@@ -167,6 +172,8 @@ function ChatApp() {
     const nowAtBottom = distanceFromBottom < 40;
     atBottomRef.current = nowAtBottom;
 
+    setShowScrollButton(distanceFromBottom >= SCROLL_BUTTON_THRESHOLD);
+
     // Notify the host when the bottom state changes (used to suppress the
     // unread marker).
     if (wasAtBottom !== nowAtBottom) {
@@ -210,30 +217,43 @@ function ChatApp() {
       : null;
 
   return (
-    <div class="chat-scroller" ref={scrollerRef} onScroll={onScroll}>
-      <div class="chat-list">
-        {/* Sentinel for infinite scroll; also acts as top padding. */}
-        <div class="scroll-sentinel-top" />
-        {loading ? (
-          <div class="loading-state">
-            <div class="spinner" />
-          </div>
-        ) : messages.length === 0 ? (
-          <div class="empty-state">No messages yet</div>
-        ) : (
-          messages.map((m) => (
-            <MessageItem
-              key={m.id}
-              message={m}
-              isStreaming={m.id === streamingId}
-              defaultThinkingOpen={expandThinking}
-              defaultToolOpen={expandToolUse}
-            />
-          ))
-        )}
-        {/* Bottom sentinel; the scroller pins to here. */}
-        <div class="scroll-sentinel-bottom" />
+    <div class="chat-viewport">
+      <div class="chat-scroller" ref={scrollerRef} onScroll={onScroll}>
+        <div class="chat-list">
+          {/* Sentinel for infinite scroll; also acts as top padding. */}
+          <div class="scroll-sentinel-top" />
+          {loading ? (
+            <div class="loading-state">
+              <div class="spinner" />
+            </div>
+          ) : messages.length === 0 ? (
+            <div class="empty-state">No messages yet</div>
+          ) : (
+            messages.map((m) => (
+              <MessageItem
+                key={m.id}
+                message={m}
+                isStreaming={m.id === streamingId}
+                defaultThinkingOpen={expandThinking}
+                defaultToolOpen={expandToolUse}
+              />
+            ))
+          )}
+          {/* Bottom sentinel; the scroller pins to here. */}
+          <div class="scroll-sentinel-bottom" />
+        </div>
       </div>
+      {showScrollButton && (
+        <button
+          type="button"
+          class="scroll-to-bottom-btn"
+          title="Scroll to bottom"
+          aria-label="Scroll to bottom"
+          onClick={() => scrollToBottom(true)}
+        >
+          <ChevronDown size={22} />
+        </button>
+      )}
     </div>
   );
 }
