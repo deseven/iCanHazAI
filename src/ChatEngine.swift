@@ -1491,12 +1491,13 @@ actor ChatEngine {
             guard let utilityConn = await self.connections.first(where: { $0.id == utilityConnID }) else { return }
 
             let systemPrompt = """
-                The user just started a new chat and the following is their first message. \
-                This message is NOT a request to you, we only need to figure out a good chat name based on it.
+                The user just started a new chat and we need to generate a name for this chat. \
+                The user message is NOT a request to you, we only need to figure out a good chat name based on it. \
                 Generate a short, descriptive chat name that captures the essence of their request. \
                 The name must be in the same language as the user's message. \
                 Respond with ONLY the chat name — no quotes, no punctuation, no explanations, no markdown. \
-                Keep it concise, ideally under 50 characters.
+                Keep it concise, ideally under 50 characters. \
+                The following is how the user started this chat:
                 """
 
             let messages: [ChatMessage] = [

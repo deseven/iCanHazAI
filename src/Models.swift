@@ -130,7 +130,7 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     var tokenCount: Int? {
         chat.messages.reversed()
             .first(where: { $0.role == .assistant && $0.tokenUsage != nil })?
-            .tokenUsage?.totalTokens
+            .tokenUsage?.tokensUsed
     }
 
     /// Key used to order chats in the sidebar. Empty chats use their in-memory

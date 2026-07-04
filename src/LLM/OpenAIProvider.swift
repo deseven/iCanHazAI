@@ -148,9 +148,7 @@ struct OpenAIProvider: LLMProvider {
         // top-level `usage` object and an empty `choices` array.
         if let usage = json["usage"] as? [String: Any],
            let total = usage["total_tokens"] as? Int {
-            let input = (usage["prompt_tokens"] as? Int) ?? 0
-            let output = (usage["completion_tokens"] as? Int) ?? (total - input)
-            return [.usage(TokenUsage(inputTokens: input, outputTokens: output))]
+            return [.usage(TokenUsage(tokensUsed: total))]
         }
         guard let choices = json["choices"] as? [[String: Any]] else {
             return []

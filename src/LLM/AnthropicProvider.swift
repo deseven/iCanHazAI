@@ -215,8 +215,8 @@ struct AnthropicProvider: LLMProvider {
             // the stashed input tokens, emit the full usage.
             if let usage = json["usage"] as? [String: Any],
                let outputTokens = usage["output_tokens"] as? Int {
-                let inputTokens = accumulator.getInputTokens()
-                chunks.append(.usage(TokenUsage(inputTokens: inputTokens, outputTokens: outputTokens)))
+                let total = accumulator.getInputTokens() + outputTokens
+                chunks.append(.usage(TokenUsage(tokensUsed: total)))
             }
         default:
             break

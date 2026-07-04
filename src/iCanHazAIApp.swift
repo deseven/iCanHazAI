@@ -39,13 +39,19 @@ struct iCanHazAIApp: App {
         WindowGroup {
             MainWindow()
                 .environmentObject(viewModel)
-                .frame(minWidth: 800, minHeight: 500)
+                .frame(minWidth: viewModel.chatInfoSidebarVisible ? 1050 : 860, minHeight: 500)
                 .onAppear {
                     NSApplication.shared.activate(ignoringOtherApps: true)
                     if let window = NSApplication.shared.windows.first(where: { $0.contentViewController is NSHostingController<AnyView> }) ?? NSApplication.shared.windows.first {
                         window.makeKeyAndOrderFront(nil)
                         restoreWindowFrame(window)
                         trackWindowFrame(window)
+                        applyMinSize(to: window)
+                    }
+                }
+                .onChange(of: viewModel.chatInfoSidebarVisible) { _, _ in
+                    if let window = NSApplication.shared.windows.first(where: { $0.contentViewController is NSHostingController<AnyView> }) ?? NSApplication.shared.windows.first {
+                        applyMinSize(to: window)
                     }
                 }
         }
@@ -130,6 +136,26 @@ struct iCanHazAIApp: App {
         }
         objc_setAssociatedObject(window, "frameTracker", tracker, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
         tracker.attach(to: window)
+    }
+
+    /// Applies the minimum window size based on whether the chat info sidebar
+    /// is visible. If the current width is below the new minimum, the window
+    /// is widened to meet it.
+    private func applyMinSize(to window: NSWindow) {
+        let minWidth: CGFloat = viewModel.chatInfoSidebarVisible ? 1050 : 860
+        var minSize = window.minSize
+        minSize.width = minWidth
+        minSize.height = 500
+        window.minSize = minSize
+
+        if window.frame.width < minWidth {
+            var frame = window.frame
+            let delta = minWidth - frame.width
+            frame.size.width = minWidth
+            // Keep the left edge anchored so the window grows to the right.
+            frame.origin.x -= delta
+            window.setFrame(frame, display: true)
+        }
     }
 }
 

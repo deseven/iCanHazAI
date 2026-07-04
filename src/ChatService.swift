@@ -28,9 +28,7 @@ enum StreamChunk: Sendable {
 /// Token usage as reported by the provider. Stored on each assistant
 /// message; the chat info panel shows the last assistant message's total.
 struct TokenUsage: Sendable, Equatable, Codable {
-    let inputTokens: Int
-    let outputTokens: Int
-    var totalTokens: Int { inputTokens + outputTokens }
+    let tokensUsed: Int
 }
 
 /// A shared chunk coalescer used by both providers so they stream at the same
