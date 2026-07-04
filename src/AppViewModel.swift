@@ -444,6 +444,13 @@ final class AppViewModel: ObservableObject {
         Task { await engine.stopStreaming(filename: filename) }
     }
 
+    /// Opens the in-chat search bar (Cmd-F). No-op when no chat is selected.
+    /// Focuses the web view and asks the renderer to show its search form.
+    func startSearchInChat() {
+        guard selectedChatItem != nil else { return }
+        chatWebViewModel?.startSearch()
+    }
+
     /// Edits a message's plain-text content in the selected chat.
     func editMessage(messageID: UUID, to newText: String) {
         guard let filename = selectedChatID else { return }

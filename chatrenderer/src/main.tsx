@@ -14,13 +14,14 @@
 //    on every token or edit.
 import { render } from "preact";
 import { useEffect, useRef, useState, useCallback } from "preact/hooks";
-import { ChevronDown } from "lucide-preact";
+import { ChevronDown, ChevronLeft, ChevronRight, X } from "lucide-preact";
 import type { ChatMessage, ChatSnapshot, HostMessage } from "./types";
 import { setHostSubscriber, sendToHost } from "./bridge";
 import { MessageItem } from "./components/Message";
 import { setMermaidTheme, featuresReady } from "./markdown";
 import { debugLog } from "./debug";
 import { expandThinking, expandToolUse } from "./chatBehaviour";
+import { runSearch, nextMatch, prevMatch, clearSearch } from "./search";
 import "./styles.css";
 // highlight.js token colors are defined directly in styles.css, scoped by
 // [data-theme="dark"] / [data-theme="light"] (atom-one-dark / atom-one-light).
@@ -33,6 +34,21 @@ function ChatApp() {
   // Whether we're waiting for the first snapshot from the host. Shows a
   // spinner until content arrives.
   const [loading, setLoading] = useState(true);
+
+  // ── In-chat search ──────────────────────────────────────────────────
+  /** Whether the search bar is open. */
+  const [searchOpen, setSearchOpen] = useState(false);
+  /** Current search query. */
+  const [searchQuery, setSearchQuery] = useState("");
+  /** Total matches / active (1-based) match index for display. */
+  const [searchTotal, setSearchTotal] = useState(0);
+  const [searchActive, setSearchActive] = useState(0);
+  /** Ref to the search input so we can focus it on open. */
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  /** Debounce timer for the 200ms search delay. */
+  const searchTimerRef = useRef<number | null>(null);
+  /** Bump counter to re-run search after incremental message updates. */
+  const [searchTick, setSearchTick] = useState(0);
 
   // Scroll bookkeeping.
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -89,6 +105,16 @@ function ChatApp() {
           debugLog("scroll", "scrollToBottom requested");
           requestAnimationFrame(() => scrollToBottom(true));
           break;
+        case "startSearch":
+          // Toggle the search bar: open if closed, close if already open.
+          setSearchOpen((open) => {
+            if (open) {
+              closeSearch();
+              return false;
+            }
+            return true;
+          });
+          break;
         case "updateMessage":
           debugLog(
             "edit",
@@ -108,6 +134,7 @@ function ChatApp() {
             return { ...s, messages };
           });
           setTick((t) => t + 1);
+          setSearchTick((t) => t + 1);
           break;
         case "addMessage":
           debugLog(
@@ -122,6 +149,7 @@ function ChatApp() {
             return { ...s, messages };
           });
           setTick((t) => t + 1);
+          setSearchTick((t) => t + 1);
           break;
         case "deleteMessage":
           debugLog("delete", `deleteMessage id=${msg.messageId}`);
@@ -131,6 +159,7 @@ function ChatApp() {
             return { ...s, messages };
           });
           setTick((t) => t + 1);
+          setSearchTick((t) => t + 1);
           break;
       }
     });
@@ -201,6 +230,8 @@ function ChatApp() {
     if (!force && !atBottomRef.current) return;
     autoScrollingRef.current = true;
     el.scrollTop = el.scrollHeight;
+    atBottomRef.current = true;
+    setShowScrollButton(false);
     // Clear the flag after the scroll settles.
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -208,6 +239,67 @@ function ChatApp() {
       });
     });
   }
+
+  // ── Search helpers ───────────────────────────────────────────────────
+  /** Close the search bar and clear all highlights. */
+  function closeSearch() {
+    if (searchTimerRef.current != null) {
+      clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+    clearSearch();
+    setSearchQuery("");
+    setSearchTotal(0);
+    setSearchActive(0);
+  }
+
+  /** Run the search immediately and update display state. */
+  function doSearchNow(q: string) {
+    const st = runSearch(q);
+    setSearchTotal(st.total);
+    setSearchActive(st.total > 0 ? st.active + 1 : 0);
+  }
+
+  /** Schedule a search 200ms after the last input (debounced). */
+  function scheduleSearch(q: string) {
+    if (searchTimerRef.current != null) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = window.setTimeout(() => {
+      searchTimerRef.current = null;
+      doSearchNow(q);
+    }, 200);
+  }
+
+  // Focus the input when the search bar opens; clear when it closes.
+  useEffect(() => {
+    if (searchOpen) {
+      requestAnimationFrame(() => searchInputRef.current?.focus());
+    } else {
+      closeSearch();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchOpen]);
+
+  // Re-run the current search after incremental message updates so new/edited
+  // content is reflected in the results.
+  useEffect(() => {
+    if (!searchOpen) return;
+    if (searchQuery.trim()) doSearchNow(searchQuery);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchTick, snapshot?.messages.length]);
+
+  // Global Escape closes the search when the input is focused.
+  useEffect(() => {
+    if (!searchOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setSearchOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [searchOpen]);
 
   const messages = snapshot?.messages ?? [];
   const isStreaming = snapshot?.isStreaming ?? false;
@@ -218,6 +310,72 @@ function ChatApp() {
 
   return (
     <div class="chat-viewport">
+      {searchOpen && (
+        <div class="search-bar">
+          <input
+            ref={searchInputRef}
+            class="search-input"
+            type="text"
+            placeholder="Find in chat"
+            value={searchQuery}
+            spellcheck={false}
+            autocomplete="off"
+            onInput={(e) => {
+              const v = (e.target as HTMLInputElement).value;
+              setSearchQuery(v);
+              scheduleSearch(v);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                if (searchTotal === 0) return;
+                // Shift+Enter goes to the previous match, Enter to the next.
+                const st = e.shiftKey ? prevMatch() : nextMatch();
+                setSearchActive(st.total > 0 ? st.active + 1 : 0);
+              }
+            }}
+          />
+          <span class="search-count">
+            {searchTotal > 0
+              ? `${searchActive} / ${searchTotal}`
+              : searchQuery.trim()
+                ? "0 / 0"
+                : ""}
+          </span>
+          <button
+            type="button"
+            class="search-nav-btn"
+            title="Previous"
+            disabled={searchTotal < 2}
+            onClick={() => {
+              const st = prevMatch();
+              setSearchActive(st.total > 0 ? st.active + 1 : 0);
+            }}
+          >
+            <ChevronLeft size={16} />
+          </button>
+          <button
+            type="button"
+            class="search-nav-btn"
+            title="Next"
+            disabled={searchTotal < 2}
+            onClick={() => {
+              const st = nextMatch();
+              setSearchActive(st.total > 0 ? st.active + 1 : 0);
+            }}
+          >
+            <ChevronRight size={16} />
+          </button>
+          <button
+            type="button"
+            class="search-close-btn"
+            title="Close"
+            onClick={() => setSearchOpen(false)}
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
       <div class="chat-scroller" ref={scrollerRef} onScroll={onScroll}>
         <div class="chat-list">
           {/* Sentinel for infinite scroll; also acts as top padding. */}

@@ -376,6 +376,13 @@ final class ChatWebViewModel: ObservableObject {
         sendHostMessage(.scrollToBottom)
     }
 
+    /// Opens the in-chat search bar. Focuses the web view first so keystrokes
+    /// land in the renderer's search input, then asks it to show the form.
+    func startSearch() {
+        webView.window?.makeFirstResponder(webView)
+        sendHostMessage(.startSearch)
+    }
+
     // MARK: - JS communication
 
     private func sendHostMessage(_ message: HostMessageData) {
@@ -502,6 +509,7 @@ enum HostMessageData: Codable {
     case streaming(chatId: String, isStreaming: Bool)
     case theme(theme: String)
     case scrollToBottom
+    case startSearch
     case updateMessage(chatId: String, message: ChatMessageData)
     case addMessage(chatId: String, message: ChatMessageData, index: Int)
     case deleteMessage(chatId: String, messageId: String)
@@ -532,6 +540,8 @@ enum HostMessageData: Codable {
             try c.encode(theme, forKey: .theme)
         case .scrollToBottom:
             try c.encode("scrollToBottom", forKey: .type)
+        case .startSearch:
+            try c.encode("startSearch", forKey: .type)
         case .updateMessage(let chatId, let message):
             try c.encode("updateMessage", forKey: .type)
             try c.encode(chatId, forKey: .chatId)
@@ -561,6 +571,8 @@ enum HostMessageData: Codable {
             self = .theme(theme: try c.decode(String.self, forKey: .theme))
         case "scrollToBottom":
             self = .scrollToBottom
+        case "startSearch":
+            self = .startSearch
         case "updateMessage":
             self = .updateMessage(chatId: try c.decode(String.self, forKey: .chatId),
                                   message: try c.decode(ChatMessageData.self, forKey: .message))

@@ -68,6 +68,7 @@ export type HostMessage =
   | { type: "streaming"; chatId: string; isStreaming: boolean }
   | { type: "theme"; theme: "light" | "dark" }
   | { type: "scrollToBottom" }
+  | { type: "startSearch" }
   | { type: "updateMessage"; chatId: string; message: ChatMessage }
   | { type: "addMessage"; chatId: string; message: ChatMessage; index: number }
   | { type: "deleteMessage"; chatId: string; messageId: string };

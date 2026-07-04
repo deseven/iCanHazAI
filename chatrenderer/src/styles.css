@@ -181,6 +181,90 @@ body {
   transform: translateY(0);
 }
 
+/* ── In-chat search bar ───────────────────────────────────────────────
+   Pinned to the top-right of the viewport, above the scroller. */
+
+.search-bar {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+  font-size: 13px;
+}
+
+.search-input {
+  appearance: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  width: 180px;
+  padding: 2px 6px;
+}
+
+.search-input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.search-count {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  min-width: 56px;
+  text-align: center;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.search-nav-btn,
+.search-close-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  padding: 0;
+}
+
+.search-nav-btn:hover:not(:disabled),
+.search-close-btn:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text);
+}
+
+.search-nav-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* ── Search highlight marks ─────────────────────────────────────────── */
+
+.search-mark {
+  background: rgba(255, 213, 79, 0.45);
+  border-radius: 2px;
+  color: inherit;
+}
+
+.search-mark-active {
+  background: #ffd54f;
+  color: #000;
+  outline: 1px solid rgba(0, 0, 0, 0.25);
+}
+
 .chat-list {
   max-width: 820px;
   margin: 0 auto;

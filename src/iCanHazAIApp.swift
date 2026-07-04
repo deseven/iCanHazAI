@@ -75,6 +75,12 @@ struct iCanHazAIApp: App {
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
             }
+            CommandGroup(after: .textEditing) {
+                Button("Find in Chat…") {
+                    AppViewModel.shared?.startSearchInChat()
+                }
+                .keyboardShortcut("f", modifiers: .command)
+            }
             CommandGroup(replacing: .appSettings) {
                 Button("Preferences...") {
                     PreferencesView.show()
