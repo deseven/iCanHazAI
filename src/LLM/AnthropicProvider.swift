@@ -197,10 +197,26 @@ struct AnthropicProvider: LLMProvider {
                     chunks.append(.content(text))
                 }
             }
+        case "message_start":
+            // `message_start` carries the input token count. We stash it on
+            // the accumulator so the later `message_delta` (which carries the
+            // output token count) can emit a combined usage chunk.
+            if let message = json["message"] as? [String: Any],
+               let input = message["usage"] as? [String: Any],
+               let inputTokens = input["input_tokens"] as? Int {
+                accumulator.setInputTokens(inputTokens)
+            }
         case "message_delta":
             if let delta = json["delta"] as? [String: Any],
                let reason = delta["stop_reason"] as? String {
                 chunks.append(.finishReason(reason))
+            }
+            // `message_delta` carries the output token count. Combined with
+            // the stashed input tokens, emit the full usage.
+            if let usage = json["usage"] as? [String: Any],
+               let outputTokens = usage["output_tokens"] as? Int {
+                let inputTokens = accumulator.getInputTokens()
+                chunks.append(.usage(TokenUsage(inputTokens: inputTokens, outputTokens: outputTokens)))
             }
         default:
             break

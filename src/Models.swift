@@ -40,8 +40,12 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     var toolCalls: [ToolCall]?
     /// For `tool`-role messages: the result of a tool call. Nil otherwise.
     var toolResults: [ToolResult]?
+    /// For assistant messages: token usage reported by the provider for this
+    /// response. Nil when the provider didn't report usage (shown as N/A in
+    /// the UI) or for non-assistant messages.
+    var tokenUsage: TokenUsage?
 
-    init(id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil, error: String? = nil, timestamp: Date = Date(), connectionName: String? = nil, images: [ImageAttachment]? = nil, toolCalls: [ToolCall]? = nil, toolResults: [ToolResult]? = nil) {
+    init(id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil, error: String? = nil, timestamp: Date = Date(), connectionName: String? = nil, images: [ImageAttachment]? = nil, toolCalls: [ToolCall]? = nil, toolResults: [ToolResult]? = nil, tokenUsage: TokenUsage? = nil) {
         self.id = id
         self.role = role
         self.content = content
@@ -52,6 +56,7 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         self.images = images
         self.toolCalls = toolCalls
         self.toolResults = toolResults
+        self.tokenUsage = tokenUsage
     }
 }
 
@@ -117,10 +122,15 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
         self.createdAt = createdAt
     }
 
-    /// Approximate token count for the whole conversation (all messages,
-    /// including thinking). Updated live as content streams in.
-    var tokenCount: Int {
-        chat.messages.reduce(0) { $0 + TokenEstimator.estimate($1.content) + TokenEstimator.estimate($1.thinking ?? "") }
+    /// Token usage reported by the provider for the most recent assistant
+    /// response that has usage. A new (in-progress) assistant message has no
+    /// usage yet, so we skip back to the last one that does — the counter
+    /// holds its previous value while a new response streams in. Nil (shown
+    /// as N/A) until the first assistant response with usage completes.
+    var tokenCount: Int? {
+        chat.messages.reversed()
+            .first(where: { $0.role == .assistant && $0.tokenUsage != nil })?
+            .tokenUsage?.totalTokens
     }
 
     /// Key used to order chats in the sidebar. Empty chats use their in-memory
@@ -139,19 +149,6 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
             return String(firstUser.content.prefix(40))
         }
         return "New chat"
-    }
-}
-
-// MARK: - Token estimation
-
-/// A lightweight, dependency-free token estimator. Real BPE tokenizers are
-/// model-specific and heavy; for a UI counter a rough heuristic is enough.
-/// The approximation (~4 chars/token) tracks the OpenAI family closely enough
-/// for display purposes and updates in real time as content streams in.
-enum TokenEstimator {
-    static func estimate(_ text: String) -> Int {
-        guard !text.isEmpty else { return 0 }
-        return max(1, (text.count + 3) / 4)
     }
 }
 

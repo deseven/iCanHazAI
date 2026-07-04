@@ -420,10 +420,11 @@ final class AppViewModel: ObservableObject {
         return conn.imageInput
     }
 
-    /// Approximate token count for the currently selected chat, updated live
-    /// as content streams in.
-    var selectedChatTokenCount: Int {
-        selectedChatItem?.tokenCount ?? 0
+    /// Token usage for the currently selected chat, as reported by the
+    /// provider on the last assistant response. Nil until the first
+    /// response with usage completes.
+    var selectedChatTokenCount: Int? {
+        selectedChatItem?.tokenCount
     }
 
     // MARK: - Actions (forwarders to the engine)

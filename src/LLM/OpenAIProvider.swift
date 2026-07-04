@@ -67,7 +67,12 @@ struct OpenAIProvider: LLMProvider {
             }
         }
 
-        if stream { body["stream"] = true }
+        if stream {
+            body["stream"] = true
+            // Request a final chunk carrying token usage so we can display
+            // the provider-reported totals instead of estimating.
+            body["stream_options"] = ["include_usage": true]
+        }
         return body
     }
 
@@ -136,8 +141,18 @@ struct OpenAIProvider: LLMProvider {
     // MARK: - Stream chunk parsing
 
     func parseStreamChunk(_ data: Data, accumulator: ToolCallAccumulator) -> [StreamChunk] {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]] else {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return []
+        }
+        // The final chunk (with `stream_options.include_usage`) carries a
+        // top-level `usage` object and an empty `choices` array.
+        if let usage = json["usage"] as? [String: Any],
+           let total = usage["total_tokens"] as? Int {
+            let input = (usage["prompt_tokens"] as? Int) ?? 0
+            let output = (usage["completion_tokens"] as? Int) ?? (total - input)
+            return [.usage(TokenUsage(inputTokens: input, outputTokens: output))]
+        }
+        guard let choices = json["choices"] as? [[String: Any]] else {
             return []
         }
         var chunks: [StreamChunk] = []

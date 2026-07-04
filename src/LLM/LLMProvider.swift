@@ -93,6 +93,9 @@ final class ToolCallAccumulator: @unchecked Sendable {
         var arguments: String = ""
     }
     private var entries: [Int: Entry] = [:]
+    /// Input token count reported by the provider (Anthropic reports it in
+    /// `message_start` before the output count arrives in `message_delta`).
+    private var inputTokens: Int = 0
     private let lock = NSLock()
 
     /// Records a delta for the given index. `id`/`name` are applied when
@@ -104,6 +107,19 @@ final class ToolCallAccumulator: @unchecked Sendable {
         if let name, !name.isEmpty { entry.name = name }
         if let args = argumentsDelta, !args.isEmpty { entry.arguments += args }
         entries[index] = entry
+    }
+
+    /// Stashes the input token count for later combination with the output
+    /// count (Anthropic splits usage across two events).
+    func setInputTokens(_ count: Int) {
+        lock.lock(); defer { lock.unlock() }
+        inputTokens = count
+    }
+
+    /// Returns the stashed input token count.
+    func getInputTokens() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return inputTokens
     }
 
     /// Materialize the accumulated tool calls into [`ToolCall`](src/MCPModels.swift)

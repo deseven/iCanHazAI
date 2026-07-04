@@ -1392,6 +1392,10 @@ actor ChatEngine {
             // No state change needed; the finish reason is used by the loop
             // via the StreamResult return value.
             break
+        case .usage(let usage):
+            // Provider-reported token usage for this assistant response.
+            // Stored on the message and surfaced in the chat info panel.
+            chat.messages[lastIdx].tokenUsage = usage
         }
         records[idx].chat = chat
         // Coalesce: don't emit on every chunk. The flush fires on a timer,

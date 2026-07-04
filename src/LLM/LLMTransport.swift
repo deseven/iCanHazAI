@@ -129,6 +129,7 @@ enum LLMTransport {
 
         var fullContent = ""
         var finishReason: String?
+        var usage: TokenUsage?
         let accumulator = ToolCallAccumulator()
 
         for try await line in bytes.lines {
@@ -144,6 +145,8 @@ enum LLMTransport {
                     fullContent += text
                 case .finishReason(let reason):
                     finishReason = reason
+                case .usage(let u):
+                    usage = u
                 default:
                     break
                 }
@@ -158,11 +161,15 @@ enum LLMTransport {
         if let reason = finishReason {
             await onChunk(.finishReason(reason))
         }
+        if let usage {
+            await onChunk(.usage(usage))
+        }
 
         return ChatService.StreamResult(
             content: fullContent,
             toolCalls: toolCalls,
-            finishReason: finishReason
+            finishReason: finishReason,
+            usage: usage
         )
     }
 

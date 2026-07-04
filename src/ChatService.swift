@@ -19,6 +19,18 @@ enum StreamChunk: Sendable {
     /// The finish reason reported by the provider (e.g. "stop", "tool_calls",
     /// "tool_use"). Emitted once at the end of a stream.
     case finishReason(String)
+    /// Token usage reported by the provider for this response. Emitted once
+    /// at the end of a stream (OpenAI sends it in a final chunk with
+    /// `stream_options.include_usage`; Anthropic sends it in `message_delta`).
+    case usage(TokenUsage)
+}
+
+/// Token usage as reported by the provider. Stored on each assistant
+/// message; the chat info panel shows the last assistant message's total.
+struct TokenUsage: Sendable, Equatable, Codable {
+    let inputTokens: Int
+    let outputTokens: Int
+    var totalTokens: Int { inputTokens + outputTokens }
 }
 
 /// A shared chunk coalescer used by both providers so they stream at the same
@@ -149,6 +161,7 @@ final class ChatService: @unchecked Sendable {
         let content: String
         let toolCalls: [ToolCall]
         let finishReason: String?
+        let usage: TokenUsage?
     }
 
     /// Streams a chat completion, calling `onChunk` for each piece of

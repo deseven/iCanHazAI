@@ -31,7 +31,7 @@ struct ChatInfoSidebar: View {
                         InfoCell(label: "Updated", value: formatted(updatedDate(for: item)))
                     }
                     Section("Usage") {
-                        LabeledContent("Tokens", value: "\(item.tokenCount)")
+                        LabeledContent("Tokens", value: item.tokenCount.map { "\($0)" } ?? "N/A")
                     }
                 }
                 .formStyle(.grouped)
