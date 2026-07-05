@@ -9,6 +9,9 @@ import AppKit
 /// force-quitting the app would orphan spawned MCP server processes.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // The app is single-window; disable automatic window tabbing so the
+        // "Show Tab Bar" / "Show All Tabs" items disappear from the View menu.
+        NSWindow.allowsAutomaticWindowTabbing = false
         // Load and decode config.toml synchronously, on this thread, BEFORE
         // any Task is spawned. This applies the debug-logging flag from the
         // very first log line and stashes the decoded config so the actor's
@@ -57,31 +60,12 @@ struct iCanHazAIApp: App {
         }
         .windowToolbarStyle(.unified)
         .commands {
-            CommandGroup(replacing: .newItem) {
-                Button("New Chat") {
-                    AppViewModel.shared?.createNewChat()
-                }
-                .keyboardShortcut("n", modifiers: .command)
+            CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .textEditing) {
                 Button("New Chat") {
                     AppViewModel.shared?.createNewChat()
                 }
                 .keyboardShortcut("t", modifiers: .command)
-                Button("New Connection...") {
-                    ConnectionWizardView.show(onFinish: { AppViewModel.shared?.refreshAfterWizard() })
-                }
-                .keyboardShortcut("n", modifiers: [.command, .shift])
-                Button("New MCP Server...") {
-                    MCPWizardView.show(onFinish: { AppViewModel.shared?.refreshPreferences() })
-                }
-                .keyboardShortcut("m", modifiers: [.command, .shift])
-            }
-            CommandGroup(after: .newItem) {
-                Button("Reload MCPs…") {
-                    AppViewModel.shared?.reloadMCPs()
-                }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
-            }
-            CommandGroup(after: .textEditing) {
                 Button("Find in Chat…") {
                     AppViewModel.shared?.startSearchInChat()
                 }
@@ -92,6 +76,44 @@ struct iCanHazAIApp: App {
                     PreferencesView.show()
                 }
                 .keyboardShortcut(",", modifiers: .command)
+            }
+
+            CommandMenu("Role") {
+                Button("Roles: \(viewModel.roles.count)") {}
+                    .disabled(true)
+                Button("Reveal Roles in Finder…") {
+                    NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.rolesURL])
+                }
+            }
+
+            CommandMenu("Connection") {
+                Button("Connections: \(viewModel.connections.count)") {}
+                    .disabled(true)
+                Button("Reveal Connections in Finder…") {
+                    NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.connectionsURL])
+                }
+                Divider()
+                Button("New Connection…") {
+                    ConnectionWizardView.show(onFinish: { AppViewModel.shared?.refreshAfterWizard() })
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+            }
+
+            CommandMenu("MCP") {
+                Button("MCP Servers: \(viewModel.mcps.count)") {}
+                    .disabled(true)
+                Button("Reinitialize MCP Servers…") {
+                    AppViewModel.shared?.reloadMCPs()
+                }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                Button("Reveal MCP Servers in Finder…") {
+                    NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.mcpsURL])
+                }
+                Divider()
+                Button("New MCP Server…") {
+                    MCPWizardView.show(onFinish: { AppViewModel.shared?.refreshPreferences() })
+                }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
             }
         }
     }

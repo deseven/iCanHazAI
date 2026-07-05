@@ -204,6 +204,27 @@ do_create_bundle() {
 
 do_codesign() {
     xattr -cr "$loc/dist/$name.app"
+
+    # Sign nested Mach-O binaries (bundled MCP servers) explicitly first.
+    # --deep does not reliably apply hardened runtime + secure timestamp to
+    # nested executables, which causes notarization to reject them.
+    local mcpDir="$loc/dist/$name.app/Contents/Resources/MCPServers"
+    if [ -d "$mcpDir" ]; then
+        for srv in UtilsMCP FilesystemMCP CodeMCP ShellMCP; do
+            [ -f "$mcpDir/$srv" ] || continue
+            if [ "$can_sign" = true ]; then
+                codesign --force --sign "$ICHAI_SIGNING_IDENTITY" \
+                    --options runtime \
+                    --timestamp \
+                    "$mcpDir/$srv"
+            else
+                codesign --force --sign - \
+                    -r="designated => identifier \"$ident\"" \
+                    "$mcpDir/$srv"
+            fi
+        done
+    fi
+
     if [ "$can_sign" = true ]; then
         codesign --force --deep --sign "$ICHAI_SIGNING_IDENTITY" \
             --options runtime \
@@ -248,14 +269,25 @@ do_sign_dmg() {
 
 do_notarize() {
     local file="$1"
-    if [ -n "${ICH_NOTARY_PROFILE:-}" ]; then
-        xcrun notarytool submit "$file" --keychain-profile "$ICHAI_NOTARY_PROFILE" --wait
+    local submissionLog
+    if [ -n "${ICHAI_NOTARY_PROFILE:-}" ]; then
+        submissionLog="$(xcrun notarytool submit "$file" --keychain-profile "$ICHAI_NOTARY_PROFILE" --wait 2>&1)"
     else
-        xcrun notarytool submit "$file" \
+        submissionLog="$(xcrun notarytool submit "$file" \
             --apple-id "$ICHAI_APPLE_ID" \
             --team-id "$ICHAI_TEAM_ID" \
             --password "$ICHAI_APP_PASSWORD" \
-            --wait
+            --wait 2>&1)"
+    fi
+    echo "$submissionLog"
+    # notarytool exits 0 even when the submission is rejected; inspect the
+    # final status line so we fail before attempting to staple a ticket
+    # that doesn't exist.
+    local finalStatus
+    finalStatus="$(echo "$submissionLog" | awk '/status:/ {print $2}' | tail -n 1)"
+    if [ "$finalStatus" != "Accepted" ]; then
+        echo "notarization did not succeed (status: ${finalStatus:-unknown})" >&2
+        return 1
     fi
 }
 
