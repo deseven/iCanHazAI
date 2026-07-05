@@ -126,6 +126,15 @@ do_clean_build() {
     swift package clean
 }
 
+# Clean the .build directories of the bundled MCP server packages and the
+# shared ImageTools library under mcps/.
+do_clean_mcps() {
+    local mcpDir="$loc/mcps"
+    for pkg in UtilsMCP FilesystemMCP CodeMCP ShellMCP Shared/ImageTools; do
+        rm -rf "$mcpDir/$pkg/.build"
+    done
+}
+
 do_compile_arm64() {
     swift build -c "$buildConfig" --arch arm64
 }
@@ -308,6 +317,7 @@ do_clean_dist
 
 if [ "$mode" = "clean" ]; then
     swift package clean
+    do_clean_mcps
     echo -e "  ${greenColor}${bold}Clean complete.${noColor}"
     exit 0
 fi
