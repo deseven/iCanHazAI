@@ -463,8 +463,36 @@ private struct ChatInputEditor: NSViewRepresentable {
             tv.string = text
             tv.reportContentHeight()
         }
-        if isFocused.wrappedValue, tv.window?.firstResponder !== tv {
-            tv.window?.makeFirstResponder(tv)
+        // A focus request is "pending" from the moment the focus token changes
+        // (onAppear / chat switch) until we actually become first responder.
+        // SwiftUI's @FocusState doesn't reliably drive focus into an
+        // NSViewRepresentable (setting it to true gets reverted because the
+        // WKWebView holds first-responder status), so we drive makeFirstResponder
+        // ourselves and keep retrying across updateNSView passes until the
+        // window is ready and the claim succeeds.
+        let tokenChanged = context.coordinator.lastFocusToken != focusToken
+        if tokenChanged {
+            context.coordinator.lastFocusToken = focusToken
+            context.coordinator.wantsFocus = true
+        }
+        let isTV = tv.window?.firstResponder === tv
+        // Only clear a pending focus request if we're actually focused AND
+        // this isn't the pass triggered by a token change (the web view can
+        // steal focus right after a chat switch, so we keep the request
+        // pending until the deferred claim runs).
+        if isTV, !tokenChanged {
+            context.coordinator.wantsFocus = false
+        }
+        if context.coordinator.wantsFocus, tv.window != nil, !isTV {
+            let coord = context.coordinator
+            DispatchQueue.main.async { [weak tv, weak coord] in
+                guard let tv, let coord else { return }
+                let nowTV = tv.window?.firstResponder === tv
+                if !nowTV, let window = tv.window {
+                    window.makeFirstResponder(tv)
+                    if tv.window?.firstResponder === tv { coord.wantsFocus = false }
+                }
+            }
         }
         context.coordinator.parent = self
     }
@@ -475,6 +503,12 @@ private struct ChatInputEditor: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: ChatInputEditor
+        /// Last focus token seen in `updateNSView`, used to detect chat switches
+        /// that should re-claim focus even when `isFocused` is already true.
+        var lastFocusToken: Int = -1
+        /// True while a focus request is pending (token changed but the text
+        /// view hasn't become first responder yet). Cleared once we win focus.
+        var wantsFocus: Bool = false
         init(parent: ChatInputEditor) { self.parent = parent }
 
         func textDidChange(_ notification: Notification) {

@@ -10,4 +10,9 @@
 import katexPlugin from "@vscode/markdown-it-katex";
 import "katex/dist/katex.min.css";
 
+const cssLink = document.createElement("link");
+cssLink.rel = "stylesheet";
+cssLink.href = "./katex-bundle.css";
+document.head.appendChild(cssLink);
+
 (window as any).__katexPlugin = katexPlugin;
