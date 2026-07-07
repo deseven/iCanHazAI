@@ -1252,12 +1252,13 @@ actor ChatEngine {
         switch approval {
         case .allow:
             // Resolve the prefix + tool name from the namespaced call name,
-            // then map the prefix back to the owning server.
+            // then map (prefix, tool) back to the owning server. Prefixes may
+            // be shared across servers, so we disambiguate by tool name.
             guard let parsed = ToolDefinition.parse(call.name) else {
                 debugLog("Tool", "could not parse tool name \"\(call.name)\" — chat=\(filename)")
                 return ToolResult(callID: call.id, content: "Could not parse tool name \"\(call.name)\".", isError: true)
             }
-            guard let serverName = await MCPManager.shared.serverName(forPrefix: parsed.prefix) else {
+            guard let serverName = await MCPManager.shared.serverName(forPrefix: parsed.prefix, tool: parsed.tool) else {
                 debugLog("Tool", "no server found for prefix \"\(parsed.prefix)\" — chat=\(filename)")
                 return ToolResult(callID: call.id, content: "No MCP server found for tool prefix \"\(parsed.prefix)\".", isError: true)
             }

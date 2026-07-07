@@ -636,12 +636,33 @@ actor MCPManager {
         knownServers[server]
     }
 
-    /// Resolves a tool prefix back to the server name that owns it. Used by
-    /// `ChatEngine.executeToolCall` to route a model-issued tool call (which
-    /// carries the `{prefix}_{tool}` namespaced name) to the originating server.
-    /// Returns nil if no configured server uses that prefix.
+    /// Resolves a tool prefix back to a server name. Used as a fallback by
+    /// `ChatEngine.executeToolCall` when routing a model-issued tool call.
+    /// Because prefixes are not required to be unique (multiple servers may
+    /// share a prefix to combine their tool sets), prefer
+    /// `serverName(forPrefix:tool:)` which disambiguates by tool name.
+    /// Returns the first matching server, or nil if no configured server uses
+    /// that prefix. An empty prefix matches servers configured without a prefix.
     func serverName(forPrefix prefix: String) -> String? {
         knownServers.values.first(where: { $0.prefix == prefix })?.name
+    }
+
+    /// Resolves a (prefix, tool) pair back to the server that actually owns
+    /// that tool. Used by `ChatEngine.executeToolCall` to route a model-issued
+    /// tool call to the originating server. Because prefixes may be shared
+    /// across servers, this checks each server with the given prefix and
+    /// returns the first whose cached tool list contains `tool`. If no server
+    /// advertises the tool, falls back to the first server with the prefix.
+    /// Returns nil if no configured server uses that prefix.
+    func serverName(forPrefix prefix: String, tool: String) -> String? {
+        let candidates = knownServers.values.filter { $0.prefix == prefix }
+        if candidates.isEmpty { return nil }
+        for server in candidates {
+            if let cached = toolsCache[server.name], cached.contains(where: { $0.name == tool }) {
+                return server.name
+            }
+        }
+        return candidates.first?.name
     }
 
     /// Connects to `server` and queries its tool list, returning the tools

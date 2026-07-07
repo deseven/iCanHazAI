@@ -262,7 +262,10 @@ struct ChatView: View {
                             }
                         }
                     } label: {
-                        let count = store.selectedChatItem?.chat.mcps?.count ?? 0
+                        // Count only MCPs that still exist; a chat may reference
+                        // servers that were since deleted from disk.
+                        let available = Set(store.mcps.map(\.name))
+                        let count = store.selectedChatItem?.chat.mcps?.filter { available.contains($0) }.count ?? 0
                         Label("MCP: \(count)", systemImage: "wrench.and.screwdriver")
                             .labelStyle(.titleAndIcon)
                     }

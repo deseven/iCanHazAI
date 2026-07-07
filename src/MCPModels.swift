@@ -32,10 +32,12 @@ struct MCPServer: Identifiable, Equatable, Sendable {
     let name: String
     /// Short, lowercase-alphanumeric identifier used to namespace this server's
     /// tools for the LLM (e.g. a tool `search` under prefix `gdocs` becomes
-    /// `gdocs_search`). Must match `^[a-z0-9]+$` and be unique across servers.
-    /// Required because provider APIs reject tool names containing spaces or
-    /// punctuation (the server `name` is filesystem-derived and may contain
-    /// such characters).
+    /// `gdocs_search`). Must match `^[a-z0-9]+$` and be unique across servers
+    /// when non-empty. Optional: when empty (the default), tools are exposed
+    /// to the model under their own names without a prefix. Provider APIs
+    /// reject tool names containing spaces or punctuation (the server `name`
+    /// is filesystem-derived and may contain such characters), which is why a
+    /// prefix is offered — but it is no longer required.
     let prefix: String
     let transport: MCPTransport
     /// When the server process is started/stopped. Only meaningful for stdio
@@ -160,16 +162,26 @@ struct ToolDefinition: Sendable, Equatable {
     /// Raw JSON string of the tool's input schema (a JSON Schema object).
     let inputSchema: String
 
-    /// The namespaced name sent to the model: `{prefix}_{tool}`.
-    var namespacedName: String { "\(prefix)_\(name)" }
+    /// The namespaced name sent to the model. When the server has a non-empty
+    /// prefix this is `{prefix}_{tool}`; when the prefix is empty (the default)
+    /// the tool is exposed under its own name with no prefix.
+    var namespacedName: String {
+        prefix.isEmpty ? name : "\(prefix)_\(name)"
+    }
 
-    /// Parses a namespaced tool name back into (prefix, tool).
-    /// Returns nil if the name doesn't follow the `{prefix}_{tool}` format.
+    /// Parses a namespaced tool name back into (prefix, tool). A name with no
+    /// underscore is treated as prefixless (prefix = ""). Returns nil only if
+    /// the tool portion is empty.
     static func parse(_ namespacedName: String) -> (prefix: String, tool: String)? {
-        guard let range = namespacedName.range(of: "_") else { return nil }
+        guard let range = namespacedName.range(of: "_") else {
+            // No underscore → prefixless tool.
+            let tool = namespacedName
+            guard !tool.isEmpty else { return nil }
+            return ("", tool)
+        }
         let prefix = String(namespacedName[namespacedName.startIndex..<range.lowerBound])
         let tool = String(namespacedName[range.upperBound...])
-        guard !prefix.isEmpty, !tool.isEmpty else { return nil }
+        guard !tool.isEmpty else { return nil }
         return (prefix, tool)
     }
 }
