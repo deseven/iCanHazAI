@@ -1,5 +1,6 @@
 import MCP
 import Foundation
+import ProcessExit
 
 enum FindTextTool {
     static let definition = ToolDefinition(
@@ -45,7 +46,7 @@ enum FindTextTool {
             process.standardError = Pipe()
             try process.run()
             let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
+            await awaitProcessExit(process)
 
             let output = String(data: data, encoding: .utf8) ?? ""
             let cap = 64 * 1024

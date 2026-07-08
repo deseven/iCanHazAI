@@ -1,5 +1,6 @@
 import MCP
 import Foundation
+import ProcessExit
 
 enum StatTool {
     static let definition = ToolDefinition(
@@ -52,7 +53,7 @@ enum StatTool {
             try process.run()
             let fileOut = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            process.waitUntilExit()
+            await awaitProcessExit(process)
 
             var json: [String: String] = [
                 "type": typeStr,

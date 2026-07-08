@@ -19,7 +19,7 @@ enum CalcTool {
         ),
         handler: { args in
             let expression = try requireString(args, "expression")
-            let result = try ShellRunner.run(launchPath: "/usr/bin/bc", arguments: ["-l"], stdin: expression + "\n")
+            let result = try await ShellRunner.run(launchPath: "/usr/bin/bc", arguments: ["-l"], stdin: expression + "\n")
             if result.exitCode != 0 {
                 throw ToolError.invalidArgument("expression", "bc failed: \(result.stderr)")
             }

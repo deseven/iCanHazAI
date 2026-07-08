@@ -30,6 +30,7 @@ case "${1:-}" in
     dev-release) mode="dev-release" ;;
     release)     mode="release" ;;
     clean)       mode="clean" ;;
+    test)        mode="test" ;;
     *)           mode="dev" ;;
 esac
 
@@ -127,11 +128,15 @@ do_clean_build() {
 }
 
 # Clean the .build directories of the bundled MCP server packages and the
-# shared ImageTools library under mcps/.
+# shared libraries under shared/.
 do_clean_mcps() {
     local mcpDir="$loc/mcps"
-    for pkg in UtilsMCP FilesystemMCP CodeMCP ShellMCP Shared/ImageTools; do
+    for pkg in UtilsMCP FilesystemMCP CodeMCP ShellMCP; do
         rm -rf "$mcpDir/$pkg/.build"
+    done
+    local sharedDir="$loc/shared"
+    for pkg in ImageTools ProcessExit; do
+        rm -rf "$sharedDir/$pkg/.build"
     done
 }
 
@@ -316,11 +321,29 @@ do_upload() {
     share "$1"
 }
 
+# ── Test step ────────────────────────────────────────────────────────
+
+# Build the four MCP servers in debug config (the test harness spawns the
+# debug binaries at mcps/<Server>/.build/debug/<Server>).
+do_build_mcps_debug() {
+    local mcpDir="$loc/mcps"
+    for srv in UtilsMCP FilesystemMCP CodeMCP ShellMCP; do
+        ( cd "$mcpDir/$srv" && swift build -c debug ) || return 1
+    done
+}
+
+# Run the Swift Testing suite. The tests spawn the bundled MCP servers as
+# real subprocesses and exercise every tool over stdio via the swift-sdk
+# Client — the same transport the main app uses.
+do_run_tests() {
+    swift test
+}
+
 # ── Calculate total steps per mode ───────────────────────────────────
 case "$mode" in
     dev)         totalSteps=7 ;;
     dev-release)
-        totalSteps=11
+        totalSteps=12
         if [ "$can_notarize" = true ]; then
             totalSteps=$((totalSteps + 2))
         fi
@@ -329,7 +352,7 @@ case "$mode" in
         fi
         ;;
     release)
-        totalSteps=11
+        totalSteps=12
         if [ "$can_sign" = true ]; then
             totalSteps=$((totalSteps + 1))
         fi
@@ -340,6 +363,7 @@ case "$mode" in
             totalSteps=$((totalSteps + 1))
         fi
         ;;
+    test)        totalSteps=2 ;;
 esac
 
 # ── Build ────────────────────────────────────────────────────────────
@@ -351,6 +375,14 @@ if [ "$mode" = "clean" ]; then
     swift package clean
     do_clean_mcps
     echo -e "  ${greenColor}${bold}Clean complete.${noColor}"
+    exit 0
+fi
+
+if [ "$mode" = "test" ]; then
+    run_step "Building bundled MCP servers (debug)..." "failed to build bundled MCP servers" do_build_mcps_debug
+    run_step "Running tests..."                "tests failed"                              do_run_tests
+    echo ""
+    echo -e "  ${greenColor}${bold}Tests passed!${noColor}"
     exit 0
 fi
 
@@ -370,6 +402,14 @@ if [ "$mode" = "dev" ]; then
 else
     run_step "Building bundled MCP servers..."     "failed to build bundled MCP servers"      do_build_mcps_universal
 fi
+
+# Tests are mandatory for dev-release and release: they spawn the bundled MCP
+# servers (debug binaries) and exercise every tool via the swift-sdk Client.
+if [ "$mode" != "dev" ]; then
+    run_step "Building bundled MCP servers (debug)..." "failed to build bundled MCP servers"  do_build_mcps_debug
+    run_step "Running tests..."                    "tests failed"                              do_run_tests
+fi
+
 run_step "Code-signing APP bundle..."             "failed to code-sign app bundle"           do_codesign
 
 if [ "$mode" != "dev" ]; then

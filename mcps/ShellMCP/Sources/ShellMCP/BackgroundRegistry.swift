@@ -1,4 +1,5 @@
 import Foundation
+import ProcessExit
 
 /// Owns background shell processes keyed by an incrementing integer handle.
 /// Each entry holds the `Process`, an accumulating output buffer, and (once the
@@ -59,7 +60,7 @@ actor BackgroundRegistry {
         return SpawnResult(handle: handle, pid: process.processIdentifier)
     }
 
-    private func drain(handle: Int, stdout: Pipe, stderr: Pipe) {
+    private func drain(handle: Int, stdout: Pipe, stderr: Pipe) async {
         let stdoutHandle = stdout.fileHandleForReading
         let stderrHandle = stderr.fileHandleForReading
 
@@ -70,7 +71,7 @@ actor BackgroundRegistry {
         guard var entry = entries[handle] else { return }
         entry.output.append(stdoutData)
         entry.output.append(stderrData)
-        entry.process.waitUntilExit()
+        await awaitProcessExit(entry.process)
         entry.exitCode = entry.process.terminationStatus
         entry.finished = true
         entries[handle] = entry

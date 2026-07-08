@@ -1,5 +1,6 @@
 import MCP
 import Foundation
+import ProcessExit
 
 enum ShellTool {
     static let shellPath = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
@@ -63,13 +64,13 @@ enum ShellTool {
                 if process.isRunning {
                     timedOut = true
                     process.terminate()
-                    process.waitUntilExit()
+                    await awaitProcessExit(process)
                 }
             }
 
             let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
             let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            if !timedOut { process.waitUntilExit() }
+            if !timedOut { await awaitProcessExit(process) }
 
             let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
             let stderr = String(data: stderrData, encoding: .utf8) ?? ""

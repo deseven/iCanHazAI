@@ -1,14 +1,15 @@
 import Foundation
+import ProcessExit
 
-/// Result of running a subprocess synchronously.
+/// Result of running a subprocess.
 struct RunResult {
     let exitCode: Int32
     let stdout: String
     let stderr: String
 }
 
-/// Runs a subprocess synchronously, capturing stdout/stderr. Optionally pipes
-/// data to stdin and applies a timeout (in seconds).
+/// Runs a subprocess, capturing stdout/stderr. Optionally pipes data to
+/// stdin and applies a timeout (in seconds).
 enum ShellRunner {
     static func run(
         launchPath: String,
@@ -17,7 +18,7 @@ enum ShellRunner {
         environment: [String: String]? = nil,
         cwd: String? = nil,
         timeout: TimeInterval? = nil
-    ) throws -> RunResult {
+    ) async throws -> RunResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = arguments
@@ -49,11 +50,11 @@ enum ShellRunner {
         if let timeout {
             let deadline = Date().addingTimeInterval(timeout)
             while process.isRunning && Date() < deadline {
-                Thread.sleep(forTimeInterval: 0.05)
+                try await Task.sleep(nanoseconds: 50_000_000)
             }
             if process.isRunning {
                 process.terminate()
-                _ = try? process.waitUntilExit()
+                await awaitProcessExit(process)
                 return RunResult(
                     exitCode: -1,
                     stdout: "",
@@ -64,7 +65,7 @@ enum ShellRunner {
 
         let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
         let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        await awaitProcessExit(process)
 
         return RunResult(
             exitCode: process.terminationStatus,

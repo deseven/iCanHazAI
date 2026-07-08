@@ -6,14 +6,16 @@ let package = Package(
     platforms: [.macOS(.v15)],
     dependencies: [
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.11.0"),
-        .package(path: "../Shared/ImageTools")
+        .package(path: "../../shared/ImageTools"),
+        .package(path: "../../shared/ProcessExit")
     ],
     targets: [
         .executableTarget(
             name: "FilesystemMCP",
             dependencies: [
                 .product(name: "MCP", package: "swift-sdk"),
-                .product(name: "ImageTools", package: "ImageTools")
+                .product(name: "ImageTools", package: "ImageTools"),
+                .product(name: "ProcessExit", package: "ProcessExit")
             ],
             path: "Sources/FilesystemMCP"
         )

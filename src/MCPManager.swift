@@ -4,6 +4,7 @@
 import Foundation
 import MCP
 import Logging
+import ProcessExit
 #if canImport(System)
     import System
 #else
@@ -520,7 +521,7 @@ actor MCPManager {
                         debugLog("MCP", "stdio server \"\(server.name)\" died during handshake — \(err.localizedDescription)")
                         await client.disconnect()
                         proc.terminate()
-                        proc.waitUntilExit()
+                        await awaitProcessExit(proc)
                         throw err
                     }
                     throw error
@@ -542,7 +543,7 @@ actor MCPManager {
             } else {
                 await client.disconnect()
                 process?.terminate()
-                process?.waitUntilExit()
+                if let process { await awaitProcessExit(process) }
             }
             throw error
         }
@@ -572,7 +573,7 @@ actor MCPManager {
         await conn.client.disconnect()
         if let process = conn.process {
             process.terminate()
-            process.waitUntilExit()
+            await awaitProcessExit(process)
             debugLog("MCP", "stdio server \"\(name)\" terminated — pid=\(process.processIdentifier), exitStatus=\(process.terminationStatus), reason=\(process.terminationReason.rawValue)")
         }
     }
