@@ -5,6 +5,7 @@ import Foundation
 import MCP
 import Logging
 import ProcessExit
+import LoginShell
 #if canImport(System)
     import System
 #else
@@ -347,21 +348,20 @@ actor MCPManager {
                     throw MCPManagerError.invalidConfig(server.name, "stdio server missing 'command'")
                 }
                 let proc = Process()
-                proc.executableURL = URL(fileURLWithPath: command)
-                if command.contains("/") == false {
-                    proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-                    proc.arguments = [command] + (server.args ?? [])
-                } else {
-                    proc.arguments = server.args ?? []
-                }
                 let stdin = Pipe()
                 let stdout = Pipe()
                 proc.standardInput = stdin
                 proc.standardOutput = stdout
                 proc.standardError = Pipe()
+                // Always launch via the user's login shell so their full PATH
+                // (homebrew, nvm, etc.) is available. The shell sources its login profile,
+                // then `exec` replaces it with the target command.
+                proc.executableURL = URL(fileURLWithPath: LoginShell.path())
+                proc.arguments = ["-l"]
                 try proc.run()
+                try stdin.fileHandleForWriting.write(contentsOf: Data(LoginShell.execLine(command: command).utf8))
                 process = proc
-                debugLog("MCP", "stdio server \"\(server.name)\" started — pid=\(proc.processIdentifier), command=\(command) args=\(server.args ?? [])")
+                debugLog("MCP", "stdio server \"\(server.name)\" started — pid=\(proc.processIdentifier), command=\(command)")
                 let inputFD = try fileDescriptor(for: stdout.fileHandleForReading)
                 let outputFD = try fileDescriptor(for: stdin.fileHandleForWriting)
                 transport = StdioTransport(input: inputFD, output: outputFD)
@@ -442,23 +442,22 @@ actor MCPManager {
                 throw MCPManagerError.invalidConfig(server.name, "stdio server missing 'command'")
             }
             let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: command)
-            if command.contains("/") == false {
-                proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-                proc.arguments = [command] + (server.args ?? [])
-            } else {
-                proc.arguments = server.args ?? []
-            }
             let stdin = Pipe()
             let stdout = Pipe()
             let stderr = Pipe()
             proc.standardInput = stdin
             proc.standardOutput = stdout
             proc.standardError = stderr
+            // Always launch via the user's login shell so their full PATH
+            // (homebrew, nvm, etc.) is available. The shell sources its login profile,
+            // then `exec` replaces it with the target command.
+            proc.executableURL = URL(fileURLWithPath: LoginShell.path())
+            proc.arguments = ["-l"]
             try proc.run()
+            try stdin.fileHandleForWriting.write(contentsOf: Data(LoginShell.execLine(command: command).utf8))
             process = proc
             stderrPipe = stderr
-            debugLog("MCP", "stdio server \"\(server.name)\" started — pid=\(proc.processIdentifier), command=\(command) args=\(server.args ?? [])")
+            debugLog("MCP", "stdio server \"\(server.name)\" started — pid=\(proc.processIdentifier), command=\(command)")
             let inputFD = try fileDescriptor(for: stdout.fileHandleForReading)
             let outputFD = try fileDescriptor(for: stdin.fileHandleForWriting)
             transport = StdioTransport(input: inputFD, output: outputFD, logger: mcpLogger)

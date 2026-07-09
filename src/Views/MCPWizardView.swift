@@ -58,10 +58,9 @@ struct MCPWizardView: View {
     // Step 2 — parameters
     /// When the server process is started/stopped.
     @State private var runPolicy: MCPRunPolicy = .alwaysOn
-    /// stdio: the executable command (e.g. "python3" or "npx").
+    /// stdio: the full command line to launch the server, including arguments
+    /// (e.g. "node /path/to/index.js"). It is sent to the user's login shell.
     @State private var command: String = ""
-    /// stdio: arguments as a single space-separated string; split on save.
-    @State private var args: String = ""
     /// http: the streamable HTTP endpoint URL.
     @State private var endpoint: String = ""
     /// http: optional bearer token.
@@ -109,7 +108,6 @@ struct MCPWizardView: View {
 
     private enum Field: Hashable {
         case command
-        case args
         case endpoint
         case token
         case serverName
@@ -346,7 +344,6 @@ struct MCPWizardView: View {
     private func resetState(after step: Step) {
         if step < .parameters {
             command = ""
-            args = ""
             endpoint = ""
             token = ""
         }
@@ -390,7 +387,7 @@ struct MCPWizardView: View {
                             Text(option == .stdio ? "stdio" : "Streamable HTTP")
                                 .fontWeight(.medium)
                             Text(option == .stdio
-                                 ? "A local subprocess spawned by the app. Provide a command and arguments."
+                                 ? "A local subprocess spawned by the app. Provide a command line."
                                  : "A remote server reachable over HTTP. Provide an endpoint URL and optional bearer token.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -426,24 +423,17 @@ struct MCPWizardView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Command")
                         .font(.headline)
-                    Text("The executable to run, e.g. python3, npx, or an absolute path.")
+                    Text("The full command line, including arguments, e.g. node /path/to/index.js")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    TextField("python3", text: $command)
+                    TextField("node /path/to/index.js", text: $command)
                         .textFieldStyle(.roundedBorder)
                         .focused($focusedField, equals: .command)
                         .onSubmit { goNext() }
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Arguments")
-                        .font(.headline)
-                    Text("Space-separated arguments passed to the command.")
+                    Text("The command is run via your login shell. If a command isn't found, make sure its directory is on PATH in your login profile (e.g. ~/.zprofile for zsh, ~/.bash_profile for bash).")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    TextField("/path/to/server.py", text: $args)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($focusedField, equals: .args)
-                        .onSubmit { goNext() }
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             case .http:
                 VStack(alignment: .leading, spacing: 4) {
@@ -693,7 +683,6 @@ struct MCPWizardView: View {
             transport: transport,
             runPolicy: transport == .stdio ? runPolicy : nil,
             command: transport == .stdio ? command : nil,
-            args: transport == .stdio ? splitArgs(args) : nil,
             endpoint: transport == .http ? endpoint : nil,
             token: transport == .http && !token.isEmpty ? token : nil,
             tools: tools
@@ -803,9 +792,6 @@ struct MCPWizardView: View {
             switch transport {
             case .stdio:
                 summaryRow("Command", command)
-                if !args.isEmpty {
-                    summaryRow("Arguments", args)
-                }
                 summaryRow("Run Policy", runPolicy == .alwaysOn ? "Always on" : "On-demand")
             case .http:
                 summaryRow("Endpoint", endpoint)
@@ -846,27 +832,6 @@ struct MCPWizardView: View {
     }
 
     // MARK: - Helpers
-
-    /// Splits a space-separated argument string into an array, honoring
-    /// double-quoted segments.
-    private func splitArgs(_ s: String) -> [String] {
-        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
-        var args: [String] = []
-        var current = ""
-        var inQuotes = false
-        for ch in trimmed {
-            if ch == "\"" {
-                inQuotes.toggle()
-            } else if ch == " " && !inQuotes {
-                if !current.isEmpty { args.append(current); current = "" }
-            } else {
-                current.append(ch)
-            }
-        }
-        if !current.isEmpty { args.append(current) }
-        return args
-    }
 
     /// Default name derived from the server's reported name (preferred, from
     /// the MCP `initialize` response's `serverInfo.name`), falling back to the

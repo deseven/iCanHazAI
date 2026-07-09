@@ -1,12 +1,13 @@
 import MCP
 import Foundation
 import ProcessExit
+import LoginShell
 
 enum ShellTool {
-    static let shellPath = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+    static let shellPath = LoginShell.path()
 
     static func description(for name: String) -> String {
-        "Execute a command in the default shell (\(shellPath)). Returns stdout, and stderr on non-zero exit. The command is written to the shell's stdin with a `cd` line prepended, so the working directory is reliably set."
+        "Execute a command in the user's login shell (\(shellPath) -l). Returns stdout, and stderr on non-zero exit. The command is written to the shell's stdin with a `cd` line prepended, so the working directory is reliably set."
     }
 
     static let definition = ToolDefinition(
@@ -18,7 +19,7 @@ enum ShellTool {
                 "properties": obj([
                     "command": obj([
                         "type": "string",
-                        "description": "The shell command to execute. Runs in \(shellPath)."
+                        "description": "The shell command to execute. Runs in \(shellPath) as a login shell (-l)."
                     ]),
                     "cwd": obj([
                         "type": "string",
@@ -39,6 +40,7 @@ enum ShellTool {
 
             let process = Process()
             process.executableURL = URL(fileURLWithPath: shellPath)
+            process.arguments = ["-l"]
             process.currentDirectoryURL = URL(fileURLWithPath: cwd)
 
             let stdoutPipe = Pipe()

@@ -135,7 +135,7 @@ do_clean_mcps() {
         rm -rf "$mcpDir/$pkg/.build"
     done
     local sharedDir="$loc/shared"
-    for pkg in ImageTools ProcessExit; do
+    for pkg in ImageTools ProcessExit LoginShell; do
         rm -rf "$sharedDir/$pkg/.build"
     done
 }

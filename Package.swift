@@ -14,7 +14,8 @@ let package = Package(
         // but not yet merged) instead of the official 0.11.0 release. It fixes
         // a real bug in `Client.connect(transport:)`'s message-handling loop
         .package(url: "https://github.com/piersdd/swift-sdk.git", revision: "1ea8365655f2e7dc25d495b1d75b1de9dfe1975c"),
-        .package(path: "shared/ProcessExit")
+        .package(path: "shared/ProcessExit"),
+        .package(path: "shared/LoginShell")
     ],
     targets: [
         .executableTarget(
@@ -23,7 +24,8 @@ let package = Package(
                 .product(name: "TOML", package: "swift-toml"),
                 .product(name: "FSEventsWrapper", package: "FSEventsWrapper"),
                 .product(name: "MCP", package: "swift-sdk"),
-                .product(name: "ProcessExit", package: "ProcessExit")
+                .product(name: "ProcessExit", package: "ProcessExit"),
+                .product(name: "LoginShell", package: "LoginShell")
             ],
             path: "src"
         ),

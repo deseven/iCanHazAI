@@ -45,10 +45,12 @@ struct MCPServer: Identifiable, Equatable, Sendable {
     /// to `alwaysOn` for backwards compatibility with stdio configs that
     /// predate the field.
     var runPolicy: MCPRunPolicy?
-    /// stdio: the executable command (e.g. "npx").
+    /// stdio: the full command line to launch the server, including arguments
+    /// (e.g. "node /path/to/index.js"). It is sent to the user's login shell
+    /// via stdin as `exec <command>`, so the shell sources the login profile
+    /// (making the user's PATH available) and then replaces itself with the
+    /// server process.
     var command: String?
-    /// stdio: arguments passed to the command.
-    var args: [String]?
     /// http: the streamable HTTP endpoint URL.
     var endpoint: String?
     /// http: optional bearer token.
@@ -66,7 +68,6 @@ struct MCPConfig: Codable {
     var prefix: String
     var runPolicy: String?
     var command: String?
-    var args: [String]?
     var endpoint: String?
     var token: String?
     var tools: [String]?
@@ -76,7 +77,6 @@ struct MCPConfig: Codable {
         case prefix
         case runPolicy
         case command
-        case args
         case endpoint
         case token
         case tools
@@ -99,7 +99,6 @@ extension MCPServer {
             transport: transport,
             runPolicy: runPolicy,
             command: config.command,
-            args: config.args,
             endpoint: config.endpoint,
             token: config.token,
             tools: config.tools
@@ -114,7 +113,6 @@ extension MCPServer {
             prefix: prefix,
             runPolicy: transport == .stdio ? runPolicy?.rawValue : nil,
             command: command,
-            args: args,
             endpoint: endpoint,
             token: token,
             tools: tools

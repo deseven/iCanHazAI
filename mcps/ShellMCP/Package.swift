@@ -6,14 +6,16 @@ let package = Package(
     platforms: [.macOS(.v15)],
     dependencies: [
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.11.0"),
-        .package(path: "../../shared/ProcessExit")
+        .package(path: "../../shared/ProcessExit"),
+        .package(path: "../../shared/LoginShell")
     ],
     targets: [
         .executableTarget(
             name: "ShellMCP",
             dependencies: [
                 .product(name: "MCP", package: "swift-sdk"),
-                .product(name: "ProcessExit", package: "ProcessExit")
+                .product(name: "ProcessExit", package: "ProcessExit"),
+                .product(name: "LoginShell", package: "LoginShell")
             ],
             path: "Sources/ShellMCP"
         )

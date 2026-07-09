@@ -15,6 +15,12 @@ import Foundation
 /// `[YYYY-MM-DD hh:mm:ss] [topic] message`. The timestamp uses the user's
 /// local time zone for readability.
 ///
+/// In addition to stdout, output is duplicated to `~/iCanHazAI/app.log` when
+/// [`DebugLogger.startFileLogging()`](src/DebugLogger.swift) has been called.
+/// This is essential for diagnosing issues that only reproduce when the app is
+/// launched from Finder (where stdout is discarded). The file is truncated on
+/// each launch so it only contains the current session.
+///
 /// The enabled flag is cached behind a `DispatchQueue`-protected box so that
 /// `debugLog` can be called from any thread/actor without hopping to
 /// `ConfigManager`. The flag is refreshed by
@@ -60,6 +66,49 @@ enum DebugLogger {
     }()
     private static let formatterQueue = DispatchQueue(label: "iCanHazAI.debugLogger.formatter")
 
+    // MARK: - File logging
+
+    /// A lock-protected box holding the open log file handle. Mirrors the
+    /// `FlagBox` pattern so the mutable state satisfies Swift's concurrency
+    /// checker. All access is serialized on `fileQueue`.
+    private final class FileBox: @unchecked Sendable {
+        private let queue = DispatchQueue(label: "iCanHazAI.debugLogger.file")
+        private var _handle: FileHandle?
+
+        func get() -> FileHandle? { queue.sync { _handle } }
+        func set(_ value: FileHandle?) { queue.sync { _handle = value } }
+    }
+
+    private static let fileBox = FileBox()
+
+    /// Opens (and truncates) `~/iCanHazAI/app.log` for appending. Safe to
+    /// call before the enabled flag is known — the file is opened regardless
+    /// so that early log lines are captured even if logging is later turned on.
+    /// Must be called once at launch, before any `debugLog` call that should
+    /// reach the file.
+    static func startFileLogging() {
+        // Already open.
+        if fileBox.get() != nil { return }
+        let homeURL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        let rootURL = homeURL.appendingPathComponent("iCanHazAI", isDirectory: true)
+        try? FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        let url = rootURL.appendingPathComponent("app.log", isDirectory: false)
+        // Truncate on open so each session starts fresh.
+        FileManager.default.createFile(atPath: url.path, contents: nil, attributes: nil)
+        guard let handle = try? FileHandle(forWritingTo: url) else { return }
+        // Move to end so subsequent writes append.
+        try? handle.seekToEnd()
+        fileBox.set(handle)
+    }
+
+    /// Closes the log file, if open. Called on app termination.
+    static func stopFileLogging() {
+        if let handle = fileBox.get() {
+            try? handle.close()
+        }
+        fileBox.set(nil)
+    }
+
     /// The single entry point for debug logging.
     ///
     /// Example:
@@ -72,7 +121,17 @@ enum DebugLogger {
     static func debugLog(topic: String, message: String) {
         guard enabled else { return }
         let stamp = formatterQueue.sync { formatter.string(from: Date()) }
-        print("[\(stamp)] [\(topic)] \(message)")
+        let line = "[\(stamp)] [\(topic)] \(message)\n"
+        // stdout is cheap; do it inline.
+        print(line, terminator: "")
+        // File I/O is dispatched off-thread.
+        let handle = fileBox.get()
+        guard let handle else { return }
+        DispatchQueue.global(qos: .utility).async {
+            if let data = line.data(using: .utf8) {
+                try? handle.write(contentsOf: data)
+            }
+        }
     }
 }
 

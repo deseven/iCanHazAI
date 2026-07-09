@@ -24,14 +24,17 @@ actor BackgroundRegistry {
         let pid: Int32
     }
 
-    /// Spawn a command in the detected shell, writing the command to stdin with
-    /// a prepended `cd` line. Returns the assigned handle and system PID.
+    /// Spawn a command in the user's login shell, writing the command to stdin
+    /// with a prepended `cd` line. The shell is run with `-l` so the user's
+    /// profile is sourced and their full PATH/environment is available.
+    /// Returns the assigned handle and system PID.
     func spawn(command: String, cwd: String, shell: String) throws -> SpawnResult {
         let handle = nextHandle
         nextHandle += 1
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: shell)
+        process.arguments = ["-l"]
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()

@@ -12,6 +12,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The app is single-window; disable automatic window tabbing so the
         // "Show Tab Bar" / "Show All Tabs" items disappear from the View menu.
         NSWindow.allowsAutomaticWindowTabbing = false
+        // Open ~/iCanHazAI/app.log (truncated) before anything else.
+        DebugLogger.startFileLogging()
         // Load and decode config.toml synchronously, on this thread, BEFORE
         // any Task is spawned. This applies the debug-logging flag from the
         // very first log line and stashes the decoded config so the actor's
@@ -28,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         debugLog("App", "applicationWillTerminate — disconnecting MCP servers")
         Task { await MCPManager.shared.disconnectAll() }
+        DebugLogger.stopFileLogging()
     }
 }
 
