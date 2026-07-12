@@ -41,7 +41,8 @@ struct ChatSidebar: View {
                             item: item,
                             isSelected: item.id == store.selectedChatID,
                             isUnread: item.hasUnreadActivity && item.id != store.selectedChatID,
-                            isStreaming: item.isStreaming
+                            isStreaming: item.isStreaming,
+                            isBlinking: store.blinkingChatIDs.contains(item.id)
                         )
                         .contentShape(Rectangle())
                         .onTapGesture {
@@ -124,6 +125,10 @@ private struct ChatRow: View {
     let isSelected: Bool
     var isUnread: Bool = false
     var isStreaming: Bool = false
+    /// Pulses the row to flag a tool call awaiting approval in this chat.
+    var isBlinking: Bool = false
+
+    @State private var blink: Bool = false
 
     var body: some View {
         HStack {
@@ -151,8 +156,28 @@ private struct ChatRow: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
+        .background(rowBackground)
         .contentShape(Rectangle())
+        .animation(.easeInOut(duration: 0.3), value: blink)
+        // Drive the pulse with a task scoped to `isBlinking`: when it flips
+        // false the task is cancelled and `blink` resets, so the pulsing stops
+        // immediately (unlike `repeatForever`, which lingers).
+        .task(id: isBlinking) {
+            guard isBlinking else { blink = false; return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(600))
+                if Task.isCancelled { break }
+                blink.toggle()
+            }
+        }
+    }
+
+    /// Selected rows keep their solid selection tint; otherwise, while
+    /// blinking, pulse an accent-tinted background to draw attention.
+    private var rowBackground: Color {
+        if isSelected { return Color.accentColor.opacity(0.15) }
+        if isBlinking { return blink ? Color.accentColor.opacity(0.22) : Color.clear }
+        return Color.clear
     }
 }
 

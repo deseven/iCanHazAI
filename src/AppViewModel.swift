@@ -33,7 +33,13 @@ final class AppViewModel: ObservableObject {
     /// configuration overlay. The overlay observes this and adds a 1-second
     /// display delay after configuration completes.
     @Published var mcpConfiguration: MCPConfigurationState = .empty
-    @Published var selectedChatID: String?
+    @Published var selectedChatID: String? {
+        didSet {
+            // Once the user opens a chat awaiting approval, the renderer shows
+            // its Allow/Deny buttons directly — no need to keep blinking it.
+            if let id = selectedChatID { blinkingChatIDs.remove(id) }
+        }
+    }
     @Published var errorMessage: String?
     /// Whether the currently selected chat is scrolled to the bottom. Updated
     /// by `ChatView`; used to suppress the unread marker when the user is
@@ -49,6 +55,17 @@ final class AppViewModel: ObservableObject {
     /// Message id pending a delete action (set by the web view bridge;
     /// consumed by ChatView's delete confirmation sheet).
     @Published var pendingDeleteMessageID: UUID?
+    /// Tool-call id pending a deny-reason sheet (set by the web view bridge
+    /// when the user presses Deny; consumed by ChatView's deny sheet).
+    @Published var pendingDenyToolCallID: String?
+    /// Filenames of chats awaiting tool-call approval that aren't currently
+    /// selected. Each blinks in the sidebar to draw the user's attention.
+    @Published var blinkingChatIDs: Set<String> = []
+    /// Active dock-bounce request id (if any), cancelled when the window
+    /// becomes active or all approvals are resolved.
+    private var attentionRequestID: Int? = nil
+    /// Observer token for `didBecomeActive` (to cancel the dock bounce).
+    private var didBecomeActiveObserver: NSObjectProtocol?
 
     // MARK: - Preferences state (cached from ConfigManager)
 
@@ -98,10 +115,25 @@ final class AppViewModel: ObservableObject {
         startListening()
         loadPreferences()
         setupKeyboardMonitor()
+        // Cancel any dock bounce once the user activates the app/window.
+        didBecomeActiveObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.cancelAttention() }
+        }
     }
 
     deinit {
         subscription?.cancel()
+        // `deinit` is nonisolated; the view model is `@MainActor`, so reach the
+        // observer token from the main actor to remove it safely.
+        MainActor.assumeIsolated {
+            if let obs = didBecomeActiveObserver {
+                NotificationCenter.default.removeObserver(obs)
+            }
+        }
     }
 
     // MARK: - Preferences sync
@@ -313,9 +345,52 @@ final class AppViewModel: ObservableObject {
             mcpConfiguration = state
         case .configChanged:
             refreshPreferences()
+        case .toolApprovalRequested(let filename, _):
+            // Blink the chat in the sidebar if the user isn't already viewing
+            // it (otherwise the renderer shows the Allow/Deny buttons).
+            if filename != selectedChatID {
+                blinkingChatIDs.insert(filename)
+            }
+            requestAttentionIfNeeded()
+        case .toolApprovalResolved(let filename, _):
+            blinkingChatIDs.remove(filename)
+            if blinkingChatIDs.isEmpty {
+                cancelAttention()
+            }
         case .error(let message):
             errorMessage = message
         }
+    }
+
+    // MARK: - Tool-call approval attention
+
+    /// Bounces the dock icon if the window doesn't exist or isn't key/front,
+    /// so the user notices a tool call awaiting approval. `.criticalRequest`
+    /// repeats until cancelled (on app activation or once resolved).
+    private func requestAttentionIfNeeded() {
+        let mainWindow = NSApp.mainWindow
+        let windowKey = mainWindow?.isKeyWindow ?? false
+        let needsAttention = !NSApp.isActive || mainWindow == nil || !windowKey
+        guard needsAttention, attentionRequestID == nil else { return }
+        attentionRequestID = NSApp.requestUserAttention(.criticalRequest)
+    }
+
+    private func cancelAttention() {
+        if let id = attentionRequestID {
+            NSApp.cancelUserAttentionRequest(id)
+            attentionRequestID = nil
+        }
+    }
+
+    /// Resolves a pending tool-call approval. Called from the web view bridge
+    /// when the user presses Allow (and from the deny sheet on confirm).
+    func allowToolCall(callID: String) {
+        Task { await engine.resolveToolCallApproval(callID: callID, approval: .allow) }
+    }
+
+    /// Denies a pending tool-call approval with an (optional) reason.
+    func denyToolCall(callID: String, reason: String) {
+        Task { await engine.resolveToolCallApproval(callID: callID, approval: .deny(reason: reason)) }
     }
 
     // MARK: - Wizard completion

@@ -17,6 +17,9 @@ export interface ToolCallData {
   name: string;
   /** Raw JSON arguments string as returned by the model. */
   arguments: string;
+  /** True while the host is waiting for the user to approve this call. When
+   *  set, the block is forced open and Allow/Deny buttons are shown. */
+  pendingApproval?: boolean;
 }
 
 /** The result of executing a tool call. */
@@ -26,6 +29,9 @@ export interface ToolResultData {
   isError: boolean;
   /** True while the tool is still running and `content` is streaming in. */
   isStreaming?: boolean;
+  /** True when the result is a user denial (not a tool failure). Shown as a
+   *  "denied" badge instead of "error". */
+  isDenied?: boolean;
 }
 
 export interface ChatMessage {
@@ -84,4 +90,6 @@ export type BridgeMessage =
   | { type: "retry" }
   | { type: "scrollState"; atBottom: boolean }
   | { type: "ready" }
-  | { type: "requestOlder"; chatId: string };
+  | { type: "requestOlder"; chatId: string }
+  | { type: "allowToolCall"; callId: string }
+  | { type: "denyToolCall"; callId: string };

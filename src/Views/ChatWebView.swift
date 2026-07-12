@@ -629,9 +629,9 @@ final class ChatWebViewModel: ObservableObject {
                     var folded = out[aIdx].toolResults ?? []
                     for r in results {
                         if let i = folded.firstIndex(where: { $0.callID == r.callID }) {
-                            folded[i] = ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming)
+                            folded[i] = ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming, isDenied: r.isDenied)
                         } else {
-                            folded.append(ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming))
+                            folded.append(ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming, isDenied: r.isDenied))
                         }
                     }
                     out[aIdx].toolResults = folded
@@ -711,6 +711,10 @@ final class ChatWebViewModel: ObservableObject {
             pushTheme()
         case .requestOlder:
             break
+        case .allowToolCall(let callId):
+            store.allowToolCall(callID: callId)
+        case .denyToolCall(let callId):
+            store.pendingDenyToolCallID = callId
         }
     }
 
@@ -892,12 +896,18 @@ enum BridgeMessageData: Codable {
     case scrollState(atBottom: Bool)
     case ready
     case requestOlder(chatId: String)
+    /// User approved a pending tool call (Allow button).
+    case allowToolCall(callId: String)
+    /// User requested to deny a pending tool call (Deny button); the host
+    /// presents a reason sheet before resolving.
+    case denyToolCall(callId: String)
 
     private enum CodingKeys: String, CodingKey {
         case type
         case messageId
         case atBottom
         case chatId
+        case callId
     }
 
     func encode(to encoder: Encoder) throws {
@@ -922,6 +932,12 @@ enum BridgeMessageData: Codable {
         case .requestOlder(let chatId):
             try c.encode("requestOlder", forKey: .type)
             try c.encode(chatId, forKey: .chatId)
+        case .allowToolCall(let callId):
+            try c.encode("allowToolCall", forKey: .type)
+            try c.encode(callId, forKey: .callId)
+        case .denyToolCall(let callId):
+            try c.encode("denyToolCall", forKey: .type)
+            try c.encode(callId, forKey: .callId)
         }
     }
 
@@ -943,6 +959,10 @@ enum BridgeMessageData: Codable {
             self = .ready
         case "requestOlder":
             self = .requestOlder(chatId: try c.decode(String.self, forKey: .chatId))
+        case "allowToolCall":
+            self = .allowToolCall(callId: try c.decode(String.self, forKey: .callId))
+        case "denyToolCall":
+            self = .denyToolCall(callId: try c.decode(String.self, forKey: .callId))
         default:
             throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown type")
         }
@@ -990,6 +1010,16 @@ struct ChatMessageData: Codable, Equatable {
         let name: String
         /// Raw JSON arguments string as returned by the model.
         let arguments: String
+        /// True while the engine is waiting for the user to approve this call.
+        /// Drives the renderer's Allow/Deny buttons.
+        var pendingApproval: Bool = false
+
+        init(id: String, name: String, arguments: String, pendingApproval: Bool = false) {
+            self.id = id
+            self.name = name
+            self.arguments = arguments
+            self.pendingApproval = pendingApproval
+        }
     }
 
     /// The result of executing a tool call.
@@ -999,6 +1029,17 @@ struct ChatMessageData: Codable, Equatable {
         let isError: Bool
         /// True while the tool is still running and `content` is streaming in.
         let isStreaming: Bool
+        /// True when the result is a user denial (not a tool failure). The
+        /// renderer shows a "denied" badge instead of "error".
+        let isDenied: Bool
+
+        init(callID: String, content: String, isError: Bool, isStreaming: Bool, isDenied: Bool = false) {
+            self.callID = callID
+            self.content = content
+            self.isError = isError
+            self.isStreaming = isStreaming
+            self.isDenied = isDenied
+        }
     }
 }
 
@@ -1014,10 +1055,10 @@ extension ChatMessage {
             )
         }
         let toolCalls = toolCalls?.map {
-            ChatMessageData.ToolCallData(id: $0.id, name: $0.name, arguments: $0.arguments)
+            ChatMessageData.ToolCallData(id: $0.id, name: $0.name, arguments: $0.arguments, pendingApproval: $0.pendingApproval)
         }
         let toolResults = toolResults?.map {
-            ChatMessageData.ToolResultData(callID: $0.callID, content: $0.content, isError: $0.isError, isStreaming: $0.isStreaming)
+            ChatMessageData.ToolResultData(callID: $0.callID, content: $0.content, isError: $0.isError, isStreaming: $0.isStreaming, isDenied: $0.isDenied)
         }
         return ChatMessageData(
             id: id.uuidString,

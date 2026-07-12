@@ -128,6 +128,38 @@ struct ToolCall: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var name: String
     var arguments: String
+    /// True while the engine is waiting for the user to approve this call.
+    /// Transient UI state: the streaming loop only persists on `finishStream`,
+    /// by which point this is false, so it never reaches disk in a `true`
+    /// state. Decoded defensively (defaults to false) for old chat files.
+    var pendingApproval: Bool = false
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, arguments, pendingApproval
+    }
+
+    init(id: String, name: String, arguments: String, pendingApproval: Bool = false) {
+        self.id = id
+        self.name = name
+        self.arguments = arguments
+        self.pendingApproval = pendingApproval
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        arguments = try c.decode(String.self, forKey: .arguments)
+        pendingApproval = try c.decodeIfPresent(Bool.self, forKey: .pendingApproval) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(arguments, forKey: .arguments)
+        try c.encode(pendingApproval, forKey: .pendingApproval)
+    }
 }
 
 /// The result of executing a tool call. Carried on a `tool`-role message.
@@ -140,6 +172,41 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
     /// via MCP progress notifications. The renderer shows a spinner and the
     /// partial content; when the call completes this flips to false.
     var isStreaming: Bool = false
+    /// True when this result represents a user denial (not a tool failure).
+    /// `isError` stays true so the provider treats it as a tool error, but the
+    /// renderer shows a "denied" badge instead of "error". Decoded
+    /// defensively (defaults to false) for old chat files.
+    var isDenied: Bool = false
+
+    enum CodingKeys: String, CodingKey {
+        case callID, content, isError, isStreaming, isDenied
+    }
+
+    init(callID: String, content: String, isError: Bool, isStreaming: Bool = false, isDenied: Bool = false) {
+        self.callID = callID
+        self.content = content
+        self.isError = isError
+        self.isStreaming = isStreaming
+        self.isDenied = isDenied
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        callID = try c.decode(String.self, forKey: .callID)
+        content = try c.decode(String.self, forKey: .content)
+        isError = try c.decode(Bool.self, forKey: .isError)
+        isStreaming = try c.decodeIfPresent(Bool.self, forKey: .isStreaming) ?? false
+        isDenied = try c.decodeIfPresent(Bool.self, forKey: .isDenied) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(callID, forKey: .callID)
+        try c.encode(content, forKey: .content)
+        try c.encode(isError, forKey: .isError)
+        try c.encode(isStreaming, forKey: .isStreaming)
+        try c.encode(isDenied, forKey: .isDenied)
+    }
 }
 
 // MARK: - Tool definition (provider-agnostic)

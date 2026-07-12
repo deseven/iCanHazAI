@@ -90,17 +90,39 @@ function ToolBlock({
   // `running` covers two cases: no result yet (the call hasn't returned), or a
   // result whose `isStreaming` flag is set (the server is streaming progress).
   const running = (!result && isStreaming) || (result?.isStreaming ?? false);
+  const pending = call.pendingApproval === true;
   const [open, setOpen] = useState(defaultOpen);
+  // Force the block open whenever approval is requested so the user can see
+  // the arguments and the Allow/Deny buttons.
+  useEffect(() => {
+    if (pending) setOpen(true);
+  }, [pending]);
+
+  const onAllow = () => {
+    // Collapse (unless the renderer defaults to expanded tool use) and let the
+    // host proceed with execution.
+    setOpen(defaultOpen);
+    sendToHost({ type: "allowToolCall", callId: call.id });
+  };
+  const onDeny = () => {
+    // The host presents a reason sheet; the block stays open meanwhile.
+    sendToHost({ type: "denyToolCall", callId: call.id });
+  };
+
   return (
-    <div class="tool-block">
+    <div class={`tool-block${pending ? " tool-block-pending" : ""}`}>
       <button class="tool-toggle" onClick={() => setOpen((v) => !v)}>
         <Wrench size={14} />
         <span class="tool-name">{shortToolName(call.name)}</span>
+        {pending && <span class="tool-badge tool-badge-pending">approval</span>}
         {running && <span class="tool-spinner" aria-hidden="true" />}
-        {result && !result.isStreaming && result.isError && (
+        {result && !result.isStreaming && result.isDenied && (
+          <span class="tool-badge tool-badge-denied">denied</span>
+        )}
+        {result && !result.isStreaming && !result.isDenied && result.isError && (
           <span class="tool-badge tool-badge-error">error</span>
         )}
-        {result && !result.isStreaming && !result.isError && (
+        {result && !result.isStreaming && !result.isDenied && !result.isError && (
           <span class="tool-badge tool-badge-ok">done</span>
         )}
         {result?.isStreaming && <span class="tool-badge tool-badge-running">running</span>}
@@ -113,11 +135,32 @@ function ToolBlock({
             <pre class="tool-call-args">{prettyPrintArgs(call.arguments)}</pre>
           </div>
           {result && (
-            <div class={`tool-result${result.isError ? " tool-result-error" : ""}`}>
+            <div class={`tool-result${result.isError && !result.isDenied ? " tool-result-error" : ""}`}>
               <div class="tool-call-label">
                 {result.isStreaming ? "Result (streaming…)" : "Result"}
               </div>
               <pre class="tool-call-args">{result.content}</pre>
+            </div>
+          )}
+          {pending && (
+            <div class="tool-approval">
+              <div class="tool-approval-label">This tool call needs your approval.</div>
+              <div class="tool-approval-actions">
+                <button
+                  type="button"
+                  class="tool-approval-btn tool-approval-allow"
+                  onClick={onAllow}
+                >
+                  Allow
+                </button>
+                <button
+                  type="button"
+                  class="tool-approval-btn tool-approval-deny"
+                  onClick={onDeny}
+                >
+                  Deny
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -390,7 +433,7 @@ export const MessageItem = memo(function MessageItem({
           message.toolResults.map((r) => (
             <div class="tool-block" key={r.callID}>
               <div class="tool-result-only">
-                <pre class={`tool-call-args${r.isError ? " tool-result-error-text" : ""}`}>{r.content}</pre>
+                <pre class={`tool-call-args${r.isError && !r.isDenied ? " tool-result-error-text" : ""}`}>{r.content}</pre>
               </div>
             </div>
           ))

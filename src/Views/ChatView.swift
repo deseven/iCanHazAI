@@ -183,6 +183,18 @@ struct ChatView: View {
                 }
             )
         }
+        .sheet(item: Binding(
+            get: { store.pendingDenyToolCallID.map { ToolCallIDTarget(callID: $0) } },
+            set: { if $0 == nil { store.pendingDenyToolCallID = nil } }
+        )) { target in
+            DenyToolCallSheet(
+                onCancel: { store.pendingDenyToolCallID = nil },
+                onConfirm: { reason in
+                    store.denyToolCall(callID: target.callID, reason: reason)
+                    store.pendingDenyToolCallID = nil
+                }
+            )
+        }
     }
 
     /// Whether the send/stop button should be disabled.
@@ -663,4 +675,54 @@ enum ImagePickerTypes {
 /// A wrapper that makes a `UUID` `Identifiable` so it can drive `.sheet(item:)`.
 private struct PendingID: Identifiable {
     let id: UUID
+}
+
+/// A wrapper that makes a tool-call id `Identifiable` so it can drive
+/// `.sheet(item:)` for the deny-reason sheet.
+private struct ToolCallIDTarget: Identifiable {
+    let callID: String
+    var id: String { callID }
+}
+
+/// A modal asking for an optional reason when the user denies a tool call.
+/// An empty reason sends a generic denial to the model; a non-empty reason is
+/// forwarded verbatim. Cancel returns to the Allow/Deny buttons without
+/// resolving.
+struct DenyToolCallSheet: View {
+    let onCancel: () -> Void
+    let onConfirm: (String) -> Void
+
+    @State private var reason: String = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Deny tool call")
+                .font(.headline)
+
+            Text("Optionally provide a reason to send back to the model.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            // Single-line input: Return triggers the Deny button (default
+            // action) rather than inserting a newline.
+            TextField("Optional reason", text: $reason)
+                .textFieldStyle(.roundedBorder)
+                .focused($isFocused)
+
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Deny") { onConfirm(reason) }
+                    .keyboardShortcut(.defaultAction)
+                    .tint(.red)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+        .onAppear {
+            isFocused = true
+        }
+    }
 }

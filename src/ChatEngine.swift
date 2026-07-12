@@ -80,6 +80,15 @@ actor ChatEngine {
     /// In-flight streaming tasks keyed by chat filename, used for cancellation.
     private var streamTasks: [String: Task<Void, Never>] = [:]
 
+    /// Tool-call approvals awaiting a user decision, keyed by call id. The
+    /// continuation is registered from `approveToolCall` (running on this
+    /// actor) and resumed by `resolveToolCallApproval` / `cancelPendingApprovals`.
+    /// Marked `nonisolated(unsafe)` because `withCheckedThrowingContinuation`'s
+    /// body is `@Sendable` and thus can't reference actor-isolated state, even
+    /// though that body executes synchronously on the actor. All real access is
+    /// confined to actor methods.
+    private nonisolated(unsafe) var pendingApprovals: [String: PendingToolApproval] = [:]
+
     /// Coalesced-emit bookkeeping. While a chat is streaming, rapid chunks
     /// would otherwise each trigger a full `chatsChanged` event, flooding the
     /// UI's main-actor queue and making the stop button feel unresponsive
@@ -1235,7 +1244,9 @@ actor ChatEngine {
                 // is built directly from these messages by `ChatService` (no
                 // un-folding `flatMap` needed).
                 for call in result.toolCalls {
-                    let toolResult = await executeToolCall(call, filename: filename, tools: toolDefs)
+                    // `executeToolCall` awaits user approval, which can be
+                    // cancelled (stop). Throws `CancellationError` in that case.
+                    let toolResult = try await executeToolCall(call, filename: filename, tools: toolDefs)
                     // Append the result as a `tool`-role message and persist.
                     appendToolResult(toolResult, filename: filename)
                     // Mirror into the working history so the next stream
@@ -1371,10 +1382,12 @@ actor ChatEngine {
     /// `namespacedName` to recover the owning server + raw tool name, which
     /// avoids the ambiguity of splitting on the first underscore (prefixless
     /// servers expose tools like `tavily_search` whose own name contains `_`).
-    private func executeToolCall(_ call: ToolCall, filename: String, tools: [ToolDefinition]) async -> ToolResult {
-        // The approval hook. This iteration auto-approves every call; a future
-        // UI can intercept here to present a deny/allow-once/allow-always sheet.
-        let approval = await approveToolCall(chatFilename: filename, call: call)
+    private func executeToolCall(_ call: ToolCall, filename: String, tools: [ToolDefinition]) async throws -> ToolResult {
+        // The approval hook. Suspends until the user allows or denies the call
+        // (or cancels via stop, which throws `CancellationError`). The chat
+        // remains in its streaming state throughout — this is a pause, not a
+        // stop.
+        let approval = try await approveToolCall(chatFilename: filename, call: call)
         switch approval {
         case .allow:
             // Match the model-issued call name directly against the
@@ -1391,16 +1404,85 @@ actor ChatEngine {
             debugLog("Tool", "result \(serverName)/\(toolName) — isError=\(result.isError), contentSize=\(result.content.count), chat=\(filename)")
             return result
         case .deny(let reason):
-            debugLog("Tool", "denied callID=\(call.id) — \(reason), chat=\(filename)")
-            return ToolResult(callID: call.id, content: "User denied the tool call: \(reason)", isError: true)
+            let message = ToolApproval.denialMessage(for: reason)
+            debugLog("Tool", "denied callID=\(call.id) — \(message), chat=\(filename)")
+            // `isError` stays true so the provider treats this as a tool error,
+            // but `isDenied` lets the renderer show "denied" rather than "error".
+            return ToolResult(callID: call.id, content: message, isError: true, isDenied: true)
         }
     }
 
-    /// The tool-call approval decision point. This iteration auto-approves
-    /// every call (equivalent to "allow always"). A future UI can replace the
-    /// body to present a sheet and await the user's choice.
-    private func approveToolCall(chatFilename: String, call: ToolCall) async -> ToolApproval {
-        return .allow
+    /// The tool-call approval decision point. Marks the call as pending, draws
+    /// the UI's attention (`.toolApprovalRequested`), then suspends on a
+    /// continuation until `resolveToolCallApproval` (allow/deny) or
+    /// `cancelPendingApprovals` (stop) resumes it.
+    private func approveToolCall(chatFilename: String, call: ToolCall) async throws -> ToolApproval {
+        setPendingApproval(callID: call.id, filename: chatFilename, pending: true)
+        emit(.toolApprovalRequested(filename: chatFilename, callID: call.id))
+        return try await withCheckedThrowingContinuation { continuation in
+            pendingApprovals[call.id] = PendingToolApproval(filename: chatFilename, continuation: continuation)
+        }
+    }
+
+    /// Resolves a pending approval with the user's decision. Called from the UI
+    /// (via `AppViewModel`) when the user presses Allow or confirms a Deny.
+    /// No-op (and safe) if there is no pending approval for `callID` — e.g. a
+    /// double click or a late resolve after cancellation.
+    func resolveToolCallApproval(callID: String, approval: ToolApproval) {
+        guard let pending = pendingApprovals.removeValue(forKey: callID) else { return }
+        setPendingApproval(callID: callID, filename: pending.filename, pending: false)
+        emit(.toolApprovalResolved(filename: pending.filename, callID: callID))
+        pending.continuation.resume(returning: approval)
+    }
+
+    /// Sets the `pendingApproval` flag on a tool call (matched by `callID`) on
+    /// the last assistant message of the chat, so the renderer expands the
+    /// block and shows Allow/Deny buttons. Persists in-memory only and emits.
+    private func setPendingApproval(callID: String, filename: String, pending: Bool) {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        guard var chat = records[idx].chat else { return }
+        guard let aIdx = chat.messages.indices.reversed().first(where: { chat.messages[$0].role == .assistant }),
+              var calls = chat.messages[aIdx].toolCalls,
+              let cIdx = calls.firstIndex(where: { $0.id == callID }) else { return }
+        calls[cIdx].pendingApproval = pending
+        chat.messages[aIdx].toolCalls = calls
+        records[idx].chat = chat
+        flushCoalescedEmit()
+        emit(.chatsChanged(records))
+    }
+
+    /// Cancels every pending approval for a chat (used when the user stops the
+    /// stream). Resumes each continuation with `CancellationError` so the
+    /// streaming loop unwinds, then drops the incomplete tool-call turn (the
+    // trailing assistant message carrying tool calls + any partial results)
+    /// so the conversation isn't left with a `tool_call` that has no matching
+    /// `tool_result` — a state providers reject on the next request.
+    private func cancelPendingApprovals(filename: String) {
+        let toCancel = pendingApprovals.filter { $0.value.filename == filename }
+        guard !toCancel.isEmpty else { return }
+        for (callID, pending) in toCancel {
+            pendingApprovals.removeValue(forKey: callID)
+            pending.continuation.resume(throwing: CancellationError())
+        }
+        trimIncompleteToolTurn(filename: filename)
+        flushCoalescedEmit()
+        emit(.chatsChanged(records))
+        for (callID, _) in toCancel {
+            emit(.toolApprovalResolved(filename: filename, callID: callID))
+        }
+    }
+
+    /// Removes the last assistant message and everything after it, but only if
+    /// that assistant message carries tool calls — i.e. the turn was a
+    /// tool-call turn that didn't complete (some results are missing). Leaves
+    /// normal (content-only) assistant messages intact.
+    private func trimIncompleteToolTurn(filename: String) {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        guard var chat = records[idx].chat else { return }
+        guard let lastAssistant = chat.messages.indices.reversed().first(where: { chat.messages[$0].role == .assistant }) else { return }
+        guard chat.messages[lastAssistant].toolCalls?.isEmpty == false else { return }
+        chat.messages.removeSubrange(lastAssistant...)
+        records[idx].chat = chat
     }
 
     /// Appends a tool result as its own `tool`-role `ChatMessage` (tagged with
@@ -1588,6 +1670,11 @@ actor ChatEngine {
     /// task finalizes the message content asynchronously via `finishStream`.
     func stopStreaming(filename: String) {
         debugLog("Stream", "stop requested — chat=\(filename)")
+        // If we were awaiting tool-call approval, resume those continuations
+        // with a cancellation and drop the incomplete tool-call turn so the
+        // conversation isn't left with a dangling tool_call. Done before
+        // flipping `isStreaming` so the trimmed state is what we emit.
+        cancelPendingApprovals(filename: filename)
         streamTasks[filename]?.cancel()
         if let idx = records.firstIndex(where: { $0.filename == filename }) {
             records[idx].isStreaming = false
@@ -1789,10 +1876,29 @@ actor ChatEngine {
 
 // MARK: - Tool approval
 
-/// The outcome of the tool-call approval decision point. This iteration auto-
-/// approves every call (`.allow`); a future UI can return `.deny` to block a
-/// call and feed an error result back to the model.
+/// The outcome of the tool-call approval decision point. `.allow` executes the
+/// call; `.deny(reason:)` blocks it and feeds a denial message back to the
+/// model (generic when the reason is empty, otherwise the reason is included).
 enum ToolApproval: Sendable {
     case allow
     case deny(reason: String)
+
+    /// The denial text forwarded to the model for a `.deny(reason:)` decision.
+    /// A reason that is empty after trimming leading/trailing whitespace yields
+    /// a generic denial; otherwise the trimmed reason is included verbatim.
+    static func denialMessage(for reason: String) -> String {
+        let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty
+            ? "User denied this tool call"
+            : "User denied this tool call with the following reason: \(trimmed)"
+    }
+}
+
+/// A tool-call approval awaiting a user decision, stored in
+/// `ChatEngine.pendingApprovals` keyed by call id. The continuation resumes
+/// `approveToolCall` with the user's `ToolApproval` (or throws
+/// `CancellationError` on stop).
+struct PendingToolApproval: Sendable {
+    let filename: String
+    let continuation: CheckedContinuation<ToolApproval, Error>
 }

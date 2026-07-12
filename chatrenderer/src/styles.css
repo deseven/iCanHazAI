@@ -962,6 +962,11 @@ body {
   background: var(--error-bg);
 }
 
+.tool-badge-denied {
+  color: #b8860b;
+  background: color-mix(in srgb, #b8860b 16%, transparent);
+}
+
 .tool-badge-running {
   color: var(--text-secondary, #888);
   background: color-mix(in srgb, var(--text-secondary, #888) 14%, transparent);
@@ -1007,6 +1012,77 @@ body {
 
 .tool-result-only {
   padding: 6px 8px;
+}
+
+/* ── Tool approval ─────────────────────────────────────────────────── */
+
+.tool-block-pending {
+  /* Subtle left accent so a pending call stands out from finished ones. */
+  border-left: 2px solid var(--accent);
+  padding-left: 8px;
+  margin-left: -10px;
+}
+
+.tool-badge-pending {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  animation: tool-pending-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes tool-pending-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.tool-approval {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tool-approval-label {
+  font-size: 12px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.tool-approval-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.tool-approval-btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--thinking-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  padding: 5px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.tool-approval-btn:hover {
+  border-color: var(--accent);
+}
+
+.tool-approval-allow {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+.tool-approval-allow:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.tool-approval-deny:hover {
+  background: var(--error-bg);
+  border-color: var(--error-text);
+  color: var(--error-text);
 }
 
 /* ── Error block ───────────────────────────────────────────────────── */

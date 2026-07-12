@@ -246,6 +246,65 @@ struct ChatModelTests {
         let rec = ChatRecord(filename: "a.json", chat: chat)
         #expect(rec.tokenCount == nil)
     }
+
+    // MARK: - Tool-call approval
+
+    @Test("ToolCall defaults pendingApproval to false")
+    func toolCallDefaultPending() {
+        let call = ToolCall(id: "call_1", name: "calc", arguments: "{}")
+        #expect(call.pendingApproval == false)
+    }
+
+    @Test("ToolCall decodes legacy JSON without pendingApproval as false")
+    func toolCallDecodesLegacyJSON() throws {
+        // JSON as written by older app versions (no pendingApproval key).
+        let json = #"{"id":"call_1","name":"calc","arguments":"{}"}"#.data(using: .utf8)!
+        let call = try JSONDecoder().decode(ToolCall.self, from: json)
+        #expect(call.id == "call_1")
+        #expect(call.pendingApproval == false)
+    }
+
+    @Test("ToolCall round-trips pendingApproval through JSON")
+    func toolCallRoundTripsPending() throws {
+        let original = ToolCall(id: "call_1", name: "calc", arguments: "{}", pendingApproval: true)
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(ToolCall.self, from: data)
+        #expect(decoded == original)
+        #expect(decoded.pendingApproval == true)
+    }
+
+    @Test("ToolResult decodes legacy JSON without isDenied/isStreaming as false")
+    func toolResultDecodesLegacyJSON() throws {
+        let json = #"{"callID":"call_1","content":"4","isError":false}"#.data(using: .utf8)!
+        let r = try JSONDecoder().decode(ToolResult.self, from: json)
+        #expect(r.isDenied == false)
+        #expect(r.isStreaming == false)
+    }
+
+    @Test("ToolResult round-trips isDenied through JSON")
+    func toolResultRoundTripsDenied() throws {
+        let original = ToolResult(callID: "call_1", content: "denied", isError: true, isDenied: true)
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(ToolResult.self, from: data)
+        #expect(decoded == original)
+        #expect(decoded.isDenied == true)
+    }
+
+    @Test("denialMessage is generic for an empty reason")
+    func denialMessageEmpty() {
+        #expect(ToolApproval.denialMessage(for: "") == "User denied this tool call")
+    }
+
+    @Test("denialMessage is generic for a whitespace-only reason")
+    func denialMessageWhitespace() {
+        #expect(ToolApproval.denialMessage(for: "   \n\t ") == "User denied this tool call")
+    }
+
+    @Test("denialMessage trims and includes a provided reason")
+    func denialMessageWithReason() {
+        let msg = ToolApproval.denialMessage(for: "  not allowed now  ")
+        #expect(msg == "User denied this tool call with the following reason: not allowed now")
+    }
 }
 
 } // extension AllAppTests

@@ -224,6 +224,15 @@ enum EngineEvent: Sendable {
     /// `config.toml` was reloaded from disk (external edit picked up via FSEvents).
     /// The UI should refresh its cached preferences from `ConfigManager`.
     case configChanged
+    /// The engine is waiting for the user to approve a tool call. The UI uses
+    /// this to draw attention: blink the chat in the sidebar (if it isn't the
+    /// active one) and bounce the dock icon (if the window isn't key/front).
+    /// Note: the chat remains in its streaming state — this is a pause, not a
+    /// stop.
+    case toolApprovalRequested(filename: String, callID: String)
+    /// A previously-requested tool approval was resolved (allowed, denied, or
+    /// cancelled by a stop). The UI clears any attention it drew for it.
+    case toolApprovalResolved(filename: String, callID: String)
     case error(String)
 }
 
