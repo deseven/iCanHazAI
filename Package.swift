@@ -15,7 +15,8 @@ let package = Package(
         // a real bug in `Client.connect(transport:)`'s message-handling loop
         .package(url: "https://github.com/piersdd/swift-sdk.git", revision: "1ea8365655f2e7dc25d495b1d75b1de9dfe1975c"),
         .package(path: "shared/ProcessExit"),
-        .package(path: "shared/LoginShell")
+        .package(path: "shared/LoginShell"),
+        .package(path: "shared/ImageTools")
     ],
     targets: [
         .executableTarget(
@@ -28,6 +29,44 @@ let package = Package(
                 .product(name: "LoginShell", package: "LoginShell")
             ],
             path: "src"
+        ),
+        // Bundled stdio MCP servers. Each is an independent executable copied
+        // into the app bundle under Contents/Resources/MCPServers/. Built as
+        // one SwiftPM graph with the app; build a single server on demand with
+        // `swift build --target UtilsMCP`.
+        .executableTarget(
+            name: "UtilsMCP",
+            dependencies: [
+                .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "ProcessExit", package: "ProcessExit")
+            ],
+            path: "mcps/UtilsMCP/Sources/UtilsMCP"
+        ),
+        .executableTarget(
+            name: "FilesystemMCP",
+            dependencies: [
+                .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "ImageTools", package: "ImageTools"),
+                .product(name: "ProcessExit", package: "ProcessExit")
+            ],
+            path: "mcps/FilesystemMCP/Sources/FilesystemMCP"
+        ),
+        .executableTarget(
+            name: "CodeMCP",
+            dependencies: [
+                .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "ProcessExit", package: "ProcessExit")
+            ],
+            path: "mcps/CodeMCP/Sources/CodeMCP"
+        ),
+        .executableTarget(
+            name: "ShellMCP",
+            dependencies: [
+                .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "ProcessExit", package: "ProcessExit"),
+                .product(name: "LoginShell", package: "LoginShell")
+            ],
+            path: "mcps/ShellMCP/Sources/ShellMCP"
         ),
         .testTarget(
             name: "iCanHazAITests",

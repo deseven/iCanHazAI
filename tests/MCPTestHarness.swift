@@ -30,12 +30,9 @@ final class MCPTestHarness: @unchecked Sendable {
         case code = "CodeMCP"
         case shell = "ShellMCP"
 
-        /// Path to the debug binary under `mcps/<Server>/.build/debug/<Server>`,
-        /// resolved relative to the package root. The test target runs from
-        /// `.build/<arch>/debug`, so we walk up to find `mcps/`.
         var binaryPath: String {
             let dir = MCPTestHarness.packageRoot
-            return "\(dir)/mcps/\(rawValue)/.build/debug/\(rawValue)"
+            return "\(dir)/.build/debug/\(rawValue)"
         }
     }
 

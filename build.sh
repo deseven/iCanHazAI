@@ -5,11 +5,10 @@ set -euo pipefail
 name="iCanHazAI"
 shortName="ichai"
 ident="wtf.d7.icanhazai"
+mcps=(UtilsMCP FilesystemMCP CodeMCP ShellMCP)
 loc="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 logFile="$loc/build.log"
-logMark=1
 
-# Load .env if present
 if [ -f "$loc/.env" ]; then
     set -a
     source "$loc/.env"
@@ -34,10 +33,15 @@ case "${1:-}" in
     *)           mode="dev" ;;
 esac
 
-if [ "$mode" = "release" ]; then
-    buildConfig="release"
+buildConfig="release"; [ "$mode" = "dev" ] && buildConfig="debug"
+
+# Dev builds a single arm64 slice straight into .build/arm64-apple-macosx;
+# everything else builds a universal (arm64+x86_64) binary that SwiftPM
+# lipo's automatically into .build/apple/Products.
+if [ "$mode" = "dev" ]; then
+    buildDir="$loc/.build/arm64-apple-macosx/$buildConfig"
 else
-    buildConfig="debug"
+    buildDir="$loc/.build/apple/Products/$buildConfig"
 fi
 
 # ── Determine signing & notarization ─────────────────────────────────
@@ -46,9 +50,8 @@ can_notarize=false
 
 if [ -n "${ICHAI_SIGNING_IDENTITY:-}" ] && [ "$mode" != "dev" ]; then
     can_sign=true
-    if [ -n "${ICHAI_NOTARY_PROFILE:-}" ]; then
-        can_notarize=true
-    elif [ -n "${ICHAI_APPLE_ID:-}" ] && [ -n "${ICHAI_TEAM_ID:-}" ] && [ -n "${ICHAI_APP_PASSWORD:-}" ]; then
+    if [ -n "${ICHAI_NOTARY_PROFILE:-}" ] || \
+       { [ -n "${ICHAI_APPLE_ID:-}" ] && [ -n "${ICHAI_TEAM_ID:-}" ] && [ -n "${ICHAI_APP_PASSWORD:-}" ]; }; then
         can_notarize=true
     fi
 fi
@@ -72,24 +75,33 @@ step() {
     printf "  ${dimColor}[%d/%d]${noColor} ${bold}%-36s${noColor} " "$stepNum" "$totalSteps" "$1"
 }
 
-ok() {
-    echo -e "${greenColor}[OK]${noColor}"
+ok() { echo -e "${greenColor}[OK]${noColor}"; }
+
+# Steps are queued as tab-separated "label\terror\tfunc\targ" records; the
+# pipeline runner executes them in order, so the total is always correct
+# without manual step counting.
+STEPS=()
+add() {
+    local label="$1" err="$2" func="$3" arg="${4:-}"
+    STEPS+=("$(printf '%s\t%s\t%s\t%s' "$label" "$err" "$func" "$arg")")
 }
 
-run_step() {
-    local label="$1"
-    local error_msg="$2"
-    shift 2
-    local func="$1"
-    shift
-
-    step "$label"
-    logMark=$(($(wc -l < "$logFile") + 1))
-    {
-        echo "--- $label ---"
-        "$func" "$@" || die "$error_msg"
-    } >> "$logFile" 2>&1
-    ok
+run_pipeline() {
+    totalSteps=${#STEPS[@]}
+    for spec in "${STEPS[@]}"; do
+        IFS=$'\t' read -r label err func arg <<< "$spec"
+        step "$label"
+        logMark=$(($(wc -l < "$logFile") + 1))
+        {
+            echo "--- $label ---"
+            if [ -n "$arg" ]; then
+                "$func" "$arg" || die "$err"
+            else
+                "$func" || die "$err"
+            fi
+        } >> "$logFile" 2>&1
+        ok
+    done
 }
 
 # ── Step functions ───────────────────────────────────────────────────
@@ -104,17 +116,12 @@ do_init_log() {
 }
 
 do_clean_dist() {
-    rm -rf "$loc/dist/$name.app"
-    rm -rf "$loc/dist/$shortName.zip"
-    rm -rf "$loc/dist/$shortName-dev.zip"
-    rm -rf "$loc/dist/$shortName.dmg"
-    rm -rf "$loc/dist/$name"
+    rm -rf "$loc/dist/$name.app" "$loc/dist/$shortName.zip" "$loc/dist/$shortName-dev.zip" \
+           "$loc/dist/$shortName.dmg" "$loc/dist/$name"
     mkdir -p "$loc/dist"
 }
 
-do_resolve_deps() {
-    swift package resolve
-}
+do_resolve_deps() { swift package resolve; }
 
 do_build_web() {
     cd "$loc/chatrenderer"
@@ -123,129 +130,68 @@ do_build_web() {
     cd "$loc"
 }
 
-do_clean_build() {
-    swift package clean
+# One `swift build` builds the app and all four bundled MCP servers from the
+# single package graph. Dev = arm64 only; otherwise universal (arm64+x86_64).
+do_build_swift() {
+    if [ "$mode" = "dev" ]; then
+        swift build -c "$buildConfig" --arch arm64
+    else
+        swift build -c "$buildConfig" --arch arm64 --arch x86_64
+    fi
 }
 
-# Clean the .build directories of the bundled MCP server packages and the
-# shared libraries under shared/.
-do_clean_mcps() {
-    local mcpDir="$loc/mcps"
-    for pkg in UtilsMCP FilesystemMCP CodeMCP ShellMCP; do
-        rm -rf "$mcpDir/$pkg/.build"
-    done
-    local sharedDir="$loc/shared"
-    for pkg in ImageTools ProcessExit LoginShell; do
-        rm -rf "$sharedDir/$pkg/.build"
-    done
+# Debug builds of the MCP servers (host arch) for the integration tests —
+# the test harness spawns .build/debug/<Server>.
+do_build_mcps_debug() {
+    swift build --product UtilsMCP --product FilesystemMCP --product CodeMCP --product ShellMCP
 }
 
-do_compile_arm64() {
-    swift build -c "$buildConfig" --arch arm64
-}
-
-do_compile_x86_64() {
-    swift build -c "$buildConfig" --arch x86_64
-}
-
-# Build the four bundled stdio MCP servers (UtilsMCP, FilesystemMCP, CodeMCP,
-# ShellMCP) for arm64 and copy the binaries into the app bundle under
-# Contents/Resources/MCPServers/. Each server is an independent SwiftPM
-# package under mcps/.
-do_build_mcps() {
-    local mcpDir="$loc/mcps"
-    local outDir="$loc/dist/$name.app/Contents/Resources/MCPServers"
-    mkdir -p "$outDir"
-
-    for srv in UtilsMCP FilesystemMCP CodeMCP ShellMCP; do
-        ( cd "$mcpDir/$srv" && swift build -c "$buildConfig" --arch arm64 ) || return 1
-        cp "$mcpDir/$srv/.build/arm64-apple-macosx/$buildConfig/$srv" "$outDir/$srv"
-    done
-}
-
-# Build the four MCP servers as universal (arm64 + x86_64) binaries via lipo,
-# mirroring the app's universal-binary flow for non-dev modes.
-do_build_mcps_universal() {
-    local mcpDir="$loc/mcps"
-    local outDir="$loc/dist/$name.app/Contents/Resources/MCPServers"
-    mkdir -p "$outDir"
-
-    for srv in UtilsMCP FilesystemMCP CodeMCP ShellMCP; do
-        ( cd "$mcpDir/$srv" && swift build -c "$buildConfig" --arch arm64 ) || return 1
-        ( cd "$mcpDir/$srv" && swift build -c "$buildConfig" --arch x86_64 ) || return 1
-        lipo -create \
-            "$mcpDir/$srv/.build/arm64-apple-macosx/$buildConfig/$srv" \
-            "$mcpDir/$srv/.build/x86_64-apple-macosx/$buildConfig/$srv" \
-            -output "$outDir/$srv"
-    done
-}
-
-do_create_universal() {
-    lipo -create \
-        "$loc/.build/arm64-apple-macosx/$buildConfig/$name" \
-        "$loc/.build/x86_64-apple-macosx/$buildConfig/$name" \
-        -output "$loc/dist/$name"
-}
+do_run_app_tests() { swift test --filter AllAppTests; }
+do_run_mcp_tests() { swift test --filter AllMCPTests; }
 
 do_create_bundle() {
-    mkdir -p "$loc/dist/$name.app/Contents/MacOS"
-    mkdir -p "$loc/dist/$name.app/Contents/Resources"
-    mkdir -p "$loc/dist/$name.app/Contents/Resources/ChatRenderer"
+    local app="$loc/dist/$name.app"
+    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/ChatRenderer" "$app/Contents/Resources/MCPServers"
 
-    if [ "$mode" = "dev" ]; then
-        cp "$loc/.build/arm64-apple-macosx/$buildConfig/$name" "$loc/dist/$name.app/Contents/MacOS/$name"
-    else
-        cp "$loc/dist/$name" "$loc/dist/$name.app/Contents/MacOS/$name"
-        rm "$loc/dist/$name"
-    fi
-
-    cp "$loc/Info.plist" "$loc/dist/$name.app/Contents/Info.plist"
-    cp "$loc/res/main.icns" "$loc/dist/$name.app/Contents/Resources/"
-    cp -R "$loc/res/roles" "$loc/dist/$name.app/Contents/Resources/"
-    # Copy the built web renderer (index.html + app.js + app.css) into the
-    # bundle so WKWebView can load it via Bundle.main.
-    cp "$loc/chatrenderer/dist/"* "$loc/dist/$name.app/Contents/Resources/ChatRenderer/"
+    cp "$buildDir/$name" "$app/Contents/MacOS/$name"
+    cp "$loc/Info.plist" "$app/Contents/Info.plist"
+    cp "$loc/res/main.icns" "$app/Contents/Resources/"
+    cp -R "$loc/res/roles" "$app/Contents/Resources/"
+    cp "$loc/chatrenderer/dist/"* "$app/Contents/Resources/ChatRenderer/"
+    # Copy the just-built MCP servers (arm64 in dev, universal otherwise).
+    local srv
+    for srv in "${mcps[@]}"; do
+        cp "$buildDir/$srv" "$app/Contents/Resources/MCPServers/$srv"
+    done
 }
 
 do_codesign() {
-    xattr -cr "$loc/dist/$name.app"
+    local app="$loc/dist/$name.app"
+    xattr -cr "$app"
 
-    # Sign nested Mach-O binaries (bundled MCP servers) explicitly first.
-    # --deep does not reliably apply hardened runtime + secure timestamp to
-    # nested executables, which causes notarization to reject them.
-    local mcpDir="$loc/dist/$name.app/Contents/Resources/MCPServers"
-    if [ -d "$mcpDir" ]; then
-        for srv in UtilsMCP FilesystemMCP CodeMCP ShellMCP; do
-            [ -f "$mcpDir/$srv" ] || continue
-            if [ "$can_sign" = true ]; then
-                codesign --force --sign "$ICHAI_SIGNING_IDENTITY" \
-                    --options runtime \
-                    --timestamp \
-                    "$mcpDir/$srv"
-            else
-                codesign --force --sign - \
-                    -r="designated => identifier \"$ident\"" \
-                    "$mcpDir/$srv"
-            fi
-        done
-    fi
+    # Sign nested Mach-O binaries explicitly first — --deep does not reliably
+    # apply hardened runtime + secure timestamp to nested executables, which
+    # notarization rejects.
+    local srv mcpDir="$app/Contents/Resources/MCPServers"
+    for srv in "${mcps[@]}"; do
+        [ -f "$mcpDir/$srv" ] || continue
+        if [ "$can_sign" = true ]; then
+            codesign --force --sign "$ICHAI_SIGNING_IDENTITY" --options runtime --timestamp "$mcpDir/$srv"
+        else
+            codesign --force --sign - -r="designated => identifier \"$ident\"" "$mcpDir/$srv"
+        fi
+    done
 
     if [ "$can_sign" = true ]; then
-        codesign --force --deep --sign "$ICHAI_SIGNING_IDENTITY" \
-            --options runtime \
-            --timestamp \
-            "$loc/dist/$name.app"
+        codesign --force --deep --sign "$ICHAI_SIGNING_IDENTITY" --options runtime --timestamp "$app"
     else
-        codesign --force --deep --sign - \
-            -r="designated => identifier \"$ident\"" \
-            "$loc/dist/$name.app"
+        codesign --force --deep --sign - -r="designated => identifier \"$ident\"" "$app"
     fi
 }
 
 do_create_zip() {
-    local zipName="$1"
     cd "$loc/dist"
-    zip -r9 "$zipName" "$name.app"
+    zip -r9 "$1" "$name.app"
     cd "$loc"
 }
 
@@ -272,23 +218,20 @@ do_sign_dmg() {
     codesign --force --sign "$ICHAI_SIGNING_IDENTITY" --timestamp "$loc/dist/$shortName.dmg"
 }
 
+# notarytool exits 0 even when a submission is rejected; inspect the final
+# status line so we fail before trying to staple a ticket that doesn't exist.
 do_notarize() {
-    local file="$1"
-    local submissionLog
+    local submissionLog finalStatus
     if [ -n "${ICHAI_NOTARY_PROFILE:-}" ]; then
-        submissionLog="$(xcrun notarytool submit "$file" --keychain-profile "$ICHAI_NOTARY_PROFILE" --wait 2>&1)"
+        submissionLog="$(xcrun notarytool submit "$1" --keychain-profile "$ICHAI_NOTARY_PROFILE" --wait 2>&1)"
     else
-        submissionLog="$(xcrun notarytool submit "$file" \
+        submissionLog="$(xcrun notarytool submit "$1" \
             --apple-id "$ICHAI_APPLE_ID" \
             --team-id "$ICHAI_TEAM_ID" \
             --password "$ICHAI_APP_PASSWORD" \
             --wait 2>&1)"
     fi
     echo "$submissionLog"
-    # notarytool exits 0 even when the submission is rejected; inspect the
-    # final status line so we fail before attempting to staple a ticket
-    # that doesn't exist.
-    local finalStatus
     finalStatus="$(echo "$submissionLog" | awk '/status:/ {print $2}' | tail -n 1)"
     if [ "$finalStatus" != "Accepted" ]; then
         echo "notarization did not succeed (status: ${finalStatus:-unknown})" >&2
@@ -296,13 +239,8 @@ do_notarize() {
     fi
 }
 
-do_staple_app() {
-    xcrun stapler staple "$loc/dist/$name.app"
-}
-
-do_staple_dmg() {
-    xcrun stapler staple "$loc/dist/$shortName.dmg"
-}
+do_staple_app() { xcrun stapler staple "$loc/dist/$name.app"; }
+do_staple_dmg() { xcrun stapler staple "$loc/dist/$shortName.dmg"; }
 
 do_verify() {
     codesign --verify --deep --strict --verbose=2 "$loc/dist/$name.app"
@@ -317,142 +255,74 @@ do_verify() {
     fi
 }
 
-do_upload() {
-    share "$1"
-}
+do_upload() { share "$1"; }
 
-# ── Test step ────────────────────────────────────────────────────────
-
-# Build the four MCP servers in debug config (the test harness spawns the
-# debug binaries at mcps/<Server>/.build/debug/<Server>).
-do_build_mcps_debug() {
-    local mcpDir="$loc/mcps"
-    for srv in UtilsMCP FilesystemMCP CodeMCP ShellMCP; do
-        ( cd "$mcpDir/$srv" && swift build -c debug ) || return 1
-    done
-}
-
-# Run the main-app test suites (ChatModel, ChatStore, ChatStore.FSEvents).
-# These cover the chat data model, the SwiftData-backed cache, and FSEvents
-# delivery — no MCP server binaries required, so they run first for fast
-# feedback. Selected by the AllAppTests parent suite (see
-# tests/AppTestHarness.swift); .serialized keeps them sequential.
-do_run_app_tests() {
-    swift test --filter AllAppTests
-}
-
-# Run the bundled-MCP integration suites. These spawn the four MCP servers as
-# real subprocesses and exercise every tool over stdio via the swift-sdk
-# Client — the same transport the main app uses — so they need the debug
-# server binaries built first. Selected by the AllMCPTests parent suite
-# (see tests/AllTests.swift).
-do_run_mcp_tests() {
-    swift test --filter AllMCPTests
-}
-
-# ── Calculate total steps per mode ───────────────────────────────────
-case "$mode" in
-    dev)         totalSteps=7 ;;
-    dev-release)
-        totalSteps=13
-        if [ "$can_notarize" = true ]; then
-            totalSteps=$((totalSteps + 2))
-        fi
-        if [ "$can_sign" = true ]; then
-            totalSteps=$((totalSteps + 1))
-        fi
-        ;;
-    release)
-        totalSteps=13
-        if [ "$can_sign" = true ]; then
-            totalSteps=$((totalSteps + 1))
-        fi
-        if [ "$can_notarize" = true ]; then
-            totalSteps=$((totalSteps + 3))
-        fi
-        if [ "$can_sign" = true ]; then
-            totalSteps=$((totalSteps + 1))
-        fi
-        ;;
-    test)        totalSteps=3 ;;
-esac
-
-# ── Build ────────────────────────────────────────────────────────────
-
-do_init_log
-do_clean_dist
+# ── Clean ────────────────────────────────────────────────────────────
 
 if [ "$mode" = "clean" ]; then
     swift package clean
-    do_clean_mcps
+    # Legacy standalone-package build dirs (now folded into the main package).
+    rm -rf "$loc"/mcps/*/.build "$loc"/shared/*/.build
     echo -e "  ${greenColor}${bold}Clean complete.${noColor}"
     exit 0
 fi
 
+# ── Assemble pipeline ────────────────────────────────────────────────
+
+do_init_log
+do_clean_dist
+
 if [ "$mode" = "test" ]; then
-    run_step "Running app tests..."            "app tests failed"                          do_run_app_tests
-    run_step "Building bundled MCP servers (debug)..." "failed to build bundled MCP servers" do_build_mcps_debug
-    run_step "Running MCP tests..."            "MCP tests failed"                          do_run_mcp_tests
+    add "Running app tests..."        "app tests failed"                          do_run_app_tests
+    add "Building bundled MCPs (debug)..." "failed to build bundled MCPs" do_build_mcps_debug
+    add "Running MCP tests..."        "MCP tests failed"                          do_run_mcp_tests
+    run_pipeline
     echo ""
     echo -e "  ${greenColor}${bold}Tests passed!${noColor}"
     exit 0
 fi
 
-run_step "Resolving dependencies..."            "failed to resolve dependencies"           do_resolve_deps
-run_step "Building chat renderer (web)..."       "failed to build chat renderer"            do_build_web
-run_step "Compiling Swift sources (arm64)..."    "failed to compile $shortName for arm64"   do_compile_arm64
+add "Resolving dependencies..."      "failed to resolve dependencies"            do_resolve_deps
+add "Building chat renderer (web)..." "failed to build chat renderer"            do_build_web
+add "Compiling Swift (app + MCPs)..." "failed to compile $shortName"             do_build_swift
+add "Creating APP bundle..."         "failed to create app bundle"               do_create_bundle
 
+# Tests gate signing for release builds.
 if [ "$mode" != "dev" ]; then
-    run_step "Compiling Swift sources (x86_64)..." "failed to compile $shortName for x86_64" do_compile_x86_64
-    run_step "Creating universal binary..."        "failed to create universal binary"        do_create_universal
+    add "Running app tests..."            "app tests failed"                       do_run_app_tests
+    add "Building bundled MCPs (debug)..." "failed to build bundled MCPs" do_build_mcps_debug
+    add "Running MCP tests..."            "MCP tests failed"                       do_run_mcp_tests
 fi
 
-run_step "Creating APP bundle..."                 "failed to create app bundle"              do_create_bundle
+add "Code-signing APP bundle..."     "failed to code-sign app bundle"            do_codesign
 
-if [ "$mode" = "dev" ]; then
-    run_step "Building bundled MCP servers..."     "failed to build bundled MCP servers"      do_build_mcps
-else
-    run_step "Building bundled MCP servers..."     "failed to build bundled MCP servers"      do_build_mcps_universal
-fi
-
-# Tests are mandatory for dev-release and release. App tests run first (they
-# need no MCP binaries); then the bundled MCP servers are built in debug and
-# the MCP integration suites exercise every tool via the swift-sdk Client.
-if [ "$mode" != "dev" ]; then
-    run_step "Running app tests..."                "app tests failed"                           do_run_app_tests
-    run_step "Building bundled MCP servers (debug)..." "failed to build bundled MCP servers"    do_build_mcps_debug
-    run_step "Running MCP tests..."                "MCP tests failed"                           do_run_mcp_tests
-fi
-
-run_step "Code-signing APP bundle..."             "failed to code-sign app bundle"           do_codesign
-
-if [ "$mode" != "dev" ]; then
-    if [ "$mode" = "release" ]; then
-        run_step "Creating distribution ZIP..."    "failed to pack $shortName.zip"            do_create_zip "$shortName.zip"
-        run_step "Creating distribution DMG..."    "failed to create dmg"                     do_create_dmg
-        if [ "$can_sign" = true ]; then
-            run_step "Signing distribution DMG..." "failed to sign dmg"                       do_sign_dmg
-        fi
-        if [ "$can_notarize" = true ]; then
-            run_step "Notarizing release build..." "failed to notarize release build"         do_notarize "$loc/dist/$shortName.dmg"
-            run_step "Stapling APP bundle..."      "failed to staple app bundle"              do_staple_app
-            run_step "Stapling release DMG..."     "failed to staple release DMG"             do_staple_dmg
-        fi
-        if [ "$can_sign" = true ]; then
-            run_step "Verifying signatures..."     "failed to verify signatures"              do_verify
-        fi
-    else
-        run_step "Creating dev ZIP..."             "failed to pack $shortName-dev.zip"        do_create_zip "$shortName-dev.zip"
-        if [ "$can_notarize" = true ]; then
-            run_step "Notarizing dev build..."     "failed to notarize dev build"             do_notarize "$loc/dist/$shortName-dev.zip"
-            run_step "Stapling APP bundle..."      "failed to staple app bundle"              do_staple_app
-        fi
-        if [ "$can_sign" = true ]; then
-            run_step "Verifying signatures..."     "failed to verify signatures"              do_verify
-        fi
-        run_step "Uploading dev build..."          "failed to upload dev build"               do_upload "$loc/dist/$shortName-dev.zip"
+if [ "$mode" = "release" ]; then
+    add "Creating distribution ZIP..." "failed to pack $shortName.zip"            do_create_zip "$shortName.zip"
+    add "Creating distribution DMG..." "failed to create dmg"                     do_create_dmg
+    if [ "$can_sign" = true ]; then
+        add "Signing distribution DMG..." "failed to sign dmg"                    do_sign_dmg
     fi
+    if [ "$can_notarize" = true ]; then
+        add "Notarizing release build..." "failed to notarize release build"      do_notarize "$loc/dist/$shortName.dmg"
+        add "Stapling APP bundle..."      "failed to staple app bundle"           do_staple_app
+        add "Stapling release DMG..."     "failed to staple release DMG"          do_staple_dmg
+    fi
+    if [ "$can_sign" = true ]; then
+        add "Verifying signatures..."     "failed to verify signatures"           do_verify
+    fi
+elif [ "$mode" = "dev-release" ]; then
+    add "Creating dev ZIP..."          "failed to pack $shortName-dev.zip"        do_create_zip "$shortName-dev.zip"
+    if [ "$can_notarize" = true ]; then
+        add "Notarizing dev build..."     "failed to notarize dev build"          do_notarize "$loc/dist/$shortName-dev.zip"
+        add "Stapling APP bundle..."      "failed to staple app bundle"           do_staple_app
+    fi
+    if [ "$can_sign" = true ]; then
+        add "Verifying signatures..."     "failed to verify signatures"           do_verify
+    fi
+    add "Uploading dev build..."       "failed to upload dev build"              do_upload "$loc/dist/$shortName-dev.zip"
 fi
+
+run_pipeline
 
 # ── Post-build ───────────────────────────────────────────────────────
 echo ""
