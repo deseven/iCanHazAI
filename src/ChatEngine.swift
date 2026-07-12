@@ -53,6 +53,9 @@ actor ChatEngine {
     private(set) var records: [ChatRecord] = []
     private(set) var roles: [Role] = []
     private(set) var connections: [Connection] = []
+    /// The chat data abstraction layer. Owns the SwiftData metadata cache and
+    /// all chat file I/O. The engine never reads/writes chat files directly.
+    private let store = ChatStore.shared
     /// Configured MCP servers. Loaded from disk and kept in sync via FSEvents.
     private(set) var mcps: [MCPServer] = []
     /// Live MCP configuration status, mirrored from `MCPManager`'s status
@@ -179,7 +182,10 @@ actor ChatEngine {
         Task { await MCPManager.shared.setStatusHandler { [weak self] state in
             Task { await self?.handleMCPConfigurationState(state) }
         } }
-        reloadAll(shouldEmit: false)
+        loadFromCache()
+        roles = env.loadAllRoles()
+        connections = env.loadConnections()
+        mcps = env.loadMCPs()
         startWatching()
         debugLog("Engine", "start complete — \(records.count) chats, \(connections.count) connections, \(mcps.count) MCP servers, \(roles.count) roles")
         emit(.chatsChanged(records))
@@ -505,16 +511,19 @@ actor ChatEngine {
 
     // MARK: - Per-kind handlers
 
-    /// Handles an FSEvent for a chat file. `itemRenamed` is treated as
-    /// removed(old) + created(new); since the wrapper fires two events, each
-    /// is handled independently here.
+    /// Handles an FSEvent for a chat file. External modifications reload the
+    /// chat via the store (which updates the cache), then update the in-memory
+    /// record only if the chat was already loaded. Chats that are not loaded
+    /// are left unloaded — their cache metadata is updated by the store.
+    /// `itemRenamed` is treated as removed(old) + created(new); since the
+    /// wrapper fires two events, each is handled independently here.
     private func handleChatFileEvent(_ event: FSEvent, url: URL) {
         let filename = url.lastPathComponent
         switch event {
         case .itemCreated, .itemClonedAtPath, .itemDataModified, .itemRenamed:
-            // A rename fires two events; the "new name" one is effectively a
-            // create/modify. Reload the single file.
-            guard let chat = env.loadSingleChat(filename: filename) else {
+            // Ask the store to reload from disk and update the cache.
+            let chat = store.handleExternalChange(filename: filename)
+            guard chat != nil else {
                 debugLog("FSEvents", "chat reload failed (undecodable/missing) — \(filename)")
                 return
             }
@@ -523,17 +532,33 @@ actor ChatEngine {
                 debugLog("FSEvents", "chat \(filename) is streaming — keeping in-memory state")
                 return
             }
-            if let idx = records.firstIndex(where: { $0.filename == filename }) {
-                // Update existing record, preserving runtime flags.
-                records[idx].chat = chat
-                records[idx].lastError = nil
-            } else {
-                // New chat appeared on disk.
-                records.append(ChatRecord(filename: filename, chat: chat))
+            // Refresh cache metadata for the sidebar. Only swap in the
+            // reloaded content when the chat was already loaded (the user has
+            // it open); an unloaded chat stays unloaded — its cache metadata
+            // is enough for the sidebar, and loading it here would pin it in
+            // memory with no event to release it.
+            if let info = store.getEntry(filename: filename) {
+                if let idx = records.firstIndex(where: { $0.filename == filename }) {
+                    if records[idx].chat != nil {
+                        records[idx].chat = chat
+                    }
+                    records[idx].cachedName = info.name
+                    records[idx].cachedModificationTime = info.modificationTime
+                    records[idx].lastError = nil
+                } else {
+                    // New chat appeared on disk — never loaded.
+                    records.append(ChatRecord(
+                        filename: filename,
+                        chat: nil,
+                        cachedName: info.name,
+                        cachedModificationTime: info.modificationTime
+                    ))
+                }
             }
             sortAndEmit()
         case .itemRemoved:
-            // Remove the chat and its image folder.
+            // Remove from store cache, cancel streaming, and remove the record.
+            store.handleExternalDeletion(filename: filename)
             streamTasks[filename]?.cancel()
             streamTasks[filename] = nil
             env.deleteAllImages(for: filename)
@@ -649,11 +674,17 @@ actor ChatEngine {
     // MARK: - Full rescan fallback
 
     /// Full rescan of all environment state. Used as a fallback for
-    /// `mustScanSubDirs` / `rootChanged` events (dropped events). Reloads
-    /// everything from disk and re-runs the MCP configuration pass since the
-    /// set of servers may have changed in ways we couldn't track per-file.
+    /// `mustScanSubDirs` / `rootChanged` events (dropped events). Reconciles
+    /// the chat cache with disk and re-runs the MCP configuration pass since
+    /// the set of servers may have changed in ways we couldn't track per-file.
     private func fullRescan() {
-        reloadAll(shouldEmit: true)
+        fullRescanChats()
+        roles = env.loadAllRoles()
+        connections = env.loadConnections()
+        mcps = env.loadMCPs()
+        emit(.rolesChanged(roles))
+        emit(.connectionsChanged(connections))
+        emit(.mcpsChanged(mcps))
         configureMCPs()
     }
 
@@ -756,35 +787,58 @@ actor ChatEngine {
 
     // MARK: - Loading
 
-    private func reloadAll(shouldEmit: Bool = true) {
-        let loaded = env.loadChats()
-        // Preserve streaming/unread flags for chats that already exist in memory.
+    /// Populates `records` from the SwiftData cache, syncing the cache with
+    /// disk first. No chat files are loaded — each record's `chat` is nil
+    /// (lazy loading). Only metadata (name, modification time) is read from
+    /// the cache, which already reflects the on-disk state after the sync.
+    private func loadFromCache() {
+        let entries = store.startupSync()
         var newRecords: [ChatRecord] = []
-        for (filename, chat) in loaded {
-            let existing = records.first(where: { $0.filename == filename })
+        for info in entries {
+            let existing = records.first(where: { $0.filename == info.filename })
             newRecords.append(ChatRecord(
-                filename: filename,
-                chat: chat,
+                filename: info.filename,
+                chat: existing?.chat,
+                cachedName: info.name,
+                cachedModificationTime: info.modificationTime,
                 isStreaming: existing?.isStreaming ?? false,
                 hasUnreadActivity: existing?.hasUnreadActivity ?? false,
                 lastError: existing?.lastError,
-                createdAt: existing?.createdAt ?? Date()
+                createdAt: existing?.createdAt ?? info.modificationTime
             ))
         }
         sortRecordsByActivity(&newRecords)
         records = newRecords
-        roles = env.loadAllRoles()
-        connections = env.loadConnections()
-        mcps = env.loadMCPs()
         // Drop bookkeeping for chats that no longer exist.
         let validIDs = Set(records.map { $0.id })
         streamTasks = streamTasks.filter { validIDs.contains($0.key) }
-        if shouldEmit {
-            emit(.chatsChanged(records))
-            emit(.rolesChanged(roles))
-            emit(.connectionsChanged(connections))
-            emit(.mcpsChanged(mcps))
+    }
+
+    /// Full rescan of chat state from disk. Used as a fallback for
+    /// `mustScanSubDirs` / `rootChanged` FSEvents. Rebuilds the cache from
+    /// scratch by reconciling with disk, then populates records (with
+    /// `chat = nil`). In-memory loaded chats are preserved.
+    private func fullRescanChats() {
+        let entries = store.startupSync()
+        var newRecords: [ChatRecord] = []
+        for info in entries {
+            let existing = records.first(where: { $0.filename == info.filename })
+            newRecords.append(ChatRecord(
+                filename: info.filename,
+                chat: existing?.chat,
+                cachedName: info.name,
+                cachedModificationTime: info.modificationTime,
+                isStreaming: existing?.isStreaming ?? false,
+                hasUnreadActivity: existing?.hasUnreadActivity ?? false,
+                lastError: existing?.lastError,
+                createdAt: existing?.createdAt ?? info.modificationTime
+            ))
         }
+        sortRecordsByActivity(&newRecords)
+        records = newRecords
+        let validIDs = Set(records.map { $0.id })
+        streamTasks = streamTasks.filter { validIDs.contains($0.key) }
+        emit(.chatsChanged(records))
     }
 
     /// Orders records so the chat with the most recent activity comes first.
@@ -804,14 +858,14 @@ actor ChatEngine {
 
     // MARK: - Chat management
 
-    /// Creates a new empty chat and returns its filename. Any other empty
-    /// chats (no messages) are pruned first so the sidebar doesn't accumulate
-    /// blank "New chat" entries. Applies default connection and role from the
-    /// app config if set.
+    /// Creates a new empty chat and returns its filename. The chat is held
+    /// in memory only — it is NOT written to disk until the user sends the
+    /// first message. Any other empty chats (no messages) are pruned first.
+    /// Applies default connection and role from the app config if set.
     @discardableResult
     func createNewChat() async -> String {
         pruneEmptyChats(except: nil)
-        let filename = env.newChatFilename()
+        let filename = store.newChatFilename()
         var chat = Chat()
 
         // Apply config defaults for new chats (read from ConfigManager).
@@ -830,8 +884,7 @@ actor ChatEngine {
         if !allMcpNames.isEmpty {
             chat.mcps = allMcpNames
         }
-        env.saveChat(chat, filename: filename)
-        markSelfWrite(path: env.chatsURL.appendingPathComponent(filename).path)
+        // In-memory only — no disk write until the first message is sent.
         let record = ChatRecord(filename: filename, chat: chat)
         records.insert(record, at: 0)
         emit(.chatsChanged(records))
@@ -839,50 +892,69 @@ actor ChatEngine {
     }
 
     /// Deletes a chat file and removes it from memory, including its image
-    /// folder on disk.
+    /// folder on disk. Safe to call for chats that were never persisted (the
+    /// store handles missing files gracefully).
     func deleteChat(filename: String) {
         streamTasks[filename]?.cancel()
         streamTasks[filename] = nil
         // Suppress the FSEvent for the file we're about to remove.
         markSelfWrite(path: env.chatsURL.appendingPathComponent(filename).path)
-        env.deleteChat(filename: filename)
+        store.deleteChat(filename: filename)
         env.deleteAllImages(for: filename)
         records.removeAll(where: { $0.filename == filename })
         if selectedFilename == filename { selectedFilename = nil }
         emit(.chatsChanged(records))
     }
 
-    /// Renames a chat by setting its user-defined display title.
-    func renameChat(filename: String, to newTitle: String) {
+    /// Renames a chat by setting its user-defined display title. Loads the
+    /// chat from disk if it's not currently in memory.
+    func renameChat(filename: String, to newTitle: String) async {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        var chat = records[idx].chat
+        var chat = records[idx].chat ?? store.loadChat(filename: filename) ?? Chat()
         chat.title = trimmed.isEmpty ? nil : trimmed
         saveChat(chat, filename: filename)
+        // Renaming may have loaded a chat the user isn't viewing; release it
+        // so its content doesn't linger in memory.
+        releaseChat(filename: filename)
         emit(.chatsChanged(records))
     }
 
     /// Removes all chats that have no messages, except the one identified by
-    /// `keep` (pass nil to prune every empty chat). Used when the user selects
-    /// or creates a different chat so blank placeholders don't linger.
+    /// `keep` (pass nil to prune every empty chat). Since empty chats are
+    /// never written to disk (see `createNewChat`), pruning only removes the
+    /// in-memory record — no file deletion is needed.
     func pruneEmptyChats(except keep: String?) {
-        let toRemove = records.filter { $0.chat.messages.isEmpty && $0.filename != keep }
+        // Only prune chats that are loaded AND have no messages — these are
+        // new, unsaved chats (empty chats are never persisted to disk).
+        // Unloaded chats (chat == nil) have messages on disk and must not
+        // be pruned.
+        let toRemove = records.filter {
+            guard let chat = $0.chat else { return false }
+            return chat.messages.isEmpty && $0.filename != keep
+        }
         guard !toRemove.isEmpty else { return }
         for record in toRemove {
             streamTasks[record.filename]?.cancel()
             streamTasks[record.filename] = nil
-            // Suppress the FSEvent for each file we're removing.
-            markSelfWrite(path: env.chatsURL.appendingPathComponent(record.filename).path)
-            env.deleteChat(filename: record.filename)
         }
         records.removeAll(where: { toRemove.contains($0) })
     }
 
-    /// Called when the user selects a chat: prunes other empty chats so the
-    /// sidebar stays tidy.
-    func selectChat(filename: String) {
+    /// Called when the user selects a chat: prunes other empty chats, loads
+    /// the selected chat from disk if it's not already in memory, and emits
+    /// the updated state.
+    func selectChat(filename: String) async {
+        let previous = selectedFilename
         selectedFilename = filename
         pruneEmptyChats(except: filename)
+        await ensureChatLoaded(filename: filename)
+        // The chat the user just switched away from is no longer open. If it
+        // isn't doing agentic work, drop its in-memory content now rather than
+        // waiting for a sweep. A still-streaming chat is kept.
+        if let previous, previous != filename {
+            releaseChat(filename: previous)
+        }
         emit(.chatsChanged(records))
     }
 
@@ -891,15 +963,60 @@ actor ChatEngine {
         records.first(where: { $0.filename == filename })
     }
 
-    /// Persists a chat to disk and updates the in-memory record (without
-    /// clobbering streaming/unread flags). Marks a per-path self-write
+    /// Loads a chat from disk via the store if it's not already in memory.
+    /// No-op if the chat is already loaded or doesn't exist in records.
+    /// Emits `chatsChanged` after loading so the UI reflects the new state.
+    func ensureChatLoaded(filename: String) async {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        guard records[idx].chat == nil else { return }
+        records[idx].chat = store.loadChat(filename: filename)
+        emit(.chatsChanged(records))
+    }
+
+    /// Persists a chat to disk via the store and updates the in-memory record
+    /// (without clobbering streaming/unread flags). Marks a per-path self-write
     /// suppression so the resulting FSEvents don't trigger a redundant reload.
+    /// Also updates the cached metadata from the store.
     private func saveChat(_ chat: Chat, filename: String) {
-        env.saveChat(chat, filename: filename)
         markSelfWrite(path: env.chatsURL.appendingPathComponent(filename).path)
+        store.saveChat(chat, filename: filename)
         if let idx = records.firstIndex(where: { $0.filename == filename }) {
             records[idx].chat = chat
+            if let info = store.getEntry(filename: filename) {
+                records[idx].cachedName = info.name
+                records[idx].cachedModificationTime = info.modificationTime
+            }
         }
+    }
+
+    // MARK: - Chat memory reclamation
+
+    /// Unloads the chat's in-memory content if it is no longer needed.
+    ///
+    /// A chat is "needed" only while one of these conditions holds:
+    ///   - the user has it open (it is the selected chat), or
+    ///   - agentic work is in flight for it (`isStreaming`).
+    ///
+    /// Rather than periodically sweeping all chats, the events that end a
+    /// "needed" condition invoke this directly: `selectChat` (when the user
+    /// switches away from a chat) and `finishStream` (when agentic work
+    /// completes). This reclaims memory the instant a chat becomes unneeded
+    /// instead of up to a minute later.
+    ///
+    /// The cache metadata (`cachedName`, `cachedModificationTime`) is
+    /// preserved, so the sidebar keeps displaying the chat correctly; the full
+    /// history is reloaded on demand via `ensureChatLoaded`. Safe to call at
+    /// any time — a no-op when the chat is already unloaded or still needed.
+    /// Does not emit; callers emit the resulting state.
+    @discardableResult
+    func releaseChat(filename: String) -> Bool {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return false }
+        guard records[idx].chat != nil else { return false }
+        if filename == selectedFilename { return false }
+        if records[idx].isStreaming { return false }
+        records[idx].chat = nil
+        debugLog("Engine", "released chat \(filename) — no longer needed")
+        return true
     }
 
     // MARK: - Sending messages
@@ -913,8 +1030,11 @@ actor ChatEngine {
     @discardableResult
     func sendMessage(filename: String, text: String, pendingImages: [PendingImageAttachment] = []) async -> Bool {
         debugLog("Chat", "sendMessage — chat=\(filename), text length=\(text.count), images=\(pendingImages.count)")
-        guard let record = records.first(where: { $0.filename == filename }) else { return false }
-        guard let connectionID = record.chat.connection,
+        // Ensure the chat is loaded before sending.
+        await ensureChatLoaded(filename: filename)
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return false }
+        guard let chat = records[idx].chat else { return false }
+        guard let connectionID = chat.connection,
               !connectionID.isEmpty,
               let connection = connections.first(where: { $0.id == connectionID }) else {
             emit(.error("Please select a connection in the status bar."))
@@ -923,7 +1043,7 @@ actor ChatEngine {
 
         // If the last assistant message was a failed/error placeholder, drop it so the
         // new user message follows the previous user message directly.
-        var baseChat = record.chat
+        var baseChat = chat
         if let lastIdx = baseChat.messages.indices.last,
            baseChat.messages[lastIdx].role == .assistant,
            baseChat.messages[lastIdx].error != nil {
@@ -981,8 +1101,9 @@ actor ChatEngine {
     /// re-run — equivalent to the user just re-sending their last message.
     func retryLastMessage(filename: String) async {
         guard !isStreaming(filename: filename) else { return }
+        await ensureChatLoaded(filename: filename)
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
-        let chat = records[idx].chat
+        guard let chat = records[idx].chat else { return }
         guard let connectionID = chat.connection,
               let connection = connections.first(where: { $0.id == connectionID }) else {
             emit(.error("Please select a connection in the status bar."))
@@ -1100,7 +1221,7 @@ actor ChatEngine {
                 // We read the finalized assistant message from the record so
                 // its content/thinking/toolCalls match what was streamed.
                 if let idx = records.firstIndex(where: { $0.filename == filename }) {
-                    let assistantMsg = records[idx].chat.messages.last(where: { $0.role == .assistant })
+                    let assistantMsg = records[idx].chat?.messages.last(where: { $0.role == .assistant })
                     if let assistantMsg {
                         history.append(assistantMsg)
                     }
@@ -1114,7 +1235,7 @@ actor ChatEngine {
                 // is built directly from these messages by `ChatService` (no
                 // un-folding `flatMap` needed).
                 for call in result.toolCalls {
-                    let toolResult = await executeToolCall(call, filename: filename)
+                    let toolResult = await executeToolCall(call, filename: filename, tools: toolDefs)
                     // Append the result as a `tool`-role message and persist.
                     appendToolResult(toolResult, filename: filename)
                     // Mirror into the working history so the next stream
@@ -1161,7 +1282,7 @@ actor ChatEngine {
     /// and the model can retry on the next call.
     private func gatherTools(filename: String) async -> [ToolDefinition] {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return [] }
-        let activeNames = records[idx].chat.mcps ?? []
+        let activeNames = records[idx].chat?.mcps ?? []
         guard !activeNames.isEmpty else { return [] }
 
         // Start selected on-demand stdio servers if they aren't already
@@ -1233,7 +1354,7 @@ actor ChatEngine {
     /// renderer can display them (and show a "running" state until results arrive).
     private func applyToolCalls(_ calls: [ToolCall], filename: String) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
-        var chat = records[idx].chat
+        guard var chat = records[idx].chat else { return }
         if let lastIdx = chat.messages.indices.last, chat.messages[lastIdx].role == .assistant {
             chat.messages[lastIdx].toolCalls = calls
         }
@@ -1245,26 +1366,29 @@ actor ChatEngine {
     /// hook (which auto-approves in this iteration). Returns the tool result.
     /// `filename` is the owning chat's filename, forwarded to `MCPManager` so
     /// progress notifications route to this chat's live `tool`-role message.
-    private func executeToolCall(_ call: ToolCall, filename: String) async -> ToolResult {
+    /// `tools` is the exact set of tool definitions advertised to the model for
+    /// this turn; the call name is matched directly against their
+    /// `namespacedName` to recover the owning server + raw tool name, which
+    /// avoids the ambiguity of splitting on the first underscore (prefixless
+    /// servers expose tools like `tavily_search` whose own name contains `_`).
+    private func executeToolCall(_ call: ToolCall, filename: String, tools: [ToolDefinition]) async -> ToolResult {
         // The approval hook. This iteration auto-approves every call; a future
         // UI can intercept here to present a deny/allow-once/allow-always sheet.
         let approval = await approveToolCall(chatFilename: filename, call: call)
         switch approval {
         case .allow:
-            // Resolve the prefix + tool name from the namespaced call name,
-            // then map (prefix, tool) back to the owning server. Prefixes may
-            // be shared across servers, so we disambiguate by tool name.
-            guard let parsed = ToolDefinition.parse(call.name) else {
-                debugLog("Tool", "could not parse tool name \"\(call.name)\" — chat=\(filename)")
-                return ToolResult(callID: call.id, content: "Could not parse tool name \"\(call.name)\".", isError: true)
+            // Match the model-issued call name directly against the
+            // namespaced names we advertised. This is unambiguous and doesn't
+            // depend on prefix parsing, which mis-splits prefixless tools.
+            guard let match = tools.first(where: { $0.namespacedName == call.name }) else {
+                debugLog("Tool", "no advertised tool matches name \"\(call.name)\" — chat=\(filename)")
+                return ToolResult(callID: call.id, content: "No MCP tool found for name \"\(call.name)\".", isError: true)
             }
-            guard let serverName = await MCPManager.shared.serverName(forPrefix: parsed.prefix, tool: parsed.tool) else {
-                debugLog("Tool", "no server found for prefix \"\(parsed.prefix)\" — chat=\(filename)")
-                return ToolResult(callID: call.id, content: "No MCP server found for tool prefix \"\(parsed.prefix)\".", isError: true)
-            }
-            debugLog("Tool", "executing \(serverName)/\(parsed.tool) — callID=\(call.id), chat=\(filename)")
-            let result = await MCPManager.shared.callTool(server: serverName, name: parsed.tool, arguments: call.arguments, callID: call.id, chatFilename: filename)
-            debugLog("Tool", "result \(serverName)/\(parsed.tool) — isError=\(result.isError), contentSize=\(result.content.count), chat=\(filename)")
+            let serverName = match.serverName
+            let toolName = match.name
+            debugLog("Tool", "executing \(serverName)/\(toolName) — callID=\(call.id), chat=\(filename)")
+            let result = await MCPManager.shared.callTool(server: serverName, name: toolName, arguments: call.arguments, callID: call.id, chatFilename: filename)
+            debugLog("Tool", "result \(serverName)/\(toolName) — isError=\(result.isError), contentSize=\(result.content.count), chat=\(filename)")
             return result
         case .deny(let reason):
             debugLog("Tool", "denied callID=\(call.id) — \(reason), chat=\(filename)")
@@ -1287,7 +1411,7 @@ actor ChatEngine {
     /// and emits.
     private func appendToolResult(_ result: ToolResult, filename: String) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
-        var chat = records[idx].chat
+        guard var chat = records[idx].chat else { return }
         // If a streaming placeholder `tool`-role message exists for this
         // callID, replace it in place with the final result.
         if let tIdx = chat.messages.indices.reversed().first(where: {
@@ -1313,7 +1437,7 @@ actor ChatEngine {
     /// `appendToolResult` replaces the placeholder with the final result.
     private func updateStreamingToolResult(chatFilename: String, callID: String, partial: String) {
         guard let idx = records.firstIndex(where: { $0.filename == chatFilename }) else { return }
-        var chat = records[idx].chat
+        guard var chat = records[idx].chat else { return }
         // Find the `tool`-role message carrying an in-flight result for this
         // callID and append to its streaming content.
         if let tIdx = chat.messages.indices.reversed().first(where: {
@@ -1347,7 +1471,7 @@ actor ChatEngine {
     /// appears right away.
     private func appendAssistantMessage(filename: String, connection: Connection) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
-        var chat = records[idx].chat
+        guard var chat = records[idx].chat else { return }
         chat.messages.append(ChatMessage(role: .assistant, content: "", connectionName: connection.displayName))
         records[idx].chat = chat
         // In-memory only during streaming; persisted once by `finishStream`.
@@ -1358,7 +1482,7 @@ actor ChatEngine {
     /// Applies a streamed chunk to the last assistant message of the given chat.
     private func applyChunk(_ chunk: StreamChunk, filename: String) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
-        var chat = records[idx].chat
+        guard var chat = records[idx].chat else { return }
         guard let lastIdx = chat.messages.indices.last else { return }
         switch chunk {
         case .thinking(let text):
@@ -1414,10 +1538,17 @@ actor ChatEngine {
             streamTasks[filename] = nil
             return
         }
-        // Persist the final accumulated state to disk.
-        let finalChat = records[idx].chat
-        env.saveChat(finalChat, filename: filename)
+        // Persist the final accumulated state to disk via the store.
+        guard let finalChat = records[idx].chat else {
+            streamTasks[filename] = nil
+            return
+        }
         markSelfWrite(path: env.chatsURL.appendingPathComponent(filename).path)
+        store.saveChat(finalChat, filename: filename)
+        if let info = store.getEntry(filename: filename) {
+            records[idx].cachedName = info.name
+            records[idx].cachedModificationTime = info.modificationTime
+        }
         records[idx].isStreaming = false
         streamTasks[filename] = nil
         // Flag as unread so the user is notified of new activity — but only if
@@ -1428,6 +1559,10 @@ actor ChatEngine {
         if records[idx].filename != selectedFilename {
             records[idx].hasUnreadActivity = true
         }
+        // Agentic work is done; if the user isn't viewing this chat, its
+        // in-memory content is no longer needed. The final state was just
+        // persisted above, so reopening reloads it from disk.
+        releaseChat(filename: filename)
         // Flush any pending coalesced emit first, then emit the final state
         // immediately so the UI reflects "stopped/finished" without delay.
         flushCoalescedEmit()
@@ -1438,7 +1573,7 @@ actor ChatEngine {
     private func recordError(_ text: String, filename: String) {
         emit(.error(text))
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
-        var chat = records[idx].chat
+        guard var chat = records[idx].chat else { return }
         if let lastIdx = chat.messages.indices.last, chat.messages[lastIdx].role == .assistant {
             chat.messages[lastIdx].error = text
         }
@@ -1471,10 +1606,10 @@ actor ChatEngine {
     /// This is fire-and-forget and runs in parallel to the main stream.
     private func maybeGenerateChatName(filename: String) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }),
-              records[idx].chat.title == nil,
+              records[idx].chat?.title == nil,
               !namingInProgress.contains(filename) else { return }
 
-        guard let firstUserMsg = records[idx].chat.messages.first(where: { $0.role == .user }) else { return }
+        guard let firstUserMsg = records[idx].chat?.messages.first(where: { $0.role == .user }) else { return }
         let firstUserText = firstUserMsg.content
 
         namingInProgress.insert(filename)
@@ -1531,11 +1666,12 @@ actor ChatEngine {
     /// finished we persist and emit right away so the sidebar updates immediately.
     private func applyGeneratedName(filename: String, name: String) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }),
-              records[idx].chat.title == nil else { return }
-        records[idx].chat.title = name
+              var chat = records[idx].chat,
+              chat.title == nil else { return }
+        chat.title = name
+        records[idx].chat = chat
         if !records[idx].isStreaming {
-            env.saveChat(records[idx].chat, filename: filename)
-            markSelfWrite(path: env.chatsURL.appendingPathComponent(filename).path)
+            saveChat(chat, filename: filename)
             emit(.chatsChanged(records))
         }
     }
@@ -1549,9 +1685,10 @@ actor ChatEngine {
 
     /// Edits the content of a message in place (plain text). Used by the
     /// message hover "edit" action. Persists the updated chat to disk.
-    func editMessage(filename: String, messageID: UUID, newText: String) {
+    func editMessage(filename: String, messageID: UUID, newText: String) async {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
-        var chat = records[idx].chat
+        await ensureChatLoaded(filename: filename)
+        guard var chat = records[idx].chat else { return }
         guard let msgIdx = chat.messages.firstIndex(where: { $0.id == messageID }) else { return }
         let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -1570,9 +1707,10 @@ actor ChatEngine {
     /// assistant's tool calls are removed as well — they are view projections
     /// of that assistant turn and would otherwise be orphaned (folded onto a
     /// now-deleted message and silently dropped by the renderer).
-    func deleteMessage(filename: String, messageID: UUID) {
+    func deleteMessage(filename: String, messageID: UUID) async {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
-        var chat = records[idx].chat
+        await ensureChatLoaded(filename: filename)
+        guard var chat = records[idx].chat else { return }
         guard let msgIdx = chat.messages.firstIndex(where: { $0.id == messageID }) else { return }
         // Collect the callIDs of tool calls issued by the deleted assistant
         // message so we can also remove their result messages.
@@ -1609,18 +1747,20 @@ actor ChatEngine {
     // MARK: - Selection updates
 
     /// Updates the selected connection for a chat.
-    func setConnection(filename: String, connectionID: String) {
+    func setConnection(filename: String, connectionID: String) async {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
-        var chat = records[idx].chat
+        await ensureChatLoaded(filename: filename)
+        guard var chat = records[idx].chat else { return }
         chat.connection = connectionID
         saveChat(chat, filename: filename)
         emit(.chatsChanged(records))
     }
 
     /// Updates the selected role for a chat.
-    func setRole(filename: String, roleName: String) {
+    func setRole(filename: String, roleName: String) async {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
-        var chat = records[idx].chat
+        await ensureChatLoaded(filename: filename)
+        guard var chat = records[idx].chat else { return }
         chat.role = roleName
         saveChat(chat, filename: filename)
         emit(.chatsChanged(records))
@@ -1628,9 +1768,10 @@ actor ChatEngine {
 
     /// Updates the set of active MCP servers for a chat. `names` is the list
     /// of server names to enable; pass an empty array (or nil) to disable all.
-    func setActiveMCPs(filename: String, names: [String]?) {
+    func setActiveMCPs(filename: String, names: [String]?) async {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
-        var chat = records[idx].chat
+        await ensureChatLoaded(filename: filename)
+        guard var chat = records[idx].chat else { return }
         let filtered = (names ?? []).filter { name in self.mcps.contains(where: { $0.name == name }) }
         chat.mcps = filtered.isEmpty ? nil : filtered
         saveChat(chat, filename: filename)

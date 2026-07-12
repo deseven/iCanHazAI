@@ -97,10 +97,20 @@ struct Chat: Codable, Identifiable, Equatable {
 
 /// A chat plus its live runtime status, as owned by `ChatEngine`.
 /// This is the UI-facing representation that flows through `AppViewModel`.
+///
+/// `chat` is nil when the chat is not loaded — the full message history is
+/// only in memory while the chat is needed (the user has it open, or agentic
+/// work is in flight). It is dropped the instant neither holds, via
+/// `ChatEngine.releaseChat`. Cached metadata (`cachedName`,
+/// `cachedModificationTime`) comes from the SwiftData cache and is always
+/// available, even when the chat is unloaded, so the sidebar can display and
+/// sort chats without touching disk.
 struct ChatRecord: Identifiable, Equatable, Sendable {
     var id: String { filename }
     let filename: String
-    var chat: Chat
+    /// Full chat data, or nil when unloaded. Loaded on demand via
+    /// `ChatStore.loadChat` when the user opens the chat or streaming starts.
+    var chat: Chat?
     /// Whether a streaming request is currently in flight for this chat.
     var isStreaming: Bool
     /// Whether this chat has new activity (a finished stream or new message)
@@ -112,10 +122,17 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     /// messages yet) in the sidebar; once a message exists the chat switches
     /// to ordering by the last message timestamp.
     var createdAt: Date
+    /// Cached display name from SwiftData. Available even when `chat` is nil.
+    var cachedName: String?
+    /// Cached file modification time from SwiftData. Used as the sort key
+    /// when the chat is unloaded.
+    var cachedModificationTime: Date
 
-    init(filename: String, chat: Chat, isStreaming: Bool = false, hasUnreadActivity: Bool = false, lastError: String? = nil, createdAt: Date = Date()) {
+    init(filename: String, chat: Chat? = nil, cachedName: String? = nil, cachedModificationTime: Date = Date(), isStreaming: Bool = false, hasUnreadActivity: Bool = false, lastError: String? = nil, createdAt: Date = Date()) {
         self.filename = filename
         self.chat = chat
+        self.cachedName = cachedName
+        self.cachedModificationTime = cachedModificationTime
         self.isStreaming = isStreaming
         self.hasUnreadActivity = hasUnreadActivity
         self.lastError = lastError
@@ -123,30 +140,38 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     }
 
     /// Token usage reported by the provider for the most recent assistant
-    /// response that has usage. A new (in-progress) assistant message has no
-    /// usage yet, so we skip back to the last one that does — the counter
-    /// holds its previous value while a new response streams in. Nil (shown
-    /// as N/A) until the first assistant response with usage completes.
+    /// response that has usage. Nil when the chat is unloaded.
     var tokenCount: Int? {
-        chat.messages.reversed()
+        guard let chat = chat else { return nil }
+        return chat.messages.reversed()
             .first(where: { $0.role == .assistant && $0.tokenUsage != nil })?
             .tokenUsage?.tokensUsed
     }
 
-    /// Key used to order chats in the sidebar. Empty chats use their in-memory
-    /// creation time; chats with messages use the last message timestamp.
+    /// Key used to order chats in the sidebar. When the chat is loaded, uses
+    /// the last message timestamp (or `createdAt` for empty chats). When
+    /// unloaded, falls back to the cached file modification time.
     var sortKey: Date {
-        chat.messages.last?.timestamp ?? createdAt
+        if let chat = chat {
+            return chat.messages.last?.timestamp ?? createdAt
+        }
+        return cachedModificationTime
     }
 
-    /// Display title derived from the user-defined title, the first user
-    /// message, or "New chat" for empty chats.
+    /// Display title derived from the loaded chat's title / first user
+    /// message, or from the cached name when the chat is unloaded.
     var displayTitle: String {
-        if let title = chat.title, !title.isEmpty {
-            return title
+        if let chat = chat {
+            if let title = chat.title, !title.isEmpty {
+                return title
+            }
+            if let firstUser = chat.messages.first(where: { $0.role == .user }) {
+                return String(firstUser.content.prefix(40))
+            }
+            return "New chat"
         }
-        if let firstUser = chat.messages.first(where: { $0.role == .user }) {
-            return String(firstUser.content.prefix(40))
+        if let name = cachedName, !name.isEmpty {
+            return name
         }
         return "New chat"
     }

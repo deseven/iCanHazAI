@@ -157,7 +157,7 @@ struct ChatView: View {
             set: { if $0 == nil { store.pendingEditMessageID = nil } }
         )) { pending in
             if let item = store.selectedChatItem,
-               let msg = item.chat.messages.first(where: { $0.id == pending.id }) {
+               let msg = item.chat?.messages.first(where: { $0.id == pending.id }) {
                 EditMessageSheet(
                     initialText: msg.content,
                     onCancel: { store.pendingEditMessageID = nil },
@@ -208,7 +208,7 @@ struct ChatView: View {
         var body: some View {
             HStack(spacing: 8) {
                 Picker("Connection", selection: Binding(
-                    get: { store.selectedChatItem?.chat.connection ?? "" },
+                    get: { store.selectedChatItem?.chat?.connection ?? "" },
                     set: { store.setConnection($0) }
                 )) {
                     Text("No connection").tag("")
@@ -220,7 +220,7 @@ struct ChatView: View {
                 .frame(width: 220)
 
                 Picker("Role", selection: Binding(
-                    get: { store.selectedChatItem?.chat.role ?? "" },
+                    get: { store.selectedChatItem?.chat?.role ?? "" },
                     set: { store.setRole($0) }
                 )) {
                     Text("No role").tag("")
@@ -244,9 +244,9 @@ struct ChatView: View {
                         }
                         Divider()
                         ForEach(store.mcps) { server in
-                            let active = store.selectedChatItem?.chat.mcps?.contains(server.name) ?? false
+                            let active = store.selectedChatItem?.chat?.mcps?.contains(server.name) ?? false
                             Button {
-                                var current = store.selectedChatItem?.chat.mcps ?? []
+                                var current = store.selectedChatItem?.chat?.mcps ?? []
                                 if active {
                                     current.removeAll { $0 == server.name }
                                 } else {
@@ -265,7 +265,7 @@ struct ChatView: View {
                         // Count only MCPs that still exist; a chat may reference
                         // servers that were since deleted from disk.
                         let available = Set(store.mcps.map(\.name))
-                        let count = store.selectedChatItem?.chat.mcps?.filter { available.contains($0) }.count ?? 0
+                        let count = store.selectedChatItem?.chat?.mcps?.filter { available.contains($0) }.count ?? 0
                         Label("MCP: \(count)", systemImage: "wrench.and.screwdriver")
                             .labelStyle(.titleAndIcon)
                     }

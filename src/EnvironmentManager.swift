@@ -92,11 +92,14 @@ final class EnvironmentManager: @unchecked Sendable {
         var result: [(filename: String, chat: Chat)] = []
         for file in files where file.pathExtension == "json" {
             debugLog("FileRead", "reading \(relativePath(file))")
-            guard let data = try? Data(contentsOf: file),
-                  let chat = try? JSONDecoder().decode(Chat.self, from: data) else {
+            do {
+                let data = try Data(contentsOf: file)
+                let chat = try JSONDecoder().decode(Chat.self, from: data)
+                result.append((filename: file.lastPathComponent, chat: chat))
+            } catch {
+                debugLog("ChatStore", "⚠️ failed to load chat \(file.lastPathComponent) — \(error)")
                 continue
             }
-            result.append((filename: file.lastPathComponent, chat: chat))
         }
         result.sort { $0.filename < $1.filename }
         return result
@@ -108,8 +111,13 @@ final class EnvironmentManager: @unchecked Sendable {
     func loadSingleChat(filename: String) -> Chat? {
         let url = chatsURL.appendingPathComponent(filename)
         debugLog("FileRead", "reading \(relativePath(url))")
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(Chat.self, from: data)
+        do {
+            let data = try Data(contentsOf: url)
+            return try JSONDecoder().decode(Chat.self, from: data)
+        } catch {
+            debugLog("ChatStore", "⚠️ failed to load chat \(filename) — \(error)")
+            return nil
+        }
     }
 
     /// Generates a new chat filename using the current date/time.

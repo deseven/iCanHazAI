@@ -265,9 +265,22 @@ final class AppViewModel: ObservableObject {
             chatItems = records
             chatSummaries = records.map(ChatSummary.init)
             if let selected = selectedChatID, records.contains(where: { $0.id == selected }) {
-                // keep selection
+                // Keep selection — if the chat is not loaded, load it so the
+                // UI can display its messages. This handles the initial
+                // auto-selection on startup (where chats start unloaded).
+                if records.first(where: { $0.id == selected })?.chat == nil {
+                    Task { await engine.ensureChatLoaded(filename: selected) }
+                }
             } else {
+                // The selected chat vanished (deleted) or none was selected
+                // yet (startup). Fall back to the first chat and route through
+                // `selectChat` so the engine's `selectedFilename` stays in sync
+                // with `selectedChatID` — otherwise the engine can't tell this
+                // chat is being viewed and would release it.
                 selectedChatID = records.first?.id
+                if let first = selectedChatID {
+                    Task { await engine.selectChat(filename: first) }
+                }
             }
             // Suppress the unread marker if the user is already viewing the
             // selected chat scrolled to the bottom.
@@ -397,7 +410,7 @@ final class AppViewModel: ObservableObject {
     /// Whether the selected chat has a valid connection chosen.
     var selectedChatHasConnection: Bool {
         guard let item = selectedChatItem,
-              let connectionID = item.chat.connection,
+              let connectionID = item.chat?.connection,
               !connectionID.isEmpty,
               connections.contains(where: { $0.id == connectionID }) else { return false }
         return true
@@ -408,14 +421,14 @@ final class AppViewModel: ObservableObject {
     /// that last user message (e.g. after the agent's answer was removed).
     var selectedChatLastMessageIsFromUser: Bool {
         guard let item = selectedChatItem else { return false }
-        return item.chat.messages.last?.role == .user
+        return item.chat?.messages.last?.role == .user
     }
 
     /// Whether the selected chat's connection supports image input. Used to
     /// gate the attach button and drag-and-drop in the input area.
     var selectedChatSupportsImageInput: Bool {
         guard let item = selectedChatItem,
-              let connectionID = item.chat.connection,
+              let connectionID = item.chat?.connection,
               let conn = connections.first(where: { $0.id == connectionID }) else { return false }
         return conn.imageInput
     }
@@ -470,6 +483,10 @@ final class AppViewModel: ObservableObject {
         Task {
             let filename = await engine.createNewChat()
             selectedChatID = filename
+            // Route through `selectChat` so the engine's `selectedFilename`
+            // tracks the new chat (and the previously-viewed chat is released).
+            await engine.selectChat(filename: filename)
+            await engine.markViewed(filename: filename)
         }
     }
 

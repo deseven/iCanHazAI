@@ -18,6 +18,9 @@ Use `build.sh` to build the project (this also builds `chatrenderer`). Check the
 # Research & Experimentation
 For quick research, use one-liners with `swift -e`. For anything longer, write a temporary Swift file and run it.
 
+# Tests
+The app is partly covered with tests. Please write new tests when touching old code or writing new one.
+
 # Code Style
 Keep comments minimal. Don't describe the obvious — focus only on:
 - Complex or non-obvious behavior

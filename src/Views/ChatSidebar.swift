@@ -50,7 +50,7 @@ struct ChatSidebar: View {
                         .contextMenu {
                             Button("Rename") {
                                 renamingFilename = item.id
-                                renameText = store.chatItems.first(where: { $0.id == item.id })?.chat.title ?? ""
+                                renameText = store.chatItems.first(where: { $0.id == item.id })?.chat?.title ?? store.chatItems.first(where: { $0.id == item.id })?.cachedName ?? ""
                             }
                             Button("Delete", role: .destructive) {
                                 deletingFilename = item.id

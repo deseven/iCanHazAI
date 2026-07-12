@@ -149,9 +149,11 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
 ///
 /// The `namespacedName` (`{prefix}_{tool}`) is what the model sees and calls
 /// back; it guarantees uniqueness across servers and keeps the name within the
-/// `^[a-zA-Z0-9_-]+$` pattern required by provider APIs. `ToolDefinition.parse`
-/// recovers the prefix + tool name from a call; the prefix is then resolved
-/// back to a server name via `MCPManager.serverName(forPrefix:)`.
+/// `^[a-zA-Z0-9_-]+$` pattern required by provider APIs. Routing a model-issued
+/// call back to its server is done by matching `call.name` against the
+/// `namespacedName` of the advertised `ToolDefinition`s (see
+/// `ChatEngine.executeToolCall`), rather than by splitting the name, since
+/// prefixless servers expose tools whose own names contain `_`.
 struct ToolDefinition: Sendable, Equatable {
     let serverName: String
     let prefix: String
@@ -165,21 +167,5 @@ struct ToolDefinition: Sendable, Equatable {
     /// the tool is exposed under its own name with no prefix.
     var namespacedName: String {
         prefix.isEmpty ? name : "\(prefix)_\(name)"
-    }
-
-    /// Parses a namespaced tool name back into (prefix, tool). A name with no
-    /// underscore is treated as prefixless (prefix = ""). Returns nil only if
-    /// the tool portion is empty.
-    static func parse(_ namespacedName: String) -> (prefix: String, tool: String)? {
-        guard let range = namespacedName.range(of: "_") else {
-            // No underscore → prefixless tool.
-            let tool = namespacedName
-            guard !tool.isEmpty else { return nil }
-            return ("", tool)
-        }
-        let prefix = String(namespacedName[namespacedName.startIndex..<range.lowerBound])
-        let tool = String(namespacedName[range.upperBound...])
-        guard !tool.isEmpty else { return nil }
-        return (prefix, tool)
     }
 }

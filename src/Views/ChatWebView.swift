@@ -70,7 +70,7 @@ struct ChatWebView: View {
     /// Changes when any message is added, edited, deleted, or streamed to.
     /// Used as an `onChange` trigger so the web view gets refreshed.
     private var chatContentSignature: Int {
-        guard let messages = store.selectedChatItem?.chat.messages else { return 0 }
+        guard let messages = store.selectedChatItem?.chat?.messages else { return 0 }
         var hash = messages.count
         for msg in messages {
             hash = hash &* 31 &+ msg.content.count
@@ -556,6 +556,8 @@ final class ChatWebViewModel: ObservableObject {
     func pushSnapshot() {
         guard let store else { return }
         guard let item = store.selectedChatItem else { return }
+        // If the chat is not loaded yet, there's nothing to render.
+        guard let chat = item.chat else { return }
 
         ImageSchemeHandler.currentChatFilename = item.filename
 
@@ -566,7 +568,7 @@ final class ChatWebViewModel: ObservableObject {
         // `toolResults` so the renderer shows them in the same tool block
         // (inline fold is a view concern, not a storage concern). The folded
         // `tool` messages are dropped from the wire list.
-        let currentMessages = Self.projectToolResults(item.chat.messages)
+        let currentMessages = Self.projectToolResults(chat.messages)
         let currentIds = currentMessages.map(\.id)
 
         if chatId != renderedChatId {
@@ -714,7 +716,7 @@ final class ChatWebViewModel: ObservableObject {
 
     private func copyMessage(_ messageId: String) {
         guard let item = store?.selectedChatItem,
-              let msg = item.chat.messages.first(where: { $0.id.uuidString == messageId }) else { return }
+              let msg = item.chat?.messages.first(where: { $0.id.uuidString == messageId }) else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(msg.content, forType: .string)

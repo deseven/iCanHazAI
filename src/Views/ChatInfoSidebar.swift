@@ -50,24 +50,24 @@ struct ChatInfoSidebar: View {
     // MARK: - Helpers
 
     private func displayName(for item: ChatRecord) -> String {
-        if let title = item.chat.title, !title.isEmpty {
+        if let title = item.chat?.title, !title.isEmpty {
             return title
         }
-        if let firstUser = item.chat.messages.first(where: { $0.role == .user }) {
+        if let firstUser = item.chat?.messages.first(where: { $0.role == .user }) {
             let trimmed = firstUser.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
                 return String(trimmed.prefix(60))
             }
         }
-        return "New chat"
+        return item.displayTitle
     }
 
     private func createdDate(for item: ChatRecord) -> Date {
-        item.chat.messages.first?.timestamp ?? item.createdAt
+        item.chat?.messages.first?.timestamp ?? item.createdAt
     }
 
     private func updatedDate(for item: ChatRecord) -> Date {
-        item.chat.messages.last?.timestamp ?? item.createdAt
+        item.chat?.messages.last?.timestamp ?? item.createdAt
     }
 
     private func formatted(_ date: Date) -> String {
