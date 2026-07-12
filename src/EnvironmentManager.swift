@@ -19,16 +19,22 @@ final class EnvironmentManager: @unchecked Sendable {
     let anthropicConnectionsURL: URL
     let mcpsURL: URL
 
-    private init() {
-        let fm = FileManager.default
-        let homeURL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-        rootURL = homeURL.appendingPathComponent("iCanHazAI", isDirectory: true)
+    /// Internal initializer taking an explicit root URL, so tests can point
+    /// the environment at a throwaway temp directory instead of `~/iCanHazAI`.
+    /// The production singleton (`shared`) uses the home-directory root.
+    init(rootURL: URL) {
+        self.rootURL = rootURL
         chatsURL = rootURL.appendingPathComponent("chats", isDirectory: true)
         rolesURL = rootURL.appendingPathComponent("roles", isDirectory: true)
         connectionsURL = rootURL.appendingPathComponent("connections", isDirectory: true)
         openaiConnectionsURL = connectionsURL.appendingPathComponent("openai", isDirectory: true)
         anthropicConnectionsURL = connectionsURL.appendingPathComponent("anthropic", isDirectory: true)
         mcpsURL = rootURL.appendingPathComponent("mcp", isDirectory: true)
+    }
+
+    private convenience init() {
+        let homeURL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        self.init(rootURL: homeURL.appendingPathComponent("iCanHazAI", isDirectory: true))
     }
 
     // MARK: - Setup

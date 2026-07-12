@@ -332,18 +332,29 @@ do_build_mcps_debug() {
     done
 }
 
-# Run the Swift Testing suite. The tests spawn the bundled MCP servers as
+# Run the main-app test suites (ChatModel, ChatStore, ChatStore.FSEvents).
+# These cover the chat data model, the SwiftData-backed cache, and FSEvents
+# delivery — no MCP server binaries required, so they run first for fast
+# feedback. Selected by the AllAppTests parent suite (see
+# tests/AppTestHarness.swift); .serialized keeps them sequential.
+do_run_app_tests() {
+    swift test --filter AllAppTests
+}
+
+# Run the bundled-MCP integration suites. These spawn the four MCP servers as
 # real subprocesses and exercise every tool over stdio via the swift-sdk
-# Client — the same transport the main app uses.
-do_run_tests() {
-    swift test
+# Client — the same transport the main app uses — so they need the debug
+# server binaries built first. Selected by the AllMCPTests parent suite
+# (see tests/AllTests.swift).
+do_run_mcp_tests() {
+    swift test --filter AllMCPTests
 }
 
 # ── Calculate total steps per mode ───────────────────────────────────
 case "$mode" in
     dev)         totalSteps=7 ;;
     dev-release)
-        totalSteps=12
+        totalSteps=13
         if [ "$can_notarize" = true ]; then
             totalSteps=$((totalSteps + 2))
         fi
@@ -352,7 +363,7 @@ case "$mode" in
         fi
         ;;
     release)
-        totalSteps=12
+        totalSteps=13
         if [ "$can_sign" = true ]; then
             totalSteps=$((totalSteps + 1))
         fi
@@ -363,7 +374,7 @@ case "$mode" in
             totalSteps=$((totalSteps + 1))
         fi
         ;;
-    test)        totalSteps=2 ;;
+    test)        totalSteps=3 ;;
 esac
 
 # ── Build ────────────────────────────────────────────────────────────
@@ -379,8 +390,9 @@ if [ "$mode" = "clean" ]; then
 fi
 
 if [ "$mode" = "test" ]; then
+    run_step "Running app tests..."            "app tests failed"                          do_run_app_tests
     run_step "Building bundled MCP servers (debug)..." "failed to build bundled MCP servers" do_build_mcps_debug
-    run_step "Running tests..."                "tests failed"                              do_run_tests
+    run_step "Running MCP tests..."            "MCP tests failed"                          do_run_mcp_tests
     echo ""
     echo -e "  ${greenColor}${bold}Tests passed!${noColor}"
     exit 0
@@ -403,11 +415,13 @@ else
     run_step "Building bundled MCP servers..."     "failed to build bundled MCP servers"      do_build_mcps_universal
 fi
 
-# Tests are mandatory for dev-release and release: they spawn the bundled MCP
-# servers (debug binaries) and exercise every tool via the swift-sdk Client.
+# Tests are mandatory for dev-release and release. App tests run first (they
+# need no MCP binaries); then the bundled MCP servers are built in debug and
+# the MCP integration suites exercise every tool via the swift-sdk Client.
 if [ "$mode" != "dev" ]; then
-    run_step "Building bundled MCP servers (debug)..." "failed to build bundled MCP servers"  do_build_mcps_debug
-    run_step "Running tests..."                    "tests failed"                              do_run_tests
+    run_step "Running app tests..."                "app tests failed"                           do_run_app_tests
+    run_step "Building bundled MCP servers (debug)..." "failed to build bundled MCP servers"    do_build_mcps_debug
+    run_step "Running MCP tests..."                "MCP tests failed"                           do_run_mcp_tests
 fi
 
 run_step "Code-signing APP bundle..."             "failed to code-sign app bundle"           do_codesign

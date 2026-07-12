@@ -20,7 +20,7 @@ import SwiftData
 final class ChatStore: @unchecked Sendable {
 
     static let shared: ChatStore = {
-        guard let store = ChatStore() else {
+        guard let store = ChatStore(env: EnvironmentManager.shared) else {
             fatalError("Failed to initialize ChatStore — SwiftData cache unavailable")
         }
         return store
@@ -28,10 +28,15 @@ final class ChatStore: @unchecked Sendable {
 
     private let container: ModelContainer
     private let queue = DispatchQueue(label: "iCanHazAI.chatStore")
-    private let env = EnvironmentManager.shared
+    private let env: EnvironmentManager
 
-    private init?() {
-        let cacheDir = EnvironmentManager.shared.rootURL.appendingPathComponent(".cache", isDirectory: true)
+    /// Internal initializer taking an explicit `EnvironmentManager`, so tests
+    /// can back the store with a temp directory instead of `~/iCanHazAI`.
+    /// Each store gets its own SwiftData SQLite cache file under the env's
+    /// `.cache` directory, so parallel test stores don't collide.
+    init?(env: EnvironmentManager) {
+        self.env = env
+        let cacheDir = env.rootURL.appendingPathComponent(".cache", isDirectory: true)
         try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
         let storeURL = cacheDir.appendingPathComponent("chat.cache")
         let config = ModelConfiguration(url: storeURL)

@@ -32,8 +32,10 @@ let package = Package(
         .testTarget(
             name: "iCanHazAITests",
             dependencies: [
+                .target(name: "iCanHazAI"),
                 .product(name: "MCP", package: "swift-sdk"),
-                .product(name: "ProcessExit", package: "ProcessExit")
+                .product(name: "ProcessExit", package: "ProcessExit"),
+                .product(name: "FSEventsWrapper", package: "FSEventsWrapper")
             ],
             path: "tests"
         )
