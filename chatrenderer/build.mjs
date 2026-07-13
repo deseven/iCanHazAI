@@ -6,6 +6,7 @@
 // plus index.html in ../dist/web, ready to be copied into the app bundle's Resources.
 import * as esbuild from "esbuild";
 import { mkdir, rm, copyFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -13,6 +14,21 @@ const root = dirname(fileURLToPath(import.meta.url));
 const outDir = join(root, "dist");
 
 const watch = process.argv.includes("--watch");
+
+// esbuild is a transpiler and deliberately does not type-check. We gate the
+// production build on `tsc --noEmit` so type errors fail the build. Skipped in
+// watch mode to keep rebuilds fast (run `npm run typecheck` to check manually).
+function typecheck() {
+  const res = spawnSync(
+    process.execPath,
+    [join(root, "node_modules", "typescript", "bin", "tsc"), "--noEmit"],
+    { stdio: "inherit", cwd: root },
+  );
+  if (res.status !== 0) {
+    console.error("Type-check failed; aborting build.");
+    process.exit(res.status ?? 1);
+  }
+}
 
 await rm(outDir, { recursive: true, force: true });
 await mkdir(outDir, { recursive: true });
@@ -74,6 +90,7 @@ if (watch) {
   await Promise.all([ctxCore.watch(), ctxKatex.watch(), ctxMermaid.watch()]);
   console.log("Watching for changes...");
 } else {
+  typecheck();
   await esbuild.build(coreOptions);
   await esbuild.build(katexOptions);
   await esbuild.build(mermaidOptions);

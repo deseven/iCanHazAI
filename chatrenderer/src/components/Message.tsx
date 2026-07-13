@@ -7,11 +7,11 @@
 // re-laying-out every table/code-block on every incoming token — block
 // markdown only re-renders when a newline arrives (a block completes), and the
 // partial line updates cheaply as inline.
-import { useMemo, useState, useRef, useEffect, useCallback } from "preact/hooks";
+import { useMemo, useState, useRef, useEffect, useLayoutEffect, useCallback } from "preact/hooks";
 import { memo } from "preact/compat";
 import { createPortal } from "preact/compat";
 import type { ChatMessage, MessageImage } from "../types";
-import { renderMarkdown, renderInline, renderMermaidIn } from "../markdown";
+import { renderMarkdown, renderInline, renderMermaidIn, restoreCachedMermaid, endsWithUnclosedMermaid } from "../markdown";
 import { sendToHost } from "../bridge";
 import { debugLog } from "../debug";
 import { Copy, SquarePen, Trash2, Brain, User, Bot, Settings, AlertTriangle, RotateCcw, ChevronRight, ChevronDown, Wrench, Terminal } from "lucide-preact";
@@ -266,22 +266,34 @@ export const MessageItem = memo(function MessageItem({
       return {
         blockHtml: block ? renderMarkdown(block) : "",
         partialHtml: partial ? renderInline(partial) : "",
+        // While streaming, the last mermaid fence may still be open. Its
+        // diagram is incomplete and must be skipped to avoid a render error.
+        skipLastMermaid: endsWithUnclosedMermaid(block),
       };
     }
     return {
       blockHtml: renderMarkdown(message.content),
       partialHtml: "",
+      skipLastMermaid: false,
     };
   }, [message.content, isStreaming]);
 
-  // After the rendered HTML is committed to the DOM, render any mermaid
-  // diagrams it contains. Skipped while streaming (mermaid is expensive and
-  // partial diagrams would error); runs once the message is finished.
-  useEffect(() => {
-    if (isStreaming) return;
+  // Streaming re-commits the block HTML on every newline, which recreates the
+  // `.mermaid` divs empty. Restore cached SVGs synchronously (before paint) so
+  // already-drawn diagrams don't flash empty on each chunk. The still-open
+  // trailing diagram is skipped (it is incomplete and not in the cache anyway).
+  useLayoutEffect(() => {
     if (!bodyRef.current) return;
-    renderMermaidIn(bodyRef.current);
-  }, [rendered.blockHtml, isStreaming]);
+    restoreCachedMermaid(bodyRef.current, rendered.skipLastMermaid);
+  }, [rendered.blockHtml, rendered.skipLastMermaid]);
+
+  // Render any uncached (newly completed) diagrams asynchronously. Also runs
+  // once the message finishes. Cached diagrams are already restored above, so
+  // this only invokes the expensive mermaid.render for genuinely new content.
+  useEffect(() => {
+    if (!bodyRef.current) return;
+    renderMermaidIn(bodyRef.current, { skipLast: rendered.skipLastMermaid });
+  }, [rendered.blockHtml, rendered.skipLastMermaid, isStreaming]);
 
   // Track whether the message header (top) is visible in the viewport. When
   // the message is taller than the viewport and the top scrolls out of view

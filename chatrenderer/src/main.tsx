@@ -15,7 +15,7 @@
 import { render } from "preact";
 import { useEffect, useRef, useState, useCallback } from "preact/hooks";
 import { ChevronDown, ChevronLeft, ChevronRight, X } from "lucide-preact";
-import type { ChatMessage, ChatSnapshot, HostMessage } from "./types";
+import type { ChatSnapshot, HostMessage } from "./types";
 import { setHostSubscriber, sendToHost } from "./bridge";
 import { MessageItem } from "./components/Message";
 import { setMermaidTheme, featuresReady } from "./markdown";

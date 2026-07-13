@@ -340,40 +340,170 @@ export async function setMermaidTheme(theme: "light" | "dark") {
       securityLevel: "strict",
     });
   }
+  // Cached SVGs are theme-specific: drop them and force a re-render so
+  // already-drawn diagrams pick up the new theme.
+  mermaidSvgCache.clear();
+  document.querySelectorAll<HTMLElement>(".mermaid[data-mermaid-done]").forEach((n) => {
+    n.removeAttribute("data-mermaid-done");
+    n.classList.remove("mermaid-error");
+  });
+  renderMermaidIn(document.body);
+}
+
+// Cache of rendered mermaid SVGs keyed by `${theme}\0${source}`. Streaming
+// re-commits the block HTML on every newline (dangerouslySetInnerHTML
+// recreates the `.mermaid` divs), so without a cache each chunk would
+// re-invoke the expensive mermaid.render. With the cache each unique diagram
+// renders once; later commits restore the SVG via a cheap innerHTML set.
+const mermaidSvgCache = new Map<string, string>();
+
+// Serializes mermaid render passes. Streaming can schedule a new pass before
+// the previous one resolves; chaining them avoids concurrent mermaid.render
+// calls (which share a DOM and collide on generated element ids).
+let renderChain: Promise<void> = Promise.resolve();
+
+function currentMermaidTheme(): string {
+  return document.documentElement.getAttribute("data-theme") === "light"
+    ? "default"
+    : "dark";
+}
+
+/**
+ * Whether `text` ends inside an unclosed mermaid fenced block. At most one
+ * fence can be unclosed at a time (it swallows the rest of the document), and
+ * it is always the last code block — so when this returns true the final
+ * `.mermaid` div is an incomplete diagram that must not be rendered yet.
+ */
+export function endsWithUnclosedMermaid(text: string): boolean {
+  const lines = text.split("\n");
+  let open: { marker: string; len: number; lang: string } | null = null;
+  for (const line of lines) {
+    const openMatch = /^\s{0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!open) {
+      if (openMatch) {
+        open = {
+          marker: openMatch[1][0],
+          len: openMatch[1].length,
+          lang: openMatch[2].trim(),
+        };
+      }
+    } else {
+      const closeRe = new RegExp("^" + open.marker + "{" + open.len + ",}\\s*$");
+      if (closeRe.test(line)) open = null;
+    }
+  }
+  return open !== null && open.lang === "mermaid";
 }
 
 /**
  * Find unrendered `.mermaid` elements inside `root` and render them.
- * Called by the message component after its HTML is committed to the DOM.
+ * Called by the message component after its HTML is committed to the DOM —
+ * including during streaming, so completed diagrams appear incrementally.
+ *
+ * `skipLast` skips the final matched node: used while streaming when the last
+ * mermaid fence is still open (its diagram is incomplete and would error).
+ *
  * No-op if mermaid is disabled (no `.mermaid` containers are emitted).
  */
-export async function renderMermaidIn(root: HTMLElement) {
-  if (!features.mermaid) return;
+export function renderMermaidIn(
+  root: HTMLElement,
+  opts?: { skipLast?: boolean }
+): Promise<void> {
+  if (!features.mermaid) return Promise.resolve();
+  const skipLast = opts?.skipLast === true;
+  const run = renderChain.then(() => doRenderMermaidIn(root, skipLast));
+  // Keep the chain alive regardless of rejection so a failed render doesn't
+  // block subsequent ones.
+  renderChain = run.then(
+    () => {},
+    () => {}
+  );
+  return run;
+}
+
+async function doRenderMermaidIn(root: HTMLElement, skipLast: boolean) {
   const nodes = root.querySelectorAll<HTMLElement>(
     ".mermaid:not([data-mermaid-done])"
   );
   if (nodes.length === 0) return;
-  debugLog("mermaid", `rendering ${nodes.length} diagram(s)`);
+  const theme = currentMermaidTheme();
   await loadMermaid();
   const m = (window as any).__mermaid;
   if (!m) return;
-  for (const node of nodes) {
+  let rendered = 0;
+  let restored = 0;
+  const lastIdx = nodes.length - 1;
+  for (let i = 0; i < nodes.length; i++) {
+    if (skipLast && i === lastIdx) continue;
+    const node = nodes[i];
     const src = node.getAttribute("data-mermaid");
     if (!src) continue;
+    const content = decodeURIComponent(src);
+    const cacheKey = theme + "\0" + content;
     node.setAttribute("data-mermaid-done", "1");
+    const hit = mermaidSvgCache.get(cacheKey);
+    if (hit !== undefined) {
+      node.innerHTML = hit;
+      restored++;
+      continue;
+    }
     try {
       const { svg } = await m.render(
         "mermaid-" + Math.random().toString(36).slice(2),
-        decodeURIComponent(src)
+        content
       );
+      mermaidSvgCache.set(cacheKey, svg);
       node.innerHTML = svg;
+      rendered++;
     } catch (err) {
       node.classList.add("mermaid-error");
       node.textContent =
         "Mermaid error: " + (err instanceof Error ? err.message : String(err));
-      debugLog("mermaid", "render error: " + (err instanceof Error ? err.message : String(err)));
+      debugLog(
+        "mermaid",
+        "render error: " + (err instanceof Error ? err.message : String(err))
+      );
     }
   }
+  if (rendered || restored) {
+    debugLog(
+      "mermaid",
+      `rendered ${rendered} new, restored ${restored} cached` +
+        (skipLast ? ", skipped 1 incomplete" : "")
+    );
+  }
+}
+
+/**
+ * Synchronously restore any cached SVGs into unrendered `.mermaid` divs.
+ * Intended to be called from a layout effect (before paint): streaming
+ * re-commits block HTML on every newline, recreating the divs empty, which
+ * would otherwise flash empty→filled once the async render pass runs. Restoring
+ * from the cache synchronously keeps already-drawn diagrams on screen across
+ * re-commits. Returns the number of divs restored. No-op if mermaid is off.
+ */
+export function restoreCachedMermaid(root: HTMLElement, skipLast = false): number {
+  if (!features.mermaid) return 0;
+  const theme = currentMermaidTheme();
+  const nodes = root.querySelectorAll<HTMLElement>(
+    ".mermaid:not([data-mermaid-done])"
+  );
+  if (nodes.length === 0) return 0;
+  const lastIdx = nodes.length - 1;
+  let restored = 0;
+  for (let i = 0; i < nodes.length; i++) {
+    if (skipLast && i === lastIdx) continue;
+    const node = nodes[i];
+    const src = node.getAttribute("data-mermaid");
+    if (!src) continue;
+    const hit = mermaidSvgCache.get(theme + "\0" + decodeURIComponent(src));
+    if (hit !== undefined) {
+      node.setAttribute("data-mermaid-done", "1");
+      node.innerHTML = hit;
+      restored++;
+    }
+  }
+  return restored;
 }
 
 // Set up the debug overlay as early as possible so log lines emitted during

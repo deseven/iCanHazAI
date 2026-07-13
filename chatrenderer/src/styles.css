@@ -520,18 +520,20 @@ body {
 }
 
 .msg-content {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
+  display: block;
 }
 
 .markdown {
-  flex: 1 1 auto;
   min-width: 0;
   word-wrap: break-word;
   overflow-wrap: break-word;
 }
 
+/* The trailing partial line flows inline after the block content (on its own
+   line, since `.markdown` is a block) so the streaming cursor can sit at the
+   end of the partial text. Keeping it inline — not a flex item — means the
+   block above always takes the full width and doesn't reflow as the partial
+   grows token by token. */
 .markdown-partial {
   display: inline;
 }
