@@ -97,6 +97,12 @@ function ToolBlock({
   useEffect(() => {
     if (pending) setOpen(true);
   }, [pending]);
+  // Once a denial is finalized the host has dismissed its reason sheet, so
+  // collapse the block back to its default state (stays open only when the
+  // renderer defaults to expanded tool use via `withExpandedToolUse`).
+  useEffect(() => {
+    if (result && !result.isStreaming && result.isDenied) setOpen(defaultOpen);
+  }, [result?.isDenied, result?.isStreaming, defaultOpen]);
 
   const onAllow = () => {
     // Collapse (unless the renderer defaults to expanded tool use) and let the
@@ -318,6 +324,7 @@ export const MessageItem = memo(function MessageItem({
   const hasError = !!message.error && message.error.trim().length > 0;
   const hasContent = !!message.content && message.content.trim().length > 0;
   const hasImages = !!message.images && message.images.length > 0;
+  const hasToolCalls = !!message.toolCalls && message.toolCalls.length > 0;
 
   const hoverDetail = [
     formatTimestamp(message.timestamp),
@@ -375,7 +382,7 @@ export const MessageItem = memo(function MessageItem({
             >
               <Brain size={14} />
               <span>Thinking</span>
-              {isStreaming && !hasContent && <span class="thinking-spinner" aria-hidden="true" />}
+              {isStreaming && !hasContent && !hasToolCalls && <span class="thinking-spinner" aria-hidden="true" />}
               {thinkingOpen
                 ? <ChevronDown size={14} />
                 : <ChevronRight size={14} />}

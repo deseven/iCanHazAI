@@ -29,10 +29,15 @@ const commonOptions = {
   sourcemap: watch ? "inline" : false,
   loader: {
     ".css": "css",
-    ".woff2": "dataurl",
-    ".woff": "dataurl",
-    ".ttf": "dataurl",
+    // KaTeX ships every font in three formats. Inlining them as data URLs
+    // bloats the CSS to ~1.4 MB. Instead emit woff2 as a separate (lazily
+    // fetched) file and drop woff/ttf entirely — WKWebView on macOS 15
+    // supports woff2, so the other formats are dead weight.
+    ".woff2": "file",
+    ".woff": "empty",
+    ".ttf": "empty",
   },
+  assetNames: "[name]-[hash]",
   define: {
     "process.env.NODE_ENV": watch ? '"development"' : '"production"',
   },
