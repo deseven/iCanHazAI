@@ -33,9 +33,11 @@ let package = Package(
         // Bundled stdio MCP servers. Each is an independent executable copied
         // into the app bundle under Contents/Resources/MCPServers/. Built as
         // one SwiftPM graph with the app; build a single server on demand with
-        // `swift build --target UtilsMCP`.
+        // `swift build --target iCanHazAI-UtilsMCP`. Product names are prefixed
+        // with `iCanHazAI-` so the spawned processes are distinguishable from
+        // unrelated system processes in `ps` / Activity Monitor.
         .executableTarget(
-            name: "UtilsMCP",
+            name: "iCanHazAI-UtilsMCP",
             dependencies: [
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "ProcessExit", package: "ProcessExit")
@@ -43,7 +45,7 @@ let package = Package(
             path: "mcps/UtilsMCP/Sources/UtilsMCP"
         ),
         .executableTarget(
-            name: "FilesystemMCP",
+            name: "iCanHazAI-FilesystemMCP",
             dependencies: [
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "ImageTools", package: "ImageTools"),
@@ -52,7 +54,7 @@ let package = Package(
             path: "mcps/FilesystemMCP/Sources/FilesystemMCP"
         ),
         .executableTarget(
-            name: "CodeMCP",
+            name: "iCanHazAI-CodeMCP",
             dependencies: [
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "ProcessExit", package: "ProcessExit")
@@ -60,7 +62,7 @@ let package = Package(
             path: "mcps/CodeMCP/Sources/CodeMCP"
         ),
         .executableTarget(
-            name: "ShellMCP",
+            name: "iCanHazAI-ShellMCP",
             dependencies: [
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "ProcessExit", package: "ProcessExit"),

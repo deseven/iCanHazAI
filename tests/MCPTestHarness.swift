@@ -32,7 +32,9 @@ final class MCPTestHarness: @unchecked Sendable {
 
         var binaryPath: String {
             let dir = MCPTestHarness.packageRoot
-            return "\(dir)/.build/debug/\(rawValue)"
+            // Binaries are prefixed `iCanHazAI-` (see Package.swift) so the
+            // spawned processes are distinguishable in `ps` / Activity Monitor.
+            return "\(dir)/.build/debug/iCanHazAI-\(rawValue)"
         }
     }
 

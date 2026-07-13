@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         debugLog("App", "applicationWillTerminate — disconnecting MCP servers")
         Task { await MCPManager.shared.disconnectAll() }
+        Task { await MCPManager.shared.disconnectAllInHouse() }
         DebugLogger.stopFileLogging()
     }
 }

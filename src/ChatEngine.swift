@@ -56,8 +56,16 @@ actor ChatEngine {
     /// The chat data abstraction layer. Owns the SwiftData metadata cache and
     /// all chat file I/O. The engine never reads/writes chat files directly.
     private let store = ChatStore.shared
-    /// Configured MCP servers. Loaded from disk and kept in sync via FSEvents.
+    /// Custom MCP servers loaded from disk (`~/iCanHazAI/mcp/*.toml`), kept in
+    /// sync via FSEvents. In-house (builtin) servers are prepended separately
+    /// in `rebuildMcpList()` so they always lead the list.
+    private var customMcps: [MCPServer] = []
+    /// The full server list shown to the UI: in-house servers first, then
+    /// custom servers sorted by name. Rebuilt whenever either set changes.
     private(set) var mcps: [MCPServer] = []
+    /// The in-house servers, captured once at startup. They don't change at
+    /// runtime (their binaries are bundled), so this is stable.
+    private let builtinMcps: [MCPServer] = MCPManager.builtinServers()
     /// Live MCP configuration status, mirrored from `MCPManager`'s status
     /// sink. Drives the configuration overlay. The UI layer adds the display
     /// delay; the engine only carries the logical state.
@@ -194,7 +202,8 @@ actor ChatEngine {
         loadFromCache()
         roles = env.loadAllRoles()
         connections = env.loadConnections()
-        mcps = env.loadMCPs()
+        customMcps = env.loadMCPs()
+        rebuildMcpList()
         startWatching()
         debugLog("Engine", "start complete — \(records.count) chats, \(connections.count) connections, \(mcps.count) MCP servers, \(roles.count) roles")
         emit(.chatsChanged(records))
@@ -638,25 +647,24 @@ actor ChatEngine {
         switch event {
         case .itemCreated, .itemClonedAtPath, .itemDataModified, .itemRenamed:
             if let server = env.loadSingleMCP(name: name) {
-                if let idx = mcps.firstIndex(where: { $0.name == name }) {
-                    mcps[idx] = server
+                if let idx = customMcps.firstIndex(where: { $0.name == name }) {
+                    customMcps[idx] = server
                 } else {
-                    mcps.append(server)
-                    mcps.sort { $0.name < $1.name }
+                    customMcps.append(server)
                 }
-                emit(.mcpsChanged(mcps))
+                rebuildMcpList()
                 // Single-flight reconfigure: coalesce a burst of events for the
                 // same server into one reconfigure.
                 scheduleReconfigure(server)
             } else {
                 // Undecodable — treat as removal.
-                mcps.removeAll(where: { $0.name == name })
-                emit(.mcpsChanged(mcps))
+                customMcps.removeAll(where: { $0.name == name })
+                rebuildMcpList()
                 scheduleForget(name)
             }
         case .itemRemoved:
-            mcps.removeAll(where: { $0.name == name })
-            emit(.mcpsChanged(mcps))
+            customMcps.removeAll(where: { $0.name == name })
+            rebuildMcpList()
             scheduleForget(name)
         default:
             break
@@ -690,7 +698,8 @@ actor ChatEngine {
         fullRescanChats()
         roles = env.loadAllRoles()
         connections = env.loadConnections()
-        mcps = env.loadMCPs()
+        customMcps = env.loadMCPs()
+        rebuildMcpList()
         emit(.rolesChanged(roles))
         emit(.connectionsChanged(connections))
         emit(.mcpsChanged(mcps))
@@ -712,12 +721,10 @@ actor ChatEngine {
             return
         }
         // Reload the freshest configs from disk so the pass uses current state.
-        mcps = env.loadMCPs()
-        emit(.mcpsChanged(mcps))
-        guard !mcps.isEmpty else {
-            debugLog("MCP", "configureMCPs — no MCP servers configured, skipping")
-            return
-        }
+        customMcps = env.loadMCPs()
+        rebuildMcpList()
+        // Builtins are always present, so the list is never empty; the
+        // configure pass initializes every server (in-house included).
         isConfiguringMCPs = true
         let snapshot = mcps
         Task { [weak self] in
@@ -785,12 +792,21 @@ actor ChatEngine {
         emit(.mcpConfiguration(state))
     }
 
-    /// Reloads MCP servers from disk and emits the updated set. The runtime
-    /// configuration is performed separately by `configureMCPs()` (on launch
-    /// and "Reload MCPs…") or `scheduleReconfigure` (on per-file FSEvents).
+    /// Reloads custom MCP servers from disk and rebuilds the combined list
+    /// (in-house + custom). The runtime configuration is performed separately
+    /// by `configureMCPs()` (on launch and "Reload MCPs…") or
+    /// `scheduleReconfigure` (on per-file FSEvents).
     private func reloadMCPs() {
-        mcps = env.loadMCPs()
-        debugLog("MCP", "reloaded \(mcps.count) server config(s) from disk")
+        customMcps = env.loadMCPs()
+        rebuildMcpList()
+        debugLog("MCP", "reloaded \(customMcps.count) custom server config(s) from disk")
+    }
+
+    /// Rebuilds the combined `mcps` list (in-house first, then custom sorted
+    /// by name) and emits the change. In-house servers always lead the list so
+    /// the UI can render the separator between them and the custom ones.
+    private func rebuildMcpList() {
+        mcps = builtinMcps + customMcps.sorted { $0.name < $1.name }
         emit(.mcpsChanged(mcps))
     }
 
@@ -912,6 +928,9 @@ actor ChatEngine {
         env.deleteAllImages(for: filename)
         records.removeAll(where: { $0.filename == filename })
         if selectedFilename == filename { selectedFilename = nil }
+        // Tear down any per-chat in-house MCP copies owned by this chat so we
+        // don't leak subprocesses after the chat is gone.
+        Task { await MCPManager.shared.disconnectAllInHouse(chatFilename: filename) }
         emit(.chatsChanged(records))
     }
 
@@ -1296,9 +1315,20 @@ actor ChatEngine {
         let activeNames = records[idx].chat?.mcps ?? []
         guard !activeNames.isEmpty else { return [] }
 
-        // Start selected on-demand stdio servers if they aren't already
-        // running, so the tools we advertise are actually callable.
-        await MCPManager.shared.ensureOnDemandRunning(activeNames)
+        // Route each active server by kind: in-house (builtin) servers run as
+        // per-chat copies, custom on-demand servers run in the shared pool.
+        // Always-on / http servers are already connected from configuration.
+        // `builtinMcps` is captured at init, so routing doesn't depend on the
+        // configure pass having completed.
+        let inHouseNames = Set(builtinMcps.map(\.name))
+        let inHouse = activeNames.filter { inHouseNames.contains($0) }
+        let custom = activeNames.filter { !inHouseNames.contains($0) }
+        if !inHouse.isEmpty {
+            await MCPManager.shared.ensureInHouseRunning(chatFilename: filename, names: inHouse)
+        }
+        if !custom.isEmpty {
+            await MCPManager.shared.ensureOnDemandRunning(custom)
+        }
 
         var defs: [ToolDefinition] = []
         var perServerCounts: [(String, Int)] = []
@@ -1400,7 +1430,15 @@ actor ChatEngine {
             let serverName = match.serverName
             let toolName = match.name
             debugLog("Tool", "executing \(serverName)/\(toolName) — callID=\(call.id), chat=\(filename)")
-            let result = await MCPManager.shared.callTool(server: serverName, name: toolName, arguments: call.arguments, callID: call.id, chatFilename: filename)
+            // In-house servers run as per-chat copies; custom servers use the
+            // shared connection pool. Routing uses `builtinMcps` (captured at
+            // init) so it doesn't depend on the configure pass.
+            let result: ToolResult
+            if builtinMcps.contains(where: { $0.name == serverName }) {
+                result = await MCPManager.shared.callInHouseTool(chatFilename: filename, server: serverName, name: toolName, arguments: call.arguments, callID: call.id)
+            } else {
+                result = await MCPManager.shared.callTool(server: serverName, name: toolName, arguments: call.arguments, callID: call.id, chatFilename: filename)
+            }
             debugLog("Tool", "result \(serverName)/\(toolName) — isError=\(result.isError), contentSize=\(result.content.count), chat=\(filename)")
             return result
         case .deny(let reason):

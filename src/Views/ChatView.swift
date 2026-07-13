@@ -250,27 +250,22 @@ struct ChatView: View {
                 .frame(width: 180)
 
                 if !store.mcps.isEmpty {
+                    // In-house servers lead the list, separated from custom
+                    // ones by a divider (omitted when there are no customs).
+                    let inHouse = store.mcps.filter { $0.isBuiltin }
+                    let customs = store.mcps.filter { !$0.isBuiltin }
                     Menu {
                         Button("None") {
                             store.setActiveMCPs(nil)
                         }
                         Divider()
-                        ForEach(store.mcps) { server in
-                            let active = store.selectedChatItem?.chat?.mcps?.contains(server.name) ?? false
-                            Button {
-                                var current = store.selectedChatItem?.chat?.mcps ?? []
-                                if active {
-                                    current.removeAll { $0 == server.name }
-                                } else {
-                                    current.append(server.name)
-                                }
-                                store.setActiveMCPs(current.isEmpty ? nil : current)
-                            } label: {
-                                if active {
-                                    Label(server.name, systemImage: "checkmark")
-                                } else {
-                                    Text(server.name)
-                                }
+                        ForEach(inHouse) { server in
+                            mcpToggle(server: server)
+                        }
+                        if !customs.isEmpty {
+                            Divider()
+                            ForEach(customs) { server in
+                                mcpToggle(server: server)
                             }
                         }
                     } label: {
@@ -298,6 +293,28 @@ struct ChatView: View {
             }
             .padding(.horizontal, 12)
             .frame(height: 36)
+        }
+
+        /// A toggle menu item for one MCP server, checked when the active chat
+        /// has it selected. Shared by the in-house and custom server sections.
+        @ViewBuilder
+        private func mcpToggle(server: MCPServer) -> some View {
+            let active = store.selectedChatItem?.chat?.mcps?.contains(server.name) ?? false
+            Button {
+                var current = store.selectedChatItem?.chat?.mcps ?? []
+                if active {
+                    current.removeAll { $0 == server.name }
+                } else {
+                    current.append(server.name)
+                }
+                store.setActiveMCPs(current.isEmpty ? nil : current)
+            } label: {
+                if active {
+                    Label(server.name, systemImage: "checkmark")
+                } else {
+                    Text(server.name)
+                }
+            }
         }
     }
 

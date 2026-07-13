@@ -384,12 +384,18 @@ final class AppViewModel: ObservableObject {
 
     /// Resolves a pending tool-call approval. Called from the web view bridge
     /// when the user presses Allow (and from the deny sheet on confirm).
+    /// Forces the chat to the bottom so the follow-up assistant message stays
+    /// in view as it streams in.
     func allowToolCall(callID: String) {
+        chatWebViewModel?.scrollToBottom()
         Task { await engine.resolveToolCallApproval(callID: callID, approval: .allow) }
     }
 
     /// Denies a pending tool-call approval with an (optional) reason.
+    /// Forces the chat to the bottom so the follow-up assistant message stays
+    /// in view as it streams in.
     func denyToolCall(callID: String, reason: String) {
+        chatWebViewModel?.scrollToBottom()
         Task { await engine.resolveToolCallApproval(callID: callID, approval: .deny(reason: reason)) }
     }
 
@@ -519,11 +525,16 @@ final class AppViewModel: ObservableObject {
 
     func sendMessage(_ text: String, pendingImages: [PendingImageAttachment] = []) {
         guard let filename = selectedChatID else { return }
+        // Pin to the bottom regardless of where the user had scrolled, so the
+        // outgoing message and the streaming reply stay in view.
+        chatWebViewModel?.scrollToBottom()
         Task { await engine.sendMessage(filename: filename, text: text, pendingImages: pendingImages) }
     }
 
     func retryLastMessage() {
         guard let filename = selectedChatID else { return }
+        // Pin to the bottom so the regenerated reply stays in view.
+        chatWebViewModel?.scrollToBottom()
         Task { await engine.retryLastMessage(filename: filename) }
     }
 

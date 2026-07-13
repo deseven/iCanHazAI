@@ -5,7 +5,7 @@ set -euo pipefail
 name="iCanHazAI"
 shortName="ichai"
 ident="wtf.d7.icanhazai"
-mcps=(UtilsMCP FilesystemMCP CodeMCP ShellMCP)
+mcps=(iCanHazAI-UtilsMCP iCanHazAI-FilesystemMCP iCanHazAI-CodeMCP iCanHazAI-ShellMCP)
 loc="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 logFile="$loc/build.log"
 
@@ -143,7 +143,7 @@ do_build_swift() {
 # Debug builds of the MCP servers (host arch) for the integration tests —
 # the test harness spawns .build/debug/<Server>.
 do_build_mcps_debug() {
-    swift build --product UtilsMCP --product FilesystemMCP --product CodeMCP --product ShellMCP
+    swift build --product iCanHazAI-UtilsMCP --product iCanHazAI-FilesystemMCP --product iCanHazAI-CodeMCP --product iCanHazAI-ShellMCP
 }
 
 do_run_app_tests() { swift test --filter AllAppTests; }

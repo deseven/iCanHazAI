@@ -30,7 +30,7 @@ struct ShellMCPDefaultTests {
     func listsTools() async throws {
         let tools = try await harness.listTools()
         let names = Set(tools.map(\.name))
-        #expect(names == ["shell", "applescript", "shell_background", "read_output"])
+        #expect(names == ["shell", "applescript", "shell_background", "shell_read_output"])
     }
 
     // MARK: - shell
@@ -111,7 +111,7 @@ struct ShellMCPDefaultTests {
             return
         }
 
-        let (text, err) = try await harness.callTool("read_output", ["handle": .int(handle), "wait": .bool(true)])
+        let (text, err) = try await harness.callTool("shell_read_output", ["handle": .int(handle), "wait": .bool(true)])
         #expect(!err)
         #expect(text.contains("bg-hello"))
         #expect(text.contains("[exit code: 0]"))
@@ -119,14 +119,14 @@ struct ShellMCPDefaultTests {
 
     @Test("read_output on unknown handle returns error text")
     func readUnknownHandle() async throws {
-        let (text, err) = try await harness.callTool("read_output", ["handle": .int(99999)])
+        let (text, err) = try await harness.callTool("shell_read_output", ["handle": .int(99999)])
         #expect(!err)
         #expect(text.contains("no background command"))
     }
 
     @Test("read_output errors on missing handle")
     func readMissingHandle() async throws {
-        let (text, err) = try await harness.callTool("read_output", [:])
+        let (text, err) = try await harness.callTool("shell_read_output", [:])
         #expect(err)
         #expect(text.contains("handle"))
     }
@@ -169,7 +169,7 @@ struct ShellMCPWorkdirTests {
             Issue.record("could not parse handle")
             return
         }
-        let (text, err) = try await harness.callTool("read_output", ["handle": .int(handle), "wait": .bool(true)])
+        let (text, err) = try await harness.callTool("shell_read_output", ["handle": .int(handle), "wait": .bool(true)])
         #expect(!err)
         #expect(text.contains(tmp.path))
     }
