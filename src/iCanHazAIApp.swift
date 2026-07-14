@@ -40,7 +40,13 @@ struct iCanHazAIApp: App {
     @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
     @StateObject private var viewModel = AppViewModel()
 
-    init() {}
+    init() {
+        // Ignore SIGPIPE so writing to a closed stdout (e.g. when launched
+        // through a pipe) doesn't terminate the app.
+        // Without this, the first debugLog print after the reader exits raises
+        // SIGPIPE and crashes the app on startup.
+        signal(SIGPIPE, SIG_IGN)
+    }
 
     var body: some Scene {
         WindowGroup {

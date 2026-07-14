@@ -1501,7 +1501,10 @@ actor ChatEngine {
         guard let idx = records.firstIndex(where: { $0.filename == filename }),
               let chat = records[idx].chat else { return [] }
         let resolved = resolvedMCPs(for: chat)
-        guard !resolved.isEmpty else { return [] }
+        // The configurator role has no MCP servers — it uses in-process config
+        // tools instead — so don't bail out when its resolved MCP list is empty.
+        let isConfigurator = role(for: chat)?.name == ConfiguratorTools.configuratorRoleName
+        guard !resolved.isEmpty || isConfigurator else { return [] }
 
         // Route each server by kind: in-house (builtin) servers run as per-chat
         // copies, custom on-demand servers run in the shared pool. Always-on /
@@ -1570,6 +1573,12 @@ actor ChatEngine {
         if dropped > 0 {
             debugLog("MCP", "deduplicated tools — dropped \(dropped) duplicate name(s), chat=\(filename)")
         }
+        // The bundled iCHAI Configurator role uses a set of in-process config
+        // tools (no subprocess) instead of MCP servers. They are dispatched
+        // directly from `executeToolCall`, bypassing `MCPManager`.
+        if role(for: chat)?.name == ConfiguratorTools.configuratorRoleName {
+            unique.append(contentsOf: ConfiguratorTools.toolDefinitions)
+        }
         debugLog("MCP", "gathered tools — chat=\(filename), total=\(unique.count), servers=\(resolved.count)")
         for (serverName, count) in perServerCounts {
             debugLog("MCP", "  server=\"\(serverName)\" contributed \(count) tool(s)")
@@ -1610,6 +1619,14 @@ actor ChatEngine {
         }
         let serverName = match.serverName
         let toolName = match.name
+
+        // In-process configurator tools run directly in the app (no MCP
+        // subprocess) and are always auto-approved: their writes are validated
+        // before touching disk, so there's nothing destructive to confirm.
+        if serverName == ConfiguratorTools.serverName {
+            debugLog("Tool", "executing configurator tool \(toolName) — callID=\(call.id), chat=\(filename)")
+            return await ConfiguratorTools.call(name: toolName, arguments: call.arguments, callID: call.id)
+        }
 
         // Auto-allow: if the role marks this tool (or all tools from this
         // server) as auto-approved, skip the approval prompt entirely.

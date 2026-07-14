@@ -188,7 +188,7 @@ actor ConfigManager {
         let url = bootstrapFileURL
         var decoded = AppConfig()
         if let data = try? Data(contentsOf: url) {
-            if let parsed = try? TOMLDecoder().decode(AppConfig.self, from: data) {
+            if let parsed = try? ConfigValidation.decodeAppConfig(data) {
                 decoded = parsed
             }
         }
@@ -241,10 +241,10 @@ actor ConfigManager {
             return
         }
         do {
-            config = try TOMLDecoder().decode(AppConfig.self, from: data)
+            config = try ConfigValidation.decodeAppConfig(data)
             debugLog("Config", "loaded successfully (app_debug=\(config.debug.appDebugEnabled), chat_renderer_debug=\(config.debug.chatRendererDebugEnabled))")
         } catch {
-            debugLog("Config", "failed to decode config: \(error.localizedDescription) — using defaults")
+            debugLog("Config", "failed to decode config: \(error) — using defaults")
             config = AppConfig()
             didLoad = true
             return
@@ -267,10 +267,10 @@ actor ConfigManager {
             return
         }
         do {
-            config = try TOMLDecoder().decode(AppConfig.self, from: data)
+            config = try ConfigValidation.decodeAppConfig(data)
             debugLog("Config", "reloaded successfully (app_debug=\(config.debug.appDebugEnabled), chat_renderer_debug=\(config.debug.chatRendererDebugEnabled))")
         } catch {
-            debugLog("Config", "failed to decode config on reload: \(error.localizedDescription) — keeping current state")
+            debugLog("Config", "failed to decode config on reload: \(error) — keeping current state")
             return
         }
         lastWritten = nil

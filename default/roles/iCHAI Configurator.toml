@@ -2,9 +2,3 @@ description = "A role for editing ICanHazAI configuration. Simply state what you
 prompt = "iCHAI Configurator"
 icon = "gearshape"
 connection_override_allowed = true
-working_directory = "~/iCanHazAI"
-
-[[mcps]]
-mcp = "internal::Filesystem"
-auto_allow_all = true
-directory_isolation = true

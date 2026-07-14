@@ -311,7 +311,7 @@ final class EnvironmentManager: @unchecked Sendable {
                     continue
                 }
                 do {
-                    let config = try TOMLDecoder().decode(RoleConfig.self, from: data)
+                    let config = try ConfigValidation.decodeRole(data)
                     result.append(Role(name: name, config: config))
                 } catch {
                     debugLog("Env", "⚠️ failed to decode role \"\(name)\" — \(error)")
@@ -340,7 +340,7 @@ final class EnvironmentManager: @unchecked Sendable {
             return nil
         }
         do {
-            let config = try TOMLDecoder().decode(RoleConfig.self, from: data)
+            let config = try ConfigValidation.decodeRole(data)
             return Role(name: name, config: config)
         } catch {
             debugLog("Env", "⚠️ failed to decode role \"\(name)\" — \(error)")
@@ -374,7 +374,7 @@ final class EnvironmentManager: @unchecked Sendable {
                 }
                 let config: ConnectionConfig
                 do {
-                    config = try JSONC.decode(data, as: ConnectionConfig.self)
+                    config = try ConfigValidation.decodeConnection(data)
                 } catch {
                     debugLog("Env", "⚠️ failed to decode \(provider.rawValue) connection \"\(name)\" — \(error)")
                     return nil
@@ -395,7 +395,7 @@ final class EnvironmentManager: @unchecked Sendable {
         }
         let config: ConnectionConfig
         do {
-            config = try JSONC.decode(data, as: ConnectionConfig.self)
+            config = try ConfigValidation.decodeConnection(data)
         } catch {
             debugLog("Env", "⚠️ failed to decode connection \"\(name)\" — \(error)")
             return nil
@@ -441,7 +441,7 @@ final class EnvironmentManager: @unchecked Sendable {
                     return nil
                 }
                 do {
-                    let config = try TOMLDecoder().decode(MCPConfig.self, from: data)
+                    let config = try ConfigValidation.decodeMCP(data)
                     return MCPServer(name: name, config: config)
                 } catch {
                     debugLog("MCP", "⚠️ failed to decode MCP config \"\(name)\" — \(error)")
@@ -461,7 +461,7 @@ final class EnvironmentManager: @unchecked Sendable {
             return nil
         }
         do {
-            let config = try TOMLDecoder().decode(MCPConfig.self, from: data)
+            let config = try ConfigValidation.decodeMCP(data)
             return MCPServer(name: name, config: config)
         } catch {
             debugLog("MCP", "⚠️ failed to decode MCP config \"\(name)\" — \(error)")
