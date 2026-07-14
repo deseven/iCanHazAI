@@ -10,17 +10,28 @@ import SwiftUI
 /// Built-in roles (served from the app bundle, e.g. the `iCHAI Configurator`)
 /// are pinned to the bottom in their own section, separated by a divider, so
 /// they're always visible and distinct from user-defined roles.
+///
+/// Keyboard navigation: ↑/↓ moves the selection, ↵ starts a chat with the
+/// selected role. The role marked as default in the app config is tagged with
+/// a star and is the initial selection, so pressing ↵ immediately after the
+/// picker appears starts a chat with the default role.
 struct RolePickerView: View {
     @EnvironmentObject var store: AppViewModel
     let onCancel: () -> Void
     let onPick: (String) -> Void
 
-    @State private var hovered: String?
+    /// Currently highlighted role (driven by both keyboard and hover).
+    @State private var selection: String?
+    @FocusState private var focused: Bool
 
     /// User-defined roles shown in the main scrollable list.
     private var userRoles: [Role] { store.roles.filter { !$0.isBuiltin } }
     /// Built-in roles pinned to the bottom, always visible.
     private var builtinRoles: [Role] { store.roles.filter { $0.isBuiltin } }
+    /// Combined ordered list used for keyboard navigation.
+    private var allRoles: [Role] { userRoles + builtinRoles }
+    /// The default role name from the app config, if any.
+    private var defaultRoleName: String? { store.preferencesDefaultRole }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,44 +58,31 @@ struct RolePickerView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(userRoles) { role in
-                            RolePickerRow(
-                                role: role,
-                                isHovered: hovered == role.name
-                            )
-                            .contentShape(Rectangle())
-                            .onHover { hovering in
-                                hovered = hovering ? role.name : nil
-                            }
-                            .onTapGesture {
-                                onPick(role.name)
-                            }
-                            if role.id != userRoles.last?.id {
-                                Divider()
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(userRoles) { role in
+                                roleRow(role, isBuiltin: false)
+                                    .id(role.name)
+                                if role.id != userRoles.last?.id {
+                                    Divider()
+                                }
                             }
                         }
                     }
-                }
 
-                Divider()
+                    Divider()
 
-                // Built-in roles pinned at the bottom, always visible.
-                LazyVStack(spacing: 0) {
-                    ForEach(builtinRoles) { role in
-                        RolePickerRow(
-                            role: role,
-                            isHovered: hovered == role.name,
-                            isBuiltin: true
-                        )
-                        .contentShape(Rectangle())
-                        .onHover { hovering in
-                            hovered = hovering ? role.name : nil
+                    // Built-in roles pinned at the bottom, always visible.
+                    LazyVStack(spacing: 0) {
+                        ForEach(builtinRoles) { role in
+                            roleRow(role, isBuiltin: true)
+                                .id(role.name)
                         }
-                        .onTapGesture {
-                            onPick(role.name)
-                        }
+                    }
+                    .onChange(of: selection) { _, newName in
+                        guard let newName else { return }
+                        proxy.scrollTo(newName, anchor: .center)
                     }
                 }
             }
@@ -92,6 +90,9 @@ struct RolePickerView: View {
             Divider()
 
             HStack {
+                Text("↑↓ navigate · ↵ select")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel", action: onCancel)
                     .keyboardShortcut(.cancelAction)
@@ -99,13 +100,61 @@ struct RolePickerView: View {
             .padding(12)
         }
         .frame(width: 380, height: 460)
+        .focusable()
+        .focused($focused)
+        .focusEffectDisabled()
+        .onKeyPress(.upArrow) { moveSelection(by: -1); return .handled }
+        .onKeyPress(.downArrow) { moveSelection(by: 1); return .handled }
+        .onKeyPress(.return) { pickCurrent(); return .handled }
+        .onAppear {
+            if let dr = defaultRoleName, allRoles.contains(where: { $0.name == dr }) {
+                selection = dr
+            } else {
+                selection = allRoles.first?.name
+            }
+            focused = true
+        }
+    }
+
+    @ViewBuilder
+    private func roleRow(_ role: Role, isBuiltin: Bool) -> some View {
+        RolePickerRow(
+            role: role,
+            isDefault: role.name == defaultRoleName,
+            isBuiltin: isBuiltin,
+            isSelected: selection == role.name
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            if hovering { selection = role.name }
+        }
+        .onTapGesture { onPick(role.name) }
+    }
+
+    /// Moves the keyboard selection by `delta` positions, clamped to the list.
+    private func moveSelection(by delta: Int) {
+        guard !allRoles.isEmpty else { return }
+        let current = allRoles.firstIndex(where: { $0.name == selection }) ?? 0
+        let newIndex = min(max(current + delta, 0), allRoles.count - 1)
+        selection = allRoles[newIndex].name
+    }
+
+    /// Starts a chat with the currently selected role (falling back to the
+    /// first role if none is selected).
+    private func pickCurrent() {
+        if let name = selection {
+            onPick(name)
+        } else if let first = allRoles.first {
+            onPick(first.name)
+        }
     }
 }
 
 private struct RolePickerRow: View {
     let role: Role
-    let isHovered: Bool
+    var isDefault: Bool = false
     var isBuiltin: Bool = false
+    var isSelected: Bool = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -118,6 +167,11 @@ private struct RolePickerRow: View {
                     Text(role.name)
                         .font(.callout)
                         .lineLimit(1)
+                    if isDefault {
+                        Image(systemName: "star.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.yellow)
+                    }
                     if isBuiltin {
                         Text("Built-in")
                             .font(.caption2)
@@ -137,6 +191,6 @@ private struct RolePickerRow: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(isHovered ? Color.accentColor.opacity(0.12) : Color.clear)
+        .background(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
     }
 }

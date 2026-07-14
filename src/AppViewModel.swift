@@ -93,9 +93,6 @@ final class AppViewModel: ObservableObject {
     /// synchronously in `apply(.chatsChanged)` so the web view reflects
     /// tool-call state before the engine proceeds to execute the tool.
     weak var chatWebViewModel: ChatWebViewModel?
-    /// Whether we've already performed the initial "no connections" check.
-    /// Prevents the wizard from popping up again after the user dismisses it.
-    private var didCheckInitialConnections = false
 
     // MARK: - Ctrl+Tab chat switching state
 
@@ -338,11 +335,14 @@ final class AppViewModel: ObservableObject {
         case .connectionsChanged(let connections):
             self.connections = connections
             refreshPreferences()
-            if !didCheckInitialConnections {
-                didCheckInitialConnections = true
-                if connections.isEmpty {
-                    ConnectionWizardView.show(onFinish: { self.refreshAfterWizard() })
-                }
+            // Clean-state flow: with no connections there's nothing to work
+            // with, so always surface the creation wizard. Cancelling it (via
+            // `closeAppOnCancel`) terminates the app.
+            if connections.isEmpty {
+                ConnectionWizardView.show(
+                    closeAppOnCancel: true,
+                    onFinish: { self.refreshAfterWizard() }
+                )
             }
         case .mcpsChanged(let mcps):
             self.mcps = mcps
@@ -406,79 +406,32 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - Wizard completion
 
-    /// Called after the connection wizard finishes. Refreshes preferences and,
-    /// if the app has no default/utility connection set, asks the user whether
-    /// to use the just-created connection for those roles.
+    /// Called after the connection wizard finishes. Refreshes preferences and
+    /// automatically assigns the just-created connection as the default and
+    /// utility connection when neither is set yet (first-connection flow):
+    /// instead of prompting the user, we just use the connection they created.
     func refreshAfterWizard() {
         refreshPreferences()
         Task {
             try? await Task.sleep(for: .milliseconds(300))
-            await promptForDefaultIfNeeded()
-            await promptForUtilityIfNeeded()
+            await autoAssignConnectionRolesIfNeeded()
         }
     }
 
-    /// If no default connection is configured, asks the user whether to set
-    /// the most recently created connection as the default.
-    private func promptForDefaultIfNeeded() async {
+    /// When no default and/or utility connection is configured, assigns the
+    /// most recently created connection to those roles automatically. This is
+    /// the first-connection flow.
+    private func autoAssignConnectionRolesIfNeeded() async {
+        guard let conn = connections.last else { return }
         let dc = await config.getDefaultConnection()
-        guard dc == nil else { return }
-        guard let conn = connections.last else { return }
-        await MainActor.run {
-            self.askToSetConnection(
-                title: "Set Default Connection?",
-                message: "No default connection is set. Use “\(conn.displayName)” as the default connection for new chats?",
-                connectionID: conn.id,
-                setter: { self.setDefaultConnection($0) }
-            )
-        }
-    }
-
-    /// If no utility connection is configured, asks the user whether to set
-    /// the most recently created connection as the utility connection.
-    private func promptForUtilityIfNeeded() async {
         let uc = await config.getUtilityConnection()
-        guard uc == nil else { return }
-        guard let conn = connections.last else { return }
-        await MainActor.run {
-            self.askToSetConnection(
-                title: "Set Utility Connection?",
-                message: "No utility connection is set. Use “\(conn.displayName)” for utility tasks such as chat name generation?",
-                connectionID: conn.id,
-                setter: { self.setUtilityConnection($0) }
-            )
+        if dc == nil {
+            await config.setDefaultConnection(conn.id)
         }
-    }
-
-    /// Presents a yes/no alert asking whether to assign a connection to a role.
-    private func askToSetConnection(
-        title: String,
-        message: String,
-        connectionID: String,
-        setter: @escaping (String) -> Void
-    ) {
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = title
-        alert.informativeText = message
-        alert.addButton(withTitle: "Set as Default")
-        alert.addButton(withTitle: "Not Now")
-        alert.buttons.first?.title = "Use This Connection"
-        NSApp.activate(ignoringOtherApps: true)
-        let response = alert.runModal()
-        if response == .alertFirstButtonReturn {
-            setter(connectionID)
+        if uc == nil {
+            await config.setUtilityConnection(conn.id)
         }
-    }
-
-    private func setDefaultConnection(_ id: String) {
-        preferencesDefaultConnection = id
-        Task { await config.setDefaultConnection(id) }
-    }
-
-    private func setUtilityConnection(_ id: String) {
-        preferencesUtilityConnection = id
-        Task { await config.setUtilityConnection(id) }
+        await MainActor.run { self.refreshPreferences() }
     }
 
     // MARK: - Derived helpers

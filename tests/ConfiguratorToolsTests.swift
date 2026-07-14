@@ -184,6 +184,22 @@ extension AllAppTests {
             #expect(!res.isError)
         }
 
+        @Test("read_log trims to the last 1000 lines")
+        func readLogTrims() async throws {
+            let temp = try TempEnv()
+            let env = temp.env
+            let logURL = env.rootURL.appendingPathComponent("app.log")
+            // 1500 numbered lines; the tail should keep 501..1500.
+            let content = (1...1500).map { "line \($0)" }.joined(separator: "\n")
+            try Data(content.utf8).write(to: logURL)
+            let res = await call("read_log", env, [:])
+            #expect(!res.isError)
+            #expect(!res.content.contains("line 500\n"))
+            #expect(res.content.contains("line 501"))
+            #expect(res.content.contains("line 1500"))
+            #expect(res.content.components(separatedBy: "\n").count <= 1000)
+        }
+
         // MARK: - Error messages
 
         @Test("validation errors name the offending field")

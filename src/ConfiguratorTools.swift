@@ -75,7 +75,7 @@ enum ConfiguratorTools {
          "Read the main application config.",
          #"{"type":"object","properties":{}}"#),
         ("read_log",
-         "Read the current session's application log.",
+         "Read the current session's application log (last 1000 lines).",
          #"{"type":"object","properties":{}}"#),
         ("write_connection",
          "Validate then write a Connection configuration. `id` is the Connection id \"type/name\"; `content` is JSONC text.",
@@ -270,10 +270,14 @@ enum ConfiguratorTools {
     private static func readLog(env: EnvironmentManager) -> String {
         let url = env.rootURL.appendingPathComponent("app.log")
         debugLog("FileRead", "configurator read \(env.relativePath(url))")
-        if let text = try? String(contentsOf: url, encoding: .utf8), !text.isEmpty {
+        guard let text = try? String(contentsOf: url, encoding: .utf8), !text.isEmpty else {
+            return "(application log is empty)"
+        }
+        let lines = text.components(separatedBy: "\n")
+        if lines.count <= 1000 {
             return text
         }
-        return "(application log is empty or logging is disabled)"
+        return lines.suffix(1000).joined(separator: "\n")
     }
 
     // MARK: - Write helpers

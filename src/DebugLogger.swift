@@ -3,23 +3,21 @@
 
 import Foundation
 
-/// A lightweight, opt-in debug logging facility for the app.
+/// A lightweight debug logging facility for the app.
 ///
 /// The single entry point is [`debugLog(topic:message:)`](src/DebugLogger.swift)
 /// (or the free-function shorthand [`debugLog(_:_:)`](src/DebugLogger.swift)).
-/// When "App Debug Logging" is disabled (the default) every call is a no-op,
-/// so sprinkling `debugLog` calls throughout the codebase has zero cost in
-/// production builds.
 ///
-/// Output is written to stdout formatted as
-/// `[YYYY-MM-DD hh:mm:ss] [topic] message`. The timestamp uses the user's
-/// local time zone for readability.
+/// Every call is written to `~/iCanHazAI/app.log` (once
+/// [`DebugLogger.startFileLogging()`](src/DebugLogger.swift) has been called),
+/// regardless of the "App Debug" preference. This is essential for diagnosing
+/// issues that only reproduce when the app is launched from Finder (where
+/// stdout is discarded). The file is truncated on each launch so it only
+/// contains the current session.
 ///
-/// In addition to stdout, output is duplicated to `~/iCanHazAI/app.log` when
-/// [`DebugLogger.startFileLogging()`](src/DebugLogger.swift) has been called.
-/// This is essential for diagnosing issues that only reproduce when the app is
-/// launched from Finder (where stdout is discarded). The file is truncated on
-/// each launch so it only contains the current session.
+/// When "App Debug Logging" is enabled, output is additionally mirrored to
+/// stdout as `[YYYY-MM-DD hh:mm:ss] [topic] message`. The timestamp uses the
+/// user's local time zone for readability.
 ///
 /// The enabled flag is cached behind a `DispatchQueue`-protected box so that
 /// `debugLog` can be called from any thread/actor without hopping to
@@ -81,16 +79,35 @@ enum DebugLogger {
 
     private static let fileBox = FileBox()
 
+    /// Tracks the URL of the currently open log file (mirrors `fileBox`) so
+    /// tests can read back what was written.
+    private final class URLBox: @unchecked Sendable {
+        private let queue = DispatchQueue(label: "iCanHazAI.debugLogger.url")
+        private var _url: URL?
+        func get() -> URL? { queue.sync { _url } }
+        func set(_ value: URL?) { queue.sync { _url = value } }
+    }
+    private static let urlBox = URLBox()
+
+    /// The URL of the currently open log file, if any. Exposed for tests.
+    static var currentLogFileURL: URL? { urlBox.get() }
+
     /// Opens (and truncates) `~/iCanHazAI/app.log` for appending. Safe to
     /// call before the enabled flag is known — the file is opened regardless
     /// so that early log lines are captured even if logging is later turned on.
     /// Must be called once at launch, before any `debugLog` call that should
     /// reach the file.
     static func startFileLogging() {
-        // Already open.
-        if fileBox.get() != nil { return }
         let homeURL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         let rootURL = homeURL.appendingPathComponent("iCanHazAI", isDirectory: true)
+        startFileLogging(rootURL: rootURL)
+    }
+
+    /// Internal entry point that allows tests to redirect the log into a
+    /// throwaway directory. Opens (and truncates) `app.log` inside `rootURL`.
+    static func startFileLogging(rootURL: URL) {
+        // Already open.
+        if fileBox.get() != nil { return }
         try? FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
         let url = rootURL.appendingPathComponent("app.log", isDirectory: false)
         // Truncate on open so each session starts fresh.
@@ -99,6 +116,7 @@ enum DebugLogger {
         // Move to end so subsequent writes append.
         try? handle.seekToEnd()
         fileBox.set(handle)
+        urlBox.set(url)
     }
 
     /// Closes the log file, if open. Called on app termination.
@@ -107,6 +125,7 @@ enum DebugLogger {
             try? handle.close()
         }
         fileBox.set(nil)
+        urlBox.set(nil)
     }
 
     /// The single entry point for debug logging.
@@ -117,14 +136,17 @@ enum DebugLogger {
     /// // [2026-06-30 18:25:18] [MCP] stdio server Example started
     /// ```
     ///
-    /// Silently returns when app debug logging is disabled.
+    /// The line is always written to `app.log` (when file logging has been
+    /// started). Stdout mirroring only happens when app debug logging is
+    /// enabled.
     static func debugLog(topic: String, message: String) {
-        guard enabled else { return }
         let stamp = formatterQueue.sync { formatter.string(from: Date()) }
         let line = "[\(stamp)] [\(topic)] \(message)\n"
-        // stdout is cheap; do it inline.
-        print(line, terminator: "")
-        // File I/O is dispatched off-thread.
+        // stdout is cheap; do it inline, but only when enabled.
+        if enabled {
+            print(line, terminator: "")
+        }
+        // File I/O is dispatched off-thread and always happens.
         let handle = fileBox.get()
         guard let handle else { return }
         DispatchQueue.global(qos: .utility).async {

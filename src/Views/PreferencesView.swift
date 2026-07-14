@@ -249,7 +249,7 @@ private struct DebugTab: View {
         VStack(alignment: .leading, spacing: 20) {
             PrefRow(
                 title: "App Debug",
-                description: "Write timestamped debug logs to stdout for app startup, config loading, FSEvents, wizards, LLM requests, streaming, MCP servers, and tool calls. View the output in Console.app or by launching the app from a terminal."
+                description: "Mirror timestamped debug logs to stdout for app startup, config loading, FSEvents, wizards, LLM requests, streaming, MCP servers, and tool calls. Logs are always written to ~/iCanHazAI/app.log regardless."
             ) {
                 Toggle("", isOn: store.bindingAppDebugEnabled)
                     .labelsHidden()

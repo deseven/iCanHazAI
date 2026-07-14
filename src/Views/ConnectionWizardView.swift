@@ -13,6 +13,11 @@ struct ConnectionWizardView: View {
     /// prompts handled). The view model uses this to refresh its state.
     var onFinish: (() -> Void)?
 
+    /// When true, cancelling the wizard (Cancel button or window close
+    /// button) terminates the app. Used in the clean-state flow where there
+    /// are no connections to work with, so dismissing the wizard is pointless.
+    var closeAppOnCancel: Bool = false
+
     /// The wizard steps, in order.
     private enum Step: Int, CaseIterable, Identifiable, Comparable {
         case provider
@@ -247,7 +252,7 @@ struct ConnectionWizardView: View {
     private var navigationBar: some View {
         HStack {
             Button("Cancel") {
-                closeWindow()
+                handleCancel()
             }
             .keyboardShortcut(.cancelAction)
 
@@ -296,7 +301,9 @@ struct ConnectionWizardView: View {
         case .model:
             return !selectedModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .test:
-            return !isTesting
+            // The test must complete successfully (non-empty response, no
+            // provider error) before the user can move on.
+            return !isTesting && testResponse != nil && testError == nil
         case .name:
             return !connectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .finish:
@@ -363,6 +370,17 @@ struct ConnectionWizardView: View {
 
     private func closeWindow() {
         NSApp.windows.first(where: { $0.identifier?.rawValue == "connection-wizard" })?.close()
+    }
+
+    /// Handles the Cancel button and window-close button. In the clean-state
+    /// flow (`closeAppOnCancel`) there's no connection to work with, so
+    /// cancelling terminates the app instead of just closing the window.
+    private func handleCancel() {
+        if closeAppOnCancel {
+            NSApp.terminate(nil)
+        } else {
+            closeWindow()
+        }
     }
 
     // MARK: - Step 1: Provider
@@ -582,7 +600,7 @@ struct ConnectionWizardView: View {
 
     private var testStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("We'll send a non-streaming “say hi” request to verify the connection works. You can continue regardless of the result.")
+            Text("We'll send a non-streaming “say hi” request to verify the connection works. The test must succeed before you can continue.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -622,6 +640,15 @@ struct ConnectionWizardView: View {
     /// Runs the "say hi" test once when the step appears.
     private func runTestIfNeeded() {
         guard !isTesting && testResponse == nil && testError == nil else { return }
+        runTest()
+    }
+
+    /// Sends the non-streaming "say hi" request and records either the
+    /// response text (success) or an error message (failure). An empty
+    /// response is treated as a failure: it usually means the request was
+    /// rejected (e.g. invalid API key or unavailable model) but the provider
+    /// returned 200 with no content.
+    private func runTest() {
         isTesting = true
 
         let conn = buildConnection(name: "wizard-test")
@@ -632,10 +659,6 @@ struct ConnectionWizardView: View {
                     messages: [ChatMessage(role: .user, content: "say hi")]
                 )
                 await MainActor.run {
-                    // An empty response usually means the request was rejected
-                    // (e.g. invalid API key or unavailable model) but the
-                    // provider returned 200 with no content. Surface it as an
-                    // error so the user gets a clear, actionable message.
                     if reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         self.testError = "The model returned an empty response. This usually means the API key is invalid or the selected model is unavailable."
                     } else {
@@ -805,15 +828,19 @@ struct ConnectionWizardView: View {
 
 extension ConnectionWizardView {
     /// Creates or brings to front the connection wizard window.
+    ///
+    /// - Parameter closeAppOnCancel: When true (clean-state flow with no
+    ///   connections), cancelling the wizard or closing its window terminates
+    ///   the app — there's nothing to work with without a connection.
     @MainActor
-    static func show(onFinish: (() -> Void)? = nil) {
+    static func show(closeAppOnCancel: Bool = false, onFinish: (() -> Void)? = nil) {
         if let existing = NSApp.windows.first(where: { $0.identifier?.rawValue == "connection-wizard" }) {
             existing.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
 
-        let wizard = ConnectionWizardView(onFinish: onFinish)
+        let wizard = ConnectionWizardView(onFinish: onFinish, closeAppOnCancel: closeAppOnCancel)
         let hosting = NSHostingController(rootView: wizard)
         let window = NSWindow(contentViewController: hosting)
         window.identifier = NSUserInterfaceItemIdentifier("connection-wizard")
@@ -822,7 +849,32 @@ extension ConnectionWizardView {
         window.isReleasedWhenClosed = false
         window.setContentSize(NSSize(width: 560, height: 480))
         window.center()
+        // Intercept the window-close button (red dot) so it follows the same
+        // cancel semantics as the Cancel button in the clean-state flow.
+        let delegate = WizardWindowDelegate(closeAppOnCancel: closeAppOnCancel)
+        objc_setAssociatedObject(window, "wizardDelegate", delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        window.delegate = delegate
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+/// Window delegate for the connection wizard. In the clean-state flow it
+/// terminates the app when the window is closed (via the red close button),
+/// matching the Cancel button's behavior.
+@MainActor
+private final class WizardWindowDelegate: NSObject, NSWindowDelegate {
+    private let closeAppOnCancel: Bool
+
+    init(closeAppOnCancel: Bool) {
+        self.closeAppOnCancel = closeAppOnCancel
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if closeAppOnCancel {
+            NSApp.terminate(nil)
+            return false
+        }
+        return true
     }
 }
