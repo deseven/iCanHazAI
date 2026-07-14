@@ -156,8 +156,8 @@ extension AllAppTests {
             let prePrompts = env.env.loadAllPrompts()
             #expect(preRoles.filter { !$0.isBuiltin }.isEmpty)
             #expect(prePrompts.filter { !$0.isBuiltin }.isEmpty)
-            #expect(preRoles.contains(where: { $0.name == "iCHAI Configurator" && $0.isBuiltin }))
-            #expect(prePrompts.contains(where: { $0.name == "iCHAI Configurator" && $0.isBuiltin }))
+            #expect(preRoles.contains(where: { $0.name == "Configurator" && $0.isBuiltin }))
+            #expect(prePrompts.contains(where: { $0.name == "Configurator" && $0.isBuiltin }))
 
             env.env.seedDefaults()
             let roles = env.env.loadAllRoles()
@@ -170,8 +170,8 @@ extension AllAppTests {
             // The protected configurator must NOT be copied into the user
             // directory — it stays in the bundle.
             let fm = FileManager.default
-            #expect(!fm.fileExists(atPath: env.env.rolesURL.appendingPathComponent("iCHAI Configurator.toml").path))
-            #expect(!fm.fileExists(atPath: env.env.promptsURL.appendingPathComponent("iCHAI Configurator.md").path))
+            #expect(!fm.fileExists(atPath: env.env.rolesURL.appendingPathComponent("Configurator.toml").path))
+            #expect(!fm.fileExists(atPath: env.env.promptsURL.appendingPathComponent("Configurator.md").path))
 
             // Re-seeding must not overwrite user edits: mutate a file, re-seed,
             // and confirm the mutation survives.
@@ -192,33 +192,33 @@ extension AllAppTests {
             let env = try TempEnv()
 
             // The configurator is available from the bundle before any seeding.
-            let bundled = try #require(env.env.loadSingleRole(name: "iCHAI Configurator"))
+            let bundled = try #require(env.env.loadSingleRole(name: "Configurator"))
             #expect(bundled.isBuiltin)
             let bundledDescription = bundled.description
 
             // A user creates a shadow role with the same name. It must be
             // ignored — the bundled version always wins.
-            let shadowURL = env.env.rolesURL.appendingPathComponent("iCHAI Configurator.toml")
-            try Data("description = \"shadow\"\nprompt = \"iCHAI Configurator\"\n".utf8)
+            let shadowURL = env.env.rolesURL.appendingPathComponent("Configurator.toml")
+            try Data("description = \"shadow\"\nprompt = \"Configurator\"\n".utf8)
                 .write(to: shadowURL)
 
             let roles = env.env.loadAllRoles()
             // Exactly one configurator entry, and it's the built-in one.
-            #expect(roles.filter { $0.name == "iCHAI Configurator" }.count == 1)
-            let loaded = try #require(roles.first(where: { $0.name == "iCHAI Configurator" }))
+            #expect(roles.filter { $0.name == "Configurator" }.count == 1)
+            let loaded = try #require(roles.first(where: { $0.name == "Configurator" }))
             #expect(loaded.isBuiltin)
             #expect(loaded.description == bundledDescription)
             #expect(loaded.description != "shadow")
 
             // loadSingleRole also resolves to the bundled version.
-            let single = try #require(env.env.loadSingleRole(name: "iCHAI Configurator"))
+            let single = try #require(env.env.loadSingleRole(name: "Configurator"))
             #expect(single.isBuiltin)
             #expect(single.description == bundledDescription)
 
             // Same protection applies to the prompt.
-            let shadowPrompt = env.env.promptsURL.appendingPathComponent("iCHAI Configurator.md")
+            let shadowPrompt = env.env.promptsURL.appendingPathComponent("Configurator.md")
             try Data("# shadow prompt".utf8).write(to: shadowPrompt)
-            let prompt = try #require(env.env.loadSinglePrompt(name: "iCHAI Configurator"))
+            let prompt = try #require(env.env.loadSinglePrompt(name: "Configurator"))
             #expect(prompt.isBuiltin)
             #expect(prompt.content != "# shadow prompt")
         }

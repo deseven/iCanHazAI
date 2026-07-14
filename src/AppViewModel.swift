@@ -30,10 +30,6 @@ final class AppViewModel: ObservableObject {
     @Published var prompts: [Prompt] = []
     @Published var connections: [Connection] = []
     @Published var mcps: [MCPServer] = []
-    /// Live MCP configuration status, mirrored from the engine. Drives the
-    /// configuration overlay. The overlay observes this and adds a 1-second
-    /// display delay after configuration completes.
-    @Published var mcpConfiguration: MCPConfigurationState = .empty
     @Published var selectedChatID: String? {
         didSet {
             // Once the user opens a chat awaiting approval, the renderer shows
@@ -330,8 +326,10 @@ final class AppViewModel: ObservableObject {
         case .rolesChanged(let roles):
             self.roles = roles
             refreshPreferences()
+            LoaderController.shared.markApplicationCompleted(.roles, loaded: roles.count)
         case .promptsChanged(let prompts):
             self.prompts = prompts
+            LoaderController.shared.markApplicationCompleted(.prompts, loaded: prompts.count)
         case .connectionsChanged(let connections):
             self.connections = connections
             refreshPreferences()
@@ -344,12 +342,16 @@ final class AppViewModel: ObservableObject {
                     onFinish: { self.refreshAfterWizard() }
                 )
             }
+            LoaderController.shared.markApplicationCompleted(.connections, loaded: connections.count)
         case .mcpsChanged(let mcps):
             self.mcps = mcps
         case .mcpConfiguration(let state):
-            mcpConfiguration = state
+            LoaderController.shared.setMCPState(state)
+        case .loaderActivity(let activity):
+            LoaderController.shared.applicationStarted(activity.counts, refreshCounts: activity.refreshCounts)
         case .configChanged:
             refreshPreferences()
+            LoaderController.shared.markApplicationCompleted(.configuration, loaded: 1)
         case .toolApprovalRequested(let filename, _):
             // Blink the chat in the sidebar if the user isn't already viewing
             // it (otherwise the renderer shows the Allow/Deny buttons).

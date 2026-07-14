@@ -1,4 +1,4 @@
 description = "A role for editing ICanHazAI configuration. Simply state what you need and the agent will configure the app for you."
-prompt = "iCHAI Configurator"
+prompt = "Configurator"
 icon = "gearshape"
 connection_override_allowed = true

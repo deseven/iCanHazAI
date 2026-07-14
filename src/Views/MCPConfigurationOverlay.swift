@@ -3,83 +3,74 @@
 
 import SwiftUI
 
-/// A half-transparent overlay shown over the main UI while MCP servers are
-/// being configured. Displays each server's name and its current status
-/// (pending / in-progress spinner / success / failure icon). Stays visible
-/// for 1 second after configuration completes so the user can evaluate the
-/// results, then fades out.
+/// The shared loader card: one or two titled columns ("Application" / "MCPs"),
+/// each a list of label + status-icon rows. Purely a projection of
+/// `LoaderController`; owns no logic. Used both by the startup window (with a
+/// title) and the usage overlay (without).
 ///
-/// The overlay is purely a UI projection of `AppViewModel.mcpConfiguration`;
-/// it owns no business logic. It is shown only when there is at least one
-/// entry and either a configuration pass is in progress or the 1-second
-/// display delay hasn't elapsed yet.
-struct MCPConfigurationOverlay: View {
-    @EnvironmentObject private var store: AppViewModel
-
-    /// Whether the overlay should currently be visible. True while
-    /// `isConfiguring` is true, and for 1 second after it flips to false (so
-    /// the user can see the final results).
-    @State private var visible = false
-    /// Task that hides the overlay 1 second after configuration completes.
-    @State private var hideTask: Task<Void, Never>?
+/// Columns have a fixed width so the card is content-sized (not stretched to
+/// fill its container); the host (window / overlay) centers it.
+struct LoaderCard: View {
+    @ObservedObject private var loader = LoaderController.shared
+    let title: String?
 
     var body: some View {
-        Group {
-            if visible {
-                content
-                    .transition(.opacity)
-            }
-        }
-        .animation(.easeInOut(duration: 0.2), value: visible)
-        .onChange(of: store.mcpConfiguration) { _, newState in
-            handle(newState)
-        }
-        .onAppear {
-            handle(store.mcpConfiguration)
-        }
-    }
-
-    /// The overlay content: a dimmed background and a centered card listing
-    /// each server's status.
-    private var content: some View {
-        ZStack {
-            Color.black.opacity(0.35)
-                .ignoresSafeArea()
-                .contentShape(Rectangle())
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Configuring MCP servers")
+        VStack(alignment: .leading, spacing: 14) {
+            if let title {
+                Text(title)
                     .font(.headline)
                     .foregroundStyle(.primary)
-                ForEach(store.mcpConfiguration.entries) { entry in
-                    row(for: entry)
+            }
+            HStack(alignment: .top, spacing: 28) {
+                ForEach(loader.sections) { section in
+                    column(section)
                 }
             }
-            .padding(20)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-            .shadow(radius: 12)
-            .frame(maxWidth: 360)
         }
+        .padding(20)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .shadow(radius: 12)
+        .fixedSize()
     }
 
-    /// One status row: server name (left) and status icon (right).
-    @ViewBuilder
-    private func row(for entry: MCPConfigurationEntry) -> some View {
-        HStack(spacing: 16) {
-            Text(entry.name)
-                .font(.callout)
-                .foregroundStyle(.primary)
-                .lineLimit(1)
+    private func column(_ section: LoaderSection) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(section.title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ForEach(section.entries) { entry in
+                row(entry)
+            }
+        }
+        .frame(width: 225, alignment: .leading)
+    }
+
+    /// Every row carries a stable subtitle (entry count / "pending" / tool
+    /// count / error), rendered as a caption under the label. The caption is
+    /// always reserved so row heights stay constant as statuses change.
+    private func row(_ entry: LoaderEntry) -> some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(entry.label)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(entry.detail ?? " ")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .opacity(entry.detail == nil ? 0 : 1)
+            }
             Spacer(minLength: 8)
-            statusIcon(for: entry)
+            statusIcon(entry.status)
                 .frame(width: 20, height: 20)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// The SF Symbol / spinner for a given status.
     @ViewBuilder
-    private func statusIcon(for entry: MCPConfigurationEntry) -> some View {
-        switch entry.status {
+    private func statusIcon(_ status: LoaderStatus) -> some View {
+        switch status {
         case .pending:
             Image(systemName: "circle")
                 .foregroundStyle(.secondary)
@@ -89,32 +80,52 @@ struct MCPConfigurationOverlay: View {
         case .success:
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
+        case .warning:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.yellow)
         case .failed:
             Image(systemName: "xmark.circle.fill")
                 .foregroundStyle(.red)
         }
     }
+}
 
-    /// Decides overlay visibility based on the configuration state. Shows the
-    /// overlay while configuring (and when there are entries), and schedules
-    /// a 1-second hide after configuration completes.
-    private func handle(_ state: MCPConfigurationState) {
-        let hasEntries = !state.entries.isEmpty
-        if state.isConfiguring && hasEntries {
-            hideTask?.cancel()
-            hideTask = nil
-            visible = true
-        } else if hasEntries {
-            hideTask?.cancel()
-            hideTask = Task { @MainActor in
-                try? await Task.sleep(for: .seconds(1))
-                guard !Task.isCancelled else { return }
-                visible = false
+/// The usage-mode overlay on the main window. Shown only when the loader is
+/// visible in `.usage` mode — i.e. an external change is being applied. Renders
+/// only the affected columns/entries, then fades out 1 second after everything
+/// settles.
+struct LoaderOverlay: View {
+    @ObservedObject private var loader = LoaderController.shared
+
+    private var show: Bool { loader.visible && loader.mode == .usage }
+
+    var body: some View {
+        Group {
+            if show {
+                ZStack {
+                    Color.black.opacity(0.35)
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                    LoaderCard(title: nil)
+                }
+                .transition(.opacity)
             }
-        } else {
-            hideTask?.cancel()
-            hideTask = nil
-            visible = false
         }
+        .animation(.easeInOut(duration: 0.2), value: show)
+    }
+}
+
+/// The content hosted in the startup loader window. Renders the full card
+/// (both columns); the window's `alphaValue` handles the fade-out, so this view
+/// always shows its current sections.
+///
+/// The surrounding padding gives the card's rounded drop shadow room to render
+/// inside the (transparent, borderless) window — without it the shadow is
+/// clipped to the window's straight bounds, producing a rectangular halo that
+/// fights the card's rounded corners.
+struct LoaderStartView: View {
+    var body: some View {
+        LoaderCard(title: "iCanHazAI starting up…")
+            .padding(24)
     }
 }

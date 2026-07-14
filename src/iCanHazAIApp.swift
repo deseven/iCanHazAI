@@ -21,10 +21,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // launch-time race where a mid-atomic-write read produced an empty
         // config that was later persisted as defaults (wiping user config).
         ConfigManager.bootstrapSynchronously()
+        // Present the startup loader window immediately. At this point we've
+        // read the main config and can enumerate what needs loading, so the
+        // loader is seeded synchronously (Application column + MCPs column)
+        // and completed as the engine emits load events. Runs on the main
+        // thread during launch, so assume main-actor isolation.
+        MainActor.assumeIsolated {
+            LoaderWindowController.shared.present()
+            // Reveal the main window only once the loader has finished loading
+            // everything and its 1-second results display has started. Until
+            // then the main window is kept invisible so the loader is the sole
+            // thing on screen during boot.
+            LoaderController.shared.startupReadyHandler = {
+                MainWindowRevealer.shared.markReady()
+            }
+        }
         debugLog("App", "applicationWillFinishLaunching — starting engine")
         // Start the UI-free engine at launch so it outlives any window and
         // can later be driven by a CLI.
         Task { await ChatEngine.shared.start() }
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Hide the SwiftUI main window the moment it exists (before the user
+        // sees it) so only the loader is visible during boot. alphaValue (not
+        // orderOut) keeps the window laid out so its `WindowAccessor` still
+        // resolves and registers it. The loader panel is an NSPanel and is
+        // left alone.
+        MainActor.assumeIsolated {
+            for window in NSApplication.shared.windows where !(window is NSPanel) {
+                window.alphaValue = 0
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -35,10 +63,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// Coordinates revealing the main window after the startup loader finishes.
+///
+/// The main window is created (and laid out) at launch but kept at
+/// `alphaValue = 0` so it isn't visible while the loader runs. The loader's
+/// `startupReadyHandler` calls `markReady()` once everything has loaded and the
+/// 1-second results display has begun; `register(_:)` is called by the window's
+/// `WindowAccessor` once the `NSWindow` exists. Whichever signal arrives first
+/// is held; the window is revealed only once both have occurred.
+///
+/// A 30-second safety fallback reveals the window even if the ready signal
+/// never arrives (e.g. a stuck MCP), so the app is never left bricked behind
+/// the loader.
+@MainActor
+final class MainWindowRevealer {
+    static let shared = MainWindowRevealer()
+
+    private var window: NSWindow?
+    private var ready = false
+    private var revealed = false
+    private var fallbackTask: Task<Void, Never>?
+
+    private init() {}
+
+    /// Called from `WindowAccessor` once the main `NSWindow` is resolved.
+    func register(_ window: NSWindow) {
+        guard self.window == nil else { return }
+        self.window = window
+        scheduleFallbackIfNeeded()
+        revealIfReady()
+    }
+
+    /// Called from `LoaderController.startupReadyHandler` when the loader's
+    /// 1-second results display begins.
+    func markReady() {
+        ready = true
+        revealIfReady()
+    }
+
+    private func revealIfReady() {
+        guard ready, let window, !revealed else { return }
+        revealed = true
+        fallbackTask?.cancel()
+        fallbackTask = nil
+        debugLog("App", "MainWindowRevealer — revealing main window")
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.2
+            window.animator().alphaValue = 1
+        }
+        self.window = nil
+    }
+
+    private func scheduleFallbackIfNeeded() {
+        guard fallbackTask == nil else { return }
+        fallbackTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(30))
+            guard !Task.isCancelled else { return }
+            guard let self else { return }
+            guard !self.revealed else { return }
+            debugLog("App", "MainWindowRevealer — loader never signaled ready; revealing as fallback")
+            self.ready = true
+            self.revealIfReady()
+        }
+    }
+}
+
 @main
 struct iCanHazAIApp: App {
     @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
     @StateObject private var viewModel = AppViewModel()
+    // Captured directly from the view hierarchy via `WindowAccessor` once the
+    // main window exists, so later lookups don't need to guess which of
+    // `NSApp.windows` is "the" window (the startup loader's borderless
+    // `NSPanel` is also in that list and briefly ends up first).
+    @State private var mainWindow: NSWindow?
 
     init() {
         // Ignore SIGPIPE so writing to a closed stdout (e.g. when launched
@@ -53,17 +153,19 @@ struct iCanHazAIApp: App {
             MainWindow()
                 .environmentObject(viewModel)
                 .frame(minWidth: viewModel.chatInfoSidebarVisible ? 1050 : 860, minHeight: 500)
-                .onAppear {
-                    NSApplication.shared.activate(ignoringOtherApps: true)
-                    if let window = NSApplication.shared.windows.first(where: { $0.contentViewController is NSHostingController<AnyView> }) ?? NSApplication.shared.windows.first {
-                        window.makeKeyAndOrderFront(nil)
-                        restoreWindowFrame(window)
-                        trackWindowFrame(window)
-                        applyMinSize(to: window)
-                    }
-                }
+                .background(WindowAccessor { window in
+                    guard mainWindow !== window else { return }
+                    mainWindow = window
+                    restoreWindowFrame(window)
+                    trackWindowFrame(window)
+                    applyMinSize(to: window)
+                    // Keep the window invisible until the loader signals ready;
+                    // `register` defers the key/order-front to the reveal.
+                    window.alphaValue = 0
+                    MainWindowRevealer.shared.register(window)
+                })
                 .onChange(of: viewModel.chatInfoSidebarVisible) { _, _ in
-                    if let window = NSApplication.shared.windows.first(where: { $0.contentViewController is NSHostingController<AnyView> }) ?? NSApplication.shared.windows.first {
+                    if let window = mainWindow {
                         applyMinSize(to: window)
                     }
                 }
@@ -235,5 +337,32 @@ private final class WindowFrameTracker: NSObject, NSWindowDelegate {
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+    }
+}
+
+// MARK: - Window accessor
+
+/// Bridges to the actual `NSWindow` hosting this SwiftUI view by reading
+/// `NSView.window` off the injected `NSView`, instead of guessing which entry
+/// in `NSApp.windows` is "the" main window — a guess that silently picked the
+/// startup loader's borderless `NSPanel` instead, since it's created (and
+/// thus registered) before this window exists.
+private struct WindowAccessor: NSViewRepresentable {
+    let onResolve: (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            if let window = view.window {
+                onResolve(window)
+            }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        if let window = nsView.window {
+            onResolve(window)
+        }
     }
 }

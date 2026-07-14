@@ -4,7 +4,7 @@
 import Foundation
 import TOML
 
-/// In-process tools exposed only to the bundled **iCHAI Configurator** role.
+/// In-process tools exposed only to the bundled **Configurator** role.
 ///
 /// Unlike the in-house MCP servers (Utils/Filesystem/Code/Shell), these tools
 /// are not a subprocess — they run directly inside the app so they can validate
@@ -26,8 +26,8 @@ enum ConfiguratorTools {
     static let serverName = "Configurator"
 
     /// The role name that activates these tools. Matches the protected built-in
-    /// role bundled at `default/roles/iCHAI Configurator.toml`.
-    static let configuratorRoleName = "iCHAI Configurator"
+    /// role bundled at `default/roles/Configurator.toml`.
+    static let configuratorRoleName = "Configurator"
 
     // MARK: - Tool definitions
 

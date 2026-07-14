@@ -242,6 +242,12 @@ enum EngineEvent: Sendable {
     /// configuration overlay. Carries the full snapshot so the overlay always
     /// reflects the current state.
     case mcpConfiguration(MCPConfigurationState)
+    /// A batch of external Application-resource reloads (config / connections /
+    /// prompts / roles) just started. Carries the per-resource totals the
+    /// loader shows in its labels. The corresponding "completed" signal is the
+    /// existing `.configChanged` / `.rolesChanged` / `.promptsChanged` /
+    /// `.connectionsChanged` event for each resource.
+    case loaderActivity(LoaderActivity)
     /// `config.toml` was reloaded from disk (external edit picked up via FSEvents).
     /// The UI should refresh its cached preferences from `ConfigManager`.
     case configChanged

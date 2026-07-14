@@ -7,7 +7,7 @@ import SwiftUI
 /// role. Lists every available role (filename without `.toml`) with its
 /// description as a subtitle, styled like the chat sidebar list.
 ///
-/// Built-in roles (served from the app bundle, e.g. the `iCHAI Configurator`)
+/// Built-in roles (served from the app bundle, e.g. the `Configurator`)
 /// are pinned to the bottom in their own section, separated by a divider, so
 /// they're always visible and distinct from user-defined roles.
 ///

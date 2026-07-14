@@ -93,7 +93,7 @@ extension AllAppTests {
             let valid = await call("write_role", env, ["name": "Coder", "content": "prompt = \"Assistant\"\n"])
             #expect(!valid.isError)
 
-            let protected = await call("write_role", env, ["name": "iCHAI Configurator", "content": "prompt = \"Assistant\"\n"])
+            let protected = await call("write_role", env, ["name": "Configurator", "content": "prompt = \"Assistant\"\n"])
             #expect(protected.isError)
         }
 
@@ -108,7 +108,7 @@ extension AllAppTests {
             let valid = await call("write_prompt", env, ["name": "Greeter", "content": "You are friendly."])
             #expect(!valid.isError)
 
-            let protected = await call("write_prompt", env, ["name": "iCHAI Configurator", "content": "nope"])
+            let protected = await call("write_prompt", env, ["name": "Configurator", "content": "nope"])
             #expect(protected.isError)
 
             let read = await call("read_prompt", env, ["name": "Greeter"])
@@ -171,8 +171,8 @@ extension AllAppTests {
             #expect(await call("delete_mcp", env, ["name": "Temp"]).isError)
 
             // Protected names cannot be deleted.
-            #expect(await call("delete_role", env, ["name": "iCHAI Configurator"]).isError)
-            #expect(await call("delete_prompt", env, ["name": "iCHAI Configurator"]).isError)
+            #expect(await call("delete_role", env, ["name": "Configurator"]).isError)
+            #expect(await call("delete_prompt", env, ["name": "Configurator"]).isError)
         }
 
         // MARK: - read_log

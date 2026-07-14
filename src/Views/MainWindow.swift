@@ -35,7 +35,7 @@ struct MainWindow: View {
             .navigationTitle(store.selectedChatItem?.displayTitle ?? "")
         }
         .overlay {
-            MCPConfigurationOverlay()
+            LoaderOverlay()
         }
         .sheet(isPresented: $store.showRolePicker) {
             RolePickerView(

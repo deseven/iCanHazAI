@@ -56,7 +56,7 @@ final class EnvironmentManager: @unchecked Sendable {
     /// file with the same name is ignored in favor of the bundled version, so
     /// these built-ins can always be relied upon (e.g. the onboarding
     /// configurator role and its prompt).
-    static let protectedBundleNames: Set<String> = ["iCHAI Configurator"]
+    static let protectedBundleNames: Set<String> = ["Configurator"]
 
     /// Loads a protected built-in role TOML from the app bundle by name.
     /// Returns nil if the bundle's roles resource directory (`Default/roles`)
@@ -346,6 +346,44 @@ final class EnvironmentManager: @unchecked Sendable {
             debugLog("Env", "⚠️ failed to decode role \"\(name)\" — \(error)")
             return nil
         }
+    }
+
+    // MARK: - Resource counts (for the startup loader)
+
+    /// Number of connection files across both provider directories.
+    func connectionCount() -> Int {
+        countFiles(in: openaiConnectionsURL, ext: "jsonc") + countFiles(in: anthropicConnectionsURL, ext: "jsonc")
+    }
+
+    /// Number of prompt files in the user directory (excluding protected
+    /// built-ins) plus the protected built-in prompts served from the bundle.
+    func promptCount() -> Int {
+        countFiles(in: promptsURL, ext: "md", excludingProtected: true) + Self.protectedBundleNames.count
+    }
+
+    /// Number of role files in the user directory (excluding protected
+    /// built-ins) plus the protected built-in roles served from the bundle.
+    func roleCount() -> Int {
+        countFiles(in: rolesURL, ext: "toml", excludingProtected: true) + Self.protectedBundleNames.count
+    }
+
+    /// Number of custom MCP config files in the MCPs directory.
+    func mcpCount() -> Int {
+        countFiles(in: mcpsURL, ext: "toml")
+    }
+
+    private func countFiles(in directory: URL, ext: String, excludingProtected: Bool = false) -> Int {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
+            return 0
+        }
+        return files.filter { url in
+            guard url.pathExtension == ext else { return false }
+            if excludingProtected {
+                let name = url.deletingPathExtension().lastPathComponent
+                if Self.protectedBundleNames.contains(name) { return false }
+            }
+            return true
+        }.count
     }
 
     // MARK: - Connections

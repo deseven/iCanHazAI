@@ -529,10 +529,53 @@ actor ChatEngine {
         pendingReloads.removeAll(keepingCapacity: false)
         guard !batch.isEmpty else { return }
         debugLog("FSEvents", "flushing \(batch.count) debounced reload(s)")
+        // Surface the Application resources in this batch to the loader so it
+        // can show a partial "Application" column while the reload runs.
+        // `counts` is the on-disk total per resource (drives the
+        // success/warning/failed derivation); `refreshCounts` is how many items
+        // are actually being refreshed in this batch (drives the subtitle, e.g.
+        // "1 entry" for a single-file edit). The matching "completed" signal is
+        // the per-resource changed event emitted by the handlers below. MCP /
+        // chat files are excluded — MCPs are reported via `.mcpConfiguration`.
+        var appCounts: [AppResource: Int] = [:]
+        var refreshCounts: [AppResource: Int] = [:]
+        for (_, entry) in batch {
+            if let r = appResource(for: entry.kind) {
+                appCounts[r] = resourceTotalCount(r)
+                refreshCounts[r, default: 0] += 1
+            }
+        }
+        if !appCounts.isEmpty {
+            emit(.loaderActivity(LoaderActivity(counts: appCounts, refreshCounts: refreshCounts)))
+        }
         for (path, entry) in batch {
             executeReload(path: path, kind: entry.kind, event: entry.event)
         }
         Task { await ConfigManager.shared.validateReferences() }
+    }
+
+    /// Maps a file kind to the Application resource it belongs to, or nil for
+    /// kinds the loader doesn't report (chats, MCPs).
+    private func appResource(for kind: FileKind) -> AppResource? {
+        switch kind {
+        case .config: return .configuration
+        case .connectionOpenai, .connectionAnthropic: return .connections
+        case .prompt: return .prompts
+        case .role: return .roles
+        case .mcp, .chat: return nil
+        }
+    }
+
+    /// Total number of items of a resource type currently on disk (plus bundled
+    /// built-ins for roles/prompts). Used for the loader's `[num]` labels and
+    /// the success/warning/failed derivation.
+    private func resourceTotalCount(_ resource: AppResource) -> Int {
+        switch resource {
+        case .configuration: return 1
+        case .connections: return env.connectionCount()
+        case .prompts: return env.promptCount()
+        case .roles: return env.roleCount()
+        }
     }
 
     /// Executes the single-file reload for a debounced event. Dispatches to the
@@ -755,6 +798,13 @@ actor ChatEngine {
     /// the chat cache with disk and re-runs the MCP configuration pass since
     /// the set of servers may have changed in ways we couldn't track per-file.
     private func fullRescan() {
+        // A full rescan reloads every Application resource; surface it to the
+        // loader so the user sees what's being reconciled.
+        emit(.loaderActivity(LoaderActivity(counts: [
+            .connections: env.connectionCount(),
+            .prompts: env.promptCount(),
+            .roles: env.roleCount(),
+        ])))
         fullRescanChats()
         roles = env.loadAllRoles()
         prompts = env.loadAllPrompts()
@@ -1573,7 +1623,7 @@ actor ChatEngine {
         if dropped > 0 {
             debugLog("MCP", "deduplicated tools — dropped \(dropped) duplicate name(s), chat=\(filename)")
         }
-        // The bundled iCHAI Configurator role uses a set of in-process config
+        // The bundled Configurator role uses a set of in-process config
         // tools (no subprocess) instead of MCP servers. They are dispatched
         // directly from `executeToolCall`, bypassing `MCPManager`.
         if role(for: chat)?.name == ConfiguratorTools.configuratorRoleName {
