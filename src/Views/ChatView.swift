@@ -52,7 +52,7 @@ struct ChatView: View {
                     }
                     .buttonStyle(.borderless)
                     .help("Attach images")
-                    .disabled(store.isStreaming)
+                    .disabled(store.isStreaming || inputDisabled)
                     .padding(.leading, 2)
                     .padding(.top, 6)
                 }
@@ -84,6 +84,7 @@ struct ChatView: View {
                         }
                     )
                     .frame(height: editorHeight)
+                    .disabled(inputDisabled)
                 }
                 .padding(.vertical, 6)
 
@@ -200,6 +201,7 @@ struct ChatView: View {
     /// Whether the send/stop button should be disabled.
     private var sendDisabled: Bool {
         if store.isStreaming { return false }
+        if !store.selectedChatHasValidRole { return true }
         if !store.selectedChatHasConnection { return true }
         if !pendingImages.isEmpty { return false }
         let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -209,76 +211,76 @@ struct ChatView: View {
         return !store.selectedChatLastMessageIsFromUser
     }
 
+    /// Whether the message input is disabled (the chat's role is missing).
+    private var inputDisabled: Bool {
+        !store.selectedChatHasValidRole
+    }
+
     /// A header bar that sits at the top of the chat content area (below the
     /// window titlebar). By living inside the content, it naturally shifts left
     /// when the inspector panel opens — unlike toolbar items which span the full
     /// titlebar width regardless of the inspector.
+    ///
+    /// The connection picker, prompt picker, and working-directory picker are
+    /// shown only when the chat's role allows the corresponding override. MCPs
+    /// are selected at the role level, so only a count indicator is shown.
     private struct ChatHeaderBar: View {
         @EnvironmentObject var store: AppViewModel
         let onToggleInfo: () -> Void
+        @State private var workdirPicker = false
 
         var body: some View {
             HStack(spacing: 8) {
-                Picker("Connection", selection: Binding(
-                    get: { store.selectedChatItem?.chat?.connection ?? "" },
-                    set: { store.setConnection($0) }
-                )) {
-                    Text("No connection").tag("")
-                    ForEach(store.connections) { connection in
-                        Text(connection.displayName).tag(connection.id)
+                if store.selectedChatConnectionPickerVisible {
+                    Picker("Connection", selection: Binding(
+                        get: { store.selectedChatConnectionID ?? "" },
+                        set: { store.setConnection($0) }
+                    )) {
+                        Text("No connection").tag("")
+                        ForEach(store.connections) { connection in
+                            Text(connection.displayName).tag(connection.id)
+                        }
                     }
+                    .labelsHidden()
+                    .frame(width: 220)
+                    .disabled(store.isStreaming)
                 }
-                .labelsHidden()
-                .frame(width: 220)
 
-                Picker("Role", selection: Binding(
-                    get: { store.selectedChatItem?.chat?.role ?? "" },
-                    set: { store.setRole($0) }
-                )) {
-                    Text("No role").tag("")
-                    ForEach(store.roles) { role in
-                        HStack {
-                            Text(role.name)
-                            if role.isDefault {
-                                Image(systemName: "checkmark.seal")
-                            }
+                if store.selectedChatPromptPickerVisible {
+                    Picker("Prompt", selection: Binding(
+                        get: { store.selectedChatPromptName ?? "" },
+                        set: { store.setPrompt($0.isEmpty ? nil : $0) }
+                    )) {
+                        Text("No prompt").tag("")
+                        ForEach(store.prompts) { prompt in
+                            Text(prompt.name).tag(prompt.name)
                         }
-                        .tag(role.name)
                     }
+                    .labelsHidden()
+                    .frame(width: 180)
+                    .disabled(store.isStreaming)
                 }
-                .labelsHidden()
-                .frame(width: 180)
 
-                if !store.mcps.isEmpty {
-                    // In-house servers lead the list, separated from custom
-                    // ones by a divider (omitted when there are no customs).
-                    let inHouse = store.mcps.filter { $0.isBuiltin }
-                    let customs = store.mcps.filter { !$0.isBuiltin }
-                    Menu {
-                        Button("None") {
-                            store.setActiveMCPs(nil)
-                        }
-                        Divider()
-                        ForEach(inHouse) { server in
-                            mcpToggle(server: server)
-                        }
-                        if !customs.isEmpty {
-                            Divider()
-                            ForEach(customs) { server in
-                                mcpToggle(server: server)
-                            }
-                        }
+                if store.selectedChatWorkdirPickerVisible {
+                    Button {
+                        workdirPicker = true
                     } label: {
-                        // Count only MCPs that still exist; a chat may reference
-                        // servers that were since deleted from disk.
-                        let available = Set(store.mcps.map(\.name))
-                        let count = store.selectedChatItem?.chat?.mcps?.filter { available.contains($0) }.count ?? 0
-                        Label("MCP: \(count)", systemImage: "wrench.and.screwdriver")
+                        Label(workdirLabel, systemImage: "folder")
                             .labelStyle(.titleAndIcon)
+                            .lineLimit(1)
                     }
-                    .menuStyle(.borderlessButton)
+                    .buttonStyle(.borderless)
                     .fixedSize()
-                    .help("Active MCP servers for this chat")
+                    .help("Working directory")
+                    .disabled(store.isStreaming)
+                }
+
+                // MCP count indicator: MCPs are selected at the role level.
+                if let role = store.selectedRole {
+                    Label("\(role.mcpCount)", systemImage: "wrench.and.screwdriver")
+                        .labelStyle(.titleAndIcon)
+                        .foregroundStyle(.secondary)
+                        .help("\(role.mcpCount) MCP server(s) selected by role “\(role.name)”")
                 }
 
                 Spacer()
@@ -293,28 +295,27 @@ struct ChatView: View {
             }
             .padding(.horizontal, 12)
             .frame(height: 36)
-        }
-
-        /// A toggle menu item for one MCP server, checked when the active chat
-        /// has it selected. Shared by the in-house and custom server sections.
-        @ViewBuilder
-        private func mcpToggle(server: MCPServer) -> some View {
-            let active = store.selectedChatItem?.chat?.mcps?.contains(server.name) ?? false
-            Button {
-                var current = store.selectedChatItem?.chat?.mcps ?? []
-                if active {
-                    current.removeAll { $0 == server.name }
-                } else {
-                    current.append(server.name)
-                }
-                store.setActiveMCPs(current.isEmpty ? nil : current)
-            } label: {
-                if active {
-                    Label(server.name, systemImage: "checkmark")
-                } else {
-                    Text(server.name)
+            .fileImporter(
+                isPresented: $workdirPicker,
+                allowedContentTypes: [.folder],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    if let url = urls.first {
+                        store.setWorkingDirectory(url.path)
+                    }
+                case .failure:
+                    break
                 }
             }
+        }
+
+        private var workdirLabel: String {
+            if let path = store.selectedChatWorkingDirectory {
+                return (path as NSString).abbreviatingWithTildeInPath
+            }
+            return "No directory"
         }
     }
 

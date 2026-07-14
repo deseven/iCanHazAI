@@ -20,7 +20,4 @@ enum WorkdirConfig {
         }
         return NSHomeDirectory()
     }()
-
-    /// The "current directory" surfaced to the model in tool descriptions.
-    static var currentDirectory: String { `default` }
 }

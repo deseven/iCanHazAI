@@ -18,6 +18,9 @@ Use `build.sh` to build the project (this also builds `chatrenderer`). Check the
 # Research & Experimentation
 For quick research, use one-liners with `swift -e`. For anything longer, write a temporary Swift file and run it.
 
+# Documentation
+Our `README.md` is outdated and not maintained - that's fine for now. However, please update `default/prompts/iCHAI Configurator.md` on major changes, this is the prompt for our agentic configuration manager that should have all current information about existing configs.
+
 # Tests
 The app is partly covered with tests. Please write new tests when touching old code or writing new one.
 

@@ -52,6 +52,7 @@ actor ChatEngine {
 
     private(set) var records: [ChatRecord] = []
     private(set) var roles: [Role] = []
+    private(set) var prompts: [Prompt] = []
     private(set) var connections: [Connection] = []
     /// The chat data abstraction layer. Owns the SwiftData metadata cache and
     /// all chat file I/O. The engine never reads/writes chat files directly.
@@ -115,7 +116,7 @@ actor ChatEngine {
     private let env = EnvironmentManager.shared
     private var watcher: EnvironmentWatcher?
 
-    // MARK: - Self-write suppression & per-path debouncing
+    // MARK: - Self-write suppression & debouncing
 
     /// Paths we just wrote ourselves, mapped to the time their suppression
     /// expires. Events for these paths are ignored until the expiry passes.
@@ -125,11 +126,16 @@ actor ChatEngine {
     /// How long after one of our own saves we ignore FSEvents for that path.
     /// Covers the atomic-write burst (temp file create → temp remove → rename).
     private let selfWriteSuppressionInterval: TimeInterval = 1.0
-    /// Pending debounced reload tasks, keyed by file path. A burst of events
-    /// for the same file collapses into a single reload once the burst settles.
-    private var pendingReloads: [String: Task<Void, Never>] = [:]
-    /// Settle interval for per-path debouncing of external FSEvents.
-    private let reloadDebounceInterval: UInt64 = 80_000_000 // 80ms
+    /// Accumulated unique file paths awaiting a debounced reload, mapped to the
+    /// latest (kind, event) seen for that path. A burst of events across many
+    /// files is coalesced into a single flush once the burst settles.
+    private var pendingReloads: [String: (kind: FileKind, event: FSEvent)] = [:]
+    /// The single global debounce task. Reset on every incoming event; when it
+    /// fires (1s after the last event) all accumulated paths are reloaded.
+    private var pendingReloadTask: Task<Void, Never>?
+    /// Settle interval for debouncing of external FSEvents: 1s after the last
+    /// event, all unique files that changed are reloaded together.
+    private let reloadDebounceInterval: UInt64 = 1_000_000_000 // 1s
     /// Paths for which we've already logged a self-write suppression line in
     /// the current burst. Prevents the atomic-write event storm (temp create,
     /// temp rename, target rename, target modify, …) from producing one
@@ -142,6 +148,7 @@ actor ChatEngine {
     private enum FileKind: Sendable {
         case chat
         case role
+        case prompt
         case connectionOpenai
         case connectionAnthropic
         case mcp
@@ -169,6 +176,10 @@ actor ChatEngine {
         await ConfigManager.shared.load()
         debugLog("Engine", "start — ensuring directories and wiring MCP handlers")
         env.ensureDirectories()
+        // Seed bundled default prompts/roles into the user directory (copies
+        // only missing files, so user edits are preserved). Done before the
+        // FSEvents watcher starts so the copies don't trigger reload bursts.
+        env.seedDefaults()
         // Wire the ConfigManager self-write hook so our own config.toml writes
         // are registered in the per-path suppression registry before the
         // atomic-write burst hits FSEvents.
@@ -201,13 +212,15 @@ actor ChatEngine {
         } }
         loadFromCache()
         roles = env.loadAllRoles()
+        prompts = env.loadAllPrompts()
         connections = env.loadConnections()
         customMcps = env.loadMCPs()
         rebuildMcpList()
         startWatching()
-        debugLog("Engine", "start complete — \(records.count) chats, \(connections.count) connections, \(mcps.count) MCP servers, \(roles.count) roles")
+        debugLog("Engine", "start complete — \(records.count) chats, \(connections.count) connections, \(mcps.count) MCP servers, \(roles.count) roles, \(prompts.count) prompts")
         emit(.chatsChanged(records))
         emit(.rolesChanged(roles))
+        emit(.promptsChanged(prompts))
         emit(.connectionsChanged(connections))
         emit(.mcpsChanged(mcps))
         // Kick off the initial MCP configuration pass now that configs are
@@ -233,6 +246,7 @@ actor ChatEngine {
             // Emit the current snapshot right away.
             continuation.yield(.chatsChanged(self.records))
             continuation.yield(.rolesChanged(self.roles))
+            continuation.yield(.promptsChanged(self.prompts))
             continuation.yield(.connectionsChanged(self.connections))
             continuation.yield(.mcpsChanged(self.mcps))
         }
@@ -292,7 +306,7 @@ actor ChatEngine {
 
     /// The central event router. Every incoming `FSEvent` is classified by
     /// path and type, checked against the per-path self-write suppression
-    /// registry, debounced per-path, and dispatched to the appropriate
+    /// registry, debounced globally, and dispatched to the appropriate
     /// per-kind handler.
     private func handleFSEvent(_ event: FSEvent) {
         switch event {
@@ -402,9 +416,13 @@ actor ChatEngine {
         if url.deletingLastPathComponent().path == env.chatsURL.path, ext == "json" {
             return .chat
         }
-        // roles/*.md
-        if url.deletingLastPathComponent().path == env.rolesURL.path, ext == "md" {
+        // roles/*.toml
+        if url.deletingLastPathComponent().path == env.rolesURL.path, ext == "toml" {
             return .role
+        }
+        // prompts/*.md
+        if url.deletingLastPathComponent().path == env.promptsURL.path, ext == "md" {
+            return .prompt
         }
         // connections/openai/*.jsonc
         if url.deletingLastPathComponent().path == env.openaiConnectionsURL.path, ext == "jsonc" {
@@ -485,25 +503,41 @@ actor ChatEngine {
         loggedSuppressionForPath.remove(path)
     }
 
-    // MARK: - Per-path debouncing
+    // MARK: - Global debouncing
 
-    /// Schedules a debounced reload for the given path. A burst of events for
-    /// the same file collapses into a single reload after the settle interval.
+    /// Records the path and (re)arms the single global debounce task. Every
+    /// incoming event resets the 1s timer; when it finally fires, all unique
+    /// paths accumulated in `pendingReloads` are reloaded together.
     private func scheduleReload(path: String, kind: FileKind, event: FSEvent) {
-        pendingReloads[path]?.cancel()
+        pendingReloads[path] = (kind, event)
+        pendingReloadTask?.cancel()
         let interval = reloadDebounceInterval
-        pendingReloads[path] = Task { [weak self] in
+        pendingReloadTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: interval)
             guard !Task.isCancelled else { return }
-            await self?.executeReload(path: path, kind: kind, event: event)
+            await self?.flushPendingReloads()
         }
-        debugLog("FSEvents", "scheduled debounced reload for \(env.relativePath(URL(fileURLWithPath: path)))")
+        debugLog("FSEvents", "armed debounce for \(env.relativePath(URL(fileURLWithPath: path))) (\(pendingReloads.count) pending)")
+    }
+
+    /// Drains all accumulated reloads once the debounce settles. Each unique
+    /// path is reloaded via its latest recorded event, then config references
+    /// are validated once for the whole batch.
+    private func flushPendingReloads() {
+        pendingReloadTask = nil
+        let batch = pendingReloads
+        pendingReloads.removeAll(keepingCapacity: false)
+        guard !batch.isEmpty else { return }
+        debugLog("FSEvents", "flushing \(batch.count) debounced reload(s)")
+        for (path, entry) in batch {
+            executeReload(path: path, kind: entry.kind, event: entry.event)
+        }
+        Task { await ConfigManager.shared.validateReferences() }
     }
 
     /// Executes the single-file reload for a debounced event. Dispatches to the
     /// per-kind handler based on the event type.
     private func executeReload(path: String, kind: FileKind, event: FSEvent) {
-        pendingReloads[path] = nil
         let url = URL(fileURLWithPath: path)
         let relPath = env.relativePath(url)
         debugLog("FSEvents", "executing reload — kind=\(kind), path=\(relPath)")
@@ -513,6 +547,8 @@ actor ChatEngine {
             handleChatFileEvent(event, url: url)
         case .role:
             handleRoleFileEvent(event, url: url)
+        case .prompt:
+            handlePromptFileEvent(event, url: url)
         case .connectionOpenai, .connectionAnthropic:
             handleConnectionFileEvent(event, url: url)
         case .mcp:
@@ -520,11 +556,6 @@ actor ChatEngine {
         case .config:
             handleConfigFileEvent(event, url: url)
         }
-
-        // Validate config references after any environment change so stale
-        // default_connection / default_role / utility_connection entries are
-        // cleared from the config file.
-        Task { await ConfigManager.shared.validateReferences() }
     }
 
     // MARK: - Per-kind handlers
@@ -561,6 +592,7 @@ actor ChatEngine {
                         records[idx].chat = chat
                     }
                     records[idx].cachedName = info.name
+                    records[idx].cachedRole = info.role
                     records[idx].cachedModificationTime = info.modificationTime
                     records[idx].lastError = nil
                 } else {
@@ -569,6 +601,7 @@ actor ChatEngine {
                         filename: filename,
                         chat: nil,
                         cachedName: info.name,
+                        cachedRole: info.role,
                         cachedModificationTime: info.modificationTime
                     ))
                 }
@@ -588,36 +621,63 @@ actor ChatEngine {
         }
     }
 
-    /// Handles an FSEvent for a custom role file.
+    /// Handles an FSEvent for a role TOML file.
     private func handleRoleFileEvent(_ event: FSEvent, url: URL) {
         let name = url.deletingPathExtension().lastPathComponent
+        // Protected built-ins are served from the bundle and never modified
+        // via the user directory — ignore any user-dir events for them so a
+        // user shadow file can't clobber or remove the built-in role.
+        if EnvironmentManager.protectedBundleNames.contains(name) { return }
         switch event {
         case .itemCreated, .itemClonedAtPath, .itemDataModified, .itemRenamed:
             // Reload the single role and merge into the in-memory list.
             if let role = env.loadSingleRole(name: name) {
                 if let idx = roles.firstIndex(where: { $0.name == name }) {
-                    // Only update if it's a custom role (defaults are read-only).
-                    if !roles[idx].isDefault {
-                        roles[idx] = role
-                    } else {
-                        // A custom role now overrides a default with the same name.
-                        roles[idx] = role
-                    }
+                    roles[idx] = role
                 } else {
                     roles.append(role)
                     roles.sort { $0.name < $1.name }
                 }
             } else {
                 // File gone or undecodable — treat as removal.
-                roles.removeAll(where: { $0.name == name && !$0.isDefault })
+                roles.removeAll(where: { $0.name == name })
             }
+            // Working directory / MCP isolation may have changed: relaunch
+            // in-house MCP copies for chats using this role so they pick up the
+            // new args on the next request (deferred if a chat is streaming).
+            relaunchInHouseForRole(name)
             emit(.rolesChanged(roles))
         case .itemRemoved:
-            // Remove the custom role; a default with the same name (if any) re-emerges.
-            roles.removeAll(where: { $0.name == name && !$0.isDefault })
-            // Re-merge defaults so a shadowed default reappears.
-            roles = env.loadAllRoles()
+            roles.removeAll(where: { $0.name == name })
+            relaunchInHouseForRole(name)
             emit(.rolesChanged(roles))
+        default:
+            break
+        }
+    }
+
+    /// Handles an FSEvent for a prompt file.
+    private func handlePromptFileEvent(_ event: FSEvent, url: URL) {
+        let name = url.deletingPathExtension().lastPathComponent
+        // Protected built-ins are served from the bundle and never modified
+        // via the user directory — ignore any user-dir events for them.
+        if EnvironmentManager.protectedBundleNames.contains(name) { return }
+        switch event {
+        case .itemCreated, .itemClonedAtPath, .itemDataModified, .itemRenamed:
+            if let prompt = env.loadSinglePrompt(name: name) {
+                if let idx = prompts.firstIndex(where: { $0.name == name }) {
+                    prompts[idx] = prompt
+                } else {
+                    prompts.append(prompt)
+                    prompts.sort { $0.name < $1.name }
+                }
+            } else {
+                prompts.removeAll(where: { $0.name == name })
+            }
+            emit(.promptsChanged(prompts))
+        case .itemRemoved:
+            prompts.removeAll(where: { $0.name == name })
+            emit(.promptsChanged(prompts))
         default:
             break
         }
@@ -697,10 +757,12 @@ actor ChatEngine {
     private func fullRescan() {
         fullRescanChats()
         roles = env.loadAllRoles()
+        prompts = env.loadAllPrompts()
         connections = env.loadConnections()
         customMcps = env.loadMCPs()
         rebuildMcpList()
         emit(.rolesChanged(roles))
+        emit(.promptsChanged(prompts))
         emit(.connectionsChanged(connections))
         emit(.mcpsChanged(mcps))
         configureMCPs()
@@ -825,6 +887,7 @@ actor ChatEngine {
                 filename: info.filename,
                 chat: existing?.chat,
                 cachedName: info.name,
+                cachedRole: info.role,
                 cachedModificationTime: info.modificationTime,
                 isStreaming: existing?.isStreaming ?? false,
                 hasUnreadActivity: existing?.hasUnreadActivity ?? false,
@@ -852,6 +915,7 @@ actor ChatEngine {
                 filename: info.filename,
                 chat: existing?.chat,
                 cachedName: info.name,
+                cachedRole: info.role,
                 cachedModificationTime: info.modificationTime,
                 isStreaming: existing?.isStreaming ?? false,
                 hasUnreadActivity: existing?.hasUnreadActivity ?? false,
@@ -883,31 +947,27 @@ actor ChatEngine {
 
     // MARK: - Chat management
 
-    /// Creates a new empty chat and returns its filename. The chat is held
-    /// in memory only — it is NOT written to disk until the user sends the
-    /// first message. Any other empty chats (no messages) are pruned first.
-    /// Applies default connection and role from the app config if set.
+    /// Creates a new empty chat for the given role and returns its filename.
+    /// The chat is held in memory only — it is NOT written to disk until the
+    /// user sends the first message. Any other empty chats (no messages) are
+    /// pruned first. The connection is seeded from the role (or the app's
+    /// default connection when the role has none).
     @discardableResult
-    func createNewChat() async -> String {
+    func createNewChat(role roleName: String) async -> String {
         pruneEmptyChats(except: nil)
         let filename = store.newChatFilename()
         var chat = Chat()
+        chat.role = roleName
 
-        // Apply config defaults for new chats (read from ConfigManager).
-        let config = ConfigManager.shared
-        let dc = await config.getDefaultConnection()
-        let dr = await config.getDefaultRole()
-        // Verify the defaults still reference valid items.
-        if let conn = dc, self.connections.contains(where: { $0.id == conn }) {
-            chat.connection = conn
-        }
-        if let role = dr, self.roles.contains(where: { $0.name == role }) {
-            chat.role = role
-        }
-        // Seed the chat with all configured MCP servers by default.
-        let allMcpNames = self.mcps.map(\.name)
-        if !allMcpNames.isEmpty {
-            chat.mcps = allMcpNames
+        let role = self.roles.first(where: { $0.name == roleName })
+        // Seed the connection from the role, falling back to the app default.
+        if let roleConn = role?.connection, self.connections.contains(where: { $0.id == roleConn }) {
+            chat.connection = roleConn
+        } else {
+            let dc = await ConfigManager.shared.getDefaultConnection()
+            if let conn = dc, self.connections.contains(where: { $0.id == conn }) {
+                chat.connection = conn
+            }
         }
         // In-memory only — no disk write until the first message is sent.
         let record = ChatRecord(filename: filename, chat: chat)
@@ -1012,6 +1072,7 @@ actor ChatEngine {
             records[idx].chat = chat
             if let info = store.getEntry(filename: filename) {
                 records[idx].cachedName = info.name
+                records[idx].cachedRole = info.role
                 records[idx].cachedModificationTime = info.modificationTime
             }
         }
@@ -1047,6 +1108,137 @@ actor ChatEngine {
         return true
     }
 
+    // MARK: - Role resolution
+
+    /// A role's MCP entry resolved against the known servers: the bare server
+    /// name (with `internal::` stripped), whether it's a builtin, the tool
+    /// selection filter, the auto-allow set, and directory-isolation flag.
+    struct ResolvedRoleMCP: Equatable {
+        let serverName: String
+        let isBuiltin: Bool
+        let toolsFilter: [String]
+        let autoAllow: Set<String>
+        let autoAllowAll: Bool
+        let directoryIsolation: Bool
+
+        /// Whether a tool (by raw name) should be auto-approved.
+        func autoAllows(tool name: String) -> Bool {
+            autoAllowAll || autoAllow.contains(name)
+        }
+    }
+
+    /// Looks up the role referenced by a chat. Nil if the chat has no role or
+    /// the role no longer exists.
+    private func role(for chat: Chat) -> Role? {
+        guard let roleName = chat.role else { return nil }
+        return roles.first(where: { $0.name == roleName })
+    }
+
+    /// The effective connection for a chat: the per-chat override when the role
+    /// allows it, otherwise the role's connection, otherwise nil. The caller is
+    /// responsible for falling back to the app default when nil.
+    private func effectiveConnection(for chat: Chat) -> Connection? {
+        let role = self.role(for: chat)
+        if role?.connectionOverrideAllowed == true, let id = chat.connection,
+           let conn = connections.first(where: { $0.id == id }) {
+            return conn
+        }
+        if let roleConn = role?.connection, !roleConn.isEmpty,
+           let conn = connections.first(where: { $0.id == roleConn }) {
+            return conn
+        }
+        if let id = chat.connection, let conn = connections.first(where: { $0.id == id }) {
+            return conn
+        }
+        return nil
+    }
+
+    /// The system prompt content for a chat: the per-chat prompt override when
+    /// the role allows it, otherwise the role's prompt. Nil when the role has
+    /// no prompt or the referenced prompt can't be found.
+    private func systemPromptContent(for chat: Chat) -> String? {
+        guard let role = self.role(for: chat) else { return nil }
+        let promptName: String?
+        if role.promptOverrideAllowed, let override = chat.prompt {
+            promptName = override
+        } else {
+            promptName = role.promptName
+        }
+        guard let name = promptName else { return nil }
+        return prompts.first(where: { $0.name == name })?.content
+    }
+
+    /// Resolves the role's MCP entries against the known servers. Entries whose
+    /// server doesn't exist (e.g. a deleted custom MCP) are dropped.
+    private func resolvedMCPs(for chat: Chat) -> [ResolvedRoleMCP] {
+        guard let role = self.role(for: chat), let entries = role.config.mcps else { return [] }
+        let builtinNames = Set(builtinMcps.map(\.name))
+        let customNames = Set(mcps.map(\.name))
+        return entries.compactMap { entry in
+            let isBuiltin = entry.mcp.hasPrefix("internal::")
+            let serverName = isBuiltin ? String(entry.mcp.dropFirst("internal::".count)) : entry.mcp
+            if isBuiltin {
+                guard builtinNames.contains(serverName) else { return nil }
+            } else {
+                guard customNames.contains(serverName) else { return nil }
+            }
+            return ResolvedRoleMCP(
+                serverName: serverName,
+                isBuiltin: isBuiltin,
+                toolsFilter: entry.tools ?? [],
+                autoAllow: Set(entry.autoAllow ?? []),
+                autoAllowAll: entry.autoAllowAll ?? false,
+                directoryIsolation: entry.directoryIsolation ?? false
+            )
+        }
+    }
+
+    /// The effective working directory for a chat: the per-chat override when
+    /// the role allows it, otherwise the role's working directory. Nil when
+    /// neither is set. Forwarded to in-house MCP servers that support
+    /// `--workdir` (Filesystem, Code, Shell) so relative paths resolve against
+    /// it. `~` is expanded by `MCPManager` when building the launch command.
+    private func effectiveWorkingDirectory(for chat: Chat) -> String? {
+        guard let role = self.role(for: chat) else { return nil }
+        if role.workingDirectoryOverrideAllowed, let override = chat.workingDirectory, !override.isEmpty {
+            return override
+        }
+        return role.workingDirectory
+    }
+
+    /// Filenames whose in-house MCP copies must be torn down once the current
+    /// request finishes. Populated when the working directory or role config
+    /// changes mid-stream — we can't kill a copy mid-tool-call without failing
+    /// the in-flight call — and drained by `finishStream`.
+    private var pendingInHouseRelaunch: Set<String> = []
+
+    /// Tears down the per-chat in-house MCP copies for `filename` so the next
+    /// request relaunches them with the current working directory / isolation
+    /// flags. If a request is streaming for this chat, the teardown is deferred
+    /// to `finishStream` to avoid killing an in-flight tool call.
+    private func scheduleInHouseRelaunch(filename: String) async {
+        if isStreaming(filename: filename) {
+            pendingInHouseRelaunch.insert(filename)
+        } else {
+            pendingInHouseRelaunch.remove(filename)
+            await MCPManager.shared.disconnectAllInHouse(chatFilename: filename)
+        }
+    }
+
+    /// Schedules an in-house relaunch for every chat currently using `roleName`.
+    /// Used when a role's config (working directory, MCP isolation) is edited
+    /// on disk, so running copies pick up the new args on the next request.
+    private func relaunchInHouseForRole(_ roleName: String) {
+        let affected = records.filter { $0.effectiveRoleName == roleName }.map(\.filename)
+        for filename in affected {
+            if isStreaming(filename: filename) {
+                pendingInHouseRelaunch.insert(filename)
+            } else {
+                Task { await MCPManager.shared.disconnectAllInHouse(chatFilename: filename) }
+            }
+        }
+    }
+
     // MARK: - Sending messages
 
     /// Sends a user message and streams the assistant response for the given chat.
@@ -1062,9 +1254,7 @@ actor ChatEngine {
         await ensureChatLoaded(filename: filename)
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return false }
         guard let chat = records[idx].chat else { return false }
-        guard let connectionID = chat.connection,
-              !connectionID.isEmpty,
-              let connection = connections.first(where: { $0.id == connectionID }) else {
+        guard let connection = effectiveConnection(for: chat) else {
             emit(.error("Please select a connection in the status bar."))
             return false
         }
@@ -1086,12 +1276,12 @@ actor ChatEngine {
             ImageManager.commit($0, chatFilename: filename)
         }
 
-        // Build the message list including the system prompt from the selected role.
+        // Build the message list including the system prompt from the role's
+        // prompt (or the chat's per-chat prompt override when allowed).
         var messages: [ChatMessage] = []
-        if let roleName = baseChat.role,
-           let role = roles.first(where: { $0.name == roleName }) {
+        if let promptContent = systemPromptContent(for: baseChat) {
             let caps = await renderingCapabilities()
-            messages.append(ChatMessage(role: .system, content: role.content + caps))
+            messages.append(ChatMessage(role: .system, content: promptContent + caps))
         }
         messages.append(contentsOf: baseChat.messages)
         let userMessage = ChatMessage(role: .user, content: text, images: committed.isEmpty ? nil : committed)
@@ -1132,8 +1322,7 @@ actor ChatEngine {
         await ensureChatLoaded(filename: filename)
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         guard let chat = records[idx].chat else { return }
-        guard let connectionID = chat.connection,
-              let connection = connections.first(where: { $0.id == connectionID }) else {
+        guard let connection = effectiveConnection(for: chat) else {
             emit(.error("Please select a connection in the status bar."))
             return
         }
@@ -1150,13 +1339,12 @@ actor ChatEngine {
         records[idx].chat = updatedChat
         emit(.chatsChanged(records))
 
-        // Rebuild the request history: system prompt (from the selected role)
+        // Rebuild the request history: system prompt (from the role's prompt)
         // followed by all messages up to (and including) the last user message.
         var messages: [ChatMessage] = []
-        if let roleName = updatedChat.role,
-           let role = roles.first(where: { $0.name == roleName }) {
+        if let promptContent = systemPromptContent(for: updatedChat) {
             let caps = await renderingCapabilities()
-            messages.append(ChatMessage(role: .system, content: role.content + caps))
+            messages.append(ChatMessage(role: .system, content: promptContent + caps))
         }
         messages.append(contentsOf: updatedChat.messages.dropLast())
 
@@ -1298,33 +1486,38 @@ actor ChatEngine {
         finishStream(filename: filename)
     }
 
-    /// Gathers tool definitions from the chat's active MCP servers using the
-    /// cached tool lists populated during MCP configuration. Servers that
-    /// failed configuration (no cached tools) are silently excluded — they're
-    /// already known to be unhealthy, and per spec we don't block LLM
-    /// interactions because of them. On-demand stdio servers are started
-    /// (if not already running) before the request via
-    /// `ensureOnDemandRunning`.
+    /// Gathers tool definitions from the chat's role-selected MCPs using the
+    /// cached tool lists populated during MCP configuration. The role's per-MCP
+    /// `tools` selection is applied (intersected with the server's own tool
+    /// allowlist). Servers that failed configuration (no cached tools) are
+    /// silently excluded. On-demand / in-house stdio servers are started before
+    /// the request.
     ///
     /// No per-request listTools call is made: the cache is authoritative for
     /// the duration of a configuration pass. If a server becomes unreachable
     /// mid-conversation, `callTool` returns a clear error in the RESULT field
     /// and the model can retry on the next call.
     private func gatherTools(filename: String) async -> [ToolDefinition] {
-        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return [] }
-        let activeNames = records[idx].chat?.mcps ?? []
-        guard !activeNames.isEmpty else { return [] }
+        guard let idx = records.firstIndex(where: { $0.filename == filename }),
+              let chat = records[idx].chat else { return [] }
+        let resolved = resolvedMCPs(for: chat)
+        guard !resolved.isEmpty else { return [] }
 
-        // Route each active server by kind: in-house (builtin) servers run as
-        // per-chat copies, custom on-demand servers run in the shared pool.
-        // Always-on / http servers are already connected from configuration.
-        // `builtinMcps` is captured at init, so routing doesn't depend on the
-        // configure pass having completed.
-        let inHouseNames = Set(builtinMcps.map(\.name))
-        let inHouse = activeNames.filter { inHouseNames.contains($0) }
-        let custom = activeNames.filter { !inHouseNames.contains($0) }
+        // Route each server by kind: in-house (builtin) servers run as per-chat
+        // copies, custom on-demand servers run in the shared pool. Always-on /
+        // http servers are already connected from configuration. In-house copies
+        // are launched with the chat's effective working directory and the
+        // per-entry isolation flag so Filesystem/Code/Shell confine themselves
+        // to the role's working directory when configured.
+        let inHouse = resolved.filter { $0.isBuiltin }.map { ($0.serverName, $0.directoryIsolation) }
+        let custom = resolved.filter { !$0.isBuiltin }.map(\.serverName)
         if !inHouse.isEmpty {
-            await MCPManager.shared.ensureInHouseRunning(chatFilename: filename, names: inHouse)
+            let workdir = effectiveWorkingDirectory(for: chat)
+            await MCPManager.shared.ensureInHouseRunning(
+                chatFilename: filename,
+                servers: inHouse,
+                workingDirectory: workdir
+            )
         }
         if !custom.isEmpty {
             await MCPManager.shared.ensureOnDemandRunning(custom)
@@ -1332,34 +1525,28 @@ actor ChatEngine {
 
         var defs: [ToolDefinition] = []
         var perServerCounts: [(String, Int)] = []
-        for serverName in activeNames {
+        for r in resolved {
             // Read the cached tool list. Servers with no cache entry either
             // failed configuration or were never configured; skip them.
-            guard let tools = await MCPManager.shared.cachedTools(for: serverName) else {
-                debugLog("MCP", "no cached tools — server=\"\(serverName)\", chat=\(filename) (skipped)")
-                perServerCounts.append((serverName, 0))
+            guard let tools = await MCPManager.shared.cachedTools(for: r.serverName) else {
+                debugLog("MCP", "no cached tools — server=\"\(r.serverName)\", chat=\(filename) (skipped)")
+                perServerCounts.append((r.serverName, 0))
                 continue
             }
-            // Apply the per-server tool allowlist. An empty/nil list means all
-            // tools are allowed; otherwise only tools whose name matches an
-            // entry are advertised to the LLM.
-            let serverConfig = await MCPManager.shared.serverConfig(for: serverName)
-            let allowlist = serverConfig?.tools ?? []
-            let allowSet = Set(allowlist)
-            let filtered: [MCPTool]
-            if allowSet.isEmpty {
-                filtered = tools
-            } else {
-                filtered = tools.filter { allowSet.contains($0.name) }
+            // Apply both the server's own tool allowlist and the role's tool
+            // selection. An empty list means "all tools".
+            let serverConfig = await MCPManager.shared.serverConfig(for: r.serverName)
+            let serverAllow = Set(serverConfig?.tools ?? [])
+            let roleAllow = Set(r.toolsFilter)
+            let filtered = tools.filter { t in
+                (serverAllow.isEmpty || serverAllow.contains(t.name)) &&
+                (roleAllow.isEmpty || roleAllow.contains(t.name))
             }
-            perServerCounts.append((serverName, filtered.count))
-            // The prefix namespaces the tool name sent to the model. It is
-            // required config, so a server with cached tools always has one;
-            // fall back to the server name only as a defensive default.
-            let prefix = serverConfig?.prefix ?? serverName
+            perServerCounts.append((r.serverName, filtered.count))
+            let prefix = serverConfig?.prefix ?? r.serverName
             defs.append(contentsOf: filtered.map { tool in
                 ToolDefinition(
-                    serverName: serverName,
+                    serverName: r.serverName,
                     prefix: prefix,
                     name: tool.name,
                     description: tool.description,
@@ -1367,10 +1554,9 @@ actor ChatEngine {
                 )
             })
         }
-        // Deduplicate by namespaced name. Some MCP servers expose tools
-        // with duplicate names, which makes the LLM API reject
-        // the request with "Tool names must be unique". We keep the first
-        // occurrence of each name and drop the rest.
+        // Deduplicate by namespaced name. Some MCP servers expose tools with
+        // duplicate names, which makes the LLM API reject the request with
+        // "Tool names must be unique". Keep the first occurrence.
         var seen = Set<String>()
         var unique: [ToolDefinition] = []
         var dropped = 0
@@ -1384,7 +1570,7 @@ actor ChatEngine {
         if dropped > 0 {
             debugLog("MCP", "deduplicated tools — dropped \(dropped) duplicate name(s), chat=\(filename)")
         }
-        debugLog("MCP", "gathered tools — chat=\(filename), total=\(unique.count), servers=\(activeNames.count)")
+        debugLog("MCP", "gathered tools — chat=\(filename), total=\(unique.count), servers=\(resolved.count)")
         for (serverName, count) in perServerCounts {
             debugLog("MCP", "  server=\"\(serverName)\" contributed \(count) tool(s)")
         }
@@ -1403,8 +1589,7 @@ actor ChatEngine {
         scheduleCoalescedEmit()
     }
 
-    /// Executes a single tool call via `MCPManager`, going through the approval
-    /// hook (which auto-approves in this iteration). Returns the tool result.
+    /// Executes a single tool call via `MCPManager`. Returns the tool result.
     /// `filename` is the owning chat's filename, forwarded to `MCPManager` so
     /// progress notifications route to this chat's live `tool`-role message.
     /// `tools` is the exact set of tool definitions advertised to the model for
@@ -1412,30 +1597,55 @@ actor ChatEngine {
     /// `namespacedName` to recover the owning server + raw tool name, which
     /// avoids the ambiguity of splitting on the first underscore (prefixless
     /// servers expose tools like `tavily_search` whose own name contains `_`).
+    ///
+    /// Tools flagged as auto-allowed by the chat's role (`auto_allow` /
+    /// `auto_allow_all`) skip the approval prompt and execute immediately.
     private func executeToolCall(_ call: ToolCall, filename: String, tools: [ToolDefinition]) async throws -> ToolResult {
-        // The approval hook. Suspends until the user allows or denies the call
-        // (or cancels via stop, which throws `CancellationError`). The chat
-        // remains in its streaming state throughout — this is a pause, not a
-        // stop.
-        let approval = try await approveToolCall(chatFilename: filename, call: call)
+        // Match the model-issued call name directly against the namespaced
+        // names we advertised. This is unambiguous and doesn't depend on
+        // prefix parsing, which mis-splits prefixless tools.
+        guard let match = tools.first(where: { $0.namespacedName == call.name }) else {
+            debugLog("Tool", "no advertised tool matches name \"\(call.name)\" — chat=\(filename)")
+            return ToolResult(callID: call.id, content: "No MCP tool found for name \"\(call.name)\".", isError: true)
+        }
+        let serverName = match.serverName
+        let toolName = match.name
+
+        // Auto-allow: if the role marks this tool (or all tools from this
+        // server) as auto-approved, skip the approval prompt entirely.
+        let chat = records.first(where: { $0.filename == filename })?.chat
+        let resolved = chat.map { resolvedMCPs(for: $0) } ?? []
+        let autoAllowed = resolved.first(where: { $0.serverName == serverName })?.autoAllows(tool: toolName) ?? false
+        // Working directory + isolation for the owning in-house server, used
+        // when a per-chat copy is (re)started lazily from this call.
+        let workdir = chat.flatMap { effectiveWorkingDirectory(for: $0) }
+        let isolation = resolved.first(where: { $0.serverName == serverName })?.directoryIsolation ?? false
+
+        let approval: ToolApproval
+        if autoAllowed {
+            debugLog("Tool", "auto-allowed \(serverName)/\(toolName) — callID=\(call.id), chat=\(filename)")
+            approval = .allow
+        } else {
+            // The approval hook. Suspends until the user allows or denies the
+            // call (or cancels via stop, which throws `CancellationError`). The
+            // chat remains in its streaming state throughout — a pause, not a
+            // stop.
+            approval = try await approveToolCall(chatFilename: filename, call: call)
+        }
+
         switch approval {
         case .allow:
-            // Match the model-issued call name directly against the
-            // namespaced names we advertised. This is unambiguous and doesn't
-            // depend on prefix parsing, which mis-splits prefixless tools.
-            guard let match = tools.first(where: { $0.namespacedName == call.name }) else {
-                debugLog("Tool", "no advertised tool matches name \"\(call.name)\" — chat=\(filename)")
-                return ToolResult(callID: call.id, content: "No MCP tool found for name \"\(call.name)\".", isError: true)
-            }
-            let serverName = match.serverName
-            let toolName = match.name
             debugLog("Tool", "executing \(serverName)/\(toolName) — callID=\(call.id), chat=\(filename)")
             // In-house servers run as per-chat copies; custom servers use the
             // shared connection pool. Routing uses `builtinMcps` (captured at
             // init) so it doesn't depend on the configure pass.
             let result: ToolResult
             if builtinMcps.contains(where: { $0.name == serverName }) {
-                result = await MCPManager.shared.callInHouseTool(chatFilename: filename, server: serverName, name: toolName, arguments: call.arguments, callID: call.id)
+                result = await MCPManager.shared.callInHouseTool(
+                    chatFilename: filename, server: serverName, name: toolName,
+                    arguments: call.arguments, callID: call.id,
+                    workingDirectory: workdir, directoryIsolation: isolation
+                )
             } else {
                 result = await MCPManager.shared.callTool(server: serverName, name: toolName, arguments: call.arguments, callID: call.id, chatFilename: filename)
             }
@@ -1667,10 +1877,17 @@ actor ChatEngine {
         store.saveChat(finalChat, filename: filename)
         if let info = store.getEntry(filename: filename) {
             records[idx].cachedName = info.name
+            records[idx].cachedRole = info.role
             records[idx].cachedModificationTime = info.modificationTime
         }
         records[idx].isStreaming = false
         streamTasks[filename] = nil
+        // If a working-directory / role change was deferred while this chat was
+        // streaming, tear down its in-house MCP copies now so the next request
+        // relaunches them with the current args.
+        if pendingInHouseRelaunch.remove(filename) != nil {
+            Task { await MCPManager.shared.disconnectAllInHouse(chatFilename: filename) }
+        }
         // Flag as unread so the user is notified of new activity — but only if
         // this isn't the chat the user is currently looking at. When the
         // finished chat is the selected one the user has already seen the
@@ -1888,18 +2105,32 @@ actor ChatEngine {
         guard var chat = records[idx].chat else { return }
         chat.role = roleName
         saveChat(chat, filename: filename)
+        // The new role may carry a different working directory / isolation
+        // config: relaunch the chat's in-house MCP copies accordingly.
+        await scheduleInHouseRelaunch(filename: filename)
         emit(.chatsChanged(records))
     }
 
-    /// Updates the set of active MCP servers for a chat. `names` is the list
-    /// of server names to enable; pass an empty array (or nil) to disable all.
-    func setActiveMCPs(filename: String, names: [String]?) async {
+    /// Updates the per-chat prompt override for a chat.
+    func setPrompt(filename: String, promptName: String?) async {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         await ensureChatLoaded(filename: filename)
         guard var chat = records[idx].chat else { return }
-        let filtered = (names ?? []).filter { name in self.mcps.contains(where: { $0.name == name }) }
-        chat.mcps = filtered.isEmpty ? nil : filtered
+        chat.prompt = promptName
         saveChat(chat, filename: filename)
+        emit(.chatsChanged(records))
+    }
+
+    /// Updates the per-chat working-directory override for a chat.
+    func setWorkingDirectory(filename: String, path: String?) async {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        await ensureChatLoaded(filename: filename)
+        guard var chat = records[idx].chat else { return }
+        chat.workingDirectory = path
+        saveChat(chat, filename: filename)
+        // The working directory drives in-house MCP `--workdir`/`--confine`:
+        // relaunch the chat's copies so they pick up the new path.
+        await scheduleInHouseRelaunch(filename: filename)
         emit(.chatsChanged(records))
     }
 

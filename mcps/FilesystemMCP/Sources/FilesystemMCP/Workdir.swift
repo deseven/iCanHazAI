@@ -72,18 +72,23 @@ struct Workdir {
         }
     }
 
-    /// The default search root for find_file/find_text.
+    /// The default search root for find_file/find_text. Returns the model-facing
+    /// current directory so it round-trips correctly through `resolve()`: `/`
+    /// when confined (the chroot illusion), the real workdir/home otherwise.
     var defaultRoot: String {
-        root ?? NSHomeDirectory()
+        currentDirectory
     }
 
-    /// Neutral path-argument description mentioning the current directory.
+    /// Directory-neutral path-argument description. Intentionally static so the
+    /// real working-directory path is never baked into the tool descriptions
+    /// (which are cached once at startup from an unconfined instance). The model
+    /// discovers the live current directory via the `pwd` tool.
     var pathDescription: String {
-        "Absolute or relative path, resolved against the current directory (\(currentDirectory))."
+        "Absolute or relative path, resolved against the current working directory."
     }
 
-    /// Neutral search-root description mentioning the current directory.
+    /// Directory-neutral search-root description. See `pathDescription`.
     var searchRootDescription: String {
-        "Directory to search in (absolute or relative to the current directory). Defaults to the current directory (\(currentDirectory))."
+        "Directory to search in (absolute or relative to the current working directory). Defaults to the current working directory."
     }
 }

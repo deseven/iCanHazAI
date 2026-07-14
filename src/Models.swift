@@ -66,24 +66,29 @@ struct Chat: Codable, Identifiable, Equatable {
     var id: UUID
     var messages: [ChatMessage]
     /// Selected connection identifier in the form "provider/name", e.g. "openai/myconn".
+    /// When the chat's role allows connection overrides this is the per-chat
+    /// override; otherwise the role's connection is used and this is ignored.
+    /// If role connection is not defined, a default model will be used.
     var connection: String?
     /// Selected role name.
     var role: String?
+    /// Per-chat prompt override (name of a prompt file, without extension).
+    /// Only honored when the role's `prompt_override_allowed` is true.
+    var prompt: String?
+    /// Per-chat working-directory override. Only honored when the role's
+    /// `working_directory_override_allowed` is true.
+    var workingDirectory: String?
     /// Optional user-defined display title. When nil the UI derives a title
     /// from the first user message (or "New chat").
     var title: String?
-    /// Names of MCP servers active for this chat. Nil when no MCP servers are
-    /// configured or selected. New chats are seeded with servers flagged
-    /// "default for new chats".
-    var mcps: [String]?
-
-    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, title: String? = nil, mcps: [String]? = nil) {
+    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, prompt: String? = nil, workingDirectory: String? = nil, title: String? = nil) {
         self.id = id
         self.messages = messages
         self.connection = connection
         self.role = role
+        self.prompt = prompt
+        self.workingDirectory = workingDirectory
         self.title = title
-        self.mcps = mcps
     }
 
     /// Wall-clock time of the most recent message, used to order chats in the
@@ -124,19 +129,30 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     var createdAt: Date
     /// Cached display name from SwiftData. Available even when `chat` is nil.
     var cachedName: String?
+    /// Cached role name from SwiftData. Mirrors `Chat.role` so the sidebar
+    /// can badge each chat with its role without loading the full chat.
+    var cachedRole: String?
     /// Cached file modification time from SwiftData. Used as the sort key
     /// when the chat is unloaded.
     var cachedModificationTime: Date
 
-    init(filename: String, chat: Chat? = nil, cachedName: String? = nil, cachedModificationTime: Date = Date(), isStreaming: Bool = false, hasUnreadActivity: Bool = false, lastError: String? = nil, createdAt: Date = Date()) {
+    init(filename: String, chat: Chat? = nil, cachedName: String? = nil, cachedRole: String? = nil, cachedModificationTime: Date = Date(), isStreaming: Bool = false, hasUnreadActivity: Bool = false, lastError: String? = nil, createdAt: Date = Date()) {
         self.filename = filename
         self.chat = chat
         self.cachedName = cachedName
+        self.cachedRole = cachedRole
         self.cachedModificationTime = cachedModificationTime
         self.isStreaming = isStreaming
         self.hasUnreadActivity = hasUnreadActivity
         self.lastError = lastError
         self.createdAt = createdAt
+    }
+
+    /// The role name to display for this chat: the live chat's role when
+    /// loaded (authoritative), otherwise the cached role. Nil when neither
+    /// is set.
+    var effectiveRoleName: String? {
+        chat?.role ?? cachedRole
     }
 
     /// Token usage reported by the provider for the most recent assistant
@@ -188,6 +204,9 @@ struct ChatSummary: Identifiable, Equatable, Sendable {
     var id: String { filename }
     let filename: String
     let displayTitle: String
+    /// Role name for this chat (live role when loaded, else cached). The
+    /// sidebar badges each row with this. Nil when no role is set.
+    let roleName: String?
     let isStreaming: Bool
     let hasUnreadActivity: Bool
     let lastError: String?
@@ -199,6 +218,7 @@ struct ChatSummary: Identifiable, Equatable, Sendable {
     init(record: ChatRecord) {
         self.filename = record.filename
         self.displayTitle = record.displayTitle
+        self.roleName = record.effectiveRoleName
         self.isStreaming = record.isStreaming
         self.hasUnreadActivity = record.hasUnreadActivity
         self.lastError = record.lastError
@@ -213,6 +233,7 @@ enum EngineEvent: Sendable {
     /// The full set of chat records changed (load, add, edit, delete, streaming state).
     case chatsChanged([ChatRecord])
     case rolesChanged([Role])
+    case promptsChanged([Prompt])
     case connectionsChanged([Connection])
     /// The set of configured MCP servers changed (load, add, edit, delete).
     case mcpsChanged([MCPServer])
@@ -273,14 +294,105 @@ struct MCPConfigurationState: Sendable, Equatable {
     static let empty = MCPConfigurationState(isConfiguring: false, entries: [])
 }
 
-// MARK: - Role
+// MARK: - Prompt
 
-struct Role: Identifiable, Equatable, Hashable {
+/// A prompt file (`~/iCanHazAI/prompts/<name>.md`). The system prompt sent to
+/// the model is the content of the prompt referenced by the chat's role (or
+/// the chat's per-chat prompt override when allowed).
+struct Prompt: Identifiable, Equatable, Hashable {
     var id: String { name }
     let name: String
     let content: String
-    /// Whether this role is bundled with the app (read-only) or user-defined.
-    let isDefault: Bool
+    /// True for built-in prompts served from the app bundle (never
+    /// user-editable). Derived from the protected built-in name set.
+    var isBuiltin: Bool { EnvironmentManager.protectedBundleNames.contains(name) }
+}
+
+// MARK: - Role config (TOML)
+
+/// One MCP entry within a role config. `mcp` is either `internal::<name>` for
+/// a built-in server or `<name>` for a custom server config.
+struct RoleMCP: Codable, Equatable, Hashable, Sendable {
+    var mcp: String
+    /// Tool selection from this MCP. Empty/nil means all available tools.
+    var tools: [String]?
+    /// Tools to auto-approve (raw tool names, without prefix). Empty/nil = none.
+    var autoAllow: [String]?
+    /// When true, all available tools from this MCP are auto-approved.
+    var autoAllowAll: Bool?
+    /// When true, the in-house server runs confined to the working directory.
+    /// Only meaningful for `internal::Filesystem` and `internal::Code`.
+    var directoryIsolation: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case mcp
+        case tools
+        case autoAllow = "auto_allow"
+        case autoAllowAll = "auto_allow_all"
+        case directoryIsolation = "directory_isolation"
+    }
+}
+
+/// Raw structure decoded from a role TOML file (`~/iCanHazAI/roles/<name>.toml`).
+struct RoleConfig: Codable, Equatable, Hashable {
+    var description: String?
+    var prompt: String?
+    var promptOverrideAllowed: Bool?
+    var workingDirectory: String?
+    var workingDirectoryOverrideAllowed: Bool?
+    var connection: String?
+    var connectionOverrideAllowed: Bool?
+    var mcps: [RoleMCP]?
+    /// SF Symbol name used to badge this role's chats in the sidebar and the
+    /// role picker. Nil → falls back to `Role.defaultIcon`.
+    var icon: String?
+    /// Accent color alias for this role (e.g. "blue", "purple"). Resolved by
+    /// `RoleAccent` to an adaptive system color. Nil/unknown → falls back to
+    /// the macOS accent color (system setting).
+    var accent: String?
+
+    enum CodingKeys: String, CodingKey {
+        case description
+        case prompt
+        case promptOverrideAllowed = "prompt_override_allowed"
+        case workingDirectory = "working_directory"
+        case workingDirectoryOverrideAllowed = "working_directory_override_allowed"
+        case connection
+        case connectionOverrideAllowed = "connection_override_allowed"
+        case mcps
+        case icon
+        case accent
+    }
+}
+
+// MARK: - Role
+
+/// A role: a TOML config combining a prompt, connection, working directory, and
+/// a set of MCPs (with per-MCP tool selection and auto-allow rules). Roles live
+/// in `~/iCanHazAI/roles/<name>.toml`; bundled defaults are seeded from
+/// `default/roles` on startup and are fully user-editable.
+struct Role: Identifiable, Equatable, Hashable {
+    var id: String { name }
+    let name: String
+    let config: RoleConfig
+
+    /// Generic SF Symbol used when a role doesn't define its own `icon`.
+    static let defaultIcon = "brain"
+
+    /// True for built-in roles served from the app bundle (never
+    /// user-editable). Derived from the protected built-in name set.
+    var isBuiltin: Bool { EnvironmentManager.protectedBundleNames.contains(name) }
+    var description: String { config.description ?? "No description." }
+    var promptName: String? { config.prompt }
+    var promptOverrideAllowed: Bool { config.promptOverrideAllowed ?? false }
+    var connectionOverrideAllowed: Bool { config.connectionOverrideAllowed ?? false }
+    var workingDirectoryOverrideAllowed: Bool { config.workingDirectoryOverrideAllowed ?? false }
+    var workingDirectory: String? { config.workingDirectory }
+    var connection: String? { config.connection }
+    /// SF Symbol for this role, falling back to `defaultIcon`.
+    var icon: String { config.icon ?? Role.defaultIcon }
+    /// Number of MCPs selected by this role.
+    var mcpCount: Int { config.mcps?.count ?? 0 }
 }
 
 // MARK: - Connection

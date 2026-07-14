@@ -21,8 +21,8 @@ enum MCPTransport: String, Codable, Sendable {
 ///   same reload-on-config-change rules apply; if the config changes during
 ///   the idle timeout the server is simply stopped until the next request.
 enum MCPRunPolicy: String, Codable, Sendable {
-    case alwaysOn
-    case onDemand
+    case alwaysOn = "always_on"
+    case onDemand = "on_demand"
 }
 
 /// A configured MCP server. One server per file in `~/iCanHazAI/mcp/<name>.toml`,
@@ -85,7 +85,10 @@ struct MCPServer: Identifiable, Equatable, Sendable {
 /// Mirrors `ConnectionConfig` with snake_case keys.
 struct MCPConfig: Codable {
     var transport: String
-    var prefix: String
+    /// Optional tool namespace. Omitted entirely (rather than written as an
+    /// empty string) when the server has no prefix, so a hand-written config
+    /// without a `prefix` key decodes cleanly. Defaults to "" on the server.
+    var prefix: String?
     var runPolicy: String?
     var command: String?
     var endpoint: String?
@@ -95,7 +98,7 @@ struct MCPConfig: Codable {
     enum CodingKeys: String, CodingKey {
         case transport
         case prefix
-        case runPolicy
+        case runPolicy = "run_policy"
         case command
         case endpoint
         case token
@@ -115,7 +118,7 @@ extension MCPServer {
         }
         self.init(
             name: name,
-            prefix: config.prefix,
+            prefix: config.prefix ?? "",
             transport: transport,
             runPolicy: runPolicy,
             command: config.command,
@@ -132,7 +135,7 @@ extension MCPServer {
     var config: MCPConfig {
         MCPConfig(
             transport: transport.rawValue,
-            prefix: prefix,
+            prefix: prefix.isEmpty ? nil : prefix,
             runPolicy: transport == .stdio ? runPolicy?.rawValue : nil,
             command: command,
             endpoint: endpoint,

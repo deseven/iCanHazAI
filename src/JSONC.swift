@@ -153,4 +153,32 @@ enum JSONC {
         guard let source = String(data: data, encoding: .utf8) else { return nil }
         return parse(source, as: type)
     }
+
+    /// Parses JSONC text into a `Decodable` type, throwing on failure so the
+    /// caller can surface a descriptive error instead of silently dropping the
+    /// file. Used by config loaders that log load failures.
+    static func decode<T: Decodable>(_ source: String, as type: T.Type) throws -> T {
+        let json = preprocess(source)
+        guard let data = json.data(using: .utf8) else {
+            throw JSONCError.invalidUTF8
+        }
+        return try JSONDecoder().decode(type, from: data)
+    }
+
+    /// Parses JSONC `Data` into a `Decodable` type, throwing on failure.
+    static func decode<T: Decodable>(_ data: Data, as type: T.Type) throws -> T {
+        guard let source = String(data: data, encoding: .utf8) else {
+            throw JSONCError.invalidUTF8
+        }
+        return try decode(source, as: type)
+    }
+}
+
+enum JSONCError: Error, LocalizedError {
+    case invalidUTF8
+    var errorDescription: String? {
+        switch self {
+        case .invalidUTF8: return "connection config is not valid UTF-8"
+        }
+    }
 }

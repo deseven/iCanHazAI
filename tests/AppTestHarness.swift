@@ -28,8 +28,8 @@ enum AppTestError: Error, CustomStringConvertible {
 /// SwiftData cache under `<root>/.cache/chat.cache`. Removed on deinit.
 ///
 /// This mirrors how the production singletons are wired, but with a temp dir so
-/// tests never touch `~/iCanHazAI`. `ensureDirectories()` creates the chats/
-/// roles/connections/mcp/ tree just like app launch does.
+/// tests never touch `~/iCanHazAI`. `ensureDirectories()` creates the Chats/
+/// Roles/Connections/MCPs/ tree just like app launch does.
 final class TempEnv: @unchecked Sendable {
 
     let rootURL: URL
@@ -215,10 +215,11 @@ enum Fixtures {
         messages: [ChatMessage] = [],
         connection: String? = nil,
         role: String? = nil,
-        title: String? = nil,
-        mcps: [String]? = nil
+        prompt: String? = nil,
+        workingDirectory: String? = nil,
+        title: String? = nil
     ) -> Chat {
-        Chat(id: id, messages: messages, connection: connection, role: role, title: title, mcps: mcps)
+        Chat(id: id, messages: messages, connection: connection, role: role, prompt: prompt, workingDirectory: workingDirectory, title: title)
     }
 
     /// A chat with one user + one assistant message, useful for cache/display tests.

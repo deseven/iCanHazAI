@@ -1,0 +1,23 @@
+description = "Basic agentic development role, includes all required tools for succeful project development."
+prompt = "Developer"
+icon = "hammer"
+accent = "blue"
+connection_override_allowed = true
+working_directory_override_allowed = true
+
+[[mcps]]
+mcp = "internal::Utils"
+tools = []
+auto_allow_all = true
+
+[[mcps]]
+mcp = "internal::Filesystem"
+auto_allow = ["ls", "read_file", "stat"]
+directory_isolation = true
+
+[[mcps]]
+mcp = "internal::Code"
+directory_isolation = true
+
+[[mcps]]
+mcp = "internal::Shell"

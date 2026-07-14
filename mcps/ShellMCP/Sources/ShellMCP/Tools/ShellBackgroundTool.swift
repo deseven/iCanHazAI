@@ -15,7 +15,7 @@ enum ShellBackgroundTool {
                     ]),
                     "cwd": obj([
                         "type": "string",
-                        "description": "Optional working directory (absolute or relative to the current directory). Defaults to the current directory (\(WorkdirConfig.currentDirectory))."
+                        "description": "Optional working directory (absolute or relative to the current directory). Defaults to the current working directory."
                     ])
                 ]),
                 "required": arr("command")

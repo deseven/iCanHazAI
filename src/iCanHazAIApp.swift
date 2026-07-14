@@ -85,8 +85,14 @@ struct iCanHazAIApp: App {
             CommandMenu("Role") {
                 Button("Roles: \(viewModel.roles.count)") {}
                     .disabled(true)
+                Button("Prompts: \(viewModel.prompts.count)") {}
+                    .disabled(true)
+                Divider()
                 Button("Reveal Roles in Finder…") {
                     NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.rolesURL])
+                }
+                Button("Reveal Prompts in Finder…") {
+                    NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.promptsURL])
                 }
             }
 

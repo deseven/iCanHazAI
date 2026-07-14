@@ -63,8 +63,9 @@ struct ChatModelTests {
             messages: [Fixtures.message(role: .user, content: "ping")],
             connection: "openai/myconn",
             role: "Developer",
-            title: "My Chat",
-            mcps: ["filesystem", "shell"]
+            prompt: "Developer",
+            workingDirectory: "~/projects/MyProject",
+            title: "My Chat"
         )
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(Chat.self, from: data)
@@ -89,7 +90,8 @@ struct ChatModelTests {
         #expect(chat.connection == nil)
         #expect(chat.role == nil)
         #expect(chat.title == nil)
-        #expect(chat.mcps == nil)
+        #expect(chat.prompt == nil)
+        #expect(chat.workingDirectory == nil)
         #expect(chat.messages.isEmpty)
     }
 
@@ -194,6 +196,35 @@ struct ChatModelTests {
     func displayTitleUnloadedEmpty() {
         let rec = ChatRecord(filename: "a.json", chat: nil, cachedName: nil)
         #expect(rec.displayTitle == "New chat")
+    }
+
+    // MARK: - Role projection
+
+    @Test("effectiveRoleName prefers the live chat's role")
+    func effectiveRoleNameLoaded() {
+        let rec = ChatRecord(filename: "a.json", chat: Fixtures.chat(role: "Assistant"), cachedRole: "Developer")
+        #expect(rec.effectiveRoleName == "Assistant")
+    }
+
+    @Test("effectiveRoleName falls back to the cached role when unloaded")
+    func effectiveRoleNameUnloaded() {
+        let rec = ChatRecord(filename: "a.json", chat: nil, cachedRole: "Developer")
+        #expect(rec.effectiveRoleName == "Developer")
+    }
+
+    @Test("effectiveRoleName is nil with neither live nor cached role")
+    func effectiveRoleNameNone() {
+        #expect(ChatRecord(filename: "a.json").effectiveRoleName == nil)
+    }
+
+    @Test("ChatSummary carries the effective role name")
+    func summaryRoleName() {
+        let loaded = ChatSummary(record: ChatRecord(filename: "a.json", chat: Fixtures.chat(role: "Assistant")))
+        #expect(loaded.roleName == "Assistant")
+        let cached = ChatSummary(record: ChatRecord(filename: "a.json", chat: nil, cachedRole: "Developer"))
+        #expect(cached.roleName == "Developer")
+        let none = ChatSummary(record: ChatRecord(filename: "a.json"))
+        #expect(none.roleName == nil)
     }
 
     @Test("sortKey uses last message timestamp when loaded with messages")

@@ -17,6 +17,7 @@ let tools: [ToolDefinition] = [
     MvTool.definition,
     RmTool.definition,
     StatTool.definition,
+    PwdTool.definition,
 ]
 
 let dispatch: [String: @Sendable ([String: Value]) async throws -> [Tool.Content]] = Dictionary(

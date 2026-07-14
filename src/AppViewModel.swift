@@ -27,6 +27,7 @@ final class AppViewModel: ObservableObject {
     /// Derived in `apply(.chatsChanged)` from `chatItems`.
     @Published var chatSummaries: [ChatSummary] = []
     @Published var roles: [Role] = []
+    @Published var prompts: [Prompt] = []
     @Published var connections: [Connection] = []
     @Published var mcps: [MCPServer] = []
     /// Live MCP configuration status, mirrored from the engine. Drives the
@@ -61,6 +62,8 @@ final class AppViewModel: ObservableObject {
     /// Filenames of chats awaiting tool-call approval that aren't currently
     /// selected. Each blinks in the sidebar to draw the user's attention.
     @Published var blinkingChatIDs: Set<String> = []
+    /// Whether the new-chat role picker sheet is currently shown.
+    @Published var showRolePicker: Bool = false
     /// Active dock-bounce request id (if any), cancelled when the window
     /// becomes active or all approvals are resolved.
     private var attentionRequestID: Int? = nil
@@ -330,6 +333,8 @@ final class AppViewModel: ObservableObject {
         case .rolesChanged(let roles):
             self.roles = roles
             refreshPreferences()
+        case .promptsChanged(let prompts):
+            self.prompts = prompts
         case .connectionsChanged(let connections):
             self.connections = connections
             refreshPreferences()
@@ -488,13 +493,77 @@ final class AppViewModel: ObservableObject {
         selectedChatItem?.isStreaming ?? false
     }
 
-    /// Whether the selected chat has a valid connection chosen.
+    /// The role assigned to the selected chat, if any (and if it still exists).
+    var selectedRole: Role? {
+        guard let roleName = selectedChatItem?.chat?.role else { return nil }
+        return roles.first(where: { $0.name == roleName })
+    }
+
+    /// Whether the selected chat's assigned role exists. When false the message
+    /// input and send button are disabled (the role was deleted or never set).
+    var selectedChatHasValidRole: Bool {
+        selectedRole != nil
+    }
+
+    /// Whether the selected chat has a resolvable connection: either the
+    /// per-chat override or the role's connection references a valid connection.
     var selectedChatHasConnection: Bool {
-        guard let item = selectedChatItem,
-              let connectionID = item.chat?.connection,
-              !connectionID.isEmpty,
-              connections.contains(where: { $0.id == connectionID }) else { return false }
-        return true
+        guard let chat = selectedChatItem?.chat, let role = selectedRole else { return false }
+        for candidate in [chat.connection, role.connection] {
+            if let id = candidate, !id.isEmpty, connections.contains(where: { $0.id == id }) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// The effective connection id for the selected chat (override when
+    /// allowed, otherwise the role's connection). Nil when none resolves.
+    var selectedChatConnectionID: String? {
+        guard let chat = selectedChatItem?.chat, let role = selectedRole else { return nil }
+        if role.connectionOverrideAllowed, let id = chat.connection,
+           connections.contains(where: { $0.id == id }) {
+            return id
+        }
+        if let id = role.connection, connections.contains(where: { $0.id == id }) {
+            return id
+        }
+        return chat.connection
+    }
+
+    /// Whether the connection picker should be shown for the selected chat.
+    var selectedChatConnectionPickerVisible: Bool {
+        selectedRole?.connectionOverrideAllowed ?? false
+    }
+
+    /// The effective prompt name for the selected chat (override when allowed,
+    /// otherwise the role's prompt).
+    var selectedChatPromptName: String? {
+        guard let chat = selectedChatItem?.chat, let role = selectedRole else { return nil }
+        if role.promptOverrideAllowed, let override = chat.prompt {
+            return override
+        }
+        return role.promptName
+    }
+
+    /// Whether the prompt picker should be shown for the selected chat.
+    var selectedChatPromptPickerVisible: Bool {
+        selectedRole?.promptOverrideAllowed ?? false
+    }
+
+    /// The effective working directory for the selected chat (override when
+    /// allowed, otherwise the role's working directory).
+    var selectedChatWorkingDirectory: String? {
+        guard let chat = selectedChatItem?.chat, let role = selectedRole else { return nil }
+        if role.workingDirectoryOverrideAllowed, let override = chat.workingDirectory {
+            return override
+        }
+        return role.workingDirectory
+    }
+
+    /// Whether the working-directory picker should be shown for the selected chat.
+    var selectedChatWorkdirPickerVisible: Bool {
+        selectedRole?.workingDirectoryOverrideAllowed ?? false
     }
 
     /// Whether the last message in the selected chat is from the user. Used to
@@ -508,9 +577,8 @@ final class AppViewModel: ObservableObject {
     /// Whether the selected chat's connection supports image input. Used to
     /// gate the attach button and drag-and-drop in the input area.
     var selectedChatSupportsImageInput: Bool {
-        guard let item = selectedChatItem,
-              let connectionID = item.chat?.connection,
-              let conn = connections.first(where: { $0.id == connectionID }) else { return false }
+        guard let id = selectedChatConnectionID,
+              let conn = connections.first(where: { $0.id == id }) else { return false }
         return conn.imageInput
     }
 
@@ -562,15 +630,32 @@ final class AppViewModel: ObservableObject {
         Task { await engine.deleteMessage(filename: filename, messageID: messageID) }
     }
 
+    /// Begins creating a new chat by presenting the role picker. The actual
+    /// chat is created once the user picks a role.
     func createNewChat() {
         if let current = selectedChatID {
             previousChatID = current
         }
+        if roles.isEmpty {
+            // No roles available — create a chat with no role. The input will
+            // be disabled until a role is assigned.
+            Task {
+                let filename = await engine.createNewChat(role: "")
+                selectedChatID = filename
+                await engine.selectChat(filename: filename)
+                await engine.markViewed(filename: filename)
+            }
+            return
+        }
+        showRolePicker = true
+    }
+
+    /// Creates a new chat with the chosen role (called from the role picker).
+    func createNewChat(role roleName: String) {
+        showRolePicker = false
         Task {
-            let filename = await engine.createNewChat()
+            let filename = await engine.createNewChat(role: roleName)
             selectedChatID = filename
-            // Route through `selectChat` so the engine's `selectedFilename`
-            // tracks the new chat (and the previously-viewed chat is released).
             await engine.selectChat(filename: filename)
             await engine.markViewed(filename: filename)
         }
@@ -594,10 +679,16 @@ final class AppViewModel: ObservableObject {
         Task { await engine.setRole(filename: filename, roleName: roleName) }
     }
 
-    /// Updates the set of active MCP servers for the selected chat.
-    func setActiveMCPs(_ names: [String]?) {
+    /// Updates the per-chat prompt override for the selected chat.
+    func setPrompt(_ promptName: String?) {
         guard let filename = selectedChatID else { return }
-        Task { await engine.setActiveMCPs(filename: filename, names: names) }
+        Task { await engine.setPrompt(filename: filename, promptName: promptName) }
+    }
+
+    /// Updates the per-chat working-directory override for the selected chat.
+    func setWorkingDirectory(_ path: String?) {
+        guard let filename = selectedChatID else { return }
+        Task { await engine.setWorkingDirectory(filename: filename, path: path) }
     }
 
     /// Triggers a full MCP configuration pass ("File > Reload MCPs…"). Resets

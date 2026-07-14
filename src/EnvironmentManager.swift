@@ -14,6 +14,7 @@ final class EnvironmentManager: @unchecked Sendable {
     let rootURL: URL
     let chatsURL: URL
     let rolesURL: URL
+    let promptsURL: URL
     let connectionsURL: URL
     let openaiConnectionsURL: URL
     let anthropicConnectionsURL: URL
@@ -24,12 +25,13 @@ final class EnvironmentManager: @unchecked Sendable {
     /// The production singleton (`shared`) uses the home-directory root.
     init(rootURL: URL) {
         self.rootURL = rootURL
-        chatsURL = rootURL.appendingPathComponent("chats", isDirectory: true)
-        rolesURL = rootURL.appendingPathComponent("roles", isDirectory: true)
-        connectionsURL = rootURL.appendingPathComponent("connections", isDirectory: true)
+        chatsURL = rootURL.appendingPathComponent("Chats", isDirectory: true)
+        rolesURL = rootURL.appendingPathComponent("Roles", isDirectory: true)
+        promptsURL = rootURL.appendingPathComponent("Prompts", isDirectory: true)
+        connectionsURL = rootURL.appendingPathComponent("Connections", isDirectory: true)
         openaiConnectionsURL = connectionsURL.appendingPathComponent("openai", isDirectory: true)
         anthropicConnectionsURL = connectionsURL.appendingPathComponent("anthropic", isDirectory: true)
-        mcpsURL = rootURL.appendingPathComponent("mcp", isDirectory: true)
+        mcpsURL = rootURL.appendingPathComponent("MCPs", isDirectory: true)
     }
 
     private convenience init() {
@@ -42,8 +44,109 @@ final class EnvironmentManager: @unchecked Sendable {
     /// Ensures the data directory structure exists, creating it if needed.
     func ensureDirectories() {
         let fm = FileManager.default
-        for url in [rootURL, chatsURL, rolesURL, connectionsURL, openaiConnectionsURL, anthropicConnectionsURL, mcpsURL] {
+        for url in [rootURL, chatsURL, rolesURL, promptsURL, connectionsURL, openaiConnectionsURL, anthropicConnectionsURL, mcpsURL] {
             try? fm.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+    }
+
+    // MARK: - Protected built-ins
+
+    /// Names of built-in roles/prompts that are always served from the app
+    /// bundle and never copied into or read from the user directory. A user
+    /// file with the same name is ignored in favor of the bundled version, so
+    /// these built-ins can always be relied upon (e.g. the onboarding
+    /// configurator role and its prompt).
+    static let protectedBundleNames: Set<String> = ["iCHAI Configurator"]
+
+    /// Loads a protected built-in role TOML from the app bundle by name.
+    /// Returns nil if the bundle's roles resource directory (`Default/roles`)
+    /// can't be located or the file is missing/undecodable.
+    nonisolated static func bundledRole(name: String) -> Role? {
+        guard let dir = defaultResourceDir("roles") else { return nil }
+        let url = dir.appendingPathComponent("\(name).toml")
+        debugLog("FileRead", "reading bundled \(url.path)")
+        guard let data = try? Data(contentsOf: url) else {
+            debugLog("Env", "⚠️ failed to read bundled role \"\(name)\"")
+            return nil
+        }
+        do {
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: data)
+            return Role(name: name, config: config)
+        } catch {
+            debugLog("Env", "⚠️ failed to decode bundled role \"\(name)\" — \(error)")
+            return nil
+        }
+    }
+
+    /// Loads a protected built-in prompt from the app bundle by name.
+    /// Returns nil if the bundle's prompts resource directory
+    /// (`Default/prompts`) can't be located or the file is missing.
+    nonisolated static func bundledPrompt(name: String) -> Prompt? {
+        guard let dir = defaultResourceDir("prompts") else { return nil }
+        let url = dir.appendingPathComponent("\(name).md")
+        debugLog("FileRead", "reading bundled \(url.path)")
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        return Prompt(name: name, content: content)
+    }
+
+    // MARK: - Default seeding
+
+    /// Locates a bundled default resource directory for `<sub>` (e.g. "roles",
+    /// "prompts"). Checks the app bundle's `Contents/Resources/Default/<sub>`
+    /// first (the production layout), then the flat `Contents/Resources/<sub>`
+    /// (legacy), then walks up from the main bundle (or CWD) to find a
+    /// `default/<sub>` directory (for `swift run` / `swift test`). Returns nil
+    /// if none exists.
+    nonisolated static func defaultResourceDir(_ sub: String) -> URL? {
+        let fm = FileManager.default
+        if let url = Bundle.main.url(forResource: sub, withExtension: nil, subdirectory: "Default") {
+            return url
+        }
+        if let url = Bundle.main.url(forResource: sub, withExtension: nil) {
+            return url
+        }
+        // Walk up from the bundle's parent dir and the current working dir
+        // (the latter covers `swift run` / `swift test`, where CWD is the
+        // package root) until a `default/<sub>` directory is found.
+        let starts = [
+            Bundle.main.bundleURL.deletingLastPathComponent(),
+            URL(fileURLWithPath: fm.currentDirectoryPath)
+        ]
+        for start in starts {
+            var url = start
+            while url.path != "/" {
+                let candidate = url.appendingPathComponent("default").appendingPathComponent(sub)
+                if fm.fileExists(atPath: candidate.path) { return candidate }
+                url = url.deletingLastPathComponent()
+            }
+        }
+        return nil
+    }
+
+    /// On every startup, copies any missing files from the bundled
+    /// `default/prompts` into `~/iCanHazAI/Prompts` and from `default/roles`
+    /// into `~/iCanHazAI/Roles`. Existing files are never overwritten, so user
+    /// edits to seeded defaults are preserved.
+    func seedDefaults() {
+        seedFromBundle(sub: "prompts", dest: promptsURL, ext: "md")
+        seedFromBundle(sub: "roles", dest: rolesURL, ext: "toml")
+    }
+
+    private func seedFromBundle(sub: String, dest: URL, ext: String) {
+        guard let src = Self.defaultResourceDir(sub) else { return }
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: src, includingPropertiesForKeys: nil) else { return }
+        try? fm.createDirectory(at: dest, withIntermediateDirectories: true)
+        for file in files where file.pathExtension == ext {
+            let name = file.deletingPathExtension().lastPathComponent
+            // Protected built-ins are never copied into the user directory;
+            // they stay in the bundle and are loaded on demand.
+            if Self.protectedBundleNames.contains(name) { continue }
+            let target = dest.appendingPathComponent(file.lastPathComponent)
+            if !fm.fileExists(atPath: target.path) {
+                try? fm.copyItem(at: file, to: target)
+                debugLog("Env", "seeded default \(relativePath(target))")
+            }
         }
     }
 
@@ -151,58 +254,98 @@ final class EnvironmentManager: @unchecked Sendable {
         try? FileManager.default.removeItem(at: url)
     }
 
-    // MARK: - Roles
+    // MARK: - Prompts
 
-    /// Loads default roles bundled with the app (read-only).
-    func loadDefaultRoles() -> [Role] {
-        guard let bundleURL = Bundle.main.url(forResource: "roles", withExtension: nil),
-              let files = try? FileManager.default.contentsOfDirectory(at: bundleURL, includingPropertiesForKeys: nil) else {
-            return []
-        }
-        return files
-            .filter { $0.pathExtension == "md" }
-            .compactMap { url in
-                guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-                let name = url.deletingPathExtension().lastPathComponent
-                return Role(name: name, content: content, isDefault: true)
-            }
-            .sorted { $0.name < $1.name }
-    }
-
-    /// Loads user-defined roles from the roles directory.
-    func loadCustomRoles() -> [Role] {
+    /// Loads all prompt files from the prompts directory, sorted by name.
+    /// Protected built-in prompts are always appended from the app bundle; a
+    /// user file that shadows a protected name is ignored in favor of the
+    /// bundled version.
+    func loadAllPrompts() -> [Prompt] {
         let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(at: rolesURL, includingPropertiesForKeys: nil) else {
-            return []
-        }
-        return files
-            .filter { $0.pathExtension == "md" }
-            .compactMap { url in
-                debugLog("FileRead", "reading \(relativePath(url))")
-                guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        var result: [Prompt] = []
+        if let files = try? fm.contentsOfDirectory(at: promptsURL, includingPropertiesForKeys: nil) {
+            for url in files where url.pathExtension == "md" {
                 let name = url.deletingPathExtension().lastPathComponent
-                return Role(name: name, content: content, isDefault: false)
+                if Self.protectedBundleNames.contains(name) { continue }
+                debugLog("FileRead", "reading \(relativePath(url))")
+                guard let content = try? String(contentsOf: url, encoding: .utf8) else { continue }
+                result.append(Prompt(name: name, content: content))
             }
-            .sorted { $0.name < $1.name }
+        }
+        for name in Self.protectedBundleNames {
+            if let prompt = Self.bundledPrompt(name: name) {
+                result.append(prompt)
+            }
+        }
+        return result.sorted { $0.name < $1.name }
     }
 
-    /// Loads one custom role by name. Returns nil if not found. Does not fall
-    /// back to default roles — those are bundled and never change on disk.
-    func loadSingleRole(name: String) -> Role? {
-        let url = rolesURL.appendingPathComponent("\(name).md")
+    /// Loads one prompt by name. Returns nil if not found. Protected built-in
+    /// names are always resolved from the app bundle.
+    func loadSinglePrompt(name: String) -> Prompt? {
+        if Self.protectedBundleNames.contains(name) {
+            return Self.bundledPrompt(name: name)
+        }
+        let url = promptsURL.appendingPathComponent("\(name).md")
         debugLog("FileRead", "reading \(relativePath(url))")
         guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        return Role(name: name, content: content, isDefault: false)
+        return Prompt(name: name, content: content)
     }
 
-    /// Loads all roles (default + custom). Custom roles override defaults with the same name.
+    // MARK: - Roles
+
+    /// Loads all role TOML files from the roles directory, sorted by name.
+    /// Protected built-in roles are always appended from the app bundle; a user
+    /// file that shadows a protected name is ignored in favor of the bundled
+    /// version.
     func loadAllRoles() -> [Role] {
-        let defaults = loadDefaultRoles()
-        let custom = loadCustomRoles()
-        var merged: [String: Role] = [:]
-        for role in defaults { merged[role.name] = role }
-        for role in custom { merged[role.name] = role }
-        return merged.values.sorted { $0.name < $1.name }
+        let fm = FileManager.default
+        var result: [Role] = []
+        if let files = try? fm.contentsOfDirectory(at: rolesURL, includingPropertiesForKeys: nil) {
+            for url in files where url.pathExtension == "toml" {
+                let name = url.deletingPathExtension().lastPathComponent
+                if Self.protectedBundleNames.contains(name) { continue }
+                debugLog("FileRead", "reading \(relativePath(url))")
+                guard let data = try? Data(contentsOf: url) else {
+                    debugLog("Env", "⚠️ failed to read role \"\(name)\"")
+                    continue
+                }
+                do {
+                    let config = try TOMLDecoder().decode(RoleConfig.self, from: data)
+                    result.append(Role(name: name, config: config))
+                } catch {
+                    debugLog("Env", "⚠️ failed to decode role \"\(name)\" — \(error)")
+                    continue
+                }
+            }
+        }
+        for name in Self.protectedBundleNames {
+            if let role = Self.bundledRole(name: name) {
+                result.append(role)
+            }
+        }
+        return result.sorted { $0.name < $1.name }
+    }
+
+    /// Loads one role by name. Returns nil if not found or undecodable.
+    /// Protected built-in names are always resolved from the app bundle.
+    func loadSingleRole(name: String) -> Role? {
+        if Self.protectedBundleNames.contains(name) {
+            return Self.bundledRole(name: name)
+        }
+        let url = rolesURL.appendingPathComponent("\(name).toml")
+        debugLog("FileRead", "reading \(relativePath(url))")
+        guard let data = try? Data(contentsOf: url) else {
+            debugLog("Env", "⚠️ failed to read role \"\(name)\"")
+            return nil
+        }
+        do {
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: data)
+            return Role(name: name, config: config)
+        } catch {
+            debugLog("Env", "⚠️ failed to decode role \"\(name)\" — \(error)")
+            return nil
+        }
     }
 
     // MARK: - Connections
@@ -224,10 +367,16 @@ final class EnvironmentManager: @unchecked Sendable {
             .filter { $0.pathExtension == "jsonc" }
             .compactMap { url in
                 debugLog("FileRead", "reading \(relativePath(url))")
+                let name = url.deletingPathExtension().lastPathComponent
                 guard let data = try? Data(contentsOf: url) else {
+                    debugLog("Env", "⚠️ failed to read \(provider.rawValue) connection \"\(name)\"")
                     return nil
                 }
-                guard let config = JSONC.parse(data, as: ConnectionConfig.self) else {
+                let config: ConnectionConfig
+                do {
+                    config = try JSONC.decode(data, as: ConnectionConfig.self)
+                } catch {
+                    debugLog("Env", "⚠️ failed to decode \(provider.rawValue) connection \"\(name)\" — \(error)")
                     return nil
                 }
                 return connection(from: config, url: url, provider: provider)
@@ -239,8 +388,18 @@ final class EnvironmentManager: @unchecked Sendable {
     /// if the file is missing or undecodable, or the provider is unknown.
     func loadSingleConnection(url: URL) -> Connection? {
         debugLog("FileRead", "reading \(relativePath(url))")
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        guard let config = JSONC.parse(data, as: ConnectionConfig.self) else { return nil }
+        let name = url.deletingPathExtension().lastPathComponent
+        guard let data = try? Data(contentsOf: url) else {
+            debugLog("Env", "⚠️ failed to read connection \"\(name)\"")
+            return nil
+        }
+        let config: ConnectionConfig
+        do {
+            config = try JSONC.decode(data, as: ConnectionConfig.self)
+        } catch {
+            debugLog("Env", "⚠️ failed to decode connection \"\(name)\" — \(error)")
+            return nil
+        }
         let provider: ConnectionProvider
         switch url.deletingLastPathComponent().lastPathComponent {
         case "openai": provider = .openai
@@ -276,10 +435,18 @@ final class EnvironmentManager: @unchecked Sendable {
             .filter { $0.pathExtension == "toml" }
             .compactMap { url in
                 debugLog("FileRead", "reading \(relativePath(url))")
-                guard let data = try? Data(contentsOf: url) else { return nil }
-                guard let config = try? TOMLDecoder().decode(MCPConfig.self, from: data) else { return nil }
                 let name = url.deletingPathExtension().lastPathComponent
-                return MCPServer(name: name, config: config)
+                guard let data = try? Data(contentsOf: url) else {
+                    debugLog("MCP", "⚠️ failed to read MCP config \"\(name)\"")
+                    return nil
+                }
+                do {
+                    let config = try TOMLDecoder().decode(MCPConfig.self, from: data)
+                    return MCPServer(name: name, config: config)
+                } catch {
+                    debugLog("MCP", "⚠️ failed to decode MCP config \"\(name)\" — \(error)")
+                    return nil
+                }
             }
             .sorted { $0.name < $1.name }
     }
@@ -289,9 +456,17 @@ final class EnvironmentManager: @unchecked Sendable {
     func loadSingleMCP(name: String) -> MCPServer? {
         let url = mcpsURL.appendingPathComponent("\(name).toml")
         debugLog("FileRead", "reading \(relativePath(url))")
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        guard let config = try? TOMLDecoder().decode(MCPConfig.self, from: data) else { return nil }
-        return MCPServer(name: name, config: config)
+        guard let data = try? Data(contentsOf: url) else {
+            debugLog("MCP", "⚠️ failed to read MCP config \"\(name)\"")
+            return nil
+        }
+        do {
+            let config = try TOMLDecoder().decode(MCPConfig.self, from: data)
+            return MCPServer(name: name, config: config)
+        } catch {
+            debugLog("MCP", "⚠️ failed to decode MCP config \"\(name)\" — \(error)")
+            return nil
+        }
     }
 
     /// Saves an MCP server to `mcp/<name>.toml` (TOML encoded).

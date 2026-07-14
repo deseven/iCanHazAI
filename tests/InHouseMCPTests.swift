@@ -55,8 +55,8 @@ extension AllMCPTests {
 
             #expect(await MCPManager.shared.cachedTools(for: "Utils")?.isEmpty == false)
 
-            await MCPManager.shared.ensureInHouseRunning(chatFilename: chatA, names: ["Utils"])
-            await MCPManager.shared.ensureInHouseRunning(chatFilename: chatB, names: ["Utils"])
+            await MCPManager.shared.ensureInHouseRunning(chatFilename: chatA, servers: [("Utils", false)], workingDirectory: nil)
+            await MCPManager.shared.ensureInHouseRunning(chatFilename: chatB, servers: [("Utils", false)], workingDirectory: nil)
 
             // Builtins must NOT live in the shared connection pool — they're
             // per-chat only.
@@ -64,14 +64,16 @@ extension AllMCPTests {
 
             let resultA = await MCPManager.shared.callInHouseTool(
                 chatFilename: chatA, server: "Utils", name: "calc",
-                arguments: "{\"expression\":\"2+2\"}", callID: "a"
+                arguments: "{\"expression\":\"2+2\"}", callID: "a",
+                workingDirectory: nil, directoryIsolation: false
             )
             #expect(!resultA.isError)
             #expect(resultA.content.trimmingCharacters(in: .whitespacesAndNewlines) == "4")
 
             let resultB = await MCPManager.shared.callInHouseTool(
                 chatFilename: chatB, server: "Utils", name: "calc",
-                arguments: "{\"expression\":\"3+3\"}", callID: "b"
+                arguments: "{\"expression\":\"3+3\"}", callID: "b",
+                workingDirectory: nil, directoryIsolation: false
             )
             #expect(!resultB.isError)
             #expect(resultB.content.trimmingCharacters(in: .whitespacesAndNewlines) == "6")
@@ -84,21 +86,94 @@ extension AllMCPTests {
         func perChatTeardown() async throws {
             let chat = "teardown.json"
             _ = await MCPManager.shared.configure(MCPManager.builtinServers())
-            await MCPManager.shared.ensureInHouseRunning(chatFilename: chat, names: ["Utils"])
+            await MCPManager.shared.ensureInHouseRunning(chatFilename: chat, servers: [("Utils", false)], workingDirectory: nil)
             // A tool call confirms the copy is alive.
             let r = await MCPManager.shared.callInHouseTool(
                 chatFilename: chat, server: "Utils", name: "calc",
-                arguments: "{\"expression\":\"1+1\"}", callID: "t"
+                arguments: "{\"expression\":\"1+1\"}", callID: "t",
+                workingDirectory: nil, directoryIsolation: false
             )
             #expect(!r.isError)
             await MCPManager.shared.disconnectAllInHouse(chatFilename: chat)
             // After teardown, a call re-spawns a fresh copy (lazy) and still works.
             let r2 = await MCPManager.shared.callInHouseTool(
                 chatFilename: chat, server: "Utils", name: "calc",
-                arguments: "{\"expression\":\"5+5\"}", callID: "t2"
+                arguments: "{\"expression\":\"5+5\"}", callID: "t2",
+                workingDirectory: nil, directoryIsolation: false
             )
             #expect(!r2.isError)
             #expect(r2.content.trimmingCharacters(in: .whitespacesAndNewlines) == "10")
+            await MCPManager.shared.disconnectAllInHouse(chatFilename: chat)
+        }
+
+        @Test("workdir + confine are forwarded to a per-chat Filesystem copy")
+        func workdirConfineForwarded() async throws {
+            let chat = "confine.json"
+            let tmp = try TempDir()
+            _ = await MCPManager.shared.configure(MCPManager.builtinServers())
+            defer { Task { await MCPManager.shared.disconnectAllInHouse(chatFilename: chat) } }
+
+            // directoryIsolation = true → the copy launches with
+            // `--workdir <tmp> --confine`.
+            await MCPManager.shared.ensureInHouseRunning(
+                chatFilename: chat,
+                servers: [("Filesystem", true)],
+                workingDirectory: tmp.path
+            )
+
+            // --confine: an absolute path is treated as relative to the root,
+            // so "/confined.txt" lands inside the workdir.
+            let w = try await MCPManager.shared.callInHouseTool(
+                chatFilename: chat, server: "Filesystem", name: "write_file",
+                arguments: "{\"path\":\"/confined.txt\",\"content\":\"x\"}", callID: "w",
+                workingDirectory: tmp.path, directoryIsolation: true
+            )
+            #expect(!w.isError)
+            #expect(tmp.exists("confined.txt"))
+
+            // Path escapes via .. are rejected under --confine.
+            let e = try await MCPManager.shared.callInHouseTool(
+                chatFilename: chat, server: "Filesystem", name: "write_file",
+                arguments: "{\"path\":\"../../escaped.txt\",\"content\":\"y\"}", callID: "e",
+                workingDirectory: tmp.path, directoryIsolation: true
+            )
+            #expect(e.isError)
+            #expect(e.content.contains("escapes"))
+
+            await MCPManager.shared.disconnectAllInHouse(chatFilename: chat)
+        }
+
+        @Test("a ~ in the working directory is expanded before launching the copy")
+        func tildeExpanded() async throws {
+            let chat = "tilde.json"
+            // Create a real dir under the home directory and reference it with
+            // the `~` form, so we can assert the leading tilde is expanded
+            // (an unexpanded `~/...` would resolve against CWD, not home).
+            let basename = "ichai-tilde-test-\(UUID().uuidString)"
+            let realPath = (NSHomeDirectory() as NSString).appendingPathComponent(basename)
+            try FileManager.default.createDirectory(atPath: realPath, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: realPath) }
+
+            _ = await MCPManager.shared.configure(MCPManager.builtinServers())
+            defer { Task { await MCPManager.shared.disconnectAllInHouse(chatFilename: chat) } }
+
+            // Pass the `~` form; --workdir (no confine) makes relative paths
+            // resolve against the expanded home-based dir.
+            await MCPManager.shared.ensureInHouseRunning(
+                chatFilename: chat,
+                servers: [("Filesystem", false)],
+                workingDirectory: "~/\(basename)"
+            )
+
+            let w = try await MCPManager.shared.callInHouseTool(
+                chatFilename: chat, server: "Filesystem", name: "write_file",
+                arguments: "{\"path\":\"rel.txt\",\"content\":\"hi\"}", callID: "w",
+                workingDirectory: "~/\(basename)", directoryIsolation: false
+            )
+            #expect(!w.isError)
+            let written = (realPath as NSString).appendingPathComponent("rel.txt")
+            #expect(FileManager.default.fileExists(atPath: written))
+
             await MCPManager.shared.disconnectAllInHouse(chatFilename: chat)
         }
     }

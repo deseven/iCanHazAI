@@ -37,6 +37,12 @@ struct MainWindow: View {
         .overlay {
             MCPConfigurationOverlay()
         }
+        .sheet(isPresented: $store.showRolePicker) {
+            RolePickerView(
+                onCancel: { store.showRolePicker = false },
+                onPick: { store.createNewChat(role: $0) }
+            )
+        }
         .onAppear {
             columnVisibility = store.chatListSidebarVisible ? .all : .detailOnly
         }

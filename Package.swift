@@ -74,6 +74,7 @@ let package = Package(
             name: "iCanHazAITests",
             dependencies: [
                 .target(name: "iCanHazAI"),
+                .product(name: "TOML", package: "swift-toml"),
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "ProcessExit", package: "ProcessExit"),
                 .product(name: "FSEventsWrapper", package: "FSEventsWrapper")

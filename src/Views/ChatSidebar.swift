@@ -37,8 +37,13 @@ struct ChatSidebar: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(store.chatSummaries) { item in
+                        let role = item.roleName.flatMap { name in
+                            store.roles.first(where: { $0.name == name })
+                        }
                         ChatRow(
                             item: item,
+                            roleIcon: role?.icon ?? Role.defaultIcon,
+                            roleAccent: role?.accentColor ?? .accentColor,
                             isSelected: item.id == store.selectedChatID,
                             isUnread: item.hasUnreadActivity && item.id != store.selectedChatID,
                             isStreaming: item.isStreaming,
@@ -122,6 +127,12 @@ private struct ChatDeleteTarget: Identifiable {
 
 private struct ChatRow: View {
     let item: ChatSummary
+    /// SF Symbol for the chat's role (resolved from `store.roles`), with a
+    /// generic fallback. Only shown when `item.roleName` is non-empty.
+    var roleIcon: String = Role.defaultIcon
+    /// Accent color for the chat's role badge (resolved from `store.roles`),
+    /// falling back to the macOS accent color.
+    var roleAccent: Color = .accentColor
     let isSelected: Bool
     var isUnread: Bool = false
     var isStreaming: Bool = false
@@ -136,10 +147,15 @@ private struct ChatRow: View {
                 Text(item.displayTitle)
                     .font(.callout)
                     .lineLimit(1)
-                Text(item.filename)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    if let roleName = item.roleName, !roleName.isEmpty {
+                        RoleBadge(name: roleName, icon: roleIcon, accent: roleAccent)
+                    }
+                    Text(item.filename)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             Spacer()
             if isStreaming {
@@ -178,6 +194,32 @@ private struct ChatRow: View {
         if isSelected { return Color.accentColor.opacity(0.15) }
         if isBlinking { return blink ? Color.accentColor.opacity(0.22) : Color.clear }
         return Color.clear
+    }
+}
+
+/// A compact capsule badge showing a chat's role, with a theatermasks glyph.
+/// Sits in the chat row's subtitle line so each chat is identifiable by its
+/// role at a glance.
+private struct RoleBadge: View {
+    let name: String
+    let icon: String
+    let accent: Color
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: icon)
+                .font(.system(size: 8, weight: .semibold))
+            Text(name)
+                .font(.caption2)
+                .fontWeight(.medium)
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 1.5)
+        .background(accent.opacity(0.12), in: Capsule())
+        .foregroundStyle(accent)
+        .lineLimit(1)
+        .fixedSize()
+        .help("Role: \(name)")
     }
 }
 

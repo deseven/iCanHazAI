@@ -149,14 +149,21 @@ do_build_mcps_debug() {
 do_run_app_tests() { swift test --filter AllAppTests; }
 do_run_mcp_tests() { swift test --filter AllMCPTests; }
 
+do_clean_app_cache() {
+    # Dev builds launch the app fresh; drop the SwiftData chat-metadata cache
+    # so schema changes (e.g. new cache columns) backfill cleanly on startup.
+    rm -rf "$HOME/iCanHazAI/.cache"
+}
+
 do_create_bundle() {
     local app="$loc/dist/$name.app"
-    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/ChatRenderer" "$app/Contents/Resources/MCPServers"
+    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/ChatRenderer" "$app/Contents/Resources/MCPServers" "$app/Contents/Resources/Default"
 
     cp "$buildDir/$name" "$app/Contents/MacOS/$name"
     cp "$loc/Info.plist" "$app/Contents/Info.plist"
     cp "$loc/res/main.icns" "$app/Contents/Resources/"
-    cp -R "$loc/res/roles" "$app/Contents/Resources/"
+    cp -R "$loc/default/prompts" "$app/Contents/Resources/Default/prompts"
+    cp -R "$loc/default/roles" "$app/Contents/Resources/Default/roles"
     cp "$loc/chatrenderer/dist/"* "$app/Contents/Resources/ChatRenderer/"
     # Copy the just-built MCP servers (arm64 in dev, universal otherwise).
     local srv
@@ -295,6 +302,10 @@ if [ "$mode" != "dev" ]; then
 fi
 
 add "Code-signing APP bundle..."     "failed to code-sign app bundle"            do_codesign
+
+if [ "$mode" = "dev" ]; then
+    add "Clearing app cache..."          "failed to clear app cache"                do_clean_app_cache
+fi
 
 if [ "$mode" = "release" ]; then
     add "Creating distribution ZIP..." "failed to pack $shortName.zip"            do_create_zip "$shortName.zip"

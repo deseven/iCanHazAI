@@ -75,6 +75,36 @@ struct ChatStoreTests {
         #expect(entry.name == nil)
     }
 
+    @Test("saveChat caches the chat's role")
+    func saveCachesRole() throws {
+        env.store.saveChat(Fixtures.chat(role: "Assistant"), filename: "a.json")
+        let entry = try #require(env.store.getEntry(filename: "a.json"))
+        #expect(entry.role == "Assistant")
+    }
+
+    @Test("saveChat caches a nil role when the chat has none")
+    func saveCachesNilRole() throws {
+        env.store.saveChat(Fixtures.chat(role: nil), filename: "a.json")
+        let entry = try #require(env.store.getEntry(filename: "a.json"))
+        #expect(entry.role == nil)
+    }
+
+    @Test("re-saving with a new role updates the cached role")
+    func saveUpsertsRole() throws {
+        env.store.saveChat(Fixtures.chat(role: "Assistant"), filename: "a.json")
+        try env.setModificationDate("a.json", Date(timeIntervalSince1970: 1_000))
+        env.store.saveChat(Fixtures.chat(role: "Developer"), filename: "a.json")
+        let entry = try #require(env.store.getEntry(filename: "a.json"))
+        #expect(entry.role == "Developer")
+    }
+
+    @Test("startupSync caches the role for chats loaded from disk")
+    func startupSyncCachesRole() throws {
+        try env.writeChatDirect(Fixtures.chat(role: "Developer"), filename: "a.json")
+        _ = env.store.startupSync()
+        #expect(env.store.getEntry(filename: "a.json")?.role == "Developer")
+    }
+
     @Test("re-saving a filename upserts the cache instead of duplicating")
     func saveUpserts() throws {
         env.store.saveChat(Fixtures.chat(title: "First"), filename: "a.json")

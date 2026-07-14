@@ -37,7 +37,26 @@ struct FilesystemMCPDefaultTests {
     func listsTools() async throws {
         let tools = try await harness.listTools()
         let names = Set(tools.map(\.name))
-        #expect(names == ["ls", "read_file", "write_file", "find_file", "find_text", "mkdir", "mv", "rm", "stat"])
+        #expect(names == ["ls", "read_file", "write_file", "find_file", "find_text", "mkdir", "mv", "rm", "stat", "pwd"])
+    }
+
+    @Test("tool descriptions never embed the real working directory")
+    func descriptionsAreDirectoryNeutral() async throws {
+        let tools = try await harness.listTools()
+        for tool in tools {
+            let desc = tool.description ?? ""
+            // Descriptions are static and directory-neutral; the home path must
+            // never be baked in (it would leak the username and go stale across
+            // per-chat confinement modes).
+            #expect(!desc.contains(NSHomeDirectory()), "tool \"\(tool.name)\" leaks home: \(desc)")
+        }
+    }
+
+    @Test("pwd returns the home directory by default")
+    func pwdDefault() async throws {
+        let (text, err) = try await harness.callTool("pwd", [:])
+        #expect(!err)
+        #expect(text == NSHomeDirectory())
     }
 
     // MARK: - write_file / read_file
@@ -223,6 +242,13 @@ struct FilesystemMCPWorkdirTests {
         #expect(tmp.exists("rel.txt"))
     }
 
+    @Test("pwd returns the workdir")
+    func pwdWorkdir() async throws {
+        let (text, err) = try await harness.callTool("pwd", [:])
+        #expect(!err)
+        #expect(text == tmp.path)
+    }
+
     @Test("absolute path is allowed without --confine")
     func absolutePath() async throws {
         let abs = tmp.sub("abs.txt")
@@ -259,6 +285,27 @@ struct FilesystemMCPConfineTests {
         harness = try await UtilsMCPShared.shared(.filesystem, workdir: tmp.path, confine: true)
     }
 
+    @Test("tool descriptions do not expose the real workdir path when confined")
+    func descriptionsDontLeakPath() async throws {
+        let tools = try await harness.listTools()
+        #expect(!tools.isEmpty)
+        for tool in tools {
+            let desc = tool.description ?? ""
+            // The chroot illusion: the model should only ever see "/" as the
+            // current directory, never the real (username-bearing) path.
+            #expect(!desc.contains(tmp.path), "tool \"\(tool.name)\" description leaks the workdir path: \(desc)")
+            #expect(!desc.contains("/Users/"), "tool \"\(tool.name)\" description leaks a home path: \(desc)")
+        }
+    }
+
+    @Test("pwd returns / when confined")
+    func pwdConfined() async throws {
+        let (text, err) = try await harness.callTool("pwd", [:])
+        #expect(!err)
+        // The chroot illusion: the real workdir path is never exposed.
+        #expect(text == "/")
+    }
+
     @Test("absolute path treated as relative to root")
     func absoluteTreatedAsRelative() async throws {
         // With --confine, "/file.txt" means "<workdir>/file.txt".
@@ -287,6 +334,27 @@ struct FilesystemMCPConfineTests {
         let (text, err) = try await harness.callTool("ls", ["path": .string("/")])
         #expect(!err)
         #expect(text.contains("visible.txt"))
+    }
+
+    @Test("find_file with no path defaults to the confined root")
+    func findFileDefaultsToConfinedRoot() async throws {
+        // Regression: omitting `path` used to default to the real host-absolute
+        // workdir, which `resolve()` then treated as relative-to-root (stripping
+        // the leading slash), producing a non-existent doubled path and a
+        // "not a directory" error. It must instead default to `/` (the chroot
+        // illusion) and search the real root.
+        try tmp.write("MCPs/nested.swift", content: "x")
+        let (text, err) = try await harness.callTool("find_file", ["pattern": .string("*.swift")])
+        #expect(!err)
+        #expect(text.contains("nested.swift"))
+    }
+
+    @Test("find_text with no path defaults to the confined root")
+    func findTextDefaultsToConfinedRoot() async throws {
+        try tmp.write("search/hay.txt", content: "needle here")
+        let (text, err) = try await harness.callTool("find_text", ["regex": .string("needle")])
+        #expect(!err)
+        #expect(text.contains("hay.txt"))
     }
 }
 

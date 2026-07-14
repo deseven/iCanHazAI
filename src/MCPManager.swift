@@ -815,20 +815,46 @@ actor MCPManager {
 
     /// Ensures a per-chat copy of each selected in-house server is running for
     /// `chatFilename` before a chat request. If a copy is already running for
-    /// that chat, its idle timer is refreshed; otherwise a fresh subprocess is
-    /// spawned. Servers without a cached tool list (failed/never configured)
-    /// are skipped. Called by `ChatEngine.gatherTools`.
-    func ensureInHouseRunning(chatFilename: String, names: [String]) async {
-        for name in names {
+    /// that chat (with a matching launch command), its idle timer is refreshed;
+    /// otherwise a fresh subprocess is spawned. Servers without a cached tool
+    /// list (failed/never configured) are skipped. Called by
+    /// `ChatEngine.gatherTools`.
+    ///
+    /// `workingDirectory` (the chat's effective working directory, with `~`
+    /// expanded) is forwarded as `--workdir` to servers that understand it, so
+    /// relative paths resolve against it. When a server entry has
+    /// `directoryIsolation` set, `--confine` is also appended (chroot-like
+    /// confinement) for the servers that support it (Filesystem, Code). If the
+    /// desired launch command differs from the already-running copy (e.g. the
+    /// user changed the working directory), the old copy is torn down and a
+    /// fresh one is spawned with the new args.
+    func ensureInHouseRunning(
+        chatFilename: String,
+        servers: [(name: String, directoryIsolation: Bool)],
+        workingDirectory: String?
+    ) async {
+        for entry in servers {
+            let name = entry.name
             guard let server = knownServers[name], server.isBuiltin else { continue }
-            if perChatConnections[chatFilename]?[name] != nil {
-                touchInHouseActivity(chatFilename: chatFilename, server: name)
-                continue
+            let launchServer = makeInHouseCommand(
+                server: server,
+                workingDirectory: workingDirectory,
+                directoryIsolation: entry.directoryIsolation
+            )
+            if let existing = perChatConnections[chatFilename]?[name] {
+                if existing.server.command == launchServer.command {
+                    touchInHouseActivity(chatFilename: chatFilename, server: name)
+                    continue
+                }
+                // The workdir / isolation flags changed since the copy was
+                // started — tear it down so a fresh one spawns with the new args.
+                debugLog("MCP", "ensureInHouseRunning — relaunching copy (args changed) — server=\"\(name)\", chat=\(chatFilename)")
+                await disconnectInHouse(chatFilename: chatFilename, server: name)
             }
             guard toolsCache[name] != nil else { continue }
-            debugLog("MCP", "ensureInHouseRunning — starting per-chat copy — server=\"\(name)\", chat=\(chatFilename)")
+            debugLog("MCP", "ensureInHouseRunning — starting per-chat copy — server=\"\(name)\", chat=\(chatFilename), command=\(launchServer.command ?? "")")
             do {
-                let conn = try await makeConnection(server)
+                let conn = try await makeConnection(launchServer)
                 if perChatConnections[chatFilename] == nil { perChatConnections[chatFilename] = [:] }
                 perChatConnections[chatFilename]?[name] = conn
                 debugLog("MCP", "in-house copy connected — server=\"\(name)\", chat=\(chatFilename)")
@@ -838,6 +864,37 @@ actor MCPManager {
             }
             touchInHouseActivity(chatFilename: chatFilename, server: name)
         }
+    }
+
+    /// Builtin servers that accept `--workdir <path>` (setting the working
+    /// directory for relative-path resolution). Utils ignores it.
+    private static let workdirCapableServers: Set<String> = ["Filesystem", "Code", "Shell"]
+    /// Builtin servers that also accept `--confine` (chroot-like confinement).
+    /// Shell deliberately does no confinement.
+    private static let confineCapableServers: Set<String> = ["Filesystem", "Code"]
+
+    /// Returns a copy of `server` whose `command` has `--workdir` (and
+    /// optionally `--confine`) appended according to the role/chat settings.
+    /// Servers that don't understand these flags, or when no working directory
+    /// is set, are returned unchanged. The working directory is `~`-expanded
+    /// here (rather than relying on shell expansion, which is suppressed by
+    /// quoting) and double-quoted so paths with spaces survive `exec`.
+    private func makeInHouseCommand(
+        server: MCPServer,
+        workingDirectory: String?,
+        directoryIsolation: Bool
+    ) -> MCPServer {
+        var s = server
+        guard let base = s.command, !base.isEmpty,
+              let wd = workingDirectory, !wd.isEmpty,
+              Self.workdirCapableServers.contains(server.name) else { return s }
+        let expanded = (wd as NSString).standardizingPath
+        var cmd = "\(base) --workdir \"\(expanded)\""
+        if directoryIsolation, Self.confineCapableServers.contains(server.name) {
+            cmd += " --confine"
+        }
+        s.command = cmd
+        return s
     }
 
     /// Records activity and (re)schedules the per-chat idle-shutdown task.
@@ -934,11 +991,18 @@ actor MCPManager {
     }
 
     /// Calls a tool on a per-chat in-house copy. The copy is started lazily if
-    /// it isn't currently running for `chatFilename`. On failure the per-chat
-    /// copy is torn down so the next call starts fresh.
-    func callInHouseTool(chatFilename: String, server: String, name: String, arguments: String, callID: String) async -> ToolResult {
+    /// it isn't currently running for `chatFilename`. `workingDirectory` and
+    /// `directoryIsolation` are forwarded to the launch command (matching what
+    /// `ensureInHouseRunning` would use) so a lazily-started copy is confined
+    /// the same way as one started up front. On failure the per-chat copy is
+    /// torn down so the next call starts fresh.
+    func callInHouseTool(chatFilename: String, server: String, name: String, arguments: String, callID: String, workingDirectory: String?, directoryIsolation: Bool) async -> ToolResult {
         debugLog("MCP", "callInHouseTool — server=\"\(server)\", tool=\"\(name)\", callID=\(callID), chat=\(chatFilename)")
-        await ensureInHouseRunning(chatFilename: chatFilename, names: [server])
+        await ensureInHouseRunning(
+            chatFilename: chatFilename,
+            servers: [(server, directoryIsolation)],
+            workingDirectory: workingDirectory
+        )
         guard let conn = perChatConnections[chatFilename]?[server] else {
             debugLog("MCP", "callInHouseTool — server \"\(server)\" unreachable for chat=\(chatFilename), returning error in RESULT")
             return ToolResult(callID: callID, content: "MCP server \"\(server)\" is currently unreachable. Please retry.", isError: false)
