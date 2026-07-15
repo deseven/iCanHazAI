@@ -114,6 +114,13 @@ final class MainWindowRevealer {
             window.animator().alphaValue = 1
         }
         self.window = nil
+        // Loading is finished and the window is up: if any configuration
+        // errors were collected during startup, surface the errors sheet
+        // immediately instead of waiting for the user to press the warning
+        // button in the title bar.
+        if let vm = AppViewModel.shared, !vm.configErrors.isEmpty {
+            vm.showConfigErrors = true
+        }
     }
 
     private func scheduleFallbackIfNeeded() {

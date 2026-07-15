@@ -140,6 +140,13 @@ final class ChatWebViewModel: ObservableObject {
     private var renderedChatId: String?
     /// The last streaming state we pushed, so we only send changes.
     private var lastStreamingState: Bool = false
+    /// The last role name we pushed, so a role change forces a fresh snapshot
+    /// (incremental message diffs wouldn't otherwise reach the renderer).
+    private var lastRoleName: String? = nil
+    /// The last role accent hex we pushed. The accent is appearance-dependent,
+    /// so a theme change resolves to a different value and forces a fresh
+    /// snapshot (the renderer colors the assistant title from this).
+    private var lastRoleAccent: String? = nil
     /// The last known messages (by id) in the rendered chat, used for diffing
     /// to send incremental updates instead of full snapshots.
     private var lastMessages: [String: ChatMessageData] = [:]
@@ -527,6 +534,8 @@ final class ChatWebViewModel: ObservableObject {
         lastMessages = [:]
         lastMessageIds = []
         lastStreamingState = false
+        lastRoleName = nil
+        lastRoleAccent = nil
         loadPage()
     }
 
@@ -545,6 +554,10 @@ final class ChatWebViewModel: ObservableObject {
         let appearance = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua])
         let theme = appearance == .darkAqua ? "dark" : "light"
         sendHostMessage(.theme(theme: theme))
+        // The role accent color is appearance-dependent (system colors resolve
+        // differently per theme), so a theme change must re-push the snapshot
+        // to deliver the re-resolved accent to the renderer.
+        pushSnapshot()
     }
 
     // MARK: - Snapshot pushing
@@ -563,6 +576,14 @@ final class ChatWebViewModel: ObservableObject {
 
         let chatId = item.id
         let isStreaming = item.isStreaming
+        // The chat's role name (e.g. "Developer", "Configurator") shown
+        // as the title of assistant messages. Falls back to "Assistant" in the
+        // renderer when nil (no role set).
+        let roleName = item.effectiveRoleName
+        // The role's accent color, resolved against the current appearance so
+        // it matches the active light/dark theme. Appearance-dependent — never
+        // persisted; re-resolved on theme change (see `pushTheme`).
+        let roleAccent = RoleAccent.hexColor(for: store.selectedRole?.config.accent)
         // Project the stored message list into the wire shape, folding
         // `tool`-role result messages onto the preceding assistant message's
         // `toolResults` so the renderer shows them in the same tool block
@@ -574,9 +595,25 @@ final class ChatWebViewModel: ObservableObject {
         if chatId != renderedChatId {
             renderedChatId = chatId
             lastStreamingState = isStreaming
+            lastRoleName = roleName
+            lastRoleAccent = roleAccent
             lastMessages = Dictionary(uniqueKeysWithValues: currentMessages.map { ($0.id, $0) })
             lastMessageIds = currentIds
-            let snapshot = ChatSnapshotData(chatId: chatId, messages: currentMessages, isStreaming: isStreaming)
+            let snapshot = ChatSnapshotData(chatId: chatId, messages: currentMessages, isStreaming: isStreaming, roleName: roleName, roleAccent: roleAccent)
+            sendHostMessage(.snapshot(snapshot: snapshot))
+            return
+        }
+
+        // A role change (or a theme change, which re-resolves the accent)
+        // only affects the assistant message title, which the renderer derives
+        // from the snapshot's `roleName`/`roleAccent` — incremental message
+        // diffs wouldn't reflect it, so force a fresh full snapshot.
+        if roleName != lastRoleName || roleAccent != lastRoleAccent {
+            lastRoleName = roleName
+            lastRoleAccent = roleAccent
+            lastMessages = Dictionary(uniqueKeysWithValues: currentMessages.map { ($0.id, $0) })
+            lastMessageIds = currentIds
+            let snapshot = ChatSnapshotData(chatId: chatId, messages: currentMessages, isStreaming: isStreaming, roleName: roleName, roleAccent: roleAccent)
             sendHostMessage(.snapshot(snapshot: snapshot))
             return
         }
@@ -586,7 +623,7 @@ final class ChatWebViewModel: ObservableObject {
             if !isStreaming {
                 lastMessages = Dictionary(uniqueKeysWithValues: currentMessages.map { ($0.id, $0) })
                 lastMessageIds = currentIds
-                let snapshot = ChatSnapshotData(chatId: chatId, messages: currentMessages, isStreaming: false)
+                let snapshot = ChatSnapshotData(chatId: chatId, messages: currentMessages, isStreaming: false, roleName: roleName, roleAccent: roleAccent)
                 sendHostMessage(.snapshot(snapshot: snapshot))
                 return
             } else {
@@ -707,6 +744,8 @@ final class ChatWebViewModel: ObservableObject {
             lastMessages = [:]
             lastMessageIds = []
             lastStreamingState = false
+            lastRoleName = nil
+            lastRoleAccent = nil
             pushSnapshot()
             pushTheme()
         case .requestOlder:
@@ -974,6 +1013,15 @@ struct ChatSnapshotData: Codable {
     let chatId: String
     let messages: [ChatMessageData]
     let isStreaming: Bool
+    /// The chat's role name (e.g. "Developer"), shown as the title of
+    /// assistant messages. Nil when no role is set; the renderer falls back
+    /// to "Assistant" in that case.
+    let roleName: String?
+    /// The role's accent color as an "#RRGGBB" hex string, resolved against
+    /// the current appearance so it matches the active light/dark theme. Used
+    /// to color the assistant message title. Appearance-dependent — must not be
+    /// persisted; re-resolved on theme change.
+    let roleAccent: String?
 }
 
 /// The JSON representation of a `ChatMessage` sent to the web view.

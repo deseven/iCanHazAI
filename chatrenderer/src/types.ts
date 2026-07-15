@@ -58,6 +58,15 @@ export interface ChatSnapshot {
   messages: ChatMessage[];
   /** Whether a stream is currently in flight for this chat. */
   isStreaming: boolean;
+  /** The chat's role name (e.g. "Developer"), shown as the title of assistant
+   *  messages. Nil/undefined when no role is set; the renderer falls back to
+   *  "Assistant" in that case. */
+  roleName?: string | null;
+  /** The role's accent color as an "#RRGGBB" hex string, resolved against the
+   *  host's current appearance. Used to color the assistant message title.
+   *  Appearance-dependent — the host re-pushes a fresh snapshot on theme
+   *  change so this tracks light/dark mode. */
+  roleAccent?: string | null;
 }
 
 /**

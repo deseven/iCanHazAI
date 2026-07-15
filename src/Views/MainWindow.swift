@@ -34,13 +34,37 @@ struct MainWindow: View {
             }
             .navigationTitle(store.selectedChatItem?.displayTitle ?? "")
         }
+        .toolbar {
+            // Warning button in the top-right of the title bar. Shown only
+            // while there is at least one configuration error; hidden entirely
+            // once everything loads cleanly again.
+            ToolbarItem(placement: .primaryAction) {
+                if !store.configErrors.isEmpty {
+                    Button {
+                        store.showConfigErrors = true
+                    } label: {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundStyle(.yellow)
+                    }
+                    .help("Configuration problems")
+                }
+            }
+        }
         .overlay {
             LoaderOverlay()
         }
+        .sheet(isPresented: $store.showConfigErrors) {
+            ConfigErrorsSheet(
+                errors: store.configErrors,
+                onAcknowledge: { store.showConfigErrors = false },
+                onFix: { store.fixWithConfigurator() }
+            )
+        }
         .sheet(isPresented: $store.showRolePicker) {
             RolePickerView(
-                onCancel: { store.showRolePicker = false },
-                onPick: { store.createNewChat(role: $0) }
+                mode: store.rolePickerMode,
+                onCancel: { store.rolePickerCancelled() },
+                onPick: { store.rolePickerPicked(role: $0) }
             )
         }
         .onAppear {

@@ -13,6 +13,15 @@ import SwiftUI
 @MainActor
 final class AppViewModel: ObservableObject {
 
+    /// The mode the role picker sheet operates in.
+    enum RolePickerMode: Equatable {
+        /// Creating a brand-new chat: picking a role creates the chat.
+        case newChat
+        /// Assigning a role to an existing chat whose role is missing. Carries
+        /// the filename of the chat to update.
+        case assignToExisting(filename: String)
+    }
+
     /// Shared reference set by the app on launch so that auxiliary windows
     /// (e.g. Preferences) can reach the view model without walking the
     /// responder chain.
@@ -58,8 +67,22 @@ final class AppViewModel: ObservableObject {
     /// Filenames of chats awaiting tool-call approval that aren't currently
     /// selected. Each blinks in the sidebar to draw the user's attention.
     @Published var blinkingChatIDs: Set<String> = []
-    /// Whether the new-chat role picker sheet is currently shown.
+    /// Whether the role picker sheet is currently shown (for a new chat or to
+    /// assign a role to an existing chat whose role is missing).
     @Published var showRolePicker: Bool = false
+    /// The mode the role picker sheet is operating in: creating a brand-new
+    /// chat, or assigning a role to an existing chat whose role is missing.
+    @Published var rolePickerMode: RolePickerMode = .newChat
+    /// Filenames for which the user dismissed the role-assignment picker, so
+    /// it isn't immediately re-shown on the next state emit. Cleared when the
+    /// chat is re-selected (so re-opening re-prompts) or when a role is
+    /// assigned.
+    @Published var dismissedRoleAssignmentFor: Set<String> = []
+    /// Current configuration errors (mirrored from the engine). Drives the
+    /// title-bar warning button and the errors sheet.
+    @Published var configErrors: [ConfigError] = []
+    /// Whether the configuration-errors sheet is currently shown.
+    @Published var showConfigErrors: Bool = false
     /// Active dock-bounce request id (if any), cancelled when the window
     /// becomes active or all approvals are resolved.
     private var attentionRequestID: Int? = nil
@@ -307,7 +330,12 @@ final class AppViewModel: ObservableObject {
                 // chat is being viewed and would release it.
                 selectedChatID = records.first?.id
                 if let first = selectedChatID {
-                    Task { await engine.selectChat(filename: first) }
+                    Task {
+                        await engine.selectChat(filename: first)
+                        // On startup auto-selection, present the role picker if
+                        // the first chat's role is missing.
+                        maybePresentRolePickerForSelectedChat()
+                    }
                 }
             }
             // Suppress the unread marker if the user is already viewing the
@@ -327,6 +355,10 @@ final class AppViewModel: ObservableObject {
             self.roles = roles
             refreshPreferences()
             LoaderController.shared.markApplicationCompleted(.roles, loaded: roles.count)
+            // A role may have been deleted on disk, leaving the selected chat's
+            // role missing. Present the picker so the user can assign a new one
+            // (unless they already dismissed it for this chat).
+            maybePresentRolePickerForSelectedChat()
         case .promptsChanged(let prompts):
             self.prompts = prompts
             LoaderController.shared.markApplicationCompleted(.prompts, loaded: prompts.count)
@@ -366,6 +398,8 @@ final class AppViewModel: ObservableObject {
             }
         case .error(let message):
             errorMessage = message
+        case .configErrorsChanged(let errors):
+            configErrors = errors
         }
     }
 
@@ -458,6 +492,40 @@ final class AppViewModel: ObservableObject {
     /// input and send button are disabled (the role was deleted or never set).
     var selectedChatHasValidRole: Bool {
         selectedRole != nil
+    }
+
+    /// Pure decision: whether a given chat record needs a role assigned via the
+    /// picker. True when the chat has a role name set but that role no longer
+    /// exists (deleted), or when the chat has no role at all. Extracted so it
+    /// can be unit-tested without driving the full UI.
+    nonisolated static func chatNeedsRoleAssignment(
+        _ record: ChatRecord,
+        availableRoles: [Role]
+    ) -> Bool {
+        let name = record.effectiveRoleName
+        guard let name, !name.isEmpty else { return true }
+        return !availableRoles.contains(where: { $0.name == name })
+    }
+
+    /// Whether the currently selected chat needs a role assigned (its role is
+    /// missing or doesn't exist among the loaded roles).
+    var selectedChatNeedsRoleAssignment: Bool {
+        guard let item = selectedChatItem else { return false }
+        return Self.chatNeedsRoleAssignment(item, availableRoles: roles)
+    }
+
+    /// Presents the role picker to assign a role to the selected chat when its
+    /// role is missing — unless the user already dismissed it for this chat, or
+    /// the picker is already showing, or there are no roles to pick from.
+    /// Called after chat selection changes and after roles are (re)loaded.
+    func maybePresentRolePickerForSelectedChat() {
+        guard !showRolePicker else { return }
+        guard let id = selectedChatID else { return }
+        guard !dismissedRoleAssignmentFor.contains(id) else { return }
+        guard !roles.isEmpty else { return }
+        guard selectedChatNeedsRoleAssignment else { return }
+        rolePickerMode = .assignToExisting(filename: id)
+        showRolePicker = true
     }
 
     /// Whether the selected chat has a resolvable connection: either the
@@ -602,6 +670,7 @@ final class AppViewModel: ObservableObject {
             }
             return
         }
+        rolePickerMode = .newChat
         showRolePicker = true
     }
 
@@ -613,6 +682,68 @@ final class AppViewModel: ObservableObject {
             selectedChatID = filename
             await engine.selectChat(filename: filename)
             await engine.markViewed(filename: filename)
+        }
+    }
+
+    /// Unified role-picker confirmation. Dispatches based on the current
+    /// picker mode: creates a new chat (`.newChat`) or assigns the role to an
+    /// existing chat whose role was missing (`.assignToExisting`).
+    func rolePickerPicked(role roleName: String) {
+        let mode = rolePickerMode
+        showRolePicker = false
+        switch mode {
+        case .newChat:
+            createNewChat(role: roleName)
+        case .assignToExisting(let filename):
+            // A role was assigned — clear any dismissal record so a future
+            // role deletion re-prompts the picker.
+            dismissedRoleAssignmentFor.remove(filename)
+            setRole(roleName)
+        }
+    }
+
+    /// Unified role-picker cancellation. For `.assignToExisting`, records the
+    /// dismissal so the picker isn't immediately re-shown for this chat. The
+    /// chat remains non-functional (input/send disabled) until a role is
+    /// assigned. Re-selecting the chat clears the dismissal and re-prompts.
+    func rolePickerCancelled() {
+        switch rolePickerMode {
+        case .assignToExisting(let filename):
+            dismissedRoleAssignmentFor.insert(filename)
+        case .newChat:
+            break
+        }
+        showRolePicker = false
+    }
+
+    // MARK: - Configuration errors
+
+    /// Builds the message sent to a Configurator chat for a set of errors: a
+    /// header followed by a numbered list of one-line descriptions. Pure logic,
+    /// so `nonisolated` to allow use from tests and any context.
+    nonisolated static func configuratorMessage(for errors: [ConfigError]) -> String {
+        var lines = ["Please investigate the following problems and propose solutions:"]
+        for (i, error) in errors.enumerated() {
+            lines.append("\(i + 1). \(error.configuratorLine)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Creates a new chat with the Configurator role and immediately sends it
+    /// the current configuration errors as a numbered list, kicking off a
+    /// Configurator request right away.
+    func fixWithConfigurator() {
+        let errors = configErrors
+        showConfigErrors = false
+        guard !errors.isEmpty else { return }
+        let message = Self.configuratorMessage(for: errors)
+        Task {
+            let filename = await engine.createNewChat(role: ConfiguratorTools.configuratorRoleName)
+            selectedChatID = filename
+            await engine.selectChat(filename: filename)
+            await engine.markViewed(filename: filename)
+            chatWebViewModel?.scrollToBottom()
+            await engine.sendMessage(filename: filename, text: message)
         }
     }
 
@@ -654,14 +785,23 @@ final class AppViewModel: ObservableObject {
     }
 
     /// Selects a chat, prunes other empty chats, and clears its unread marker.
+    /// Re-selecting a chat clears any prior role-picker dismissal so the
+    /// picker re-prompts if the chat's role is still missing.
     func selectChat(_ filename: String) {
         if !ctrlTabSessionActive, let current = selectedChatID, current != filename {
             previousChatID = current
         }
+        // Clear the dismissal so re-opening a chat whose role is missing
+        // re-prompts the role picker.
+        dismissedRoleAssignmentFor.remove(filename)
         selectedChatID = filename
         Task {
             await engine.selectChat(filename: filename)
             await engine.markViewed(filename: filename)
+            // After the chat is loaded, present the role picker if its role is
+            // missing. Done after selectChat so the chat record is loaded and
+            // `selectedChatNeedsRoleAssignment` reflects the real role state.
+            maybePresentRolePickerForSelectedChat()
         }
     }
 

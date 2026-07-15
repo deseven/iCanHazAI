@@ -318,7 +318,7 @@ actor MCPManager {
                         return (name, tools, nil)
                     } catch {
                         let reason = error.localizedDescription
-                        debugLog("MCP", "configure connectAndListTools failed — server=\"\(name)\": \(reason)")
+                        debugLog("MCP", "⚠️ configure connectAndListTools failed — server=\"\(name)\": \(reason)")
                         return (name, nil, reason)
                     }
                 }
@@ -373,7 +373,7 @@ actor MCPManager {
             entry.toolCount = tools.count
             entry.errorMessage = nil
         } catch {
-            debugLog("MCP", "reconfigure connectAndListTools failed — server=\"\(server.name)\": \(error.localizedDescription)")
+            debugLog("MCP", "⚠️ reconfigure connectAndListTools failed — server=\"\(server.name)\": \(error.localizedDescription)")
             await disconnect(name: server.name)
             toolsCache.removeValue(forKey: server.name)
             entry.status = .failed
@@ -436,7 +436,7 @@ actor MCPManager {
             connections[server.name] = conn
             debugLog("MCP", "connected — server=\"\(server.name)\", serverName=\"\(conn.initResult.serverInfo.name)\", serverVersion=\"\(conn.initResult.serverInfo.version)\", protocolVersion=\"\(conn.initResult.protocolVersion)\", capabilities=\(capabilitySummary(conn.initResult.capabilities))")
         } catch {
-            debugLog("MCP", "connect failed — server=\"\(server.name)\": \(error.localizedDescription)")
+            debugLog("MCP", "⚠️ connect failed — server=\"\(server.name)\": \(error.localizedDescription)")
             reportError("MCP server \"\(server.name)\" failed to connect: \(error.localizedDescription)")
         }
     }
@@ -609,7 +609,7 @@ actor MCPManager {
                 try await Task.sleep(nanoseconds: grace)
                 if box.hasTerminated() {
                     let err = box.makeError(serverName: server.name, stderrPipe: stderrPipe)
-                    debugLog("MCP", "stdio server \"\(server.name)\" died during startup grace — \(err.localizedDescription)")
+                    debugLog("MCP", "⚠️ stdio server \"\(server.name)\" died during startup grace — \(err.localizedDescription)")
                     proc.terminationHandler = nil
                     throw err
                 }
@@ -620,7 +620,7 @@ actor MCPManager {
                     proc.terminationHandler = nil
                     if box.hasTerminated() {
                         let err = box.makeError(serverName: server.name, stderrPipe: stderrPipe)
-                        debugLog("MCP", "stdio server \"\(server.name)\" died during handshake — \(err.localizedDescription)")
+                        debugLog("MCP", "⚠️ stdio server \"\(server.name)\" died during handshake — \(err.localizedDescription)")
                         await client.disconnect()
                         proc.terminate()
                         await awaitProcessExit(proc)
@@ -639,7 +639,7 @@ actor MCPManager {
                 return try await queryTools(for: server.name)
             }
         } catch {
-            debugLog("MCP", "connectAndListTools failed — server=\"\(server.name)\": \(error.localizedDescription)")
+            debugLog("MCP", "⚠️ connectAndListTools failed — server=\"\(server.name)\": \(error.localizedDescription)")
             if connections[server.name] != nil {
                 await disconnect(name: server.name)
             } else {
@@ -859,7 +859,7 @@ actor MCPManager {
                 perChatConnections[chatFilename]?[name] = conn
                 debugLog("MCP", "in-house copy connected — server=\"\(name)\", chat=\(chatFilename)")
             } catch {
-                debugLog("MCP", "in-house copy connect failed — server=\"\(name)\", chat=\(chatFilename): \(error.localizedDescription)")
+                debugLog("MCP", "⚠️ in-house copy connect failed — server=\"\(name)\", chat=\(chatFilename): \(error.localizedDescription)")
                 reportError("MCP server \"\(name)\" failed to start for chat: \(error.localizedDescription)")
             }
             touchInHouseActivity(chatFilename: chatFilename, server: name)

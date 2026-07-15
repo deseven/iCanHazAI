@@ -392,6 +392,8 @@ function ChatApp() {
                 key={m.id}
                 message={m}
                 isStreaming={m.id === streamingId}
+                roleName={snapshot?.roleName ?? null}
+                roleAccent={snapshot?.roleAccent ?? null}
                 defaultThinkingOpen={expandThinking}
                 defaultToolOpen={expandToolUse}
               />

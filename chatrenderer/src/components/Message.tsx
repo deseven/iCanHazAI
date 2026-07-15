@@ -20,20 +20,28 @@ import type { ToolCallData, ToolResultData } from "../types";
 interface Props {
   message: ChatMessage;
   isStreaming: boolean;
+  /** The chat's role name (e.g. "Developer"). Used as the title of assistant
+   *  messages instead of the generic "Assistant". Null when no role is set. */
+  roleName: string | null;
+  /** The role's accent color as an "#RRGGBB" hex string, used to color the
+   *  assistant message title. Null when no role is set. */
+  roleAccent: string | null;
   /** Whether Thinking blocks should be expanded by default (host preference). */
   defaultThinkingOpen: boolean;
   /** Whether Tool Use blocks should be expanded by default (host preference). */
   defaultToolOpen: boolean;
 }
 
-function roleLabel(role: string): string {
+function roleLabel(role: string, roleName: string | null): string {
   switch (role) {
     case "system":
       return "System";
     case "user":
       return "You";
     case "assistant":
-      return "Assistant";
+      // Prefer the chat's actual role name (e.g. "Developer") over the
+      // generic "Assistant" when one is set.
+      return roleName ?? "Assistant";
     case "tool":
       return "Tool";
     default:
@@ -247,6 +255,8 @@ function ImageGallery({ images }: { images: MessageImage[] }) {
 export const MessageItem = memo(function MessageItem({
   message,
   isStreaming,
+  roleName,
+  roleAccent,
   defaultThinkingOpen,
   defaultToolOpen,
 }: Props) {
@@ -359,7 +369,12 @@ export const MessageItem = memo(function MessageItem({
       </div>
       <div class="msg-body" ref={bodyRef}>
         <div class="msg-header" ref={headerRef}>
-          <span class="msg-role">{roleLabel(message.role)}</span>
+          <span
+            class="msg-role"
+            style={message.role === "assistant" && roleAccent ? { color: roleAccent } : undefined}
+          >
+            {roleLabel(message.role, roleName)}
+          </span>
           {hovering && <span class="msg-detail">{hoverDetail}</span>}
           <span class="msg-actions" style={{ opacity: hovering ? 1 : 0 }}>
             <button

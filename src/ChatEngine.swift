@@ -81,6 +81,18 @@ actor ChatEngine {
     /// Guards `pendingReconfigures` re-entrancy.
     private var didInitialConfigure = false
 
+    // MARK: - Config error registry
+
+    /// Current configuration errors, keyed by `ConfigError.id`
+    /// (`"<kind>:<entityName>"`). Rebuilt from the on-disk loaders
+    /// (connection/role/mcp config errors) and the live MCP configuration
+    /// state (mcp runtime failures). Runtime-only: never persisted — it is
+    /// repopulated from disk on every launch. Emitted to subscribers via
+    /// `.configErrorsChanged` whenever it changes.
+    private var configErrorMap: [String: ConfigError] = [:]
+    /// Last snapshot emitted, so we only emit when the set actually changes.
+    private var lastEmittedConfigErrors: [ConfigError] = []
+
     /// The filename of the chat the user is currently viewing. Used to suppress
     /// the unread marker when a stream finishes for the chat that's already on
     /// screen — the user has seen the answer, so no notification is needed.
@@ -211,11 +223,17 @@ actor ChatEngine {
             Task { await self?.handleMCPConfigurationState(state) }
         } }
         loadFromCache()
-        roles = env.loadAllRoles()
+        let rolesResult = env.loadAllRolesReportingErrors()
+        roles = rolesResult.loaded
+        replaceConfigErrors(kind: .role, with: rolesResult.errors)
         prompts = env.loadAllPrompts()
-        connections = env.loadConnections()
-        customMcps = env.loadMCPs()
+        let connsResult = env.loadConnectionsReportingErrors()
+        connections = connsResult.loaded
+        replaceConfigErrors(kind: .connection, with: connsResult.errors)
+        let mcpsResult = env.loadMCPsReportingErrors()
+        customMcps = mcpsResult.loaded
         rebuildMcpList()
+        replaceConfigErrors(kind: .mcpConfig, with: mcpsResult.errors)
         startWatching()
         debugLog("Engine", "start complete — \(records.count) chats, \(connections.count) connections, \(mcps.count) MCP servers, \(roles.count) roles, \(prompts.count) prompts")
         emit(.chatsChanged(records))
@@ -249,6 +267,7 @@ actor ChatEngine {
             continuation.yield(.promptsChanged(self.prompts))
             continuation.yield(.connectionsChanged(self.connections))
             continuation.yield(.mcpsChanged(self.mcps))
+            continuation.yield(.configErrorsChanged(self.currentConfigErrors()))
         }
         return stream
     }
@@ -674,16 +693,23 @@ actor ChatEngine {
         switch event {
         case .itemCreated, .itemClonedAtPath, .itemDataModified, .itemRenamed:
             // Reload the single role and merge into the in-memory list.
-            if let role = env.loadSingleRole(name: name) {
+            let (role, error) = env.loadSingleRoleReportingError(name: name)
+            if let role {
                 if let idx = roles.firstIndex(where: { $0.name == name }) {
                     roles[idx] = role
                 } else {
                     roles.append(role)
                     roles.sort { $0.name < $1.name }
                 }
+                clearConfigError(kind: .role, name: name)
             } else {
                 // File gone or undecodable — treat as removal.
                 roles.removeAll(where: { $0.name == name })
+                if let error {
+                    setConfigError(error)
+                } else {
+                    clearConfigError(kind: .role, name: name)
+                }
             }
             // Working directory / MCP isolation may have changed: relaunch
             // in-house MCP copies for chats using this role so they pick up the
@@ -692,6 +718,7 @@ actor ChatEngine {
             emit(.rolesChanged(roles))
         case .itemRemoved:
             roles.removeAll(where: { $0.name == name })
+            clearConfigError(kind: .role, name: name)
             relaunchInHouseForRole(name)
             emit(.rolesChanged(roles))
         default:
@@ -734,7 +761,9 @@ actor ChatEngine {
         // cheaper than the old full-tree scan.
         switch event {
         case .itemCreated, .itemClonedAtPath, .itemDataModified, .itemRenamed, .itemRemoved:
-            connections = env.loadConnections()
+            let result = env.loadConnectionsReportingErrors()
+            connections = result.loaded
+            replaceConfigErrors(kind: .connection, with: result.errors)
             emit(.connectionsChanged(connections))
         default:
             break
@@ -749,25 +778,39 @@ actor ChatEngine {
         let name = url.deletingPathExtension().lastPathComponent
         switch event {
         case .itemCreated, .itemClonedAtPath, .itemDataModified, .itemRenamed:
-            if let server = env.loadSingleMCP(name: name) {
+            let (server, error) = env.loadSingleMCPReportingError(name: name)
+            if let server {
                 if let idx = customMcps.firstIndex(where: { $0.name == name }) {
                     customMcps[idx] = server
                 } else {
                     customMcps.append(server)
                 }
                 rebuildMcpList()
+                clearConfigError(kind: .mcpConfig, name: name)
                 // Single-flight reconfigure: coalesce a burst of events for the
-                // same server into one reconfigure.
+                // same server into one reconfigure. The reconfigure will clear
+                // (or set) the runtime failure for this server.
                 scheduleReconfigure(server)
             } else {
                 // Undecodable — treat as removal.
                 customMcps.removeAll(where: { $0.name == name })
                 rebuildMcpList()
+                if let error {
+                    setConfigError(error)
+                    // A server with a broken config can't run; drop any stale
+                    // runtime failure so only the config error is shown.
+                    clearConfigError(kind: .mcpFailure, name: name)
+                } else {
+                    clearConfigError(kind: .mcpConfig, name: name)
+                    clearConfigError(kind: .mcpFailure, name: name)
+                }
                 scheduleForget(name)
             }
         case .itemRemoved:
             customMcps.removeAll(where: { $0.name == name })
             rebuildMcpList()
+            clearConfigError(kind: .mcpConfig, name: name)
+            clearConfigError(kind: .mcpFailure, name: name)
             scheduleForget(name)
         default:
             break
@@ -806,11 +849,17 @@ actor ChatEngine {
             .roles: env.roleCount(),
         ])))
         fullRescanChats()
-        roles = env.loadAllRoles()
+        let rolesResult = env.loadAllRolesReportingErrors()
+        roles = rolesResult.loaded
+        replaceConfigErrors(kind: .role, with: rolesResult.errors)
         prompts = env.loadAllPrompts()
-        connections = env.loadConnections()
-        customMcps = env.loadMCPs()
+        let connsResult = env.loadConnectionsReportingErrors()
+        connections = connsResult.loaded
+        replaceConfigErrors(kind: .connection, with: connsResult.errors)
+        let mcpsResult = env.loadMCPsReportingErrors()
+        customMcps = mcpsResult.loaded
         rebuildMcpList()
+        replaceConfigErrors(kind: .mcpConfig, with: mcpsResult.errors)
         emit(.rolesChanged(roles))
         emit(.promptsChanged(prompts))
         emit(.connectionsChanged(connections))
@@ -833,8 +882,10 @@ actor ChatEngine {
             return
         }
         // Reload the freshest configs from disk so the pass uses current state.
-        customMcps = env.loadMCPs()
+        let mcpsResult = env.loadMCPsReportingErrors()
+        customMcps = mcpsResult.loaded
         rebuildMcpList()
+        replaceConfigErrors(kind: .mcpConfig, with: mcpsResult.errors)
         // Builtins are always present, so the list is never empty; the
         // configure pass initializes every server (in-house included).
         isConfiguringMCPs = true
@@ -893,14 +944,33 @@ actor ChatEngine {
     /// removed server.
     func scheduleForget(_ name: String) {
         pendingReconfigures[name]?.cancel()
+        clearConfigError(kind: .mcpFailure, name: name)
         Task { await MCPManager.shared.forget(name) }
     }
 
     /// Receives a configuration-state snapshot from `MCPManager`'s status
     /// sink, stores it, and emits it so the UI overlay can update. The UI
     /// layer is responsible for any display delay.
+    ///
+    /// Also derives runtime MCP failures for custom servers: a `.failed` entry
+    /// records a [`ConfigError`](src/Models.swift) (kind `.mcpFailure`); a
+    /// `.success` entry clears it. Built-in servers are app internals (not
+    /// user-configurable) and are ignored. A single-server reconfigure pass
+    /// carries only that server, so other servers' failures are left intact.
     private func handleMCPConfigurationState(_ state: MCPConfigurationState) {
         mcpConfiguration = state
+        let customNames = Set(customMcps.map { $0.name })
+        for entry in state.entries where customNames.contains(entry.name) {
+            switch entry.status {
+            case .failed:
+                let msg = entry.errorMessage?.isEmpty == false ? entry.errorMessage! : "failed to connect or list tools"
+                setConfigError(ConfigError(kind: .mcpFailure, entityName: entry.name, message: msg))
+            case .success:
+                clearConfigError(kind: .mcpFailure, name: entry.name)
+            case .pending, .inProgress:
+                break
+            }
+        }
         emit(.mcpConfiguration(state))
     }
 
@@ -909,8 +979,10 @@ actor ChatEngine {
     /// by `configureMCPs()` (on launch and "Reload MCPs…") or
     /// `scheduleReconfigure` (on per-file FSEvents).
     private func reloadMCPs() {
-        customMcps = env.loadMCPs()
+        let mcpsResult = env.loadMCPsReportingErrors()
+        customMcps = mcpsResult.loaded
         rebuildMcpList()
+        replaceConfigErrors(kind: .mcpConfig, with: mcpsResult.errors)
         debugLog("MCP", "reloaded \(customMcps.count) custom server config(s) from disk")
     }
 
@@ -920,6 +992,55 @@ actor ChatEngine {
     private func rebuildMcpList() {
         mcps = builtinMcps + customMcps.sorted { $0.name < $1.name }
         emit(.mcpsChanged(mcps))
+    }
+
+    // MARK: - Config error registry
+
+    /// The current configuration errors, ordered by kind then entity name for
+    /// stable display.
+    private func currentConfigErrors() -> [ConfigError] {
+        configErrorMap.values.sorted { a, b in
+            if a.kind.rawValue != b.kind.rawValue { return a.kind.rawValue < b.kind.rawValue }
+            return a.entityName < b.entityName
+        }
+    }
+
+    /// Records (or replaces) a single error, then emits if the snapshot changed.
+    private func setConfigError(_ error: ConfigError) {
+        configErrorMap[error.id] = error
+        emitConfigErrorsIfChanged()
+    }
+
+    /// Clears a single entity's error (by kind + name). No-op (and no emit) if
+    /// there was none.
+    private func clearConfigError(kind: ConfigError.Kind, name: String) {
+        let id = "\(kind.rawValue):\(name)"
+        if configErrorMap.removeValue(forKey: id) != nil {
+            emitConfigErrorsIfChanged()
+        }
+    }
+
+    /// Replaces every error of `kind` with `errors` (the full failing set for
+    /// that kind, as reported by a loader). Entities that now load cleanly (or
+    /// were removed) drop out automatically because they're absent from `errors`.
+    private func replaceConfigErrors(kind: ConfigError.Kind, with errors: [ConfigError]) {
+        let prefix = "\(kind.rawValue):"
+        let toRemove = configErrorMap.keys.filter { $0.hasPrefix(prefix) }
+        for key in toRemove { configErrorMap.removeValue(forKey: key) }
+        for e in errors { configErrorMap[e.id] = e }
+        if !toRemove.isEmpty || !errors.isEmpty {
+            emitConfigErrorsIfChanged()
+        }
+    }
+
+    /// Emits `.configErrorsChanged` only when the snapshot actually changed,
+    /// so a no-op reload doesn't flood subscribers with identical events.
+    private func emitConfigErrorsIfChanged() {
+        let snapshot = currentConfigErrors()
+        if snapshot != lastEmittedConfigErrors {
+            lastEmittedConfigErrors = snapshot
+            emit(.configErrorsChanged(snapshot))
+        }
     }
 
     // MARK: - Loading

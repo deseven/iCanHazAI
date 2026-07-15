@@ -299,8 +299,16 @@ final class EnvironmentManager: @unchecked Sendable {
     /// file that shadows a protected name is ignored in favor of the bundled
     /// version.
     func loadAllRoles() -> [Role] {
+        loadAllRolesReportingErrors().loaded
+    }
+
+    /// Same as [`loadAllRoles()`](src/EnvironmentManager.swift) but also returns
+    /// a [`ConfigError`](src/Models.swift) per role file that failed to read or
+    /// decode. Used by `ChatEngine` to populate the configuration-error registry.
+    func loadAllRolesReportingErrors() -> (loaded: [Role], errors: [ConfigError]) {
         let fm = FileManager.default
-        var result: [Role] = []
+        var loaded: [Role] = []
+        var errors: [ConfigError] = []
         if let files = try? fm.contentsOfDirectory(at: rolesURL, includingPropertiesForKeys: nil) {
             for url in files where url.pathExtension == "toml" {
                 let name = url.deletingPathExtension().lastPathComponent
@@ -308,43 +316,52 @@ final class EnvironmentManager: @unchecked Sendable {
                 debugLog("FileRead", "reading \(relativePath(url))")
                 guard let data = try? Data(contentsOf: url) else {
                     debugLog("Env", "⚠️ failed to read role \"\(name)\"")
+                    errors.append(ConfigError(kind: .role, entityName: name, message: "role file could not be read"))
                     continue
                 }
                 do {
                     let config = try ConfigValidation.decodeRole(data)
-                    result.append(Role(name: name, config: config))
+                    loaded.append(Role(name: name, config: config))
                 } catch {
                     debugLog("Env", "⚠️ failed to decode role \"\(name)\" — \(error)")
-                    continue
+                    errors.append(ConfigError(kind: .role, entityName: name, message: error.localizedDescription))
                 }
             }
         }
         for name in Self.protectedBundleNames {
             if let role = Self.bundledRole(name: name) {
-                result.append(role)
+                loaded.append(role)
             }
         }
-        return result.sorted { $0.name < $1.name }
+        return (loaded.sorted { $0.name < $1.name }, errors)
     }
 
     /// Loads one role by name. Returns nil if not found or undecodable.
     /// Protected built-in names are always resolved from the app bundle.
     func loadSingleRole(name: String) -> Role? {
+        loadSingleRoleReportingError(name: name).role
+    }
+
+    /// Same as [`loadSingleRole(name:)`](src/EnvironmentManager.swift) but also
+    /// returns a [`ConfigError`](src/Models.swift) when the file exists but
+    /// fails to decode. A missing file returns `(nil, nil)` — the caller treats
+    /// that as a removal (no error). Protected built-ins never error.
+    func loadSingleRoleReportingError(name: String) -> (role: Role?, error: ConfigError?) {
         if Self.protectedBundleNames.contains(name) {
-            return Self.bundledRole(name: name)
+            return (Self.bundledRole(name: name), nil)
         }
         let url = rolesURL.appendingPathComponent("\(name).toml")
         debugLog("FileRead", "reading \(relativePath(url))")
         guard let data = try? Data(contentsOf: url) else {
             debugLog("Env", "⚠️ failed to read role \"\(name)\"")
-            return nil
+            return (nil, nil)
         }
         do {
             let config = try ConfigValidation.decodeRole(data)
-            return Role(name: name, config: config)
+            return (Role(name: name, config: config), nil)
         } catch {
             debugLog("Env", "⚠️ failed to decode role \"\(name)\" — \(error)")
-            return nil
+            return (nil, ConfigError(kind: .role, entityName: name, message: error.localizedDescription))
         }
     }
 
@@ -390,35 +407,50 @@ final class EnvironmentManager: @unchecked Sendable {
 
     /// Loads all connections from both provider directories.
     func loadConnections() -> [Connection] {
-        var connections: [Connection] = []
-        connections.append(contentsOf: loadConnections(in: openaiConnectionsURL, provider: .openai))
-        connections.append(contentsOf: loadConnections(in: anthropicConnectionsURL, provider: .anthropic))
-        return connections.sorted { $0.displayName < $1.displayName }
+        loadConnectionsReportingErrors().loaded
     }
 
-    private func loadConnections(in directory: URL, provider: ConnectionProvider) -> [Connection] {
+    /// Same as [`loadConnections()`](src/EnvironmentManager.swift) but also
+    /// returns a [`ConfigError`](src/Models.swift) per connection file that
+    /// failed to read or decode. Used by `ChatEngine` to populate the
+    /// configuration-error registry.
+    func loadConnectionsReportingErrors() -> (loaded: [Connection], errors: [ConfigError]) {
+        var loaded: [Connection] = []
+        var errors: [ConfigError] = []
+        let r1 = loadConnectionsReportingErrors(in: openaiConnectionsURL, provider: .openai)
+        loaded.append(contentsOf: r1.loaded)
+        errors.append(contentsOf: r1.errors)
+        let r2 = loadConnectionsReportingErrors(in: anthropicConnectionsURL, provider: .anthropic)
+        loaded.append(contentsOf: r2.loaded)
+        errors.append(contentsOf: r2.errors)
+        return (loaded.sorted { $0.displayName < $1.displayName }, errors)
+    }
+
+    private func loadConnectionsReportingErrors(in directory: URL, provider: ConnectionProvider) -> (loaded: [Connection], errors: [ConfigError]) {
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
-            return []
+            return ([], [])
         }
-        return files
-            .filter { $0.pathExtension == "jsonc" }
-            .compactMap { url in
-                debugLog("FileRead", "reading \(relativePath(url))")
-                let name = url.deletingPathExtension().lastPathComponent
-                guard let data = try? Data(contentsOf: url) else {
-                    debugLog("Env", "⚠️ failed to read \(provider.rawValue) connection \"\(name)\"")
-                    return nil
-                }
-                let config: ConnectionConfig
-                do {
-                    config = try ConfigValidation.decodeConnection(data)
-                } catch {
-                    debugLog("Env", "⚠️ failed to decode \(provider.rawValue) connection \"\(name)\" — \(error)")
-                    return nil
-                }
-                return connection(from: config, url: url, provider: provider)
+        var loaded: [Connection] = []
+        var errors: [ConfigError] = []
+        for url in files where url.pathExtension == "jsonc" {
+            debugLog("FileRead", "reading \(relativePath(url))")
+            let name = url.deletingPathExtension().lastPathComponent
+            let entityName = "\(provider.rawValue)/\(name)"
+            guard let data = try? Data(contentsOf: url) else {
+                debugLog("Env", "⚠️ failed to read \(provider.rawValue) connection \"\(name)\"")
+                errors.append(ConfigError(kind: .connection, entityName: entityName, message: "connection file could not be read"))
+                continue
             }
+            do {
+                let config = try ConfigValidation.decodeConnection(data)
+                loaded.append(connection(from: config, url: url, provider: provider))
+            } catch {
+                debugLog("Env", "⚠️ failed to decode \(provider.rawValue) connection \"\(name)\" — \(error)")
+                errors.append(ConfigError(kind: .connection, entityName: entityName, message: error.localizedDescription))
+            }
+        }
+        return (loaded, errors)
     }
 
     /// Loads one connection from a specific file URL, inferring the provider
@@ -465,45 +497,62 @@ final class EnvironmentManager: @unchecked Sendable {
 
     /// Loads all MCP servers from the `mcp` directory, sorted by name.
     func loadMCPs() -> [MCPServer] {
+        loadMCPsReportingErrors().loaded
+    }
+
+    /// Same as [`loadMCPs()`](src/EnvironmentManager.swift) but also returns a
+    /// [`ConfigError`](src/Models.swift) per MCP config file that failed to
+    /// read or decode. Used by `ChatEngine` to populate the configuration-error
+    /// registry.
+    func loadMCPsReportingErrors() -> (loaded: [MCPServer], errors: [ConfigError]) {
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(at: mcpsURL, includingPropertiesForKeys: nil) else {
-            return []
+            return ([], [])
         }
-        return files
-            .filter { $0.pathExtension == "toml" }
-            .compactMap { url in
-                debugLog("FileRead", "reading \(relativePath(url))")
-                let name = url.deletingPathExtension().lastPathComponent
-                guard let data = try? Data(contentsOf: url) else {
-                    debugLog("MCP", "⚠️ failed to read MCP config \"\(name)\"")
-                    return nil
-                }
-                do {
-                    let config = try ConfigValidation.decodeMCP(data)
-                    return MCPServer(name: name, config: config)
-                } catch {
-                    debugLog("MCP", "⚠️ failed to decode MCP config \"\(name)\" — \(error)")
-                    return nil
-                }
+        var loaded: [MCPServer] = []
+        var errors: [ConfigError] = []
+        for url in files where url.pathExtension == "toml" {
+            debugLog("FileRead", "reading \(relativePath(url))")
+            let name = url.deletingPathExtension().lastPathComponent
+            guard let data = try? Data(contentsOf: url) else {
+                debugLog("MCP", "⚠️ failed to read MCP config \"\(name)\"")
+                errors.append(ConfigError(kind: .mcpConfig, entityName: name, message: "MCP config file could not be read"))
+                continue
             }
-            .sorted { $0.name < $1.name }
+            do {
+                let config = try ConfigValidation.decodeMCP(data)
+                loaded.append(MCPServer(name: name, config: config))
+            } catch {
+                debugLog("MCP", "⚠️ failed to decode MCP config \"\(name)\" — \(error)")
+                errors.append(ConfigError(kind: .mcpConfig, entityName: name, message: error.localizedDescription))
+            }
+        }
+        return (loaded.sorted { $0.name < $1.name }, errors)
     }
 
     /// Loads one MCP config by name. Returns nil if the file is missing or
     /// undecodable.
     func loadSingleMCP(name: String) -> MCPServer? {
+        loadSingleMCPReportingError(name: name).server
+    }
+
+    /// Same as [`loadSingleMCP(name:)`](src/EnvironmentManager.swift) but also
+    /// returns a [`ConfigError`](src/Models.swift) when the file exists but
+    /// fails to decode. A missing file returns `(nil, nil)` — the caller treats
+    /// that as a removal (no error).
+    func loadSingleMCPReportingError(name: String) -> (server: MCPServer?, error: ConfigError?) {
         let url = mcpsURL.appendingPathComponent("\(name).toml")
         debugLog("FileRead", "reading \(relativePath(url))")
         guard let data = try? Data(contentsOf: url) else {
             debugLog("MCP", "⚠️ failed to read MCP config \"\(name)\"")
-            return nil
+            return (nil, nil)
         }
         do {
             let config = try ConfigValidation.decodeMCP(data)
-            return MCPServer(name: name, config: config)
+            return (MCPServer(name: name, config: config), nil)
         } catch {
             debugLog("MCP", "⚠️ failed to decode MCP config \"\(name)\" — \(error)")
-            return nil
+            return (nil, ConfigError(kind: .mcpConfig, entityName: name, message: error.localizedDescription))
         }
     }
 

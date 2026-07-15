@@ -47,6 +47,23 @@ enum RoleAccent {
         }
         return Color.accentColor
     }
+
+    /// Resolves the accent color for an alias to an "#RRGGBB" hex string,
+    /// resolved against the app's current effective appearance so it matches
+    /// the active light/dark theme. Falls back to the macOS control accent
+    /// color when the alias is absent/unrecognized. The resolved value is
+    /// appearance-dependent and must not be persisted — re-resolve on theme
+    /// change.
+    static func hexColor(for alias: String?) -> String {
+        let nsColor = nsColor(for: alias) ?? NSColor.controlAccentColor
+        var resolved = nsColor
+        NSApp.effectiveAppearance.performAsCurrentDrawingAppearance {
+            resolved = nsColor.usingColorSpace(.sRGB) ?? nsColor
+        }
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        resolved.getRed(&r, green: &g, blue: &b, alpha: &a)
+        return String(format: "#%02X%02X%02X", Int(round(r * 255)), Int(round(g * 255)), Int(round(b * 255)))
+    }
 }
 
 extension Role {

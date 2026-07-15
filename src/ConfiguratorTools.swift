@@ -462,16 +462,19 @@ enum ConfiguratorTools {
 
     // MARK: - Name / id validation
 
-    /// Allowed characters for a bare entity name (file stem). Rejects path
-    /// separators and traversal so a name can never escape its directory.
-    private static let safeNamePattern = #"^[A-Za-z0-9._-]+$"#
-
     /// Validates a bare entity name, returning it unchanged on success.
+    ///
+    /// Names are used directly as file stems, so the only hard rule is that a
+    /// name must not contain a path separator — otherwise it could escape its
+    /// directory (e.g. `../foo`). Any other character (spaces, `&`, unicode, …)
+    /// is allowed, matching the names users actually pick for MCPs/roles/prompts.
+    /// A name with no matching file simply yields a "not found" error downstream.
     private static func validated(_ name: String, protected: Bool = false) throws -> String {
-        guard !name.isEmpty,
-              let regex = try? NSRegularExpression(pattern: safeNamePattern),
-              regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) != nil else {
-            throw ConfiguratorToolError("Invalid name \"\(name)\". Use only letters, digits, '.', '_', '-'.")
+        guard !name.isEmpty else {
+            throw ConfiguratorToolError("Name must not be empty.")
+        }
+        if name.contains("/") || name.contains("\\") {
+            throw ConfiguratorToolError("Invalid name \"\(name)\". Names must not contain path separators.")
         }
         if protected, EnvironmentManager.protectedBundleNames.contains(name) {
             throw ConfiguratorToolError("\"\(name)\" is a protected built-in and cannot be overwritten.")

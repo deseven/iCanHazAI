@@ -154,11 +154,17 @@ actor ConfigManager {
 
     /// Lock-protected holder for the config decoded during the synchronous
     /// bootstrap. The actor's `load()` consumes it without re-reading the file.
+    /// Also carries whether the on-disk file failed to decode, so `load()` can
+    /// overwrite the broken file with the fresh defaults.
     private final class BootstrapBox: @unchecked Sendable {
         private let lock = NSLock()
-        private var _config: AppConfig?
-        func get() -> AppConfig? { lock.lock(); defer { lock.unlock() }; return _config }
-        func set(_ value: AppConfig) { lock.lock(); defer { lock.unlock() }; _config = value }
+        private var _payload: (config: AppConfig, decodeFailed: Bool)?
+        func get() -> (config: AppConfig, decodeFailed: Bool)? {
+            lock.lock(); defer { lock.unlock() }; return _payload
+        }
+        func set(_ config: AppConfig, decodeFailed: Bool) {
+            lock.lock(); defer { lock.unlock() }; _payload = (config, decodeFailed)
+        }
     }
     private static let bootstrapBox = BootstrapBox()
 
@@ -181,21 +187,28 @@ actor ConfigManager {
     ///    re-reading the file, so no launch-time FSEvent/atomic-write race can
     ///    produce an empty config that would later be persisted as defaults.
     ///
-    /// If the file is missing or undecodable, defaults are used (and stashed),
-    /// which is the correct behavior for a first launch or a genuinely corrupt
-    /// file — but the stash is never persisted by this call.
+    /// If the file is missing, defaults are used (a normal first launch — no
+    /// overwrite). If the file exists but fails to decode, defaults are used
+    /// and the failure is stashed so `load()` overwrites the broken file with a
+    /// fresh default config (logging the action).
     nonisolated static func bootstrapSynchronously() {
         let url = bootstrapFileURL
         var decoded = AppConfig()
+        var decodeFailed = false
         if let data = try? Data(contentsOf: url) {
             if let parsed = try? ConfigValidation.decodeAppConfig(data) {
                 decoded = parsed
+            } else {
+                decodeFailed = true
             }
         }
         // Apply the debug-logging flag immediately so every subsequent
         // debugLog call (including those inside the actor's load()) is captured.
         DebugLogger.setEnabled(decoded.debug.appDebugEnabled)
-        bootstrapBox.set(decoded)
+        if decodeFailed {
+            debugLog("Config", "⚠️ failed to decode app config on startup — using defaults; the broken file will be overwritten")
+        }
+        bootstrapBox.set(decoded, decodeFailed: decodeFailed)
     }
 
     /// Registers the self-write hook used to suppress FSEvents for our own
@@ -224,9 +237,17 @@ actor ConfigManager {
     func load() {
         guard !didLoad else { return }
         if let stashed = ConfigManager.bootstrapBox.get() {
-            debugLog("Config", "consuming synchronously-bootstrapped config (app_debug=\(stashed.debug.appDebugEnabled), chat_renderer_debug=\(stashed.debug.chatRendererDebugEnabled))")
-            config = stashed
+            debugLog("Config", "consuming synchronously-bootstrapped config (app_debug=\(stashed.config.debug.appDebugEnabled), chat_renderer_debug=\(stashed.config.debug.chatRendererDebugEnabled))")
+            config = stashed.config
             didLoad = true
+            if stashed.decodeFailed {
+                // The on-disk config was undecodable at startup — overwrite it
+                // with the fresh defaults we fell back to so the file is usable
+                // again (and the next launch doesn't hit the same failure).
+                debugLog("Config", "⚠️ overwriting unreadable app config with defaults")
+                lastWritten = nil
+                persist()
+            }
             validateAndSave()
             return
         }
@@ -244,9 +265,11 @@ actor ConfigManager {
             config = try ConfigValidation.decodeAppConfig(data)
             debugLog("Config", "loaded successfully (app_debug=\(config.debug.appDebugEnabled), chat_renderer_debug=\(config.debug.chatRendererDebugEnabled))")
         } catch {
-            debugLog("Config", "failed to decode config: \(error) — using defaults")
+            debugLog("Config", "⚠️ failed to decode config: \(error) — using defaults and overwriting the file")
             config = AppConfig()
             didLoad = true
+            lastWritten = nil
+            persist()
             return
         }
         didLoad = true
@@ -263,14 +286,24 @@ actor ConfigManager {
         let fm = FileManager.default
         guard fm.fileExists(atPath: fileURL.path),
               let data = try? Data(contentsOf: fileURL) else {
-            debugLog("Config", "no config file found on reload — keeping current state")
+            // The config file was removed or can't be read while the app is
+            // running (external edit). Restore the current live configuration
+            // to disk so the app keeps a working config file.
+            debugLog("Config", "⚠️ config file missing on reload — restoring current live config to disk")
+            lastWritten = nil
+            persist()
             return
         }
         do {
             config = try ConfigValidation.decodeAppConfig(data)
             debugLog("Config", "reloaded successfully (app_debug=\(config.debug.appDebugEnabled), chat_renderer_debug=\(config.debug.chatRendererDebugEnabled))")
         } catch {
-            debugLog("Config", "failed to decode config on reload: \(error) — keeping current state")
+            // The external edit produced an undecodable config. Keep the
+            // in-memory `config` (the live state) and persist it back so the
+            // broken edit is replaced with a working file.
+            debugLog("Config", "⚠️ failed to decode config on reload: \(error) — restoring current live config to disk")
+            lastWritten = nil
+            persist()
             return
         }
         lastWritten = nil

@@ -261,6 +261,66 @@ enum EngineEvent: Sendable {
     /// cancelled by a stop). The UI clears any attention it drew for it.
     case toolApprovalResolved(filename: String, callID: String)
     case error(String)
+    /// The set of gathered configuration errors changed (a connection/role/MCP
+    /// config failed to load, or an MCP server failed at runtime, or a
+    /// previously-broken entity was fixed/removed on disk). The UI shows a
+    /// warning button in the title bar while the array is non-empty. Carries
+    /// the full snapshot so subscribers always reflect the current state.
+    case configErrorsChanged([ConfigError])
+}
+
+// MARK: - Config errors
+
+/// A configuration problem surfaced to the user (and the Configurator) for
+/// manual repair. Each entry identifies the failing entity by `kind` and
+/// `entityName`, plus a human-readable `message`. The set is rebuilt by
+/// [`ChatEngine`](src/ChatEngine.swift) whenever the on-disk configuration is
+/// reloaded, so it naturally shrinks as broken entities are fixed or removed.
+///
+/// `id` is `"<kind>:<entityName>"` — stable across rebuilds so the UI diffs the
+/// list without flicker, and so the engine can replace/clear a single entity's
+/// entry without touching the rest.
+struct ConfigError: Identifiable, Equatable, Sendable, Hashable {
+    var id: String { "\(kind.rawValue):\(entityName)" }
+    let kind: Kind
+    let entityName: String
+    let message: String
+
+    enum Kind: String, Sendable {
+        /// A connection `.jsonc` file failed to parse/validate.
+        case connection
+        /// A role `.toml` file failed to parse/validate.
+        case role
+        /// A custom MCP `.toml` config failed to parse/validate.
+        case mcpConfig
+        /// A custom MCP server failed to connect / list tools at runtime.
+        case mcpFailure
+    }
+
+    /// Human-readable label for the entity kind, shown in the errors window.
+    var kindLabel: String {
+        switch kind {
+        case .connection: return "Connection"
+        case .role: return "Role"
+        case .mcpConfig: return "MCP config"
+        case .mcpFailure: return "MCP server"
+        }
+    }
+
+    /// One-line description used when pasting errors into a Configurator chat,
+    /// e.g. `Connection `openai/gpt-5` is invalid (error: "Missing model").`.
+    var configuratorLine: String {
+        switch kind {
+        case .connection:
+            return "Connection `\(entityName)` is invalid (error: \"\(message)\")."
+        case .role:
+            return "Role `\(entityName)` is invalid (error: \"\(message)\")."
+        case .mcpConfig:
+            return "MCP server `\(entityName)` has an invalid config (error: \"\(message)\")."
+        case .mcpFailure:
+            return "MCP server `\(entityName)` failed on startup (error: \"\(message)\")."
+        }
+    }
 }
 
 // MARK: - MCP configuration status

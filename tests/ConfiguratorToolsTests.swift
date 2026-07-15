@@ -152,6 +152,52 @@ extension AllAppTests {
             #expect(await call("read_connection", env, ["id": "openai/nope"]).isError)
         }
 
+        // MARK: - Name validation
+
+        @Test("names with spaces and special characters are accepted")
+        func namesWithSpacesAndSpecialChars() async throws {
+            let env = try TempEnv().env
+            // A name with spaces and '&' — the case from the bug report.
+            let res = await call("write_mcp", env, [
+                "name": "Ultimate Google Docs & Sheets MCP Server",
+                "content": "transport = \"stdio\"\ncommand = \"echo\"\n"
+            ])
+            #expect(!res.isError, "error: \(res.content)")
+
+            // It should be listable and readable under that exact name.
+            let listed = await call("list_mcps", env, [:])
+            #expect(listed.content.contains("Ultimate Google Docs & Sheets MCP Server"))
+
+            let read = await call("read_mcp", env, ["name": "Ultimate Google Docs & Sheets MCP Server"])
+            #expect(!read.isError)
+            #expect(read.content.contains("transport"))
+
+            // Reading a non-existent name with spaces yields "not found", not a
+            // character-rejection error.
+            let missing = await call("read_role", env, ["name": "Incorrect Test Role"])
+            #expect(missing.isError)
+            #expect(missing.content.lowercased().contains("not found"))
+        }
+
+        @Test("names with path separators are rejected")
+        func namesWithPathSeparators() async throws {
+            let env = try TempEnv().env
+            // Forward slash — would escape the entity directory.
+            let slash = await call("write_mcp", env, ["name": "../evil", "content": "transport = \"stdio\"\n"])
+            #expect(slash.isError)
+            #expect(slash.content.lowercased().contains("separator"))
+
+            // Backslash — same protection on platforms that treat it as a separator.
+            let backslash = await call("write_mcp", env, ["name": "..\\evil", "content": "transport = \"stdio\"\n"])
+            #expect(backslash.isError)
+            #expect(backslash.content.lowercased().contains("separator"))
+
+            // Empty name is rejected.
+            let empty = await call("write_mcp", env, ["name": "", "content": "transport = \"stdio\"\n"])
+            #expect(empty.isError)
+            #expect(empty.content.lowercased().contains("empty"))
+        }
+
         // MARK: - Delete
 
         @Test("delete removes existing entities and errors on missing/protected")

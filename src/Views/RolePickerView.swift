@@ -3,9 +3,10 @@
 
 import SwiftUI
 
-/// A modal sheet shown when creating a new chat, asking the user to pick a
-/// role. Lists every available role (filename without `.toml`) with its
-/// description as a subtitle, styled like the chat sidebar list.
+/// A modal sheet shown when creating a new chat or assigning a role to an
+/// existing chat whose role is missing, asking the user to pick a role. Lists
+/// every available role (filename without `.toml`) with its description as a
+/// subtitle, styled like the chat sidebar list.
 ///
 /// Built-in roles (served from the app bundle, e.g. the `Configurator`)
 /// are pinned to the bottom in their own section, separated by a divider, so
@@ -17,6 +18,9 @@ import SwiftUI
 /// picker appears starts a chat with the default role.
 struct RolePickerView: View {
     @EnvironmentObject var store: AppViewModel
+    /// The mode the picker operates in: creating a new chat or assigning a
+    /// role to an existing chat whose role is missing.
+    let mode: AppViewModel.RolePickerMode
     let onCancel: () -> Void
     let onPick: (String) -> Void
 
@@ -33,13 +37,26 @@ struct RolePickerView: View {
     /// The default role name from the app config, if any.
     private var defaultRoleName: String? { store.preferencesDefaultRole }
 
+    /// Header title reflecting the picker's mode.
+    private var headerTitle: String {
+        switch mode {
+        case .newChat: return "New Chat"
+        case .assignToExisting: return "This chat is missing a role"
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("New Chat")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(headerTitle)
                     .font(.headline)
-                Spacer()
+                if case .assignToExisting = mode {
+                    Text("Pick a role to make this chat functional. You can't send messages until a role is assigned.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
             .padding(.top, 16)
             .padding(.bottom, 8)
