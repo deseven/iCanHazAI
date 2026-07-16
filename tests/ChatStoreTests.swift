@@ -122,6 +122,104 @@ struct ChatStoreTests {
         #expect(env.store.getEntry(filename: "a.json")?.role == "Developer")
     }
 
+    // MARK: - Archive caching
+
+    @Test("saveChat caches the archive flag")
+    func saveCachesArchive() throws {
+        env.store.saveChat(Fixtures.chat(archive: true), filename: "a.json")
+        let entry = try #require(env.store.getEntry(filename: "a.json"))
+        #expect(entry.archive == true)
+    }
+
+    @Test("saveChat caches a false archive flag")
+    func saveCachesFalseArchive() throws {
+        env.store.saveChat(Fixtures.chat(archive: false), filename: "a.json")
+        let entry = try #require(env.store.getEntry(filename: "a.json"))
+        #expect(entry.archive == false)
+    }
+
+    @Test("saveChat defaults archive to false when nil")
+    func saveCachesNilArchive() throws {
+        env.store.saveChat(Fixtures.chat(archive: nil), filename: "a.json")
+        let entry = try #require(env.store.getEntry(filename: "a.json"))
+        #expect(entry.archive == false)
+    }
+
+    @Test("re-saving with a new archive flag updates the cache")
+    func saveUpsertsArchive() throws {
+        env.store.saveChat(Fixtures.chat(archive: false), filename: "a.json")
+        try env.setModificationDate("a.json", Date(timeIntervalSince1970: 1_000))
+        env.store.saveChat(Fixtures.chat(archive: true), filename: "a.json")
+        let entry = try #require(env.store.getEntry(filename: "a.json"))
+        #expect(entry.archive == true)
+    }
+
+    @Test("startupSync caches the archive flag for chats loaded from disk")
+    func startupSyncCachesArchive() throws {
+        try env.writeChatDirect(Fixtures.chat(archive: true), filename: "a.json")
+        _ = env.store.startupSync()
+        #expect(env.store.getEntry(filename: "a.json")?.archive == true)
+    }
+
+    @Test("startupSync picks up an externally-removed archive flag")
+    func startupSyncRemovesArchive() throws {
+        // First sync: chat is archived.
+        try env.writeChatDirect(Fixtures.chat(archive: true), filename: "a.json")
+        _ = env.store.startupSync()
+        #expect(env.store.getEntry(filename: "a.json")?.archive == true)
+        // Externally rewrite without the archive flag and force a later mod time.
+        try env.writeChatDirect(Fixtures.chat(archive: nil), filename: "a.json")
+        try env.setModificationDate("a.json", Date(timeIntervalSince1970: 9_000))
+        _ = env.store.startupSync()
+        #expect(env.store.getEntry(filename: "a.json")?.archive == false)
+    }
+
+    // MARK: - lastActivity caching
+
+    @Test("saveChat caches the last message timestamp as lastActivity")
+    func saveCachesLastActivity() throws {
+        let ts = Date(timeIntervalSince1970: 1_700_000_010)
+        let chat = Fixtures.chat(messages: [
+            Fixtures.message(role: .user, content: "hi", timestamp: Date(timeIntervalSince1970: 1_700_000_000)),
+            Fixtures.message(role: .assistant, content: "yo", timestamp: ts)
+        ])
+        env.store.saveChat(chat, filename: "a.json")
+        let entry = try #require(env.store.getEntry(filename: "a.json"))
+        #expect(entry.lastActivity == ts)
+    }
+
+    @Test("saveChat falls back to modification time for an empty chat")
+    func saveCachesLastActivityFallback() throws {
+        let chat = Fixtures.chat(messages: [])
+        env.store.saveChat(chat, filename: "a.json")
+        let entry = try #require(env.store.getEntry(filename: "a.json"))
+        #expect(entry.lastActivity == entry.modificationTime)
+    }
+
+    @Test("startupSync caches lastActivity from the chat's last message")
+    func startupSyncCachesLastActivity() throws {
+        let ts = Date(timeIntervalSince1970: 1_700_000_050)
+        try env.writeChatDirect(Fixtures.chat(messages: [
+            Fixtures.message(role: .user, content: "hi", timestamp: Date(timeIntervalSince1970: 1_700_000_000)),
+            Fixtures.message(role: .assistant, content: "yo", timestamp: ts)
+        ]), filename: "a.json")
+        _ = env.store.startupSync()
+        #expect(env.store.getEntry(filename: "a.json")?.lastActivity == ts)
+    }
+
+    @Test("getAllEntries is sorted by lastActivity descending")
+    func getAllEntriesOrderedByLastActivity() throws {
+        let early = Date(timeIntervalSince1970: 1_000)
+        let late = Date(timeIntervalSince1970: 5_000)
+        try env.writeChatDirect(Fixtures.chat(messages: [Fixtures.message(timestamp: early)]), filename: "early.json")
+        try env.writeChatDirect(Fixtures.chat(messages: [Fixtures.message(timestamp: late)]), filename: "late.json")
+        _ = env.store.startupSync()
+        let entries = env.store.getAllEntries()
+        #expect(entries.count == 2)
+        #expect(entries[0].filename == "late.json")
+        #expect(entries[1].filename == "early.json")
+    }
+
     @Test("re-saving a filename upserts the cache instead of duplicating")
     func saveUpserts() throws {
         env.store.saveChat(Fixtures.chat(title: "First"), filename: "a.json")

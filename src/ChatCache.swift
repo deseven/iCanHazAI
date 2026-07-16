@@ -22,14 +22,27 @@ final class ChatCacheEntry {
     var role: String?
     /// File modification time of the chat JSON on disk. Used to detect
     /// external changes: if the file's mod time differs from this, the
-    /// cache is stale and the file must be re-read.
+    /// cache is stale and the file must be re-read. NOT used for sorting —
+    /// see `lastActivity`.
     var modificationTime: Date
+    /// Cached archive flag. Mirrors `Chat.archive` so the sidebar can hide
+    /// archived chats without reading the full chat JSON. Defaults to false
+    /// for chats created before this field existed.
+    var archive: Bool
+    /// Cached last-activity time (the most recent message timestamp, or
+    /// `distantPast` for empty chats). Used as the sidebar sort key for
+    /// unloaded chats. Distinct from `modificationTime` because a file can
+    /// be touched without adding messages (e.g. a rename), and sorting by
+    /// mod time would then mis-order chats relative to their real activity.
+    var lastActivity: Date
 
-    init(filename: String, name: String?, role: String?, modificationTime: Date) {
+    init(filename: String, name: String?, role: String?, modificationTime: Date, archive: Bool = false, lastActivity: Date = .distantPast) {
         self.filename = filename
         self.name = name
         self.role = role
         self.modificationTime = modificationTime
+        self.archive = archive
+        self.lastActivity = lastActivity
     }
 }
 
@@ -40,4 +53,6 @@ struct ChatCacheInfo: Sendable, Equatable {
     let name: String?
     let role: String?
     let modificationTime: Date
+    let archive: Bool
+    let lastActivity: Date
 }

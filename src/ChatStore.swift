@@ -188,7 +188,7 @@ final class ChatStore: @unchecked Sendable {
     func getEntry(filename: String) -> ChatCacheInfo? {
         queue.sync {
             guard let entry = fetchEntry(filename: filename) else { return nil }
-            return ChatCacheInfo(filename: entry.filename, name: entry.name, role: entry.role, modificationTime: entry.modificationTime)
+            return ChatCacheInfo(filename: entry.filename, name: entry.name, role: entry.role, modificationTime: entry.modificationTime, archive: entry.archive, lastActivity: entry.lastActivity)
         }
     }
 
@@ -256,10 +256,10 @@ final class ChatStore: @unchecked Sendable {
     // MARK: - SwiftData helpers (must be called within `queue.sync`)
 
     private func fetchAllEntries() -> [ChatCacheInfo] {
-        let descriptor = FetchDescriptor<ChatCacheEntry>(sortBy: [SortDescriptor(\.modificationTime, order: .reverse)])
+        let descriptor = FetchDescriptor<ChatCacheEntry>(sortBy: [SortDescriptor(\.lastActivity, order: .reverse)])
         do {
             let entries = try context.fetch(descriptor)
-            return entries.map { ChatCacheInfo(filename: $0.filename, name: $0.name, role: $0.role, modificationTime: $0.modificationTime) }
+            return entries.map { ChatCacheInfo(filename: $0.filename, name: $0.name, role: $0.role, modificationTime: $0.modificationTime, archive: $0.archive, lastActivity: $0.lastActivity) }
         } catch {
             debugLog("ChatStore", "⚠️ fetchAllEntries failed: \(error)")
             return []
@@ -277,12 +277,18 @@ final class ChatStore: @unchecked Sendable {
     }
 
     private func upsertCache(filename: String, chat: Chat, modificationTime: Date) {
+        // Fall back to the file modification time when the chat has no
+        // messages (or messages without timestamps) so empty chats still sort
+        // near the top instead of pinning to distantPast.
+        let activity = chat.lastActivity(fallback: modificationTime)
         if let existing = fetchEntry(filename: filename) {
             existing.name = chat.cacheName
             existing.role = chat.role
             existing.modificationTime = modificationTime
+            existing.archive = chat.archive ?? false
+            existing.lastActivity = activity
         } else {
-            let entry = ChatCacheEntry(filename: filename, name: chat.cacheName, role: chat.role, modificationTime: modificationTime)
+            let entry = ChatCacheEntry(filename: filename, name: chat.cacheName, role: chat.role, modificationTime: modificationTime, archive: chat.archive ?? false, lastActivity: activity)
             context.insert(entry)
         }
         do {

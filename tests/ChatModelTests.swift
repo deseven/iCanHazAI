@@ -218,6 +218,49 @@ struct ChatModelTests {
         #expect(Fixtures.chat(messages: []).lastActivity == .distantPast)
     }
 
+    @Test("lastActivity(fallback:) uses the fallback for an empty chat")
+    func lastActivityFallbackEmpty() {
+        let fallback = Date(timeIntervalSince1970: 9_000)
+        #expect(Fixtures.chat(messages: []).lastActivity(fallback: fallback) == fallback)
+    }
+
+    @Test("lastActivity(fallback:) uses the last message timestamp when present")
+    func lastActivityFallbackWithMessages() {
+        let ts = Date(timeIntervalSince1970: 5_000)
+        let fallback = Date(timeIntervalSince1970: 9_000)
+        let chat = Fixtures.chat(messages: [Fixtures.message(role: .user, content: "x", timestamp: ts)])
+        #expect(chat.lastActivity(fallback: fallback) == ts)
+    }
+
+    // MARK: - Chat archive field
+
+    @Test("Chat archive defaults to nil when absent in JSON")
+    func chatArchiveDefaultsNil() throws {
+        let json = """
+        {"id":"00000000-0000-0000-0000-000000000001","messages":[]}
+        """.data(using: .utf8)!
+        let chat = try JSONDecoder().decode(Chat.self, from: json)
+        #expect(chat.archive == nil)
+    }
+
+    @Test("Chat archive round-trips through JSON")
+    func chatArchiveRoundTrip() throws {
+        let original = Fixtures.chat(archive: true)
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(Chat.self, from: data)
+        #expect(decoded.archive == true)
+        #expect(decoded == original)
+    }
+
+    @Test("Chat archive decodes a false value")
+    func chatArchiveDecodesFalse() throws {
+        let json = """
+        {"id":"00000000-0000-0000-0000-000000000001","messages":[],"archive":false}
+        """.data(using: .utf8)!
+        let chat = try JSONDecoder().decode(Chat.self, from: json)
+        #expect(chat.archive == false)
+    }
+
     // MARK: - ChatRecord derived views
 
     @Test("displayTitle uses the title when loaded")
@@ -282,6 +325,37 @@ struct ChatModelTests {
         #expect(none.roleName == nil)
     }
 
+    // MARK: - Archive projection
+
+    @Test("isArchived prefers the live chat's archive flag")
+    func isArchivedLoaded() {
+        let rec = ChatRecord(filename: "a.json", chat: Fixtures.chat(archive: true), cachedArchive: false)
+        #expect(rec.isArchived == true)
+    }
+
+    @Test("isArchived falls back to the cached flag when unloaded")
+    func isArchivedUnloaded() {
+        let rec = ChatRecord(filename: "a.json", chat: nil, cachedArchive: true)
+        #expect(rec.isArchived == true)
+    }
+
+    @Test("isArchived is false by default")
+    func isArchivedDefault() {
+        #expect(ChatRecord(filename: "a.json").isArchived == false)
+    }
+
+    @Test("ChatSummary carries the archived flag")
+    func summaryArchived() {
+        let loaded = ChatSummary(record: ChatRecord(filename: "a.json", chat: Fixtures.chat(archive: true)))
+        #expect(loaded.isArchived == true)
+        let cached = ChatSummary(record: ChatRecord(filename: "a.json", chat: nil, cachedArchive: true))
+        #expect(cached.isArchived == true)
+        let none = ChatSummary(record: ChatRecord(filename: "a.json"))
+        #expect(none.isArchived == false)
+    }
+
+    // MARK: - sortKey
+
     @Test("sortKey uses last message timestamp when loaded with messages")
     func sortKeyLoadedMessages() {
         let ts = Date(timeIntervalSince1970: 9_000)
@@ -298,11 +372,17 @@ struct ChatModelTests {
         #expect(rec.sortKey == created)
     }
 
-    @Test("sortKey uses cached modification time when unloaded")
+    @Test("sortKey uses cached last-activity time when unloaded")
     func sortKeyUnloaded() {
-        let mod = Date(timeIntervalSince1970: 5_555)
-        let rec = ChatRecord(filename: "a.json", chat: nil, cachedModificationTime: mod)
-        #expect(rec.sortKey == mod)
+        let activity = Date(timeIntervalSince1970: 5_555)
+        let rec = ChatRecord(filename: "a.json", chat: nil, cachedLastActivity: activity)
+        #expect(rec.sortKey == activity)
+    }
+
+    @Test("sortKey falls back to distantPast when unloaded with no cached activity")
+    func sortKeyUnloadedEmpty() {
+        let rec = ChatRecord(filename: "a.json", chat: nil)
+        #expect(rec.sortKey == .distantPast)
     }
 
     @Test("tokenCount is nil when the chat is unloaded")

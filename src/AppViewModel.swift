@@ -335,14 +335,24 @@ final class AppViewModel: ObservableObject {
         switch event {
         case .chatsChanged(let records):
             chatItems = records
-            chatSummaries = records.map(ChatSummary.init)
+            // Archived chats are hidden from the sidebar list but kept in
+            // `chatItems` so they remain selectable (e.g. via deep links) and
+            // their in-memory state is preserved.
+            chatSummaries = records
+                .filter { !$0.isArchived }
+                .map(ChatSummary.init)
             // During startup, report the chat-cache sync (total vs already
             // cached vs re-decoded) to the loader's chats row.
             if LoaderController.shared.mode == .startup,
                let stats = ChatStore.shared.lastStartupSyncStats() {
                 LoaderController.shared.markChatsCompleted(total: stats.totalFiles, freshCached: stats.freshCached, failed: stats.failed)
             }
-            if let selected = selectedChatID, records.contains(where: { $0.id == selected }) {
+            // Treat an archived (or deleted) selected chat as "no selection"
+            // so the UI falls back to the first visible chat.
+            let selectedStillVisible = selectedChatID.flatMap { id in
+                records.first(where: { $0.id == id })
+            }.map { !$0.isArchived } ?? false
+            if selectedStillVisible, let selected = selectedChatID {
                 // Keep selection — if the chat is not loaded, load it so the
                 // UI can display its messages. This handles the initial
                 // auto-selection on startup (where chats start unloaded).
@@ -350,12 +360,13 @@ final class AppViewModel: ObservableObject {
                     Task { await engine.ensureChatLoaded(filename: selected) }
                 }
             } else {
-                // The selected chat vanished (deleted) or none was selected
-                // yet (startup). Fall back to the first chat and route through
-                // `selectChat` so the engine's `selectedFilename` stays in sync
-                // with `selectedChatID` — otherwise the engine can't tell this
-                // chat is being viewed and would release it.
-                selectedChatID = records.first?.id
+                // The selected chat vanished (deleted/archived) or none was
+                // selected yet (startup). Fall back to the first non-archived
+                // chat and route through `selectChat` so the engine's
+                // `selectedFilename` stays in sync with `selectedChatID` —
+                // otherwise the engine can't tell this chat is being viewed
+                // and would release it.
+                selectedChatID = records.first(where: { !$0.isArchived })?.id
                 if let first = selectedChatID {
                     Task {
                         await engine.selectChat(filename: first)
@@ -829,6 +840,11 @@ final class AppViewModel: ObservableObject {
         Task { await engine.renameChat(filename: filename, to: newTitle) }
     }
 
+    /// Archives a chat (hides it from the chat list) or unarchives it.
+    func setChatArchived(_ filename: String, archived: Bool) {
+        Task { await engine.setChatArchived(filename: filename, archived: archived) }
+    }
+
     func setConnection(_ connectionID: String) {
         guard let filename = selectedChatID else { return }
         Task { await engine.setConnection(filename: filename, connectionID: connectionID) }
@@ -934,7 +950,9 @@ final class AppViewModel: ObservableObject {
 
     /// Handles a single Ctrl+Tab key press.
     private func handleCtrlTab() {
-        let items = chatItems
+        // Archived chats are hidden from the sidebar, so skip them when
+        // cycling through chats.
+        let items = chatItems.filter { !$0.isArchived }
         guard !items.isEmpty else { return }
 
         if !ctrlTabSessionActive {

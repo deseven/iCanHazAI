@@ -626,6 +626,8 @@ actor ChatEngine {
                     records[idx].cachedName = info.name
                     records[idx].cachedRole = info.role
                     records[idx].cachedModificationTime = info.modificationTime
+                    records[idx].cachedArchive = info.archive
+                    records[idx].cachedLastActivity = info.lastActivity
                     records[idx].lastError = nil
                 } else {
                     // New chat appeared on disk — never loaded.
@@ -634,7 +636,9 @@ actor ChatEngine {
                         chat: nil,
                         cachedName: info.name,
                         cachedRole: info.role,
-                        cachedModificationTime: info.modificationTime
+                        cachedModificationTime: info.modificationTime,
+                        cachedArchive: info.archive,
+                        cachedLastActivity: info.lastActivity
                     ))
                 }
             }
@@ -1040,10 +1044,12 @@ actor ChatEngine {
                 cachedName: info.name,
                 cachedRole: info.role,
                 cachedModificationTime: info.modificationTime,
+                cachedArchive: info.archive,
+                cachedLastActivity: info.lastActivity,
                 isStreaming: existing?.isStreaming ?? false,
                 hasUnreadActivity: existing?.hasUnreadActivity ?? false,
                 lastError: existing?.lastError,
-                createdAt: existing?.createdAt ?? info.modificationTime
+                createdAt: existing?.createdAt ?? info.lastActivity
             ))
         }
         sortRecordsByActivity(&newRecords)
@@ -1068,10 +1074,12 @@ actor ChatEngine {
                 cachedName: info.name,
                 cachedRole: info.role,
                 cachedModificationTime: info.modificationTime,
+                cachedArchive: info.archive,
+                cachedLastActivity: info.lastActivity,
                 isStreaming: existing?.isStreaming ?? false,
                 hasUnreadActivity: existing?.hasUnreadActivity ?? false,
                 lastError: existing?.lastError,
-                createdAt: existing?.createdAt ?? info.modificationTime
+                createdAt: existing?.createdAt ?? info.lastActivity
             ))
         }
         sortRecordsByActivity(&newRecords)
@@ -1166,6 +1174,23 @@ actor ChatEngine {
         emit(.chatsChanged(records))
     }
 
+    /// Archives or unarchives a chat by setting its `archive` flag. Loads the
+    /// chat from disk if it's not currently in memory. Archived chats are
+    /// hidden from the chat list but kept on disk.
+    func setChatArchived(filename: String, archived: Bool) async {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        var chat = records[idx].chat ?? store.loadChat(filename: filename) ?? Chat()
+        chat.archive = archived ? true : nil
+        saveChat(chat, filename: filename)
+        // Archiving may have loaded a chat the user isn't viewing; release it
+        // so its content doesn't linger in memory.
+        releaseChat(filename: filename)
+        // If the archived chat was selected, clear the selection so the UI
+        // doesn't keep showing a hidden chat.
+        if archived && selectedFilename == filename { selectedFilename = nil }
+        emit(.chatsChanged(records))
+    }
+
     /// Removes all chats that have no messages, except the one identified by
     /// `keep` (pass nil to prune every empty chat). Since empty chats are
     /// never written to disk (see `createNewChat`), pruning only removes the
@@ -1232,6 +1257,8 @@ actor ChatEngine {
                 records[idx].cachedName = info.name
                 records[idx].cachedRole = info.role
                 records[idx].cachedModificationTime = info.modificationTime
+                records[idx].cachedArchive = info.archive
+                records[idx].cachedLastActivity = info.lastActivity
             }
         }
     }
@@ -2072,6 +2099,8 @@ actor ChatEngine {
             records[idx].cachedName = info.name
             records[idx].cachedRole = info.role
             records[idx].cachedModificationTime = info.modificationTime
+            records[idx].cachedArchive = info.archive
+            records[idx].cachedLastActivity = info.lastActivity
         }
         records[idx].isStreaming = false
         streamTasks[filename] = nil

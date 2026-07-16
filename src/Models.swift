@@ -106,7 +106,11 @@ struct Chat: Codable, Identifiable, Equatable {
     /// Optional user-defined display title. When nil the UI derives a title
     /// from the first user message (or "New chat").
     var title: String?
-    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, prompt: String? = nil, workingDirectory: String? = nil, title: String? = nil) {
+    /// When true, the chat is archived: hidden from the chat list and excluded
+    /// from the default sidebar view. Completely optional in the JSON — older
+    /// chat files without this key decode as non-archived.
+    var archive: Bool?
+    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, prompt: String? = nil, workingDirectory: String? = nil, title: String? = nil, archive: Bool? = nil) {
         self.id = id
         self.messages = messages
         self.connection = connection
@@ -114,10 +118,11 @@ struct Chat: Codable, Identifiable, Equatable {
         self.prompt = prompt
         self.workingDirectory = workingDirectory
         self.title = title
+        self.archive = archive
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, messages, connection, role, prompt, workingDirectory, title
+        case id, messages, connection, role, prompt, workingDirectory, title, archive
     }
 
     /// Tolerant decode: all scalar fields are optional at the JSON level (a
@@ -134,6 +139,7 @@ struct Chat: Codable, Identifiable, Equatable {
         prompt = try? c.decode(String.self, forKey: .prompt)
         workingDirectory = try? c.decode(String.self, forKey: .workingDirectory)
         title = try? c.decode(String.self, forKey: .title)
+        archive = try? c.decode(Bool.self, forKey: .archive)
         let wrappers = (try? c.decode([SafeMessage].self, forKey: .messages)) ?? []
         let recovered = wrappers.compactMap(\.message)
         let dropped = wrappers.count - recovered.count
@@ -153,7 +159,15 @@ struct Chat: Codable, Identifiable, Equatable {
     /// Wall-clock time of the most recent message, used to order chats in the
     /// sidebar by last activity. Falls back to `Date.distantPast` for empty chats.
     var lastActivity: Date {
-        messages.last?.timestamp ?? Date.distantPast
+        lastActivity(fallback: .distantPast)
+    }
+
+    /// Same as [`lastActivity`](src/Models.swift) but with an explicit fallback
+    /// for chats with no messages (or messages lacking timestamps). Used by the
+    /// cache so an empty chat sorts by its file modification time rather than
+    /// `distantPast` (which would pin it to the very bottom of the list).
+    func lastActivity(fallback: Date) -> Date {
+        messages.last?.timestamp ?? fallback
     }
 }
 
@@ -191,16 +205,27 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     /// Cached role name from SwiftData. Mirrors `Chat.role` so the sidebar
     /// can badge each chat with its role without loading the full chat.
     var cachedRole: String?
-    /// Cached file modification time from SwiftData. Used as the sort key
-    /// when the chat is unloaded.
+    /// Cached file modification time from SwiftData. Used only for cache
+    /// invalidation (comparing against the on-disk mod time). NOT used for
+    /// sorting — see `cachedLastActivity`.
     var cachedModificationTime: Date
+    /// Cached archive flag from SwiftData. Mirrors `Chat.archive` so the
+    /// sidebar can hide archived chats without loading the full chat.
+    var cachedArchive: Bool
+    /// Cached last-activity time from SwiftData (the most recent message
+    /// timestamp, or `distantPast` for empty chats). Used as the sidebar
+    /// sort key when the chat is unloaded, so the sidebar order reflects
+    /// real chat activity rather than file-touch events.
+    var cachedLastActivity: Date
 
-    init(filename: String, chat: Chat? = nil, cachedName: String? = nil, cachedRole: String? = nil, cachedModificationTime: Date = Date(), isStreaming: Bool = false, hasUnreadActivity: Bool = false, lastError: String? = nil, createdAt: Date = Date()) {
+    init(filename: String, chat: Chat? = nil, cachedName: String? = nil, cachedRole: String? = nil, cachedModificationTime: Date = Date(), cachedArchive: Bool = false, cachedLastActivity: Date = .distantPast, isStreaming: Bool = false, hasUnreadActivity: Bool = false, lastError: String? = nil, createdAt: Date = Date()) {
         self.filename = filename
         self.chat = chat
         self.cachedName = cachedName
         self.cachedRole = cachedRole
         self.cachedModificationTime = cachedModificationTime
+        self.cachedArchive = cachedArchive
+        self.cachedLastActivity = cachedLastActivity
         self.isStreaming = isStreaming
         self.hasUnreadActivity = hasUnreadActivity
         self.lastError = lastError
@@ -214,6 +239,13 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
         chat?.role ?? cachedRole
     }
 
+    /// Whether this chat is archived: the live chat's `archive` flag when
+    /// loaded (authoritative), otherwise the cached flag. Archived chats are
+    /// hidden from the chat list.
+    var isArchived: Bool {
+        chat?.archive ?? cachedArchive
+    }
+
     /// Token usage reported by the provider for the most recent assistant
     /// response that has usage. Nil when the chat is unloaded.
     var tokenCount: Int? {
@@ -225,12 +257,15 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
 
     /// Key used to order chats in the sidebar. When the chat is loaded, uses
     /// the last message timestamp (or `createdAt` for empty chats). When
-    /// unloaded, falls back to the cached file modification time.
+    /// unloaded, falls back to the cached last-activity time (the most recent
+    /// message timestamp, captured at cache-upsert time). This is distinct
+    /// from `cachedModificationTime` (the file's mod time, used only for cache
+    /// invalidation) so a file touch without new messages doesn't re-order.
     var sortKey: Date {
         if let chat = chat {
             return chat.messages.last?.timestamp ?? createdAt
         }
-        return cachedModificationTime
+        return cachedLastActivity
     }
 
     /// Display title derived from the loaded chat's title / first user
@@ -273,6 +308,8 @@ struct ChatSummary: Identifiable, Equatable, Sendable {
     /// sidebar uses this to keep its ordering in sync with the engine without
     /// needing the message arrays.
     let sortKey: Date
+    /// Whether this chat is archived (hidden from the chat list).
+    let isArchived: Bool
 
     init(record: ChatRecord) {
         self.filename = record.filename
@@ -282,6 +319,7 @@ struct ChatSummary: Identifiable, Equatable, Sendable {
         self.hasUnreadActivity = record.hasUnreadActivity
         self.lastError = record.lastError
         self.sortKey = record.sortKey
+        self.isArchived = record.isArchived
     }
 }
 
