@@ -30,6 +30,22 @@ struct AppConfig: Codable, Equatable {
         case debug
         case window
     }
+
+    /// Every group is optional: a missing table (or a totally empty file)
+    /// falls back to the struct's own defaults instead of throwing
+    /// `keyNotFound`. This keeps partial/legacy configs loadable — every
+    /// field in every sub-struct is itself optional, so once a table is
+    /// present its keys are all tolerated too.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        general = try c.decodeIfPresent(GeneralConfig.self, forKey: .general) ?? GeneralConfig()
+        chatBehaviour = try c.decodeIfPresent(ChatBehaviourConfig.self, forKey: .chatBehaviour) ?? ChatBehaviourConfig()
+        chatFeatures = try c.decodeIfPresent(ChatFeaturesConfig.self, forKey: .chatFeatures) ?? ChatFeaturesConfig()
+        debug = try c.decodeIfPresent(DebugConfig.self, forKey: .debug) ?? DebugConfig()
+        window = try c.decodeIfPresent(WindowConfig.self, forKey: .window)
+    }
+
+    init() {}
 }
 
 /// `[general]` group — default connection, role, and utility connection.
@@ -40,20 +56,28 @@ struct GeneralConfig: Codable, Equatable {
     var defaultRole: String?
     /// Connection identifier (`"provider/name"`) used for utility tasks (e.g. chat naming).
     var utilityConnection: String?
+    /// User-managed list of working directories offered in the per-chat
+    /// directory picker. Nil/missing in older configs → treated as empty.
+    /// The selected directory is saved to the chat data (alongside role and
+    /// title), not here.
+    var workingDirectories: [String]?
 
     enum CodingKeys: String, CodingKey {
         case defaultConnection = "default_connection"
         case defaultRole = "default_role"
         case utilityConnection = "utility_connection"
+        case workingDirectories = "working_directories"
     }
 }
 
 /// `[chat_behaviour]` group — default expansion of thinking / tool use blocks.
 struct ChatBehaviourConfig: Codable, Equatable {
     /// Whether Thinking blocks are expanded by default in the chat renderer.
-    var expandThinking: Bool = false
+    /// Nil/missing → false.
+    var expandThinking: Bool?
     /// Whether Tool Use blocks are expanded by default in the chat renderer.
-    var expandToolUse: Bool = false
+    /// Nil/missing → false.
+    var expandToolUse: Bool?
 
     enum CodingKeys: String, CodingKey {
         case expandThinking = "expand_thinking"
@@ -64,9 +88,11 @@ struct ChatBehaviourConfig: Codable, Equatable {
 /// `[chat_features]` group — rendering feature toggles.
 struct ChatFeaturesConfig: Codable, Equatable {
     /// Whether Mermaid diagram rendering is enabled in the chat view.
-    var mermaidEnabled: Bool = false
+    /// Nil/missing → false.
+    var mermaidEnabled: Bool?
     /// Whether KaTeX math rendering is enabled in the chat view.
-    var katexEnabled: Bool = false
+    /// Nil/missing → false.
+    var katexEnabled: Bool?
 
     enum CodingKeys: String, CodingKey {
         case mermaidEnabled = "mermaid_enabled"
@@ -77,9 +103,11 @@ struct ChatFeaturesConfig: Codable, Equatable {
 /// `[debug]` group — debug-related toggles.
 struct DebugConfig: Codable, Equatable {
     /// Whether the app-level debug logging (`debugLog`) is enabled.
-    var appDebugEnabled: Bool = false
+    /// Nil/missing → false.
+    var appDebugEnabled: Bool?
     /// Whether the chat renderer debug overlay is enabled.
-    var chatRendererDebugEnabled: Bool = false
+    /// Nil/missing → false.
+    var chatRendererDebugEnabled: Bool?
 
     enum CodingKeys: String, CodingKey {
         case appDebugEnabled = "app_debug_enabled"
@@ -204,7 +232,7 @@ actor ConfigManager {
         }
         // Apply the debug-logging flag immediately so every subsequent
         // debugLog call (including those inside the actor's load()) is captured.
-        DebugLogger.setEnabled(decoded.debug.appDebugEnabled)
+        DebugLogger.setEnabled(decoded.debug.appDebugEnabled ?? false)
         if decodeFailed {
             debugLog("Config", "⚠️ failed to decode app config on startup — using defaults; the broken file will be overwritten")
         }
@@ -237,7 +265,7 @@ actor ConfigManager {
     func load() {
         guard !didLoad else { return }
         if let stashed = ConfigManager.bootstrapBox.get() {
-            debugLog("Config", "consuming synchronously-bootstrapped config (app_debug=\(stashed.config.debug.appDebugEnabled), chat_renderer_debug=\(stashed.config.debug.chatRendererDebugEnabled))")
+            debugLog("Config", "consuming synchronously-bootstrapped config (app_debug=\(stashed.config.debug.appDebugEnabled ?? false), chat_renderer_debug=\(stashed.config.debug.chatRendererDebugEnabled ?? false))")
             config = stashed.config
             didLoad = true
             if stashed.decodeFailed {
@@ -263,7 +291,7 @@ actor ConfigManager {
         }
         do {
             config = try ConfigValidation.decodeAppConfig(data)
-            debugLog("Config", "loaded successfully (app_debug=\(config.debug.appDebugEnabled), chat_renderer_debug=\(config.debug.chatRendererDebugEnabled))")
+            debugLog("Config", "loaded successfully (app_debug=\(config.debug.appDebugEnabled ?? false), chat_renderer_debug=\(config.debug.chatRendererDebugEnabled ?? false))")
         } catch {
             debugLog("Config", "⚠️ failed to decode config: \(error) — using defaults and overwriting the file")
             config = AppConfig()
@@ -296,7 +324,7 @@ actor ConfigManager {
         }
         do {
             config = try ConfigValidation.decodeAppConfig(data)
-            debugLog("Config", "reloaded successfully (app_debug=\(config.debug.appDebugEnabled), chat_renderer_debug=\(config.debug.chatRendererDebugEnabled))")
+            debugLog("Config", "reloaded successfully (app_debug=\(config.debug.appDebugEnabled ?? false), chat_renderer_debug=\(config.debug.chatRendererDebugEnabled ?? false))")
         } catch {
             // The external edit produced an undecodable config. Keep the
             // in-memory `config` (the live state) and persist it back so the
@@ -398,32 +426,41 @@ actor ConfigManager {
         config.general.utilityConnection
     }
 
+    func getWorkingDirectories() -> [String] {
+        config.general.workingDirectories ?? []
+    }
+
+    func setWorkingDirectories(_ dirs: [String]) {
+        config.general.workingDirectories = dirs
+        persist()
+    }
+
     func getWindow() -> WindowConfig? {
         config.window
     }
 
     func getMermaidEnabled() -> Bool {
-        config.chatFeatures.mermaidEnabled
+        config.chatFeatures.mermaidEnabled ?? false
     }
 
     func getKatexEnabled() -> Bool {
-        config.chatFeatures.katexEnabled
+        config.chatFeatures.katexEnabled ?? false
     }
 
     func getExpandThinking() -> Bool {
-        config.chatBehaviour.expandThinking
+        config.chatBehaviour.expandThinking ?? false
     }
 
     func getExpandToolUse() -> Bool {
-        config.chatBehaviour.expandToolUse
+        config.chatBehaviour.expandToolUse ?? false
     }
 
     func getAppDebugEnabled() -> Bool {
-        config.debug.appDebugEnabled
+        config.debug.appDebugEnabled ?? false
     }
 
     func getChatRendererDebugEnabled() -> Bool {
-        config.debug.chatRendererDebugEnabled
+        config.debug.chatRendererDebugEnabled ?? false
     }
 
     func getChatListSidebarVisible() -> Bool? {

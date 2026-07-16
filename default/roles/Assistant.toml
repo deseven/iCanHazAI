@@ -6,6 +6,6 @@ connection_override_allowed = true
 working_directory_override_allowed = true
 
 [[mcps]]
-mcp = "internal::Utils"
+mcp = "bundled::Utils"
 tools = []
 auto_allow_all = true

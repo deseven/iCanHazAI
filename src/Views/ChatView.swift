@@ -196,6 +196,15 @@ struct ChatView: View {
                 }
             )
         }
+        .sheet(isPresented: $store.showWorkdirPicker) {
+            WorkdirPickerView(
+                onCancel: { store.showWorkdirPicker = false },
+                onPick: { path in
+                    store.setWorkingDirectory(path)
+                    store.showWorkdirPicker = false
+                }
+            )
+        }
     }
 
     /// Whether the send/stop button should be disabled.
@@ -227,7 +236,6 @@ struct ChatView: View {
     private struct ChatHeaderBar: View {
         @EnvironmentObject var store: AppViewModel
         let onToggleInfo: () -> Void
-        @State private var workdirPicker = false
 
         var body: some View {
             HStack(spacing: 8) {
@@ -263,7 +271,7 @@ struct ChatView: View {
 
                 if store.selectedChatWorkdirPickerVisible {
                     Button {
-                        workdirPicker = true
+                        store.showWorkdirPicker = true
                     } label: {
                         Label(workdirLabel, systemImage: "folder")
                             .labelStyle(.titleAndIcon)
@@ -295,20 +303,6 @@ struct ChatView: View {
             }
             .padding(.horizontal, 12)
             .frame(height: 36)
-            .fileImporter(
-                isPresented: $workdirPicker,
-                allowedContentTypes: [.folder],
-                allowsMultipleSelection: false
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    if let url = urls.first {
-                        store.setWorkingDirectory(url.path)
-                    }
-                case .failure:
-                    break
-                }
-            }
         }
 
         private var workdirLabel: String {

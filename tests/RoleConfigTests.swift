@@ -20,12 +20,12 @@ extension AllAppTests {
             connection_override_allowed = true
 
             [[mcps]]
-            mcp = "internal::Utils"
+            mcp = "bundled::Utils"
             tools = []
             auto_allow_all = true
 
             [[mcps]]
-            mcp = "internal::Filesystem"
+            mcp = "bundled::Filesystem"
             auto_allow = ["ls", "read_file", "stat"]
             directory_isolation = true
 
@@ -44,9 +44,9 @@ extension AllAppTests {
             #expect(config.connectionOverrideAllowed == true)
             let mcps = try #require(config.mcps)
             #expect(mcps.count == 3)
-            #expect(mcps[0].mcp == "internal::Utils")
+            #expect(mcps[0].mcp == "bundled::Utils")
             #expect(mcps[0].autoAllowAll == true)
-            #expect(mcps[1].mcp == "internal::Filesystem")
+            #expect(mcps[1].mcp == "bundled::Filesystem")
             #expect(mcps[1].autoAllow == ["ls", "read_file", "stat"])
             #expect(mcps[1].directoryIsolation == true)
             #expect(mcps[2].mcp == "Tavily")
@@ -93,6 +93,78 @@ extension AllAppTests {
             #expect(role.accentColor == RoleAccent.color(for: "purple"))
         }
 
+        @Test("Role.hasWorkdirCapableMCP is true when a workdir-capable internal MCP is selected")
+        func hasWorkdirCapableMCPTrue() throws {
+            let toml = """
+            prompt = "Developer"
+
+            [[mcps]]
+            mcp = "bundled::Utils"
+            auto_allow_all = true
+
+            [[mcps]]
+            mcp = "bundled::Filesystem"
+            directory_isolation = true
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let role = Role(name: "Developer", config: config)
+            #expect(role.hasWorkdirCapableMCP)
+        }
+
+        @Test("Role.hasWorkdirCapableMCP is true for Code and Shell internal MCPs")
+        func hasWorkdirCapableMCPCodeShell() throws {
+            for name in ["Code", "Shell"] {
+                let toml = """
+                prompt = "Developer"
+
+                [[mcps]]
+                mcp = "bundled::\(name)"
+                """
+                let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+                let role = Role(name: "Developer", config: config)
+                #expect(role.hasWorkdirCapableMCP, "expected hasWorkdirCapableMCP for bundled::\(name)")
+            }
+        }
+
+        @Test("Role.hasWorkdirCapableMCP is false when only non-workdir MCPs are selected")
+        func hasWorkdirCapableMCPFalse() throws {
+            // Utils is internal but doesn't use the working directory.
+            let toml = """
+            prompt = "Developer"
+
+            [[mcps]]
+            mcp = "bundled::Utils"
+            auto_allow_all = true
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let role = Role(name: "Developer", config: config)
+            #expect(!role.hasWorkdirCapableMCP)
+        }
+
+        @Test("Role.hasWorkdirCapableMCP is false when no MCPs are selected")
+        func hasWorkdirCapableMCPFalseNoMCPs() throws {
+            let toml = """
+            prompt = "Developer"
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let role = Role(name: "Developer", config: config)
+            #expect(!role.hasWorkdirCapableMCP)
+        }
+
+        @Test("Role.hasWorkdirCapableMCP is false for custom (non-internal) MCPs")
+        func hasWorkdirCapableMCPFalseCustom() throws {
+            let toml = """
+            prompt = "Developer"
+
+            [[mcps]]
+            mcp = "Tavily"
+            tools = ["tavily_search"]
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let role = Role(name: "Developer", config: config)
+            #expect(!role.hasWorkdirCapableMCP)
+        }
+
         @Test("RoleAccent resolves known aliases to system colors and falls back for unknown")
         func accentResolution() throws {
             // Known aliases resolve to the matching adaptive system color.
@@ -118,7 +190,7 @@ extension AllAppTests {
             prompt = "Tester"
 
             [[mcps]]
-            mcp = "internal::Utils"
+            mcp = "bundled::Utils"
             auto_allow_all = true
             """
             try Data(roleTOML.utf8).write(to: env.env.rolesURL.appendingPathComponent("Tester.toml"))

@@ -6,18 +6,18 @@ connection_override_allowed = true
 working_directory_override_allowed = true
 
 [[mcps]]
-mcp = "internal::Utils"
+mcp = "bundled::Utils"
 tools = []
 auto_allow_all = true
 
 [[mcps]]
-mcp = "internal::Filesystem"
+mcp = "bundled::Filesystem"
 auto_allow = ["ls", "read_file", "stat"]
 directory_isolation = true
 
 [[mcps]]
-mcp = "internal::Code"
+mcp = "bundled::Code"
 directory_isolation = true
 
 [[mcps]]
-mcp = "internal::Shell"
+mcp = "bundled::Shell"

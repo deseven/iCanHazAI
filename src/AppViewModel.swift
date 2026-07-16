@@ -101,6 +101,11 @@ final class AppViewModel: ObservableObject {
     @Published var preferencesChatRendererDebugEnabled: Bool = false
     @Published var preferencesExpandThinking: Bool = false
     @Published var preferencesExpandToolUse: Bool = false
+    /// User-managed list of working directories offered in the per-chat
+    /// directory picker. Mirrored from `config.toml` `[general].working_directories`.
+    @Published var workingDirectories: [String] = []
+    /// Whether the working-directory picker sheet is currently shown.
+    @Published var showWorkdirPicker: Bool = false
 
     // MARK: - Private
 
@@ -165,6 +170,7 @@ final class AppViewModel: ObservableObject {
             let dc = await config.getDefaultConnection()
             let dr = await config.getDefaultRole()
             let uc = await config.getUtilityConnection()
+            let wd = await config.getWorkingDirectories()
             let ls = await config.getChatListSidebarVisible()
             let rs = await config.getChatInfoSidebarVisible()
             let me = await config.getMermaidEnabled()
@@ -176,6 +182,7 @@ final class AppViewModel: ObservableObject {
             preferencesDefaultConnection = dc
             preferencesDefaultRole = dr
             preferencesUtilityConnection = uc
+            workingDirectories = wd
             preferencesMermaidEnabled = me
             preferencesKatexEnabled = ke
             preferencesAppDebugEnabled = ad
@@ -584,9 +591,14 @@ final class AppViewModel: ObservableObject {
         return role.workingDirectory
     }
 
-    /// Whether the working-directory picker should be shown for the selected chat.
+    /// Whether the working-directory picker should be shown for the selected
+    /// chat. Requires the role to allow working-directory overrides AND to
+    /// select at least one internal MCP that actually uses the working
+    /// directory (Filesystem, Code, or Shell). Without such an MCP there's
+    /// nothing to consume the selected directory, so the picker is hidden.
     var selectedChatWorkdirPickerVisible: Bool {
-        selectedRole?.workingDirectoryOverrideAllowed ?? false
+        guard let role = selectedRole else { return false }
+        return role.workingDirectoryOverrideAllowed && role.hasWorkdirCapableMCP
     }
 
     /// Whether the last message in the selected chat is from the user. Used to
@@ -775,6 +787,26 @@ final class AppViewModel: ObservableObject {
     func setWorkingDirectory(_ path: String?) {
         guard let filename = selectedChatID else { return }
         Task { await engine.setWorkingDirectory(filename: filename, path: path) }
+    }
+
+    /// Adds a working directory to the user-managed list in the app config
+    /// (deduped, preserving order). The directory picker offers these to the
+    /// user when picking a per-chat working directory.
+    func addWorkingDirectory(_ path: String) {
+        let normalized = (path as NSString).standardizingPath
+        guard !normalized.isEmpty else { return }
+        guard !workingDirectories.contains(normalized) else { return }
+        workingDirectories.append(normalized)
+        let snapshot = workingDirectories
+        Task { await config.setWorkingDirectories(snapshot) }
+    }
+
+    /// Removes a working directory from the user-managed list in the app config.
+    func removeWorkingDirectory(_ path: String) {
+        let normalized = (path as NSString).standardizingPath
+        workingDirectories.removeAll { $0 == normalized }
+        let snapshot = workingDirectories
+        Task { await config.setWorkingDirectories(snapshot) }
     }
 
     /// Triggers a full MCP configuration pass ("File > Reload MCPs…"). Resets

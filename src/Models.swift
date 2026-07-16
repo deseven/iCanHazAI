@@ -376,7 +376,7 @@ struct Prompt: Identifiable, Equatable, Hashable {
 
 // MARK: - Role config (TOML)
 
-/// One MCP entry within a role config. `mcp` is either `internal::<name>` for
+/// One MCP entry within a role config. `mcp` is either `bundled::<name>` for
 /// a built-in server or `<name>` for a custom server config.
 struct RoleMCP: Codable, Equatable, Hashable, Sendable {
     var mcp: String
@@ -387,7 +387,7 @@ struct RoleMCP: Codable, Equatable, Hashable, Sendable {
     /// When true, all available tools from this MCP are auto-approved.
     var autoAllowAll: Bool?
     /// When true, the in-house server runs confined to the working directory.
-    /// Only meaningful for `internal::Filesystem` and `internal::Code`.
+    /// Only meaningful for `bundled::Filesystem` and `bundled::Code`.
     var directoryIsolation: Bool?
 
     enum CodingKeys: String, CodingKey {
@@ -459,6 +459,24 @@ struct Role: Identifiable, Equatable, Hashable {
     var icon: String { config.icon ?? Role.defaultIcon }
     /// Number of MCPs selected by this role.
     var mcpCount: Int { config.mcps?.count ?? 0 }
+
+    /// The internal MCP servers that consume the working directory (via
+    /// `--workdir`). When a role selects at least one of these, the per-chat
+    /// working-directory picker is meaningful; otherwise it's hidden because
+    /// nothing would use the selected directory.
+    static let workdirCapableInternalMCPs: Set<String> = ["Filesystem", "Code", "Shell"]
+
+    /// Whether this role selects at least one internal MCP that uses the working
+    /// directory (Filesystem, Code, or Shell). Drives whether the working-
+    /// directory picker is shown in the chat toolbar.
+    var hasWorkdirCapableMCP: Bool {
+        guard let mcps = config.mcps else { return false }
+        return mcps.contains { entry in
+            guard entry.mcp.hasPrefix("bundled::") else { return false }
+            let name = String(entry.mcp.dropFirst("bundled::".count))
+            return Self.workdirCapableInternalMCPs.contains(name)
+        }
+    }
 }
 
 // MARK: - Connection

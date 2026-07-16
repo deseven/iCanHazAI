@@ -115,9 +115,9 @@ Plain Markdown; the whole content is the system prompt. No special fields. `writ
 Bundles a prompt, connection, working directory, and MCPs.
 
 `[[mcps]]` entries:
-- `mcp = "internal::<Name>"` — built-in; `mcp = "<name>"` — custom.
+- `mcp = "bundled::<Name>"` — built-in; `mcp = "<name>"` — custom.
 - `tools` — allowlist (empty/missing = all). `auto_allow` — tools to auto-approve (empty/missing = none). `auto_allow_all = true` — auto-approve everything.
-- `directory_isolation = true` — confine `internal::Filesystem`/`internal::Code` to the role's working directory.
+- `directory_isolation = true` — confine `bundled::Filesystem`/`bundled::Code` to the role's working directory.
 
 ```toml
 description = "Web research role with search and note-taking tools."  # shown in picker when creating a new chat
@@ -133,17 +133,17 @@ icon = "magnifyingglass"                    # SF Symbol; optional, defaults to "
 accent = "purple"
 
 [[mcps]]
-mcp = "internal::Utils"
+mcp = "bundled::Utils"
 tools = []
 auto_allow_all = true
 
 [[mcps]]
-mcp = "internal::Filesystem"
+mcp = "bundled::Filesystem"
 auto_allow = ["ls", "read_file", "stat"]
 directory_isolation = true
 
 [[mcps]]
-mcp = "internal::Code"
+mcp = "bundled::Code"
 directory_isolation = true
 
 [[mcps]]
@@ -154,13 +154,14 @@ auto_allow = ["tavily_search"]
 
 ## App config
 
-Keys are `snake_case`.
+Keys are `snake_case`. **Every group and every key is optional** — a missing group or key falls back to its default rather than failing to load. Only genuinely unparseable TOML (broken syntax) is rejected and overwritten with defaults. So you can safely write a partial config (e.g. just `[general]` with one key) and the rest will keep its defaults.
 
 ```toml
 [general]
 default_connection = "openai/gpt-4o"       # "type/name" for new chats; nil/omitted = none
 default_role = "Assistant"                 # falls back to "Assistant" if nil/invalid
 utility_connection = "openai/gpt-4o-mini"  # for utility tasks (e.g. auto-naming chats)
+working_directories = []                   # user-managed list offered in the per-chat directory picker
 
 [chat_behaviour]
 expand_thinking = false                    # expand "Thinking" blocks by default in chats

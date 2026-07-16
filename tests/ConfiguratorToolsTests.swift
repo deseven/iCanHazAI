@@ -120,12 +120,12 @@ extension AllAppTests {
         @Test("write_config validates and read_config round-trips")
         func configRoundTrip() async throws {
             let env = try TempEnv().env
-            // Broken TOML is rejected.
+            // Broken TOML (unparseable) is rejected.
             #expect(await call("write_config", env, ["content": "[general\nbroken"]).isError)
-            // A partial config is rejected too — the app's decoder requires the
-            // full set of groups, so write_config mirrors that (prevents writing
-            // a config the app would discard on reload).
-            #expect(await call("write_config", env, ["content": "[general]\ndefault_role = \"Assistant\"\n"]).isError)
+            // A partial config is accepted — every field/group is optional and
+            // missing keys fall back to defaults rather than failing the decode.
+            let partial = await call("write_config", env, ["content": "[general]\ndefault_role = \"Assistant\"\n"])
+            #expect(!partial.isError)
 
             // A complete config (encoded the same way the app persists it) is accepted.
             var cfg = AppConfig()
@@ -139,6 +139,124 @@ extension AllAppTests {
 
             let read = await call("read_config", env, [:])
             #expect(read.content.contains("default_role"))
+        }
+
+        @Test("AppConfig decodes working_directories from TOML")
+        func decodesWorkingDirectories() throws {
+            let toml = """
+            [general]
+            default_role = "Assistant"
+            working_directories = ["/Users/me/proj1", "/Users/me/proj2"]
+
+            [chat_behaviour]
+            expand_thinking = false
+            expand_tool_use = false
+
+            [chat_features]
+            mermaid_enabled = false
+            katex_enabled = false
+
+            [debug]
+            app_debug_enabled = false
+            chat_renderer_debug_enabled = false
+            """
+            let config = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
+            #expect(config.general.workingDirectories == ["/Users/me/proj1", "/Users/me/proj2"])
+        }
+
+        @Test("AppConfig decodes working_directories as nil when omitted")
+        func defaultsWorkingDirectories() throws {
+            // An older config written before working_directories existed must
+            // still decode cleanly — the field is optional so a missing key
+            // yields nil rather than a decode failure.
+            let toml = """
+            [general]
+            default_role = "Assistant"
+
+            [chat_behaviour]
+            expand_thinking = false
+            expand_tool_use = false
+
+            [chat_features]
+            mermaid_enabled = false
+            katex_enabled = false
+
+            [debug]
+            app_debug_enabled = false
+            chat_renderer_debug_enabled = false
+            """
+            let config = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
+            #expect(config.general.workingDirectories == nil)
+        }
+
+        @Test("AppConfig working_directories round-trips through TOML with snake_case key")
+        func roundTripsWorkingDirectories() throws {
+            var cfg = AppConfig()
+            cfg.general.workingDirectories = ["/a", "/b"]
+            let encoder = TOMLEncoder()
+            encoder.outputFormatting = .sortedKeys
+            encoder.keyEncodingStrategy = .convertToSnakeCase
+            let encoded = try encoder.encode(cfg)
+            let text = try #require(String(data: encoded, encoding: .utf8))
+            #expect(text.contains("working_directories"))
+            let decoded = try TOMLDecoder().decode(AppConfig.self, from: encoded)
+            #expect(decoded.general.workingDirectories == ["/a", "/b"])
+        }
+
+        // MARK: - Missing-key tolerance
+
+        @Test("AppConfig decodes an empty TOML file with all defaults")
+        func decodesEmptyFile() throws {
+            // A completely empty file is valid TOML — every group is missing,
+            // so all fields fall back to their defaults.
+            let config = try TOMLDecoder().decode(AppConfig.self, from: Data("".utf8))
+            #expect(config.general.defaultConnection == nil)
+            #expect(config.general.defaultRole == nil)
+            #expect(config.chatBehaviour.expandThinking == nil)
+            #expect(config.chatBehaviour.expandToolUse == nil)
+            #expect(config.chatFeatures.mermaidEnabled == nil)
+            #expect(config.chatFeatures.katexEnabled == nil)
+            #expect(config.debug.appDebugEnabled == nil)
+            #expect(config.debug.chatRendererDebugEnabled == nil)
+            #expect(config.window == nil)
+        }
+
+        @Test("AppConfig decodes a partial config with only one group")
+        func decodesPartialConfig() throws {
+            // Only [general] is present — the other groups are missing and
+            // must fall back to defaults without throwing.
+            let toml = """
+            [general]
+            default_role = "Assistant"
+            """
+            let config = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
+            #expect(config.general.defaultRole == "Assistant")
+            #expect(config.chatBehaviour.expandThinking == nil)
+            #expect(config.chatFeatures.mermaidEnabled == nil)
+            #expect(config.debug.appDebugEnabled == nil)
+        }
+
+        @Test("AppConfig decodes a group with missing keys, substituting defaults")
+        func decodesGroupWithMissingKeys() throws {
+            // [chat_behaviour] exists but only has expand_thinking — the
+            // missing expand_tool_use must default to nil rather than throwing.
+            let toml = """
+            [chat_behaviour]
+            expand_thinking = true
+            """
+            let config = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
+            #expect(config.chatBehaviour.expandThinking == true)
+            #expect(config.chatBehaviour.expandToolUse == nil)
+        }
+
+        @Test("AppConfig rejects invalid TOML syntax")
+        func rejectsInvalidSyntax() throws {
+            // Genuinely unparseable TOML must still throw — this is the only
+            // case that should trigger the "failed to decode" overwrite path.
+            let invalid = "[general\nbroken"
+            #expect(throws: (any Error).self) {
+                _ = try TOMLDecoder().decode(AppConfig.self, from: Data(invalid.utf8))
+            }
         }
 
         // MARK: - Read missing
