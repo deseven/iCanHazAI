@@ -1,0 +1,13 @@
+description = "High-level planner for any task. Gathers context, asks the right questions, and produces an actionable plan."
+prompt = "Architect"
+icon = "ruler"
+accent = "orange"
+connection_override_allowed = true
+
+[[mcps]]
+mcp = "bundled::Utils"
+auto_allow_all = true
+
+[[mcps]]
+mcp = "bundled::Filesystem"
+auto_allow = ["ls", "read_file", "stat", "find_file", "find_text", "pwd"]

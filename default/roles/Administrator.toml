@@ -1,0 +1,17 @@
+description = "System administration agent for editing configs and troubleshooting issues."
+prompt = "Administrator"
+icon = "terminal"
+accent = "green"
+connection_override_allowed = true
+
+[[mcps]]
+mcp = "bundled::Utils"
+auto_allow_all = true
+
+[[mcps]]
+mcp = "bundled::Filesystem"
+auto_allow = ["ls", "read_file", "stat", "find_file", "find_text", "pwd"]
+
+[[mcps]]
+mcp = "bundled::Shell"
+tools = ["shell", "shell_background", "shell_read_output"]

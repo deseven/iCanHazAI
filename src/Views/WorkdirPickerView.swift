@@ -26,9 +26,24 @@ struct WorkdirPickerView: View {
 
     @State private var selection: WorkdirSelection?
     @State private var addPicker: Bool = false
+    @State private var rowHeight: CGFloat = 50
     @FocusState private var focused: Bool
 
     private var directories: [String] { store.workingDirectories }
+
+    /// Number of directory rows that fit in the scroll area before a scrollbar
+    /// appears. The actual pixel height is derived at runtime from a measured
+    /// row, so the list shrinks to fit fewer rows and only scrolls past this.
+    private let visibleRowCount = 6
+
+    /// Scroll area height: the natural content height, capped so a scrollbar
+    /// only appears once there are more than `visibleRowCount` rows.
+    private var listHeight: CGFloat {
+        let count = directories.count
+        let content = rowHeight * CGFloat(count) + CGFloat(max(count - 1, 0))
+        let cap = rowHeight * CGFloat(visibleRowCount) + CGFloat(visibleRowCount - 1)
+        return min(content, cap)
+    }
 
     /// The role's pre-set working directory (standardized), shown as a pinned
     /// default at the bottom when the role allows overrides. May duplicate an
@@ -83,7 +98,7 @@ struct WorkdirPickerView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, minHeight: rowHeight * CGFloat(visibleRowCount))
             } else {
                 ScrollViewReader { proxy in
                     VStack(spacing: 0) {
@@ -98,15 +113,20 @@ struct WorkdirPickerView: View {
                                 }
                             }
                         }
+                        .frame(height: listHeight)
 
                         if let roleDefault = roleDefaultWorkdir {
-                            Divider()
                             // Pinned role-default row, always visible (mirrors
                             // the role picker's built-in section).
-                            roleDefaultRow(roleDefault)
-                                .id(WorkdirSelection.roleDefault(roleDefault))
+                            VStack(spacing: 0) {
+                                PickerSectionHeader(title: "Default")
+                                roleDefaultRow(roleDefault)
+                                    .id(WorkdirSelection.roleDefault(roleDefault))
+                            }
+                            .background(Color.secondary.opacity(0.05))
                         }
                     }
+                    .onPreferenceChange(RowHeightKey.self) { if $0 > 0 { rowHeight = $0 } }
                     .onChange(of: selection) { _, newSelection in
                         guard let newSelection else { return }
                         proxy.scrollTo(newSelection, anchor: .center)
@@ -128,7 +148,7 @@ struct WorkdirPickerView: View {
             }
             .padding(12)
         }
-        .frame(width: 420, height: 420)
+        .frame(width: 420)
         .focusable()
         .focused($focused)
         .focusEffectDisabled()
@@ -206,11 +226,12 @@ struct WorkdirPickerView: View {
             if hovering { selection = .userList(dir) }
         }
         .onTapGesture { onPick(dir) }
+        .measureRowHeight()
     }
 
     /// Pinned row for the role's pre-set working directory. Mirrors
     /// `directoryRow` but has no remove button (it's role-defined, not
-    /// user-managed) and is tagged "Default".
+    /// user-managed); the "Default" label lives in the section header above it.
     @ViewBuilder
     private func roleDefaultRow(_ dir: String) -> some View {
         let isSelected = selection == .roleDefault(dir)
@@ -221,17 +242,9 @@ struct WorkdirPickerView: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text((dir as NSString).lastPathComponent)
-                        .font(.callout)
-                        .lineLimit(1)
-                    Text("Default")
-                        .font(.caption2)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Color.accentColor.opacity(0.15), in: Capsule())
-                        .foregroundStyle(.secondary)
-                }
+                Text((dir as NSString).lastPathComponent)
+                    .font(.callout)
+                    .lineLimit(1)
                 Text((dir as NSString).abbreviatingWithTildeInPath)
                     .font(.caption)
                     .foregroundStyle(.secondary)

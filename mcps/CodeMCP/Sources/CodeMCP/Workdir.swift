@@ -1,22 +1,22 @@
 import Foundation
 
-/// Parses `--workdir <path>` and optional `--confine` from the command line.
+/// Parses `--workdir <path>` and optional `--isolate` from the command line.
 ///
 /// `--workdir` sets the working directory: relative paths resolve against it
-/// and it becomes the default cwd for git. `--confine` (only meaningful with
-/// `--workdir`) enables chroot-like confinement — the workdir becomes `/` for
+/// and it becomes the default cwd for git. `--isolate` (only meaningful with
+/// `--workdir`) enables chroot-like isolation — the workdir becomes `/` for
 /// the model, absolute paths are treated as relative to the root, and path
-/// escapes are rejected. Without `--confine`, absolute paths are allowed as-is.
+/// escapes are rejected. Without `--isolate`, absolute paths are allowed as-is.
 struct Workdir {
     let root: String?      // nil = no --workdir
-    let confined: Bool     // true = --confine set (chroot-like)
+    let isolated: Bool     // true = --isolate set (chroot-like)
 
     static let shared = Workdir.parse()
 
     private static func parse() -> Workdir {
         let args = CommandLine.arguments
         var workdir: String? = nil
-        var confine = false
+        var isolate = false
         var i = args.startIndex
         while i < args.endIndex {
             if args[i] == "--workdir", i + 1 < args.endIndex {
@@ -27,19 +27,19 @@ struct Workdir {
                 i += 2
                 continue
             }
-            if args[i] == "--confine" {
-                confine = true
+            if args[i] == "--isolate" {
+                isolate = true
             }
             i += 1
         }
-        return Workdir(root: workdir, confined: confine)
+        return Workdir(root: workdir, isolated: isolate)
     }
 
     /// The "current directory" surfaced to the model in tool descriptions.
-    /// `/` when confined (chroot illusion), the real workdir path when set,
+    /// `/` when isolated (chroot illusion), the real workdir path when set,
     /// or the expanded home directory otherwise.
     var currentDirectory: String {
-        if confined { return "/" }
+        if isolated { return "/" }
         return root ?? NSHomeDirectory()
     }
 
@@ -49,11 +49,11 @@ struct Workdir {
     }
 
     /// Resolve a model-supplied path to an absolute filesystem path. When
-    /// confined, absolute paths are treated as relative to the workdir root
-    /// (leading slash stripped) and escapes are rejected. When unconfined,
+    /// isolated, absolute paths are treated as relative to the workdir root
+    /// (leading slash stripped) and escapes are rejected. When not isolated,
     /// absolute paths pass through and relative paths resolve against the base.
     func resolve(_ path: String) throws -> String {
-        if confined, let root {
+        if isolated, let root {
             let relative = path.hasPrefix("/") ? String(path.dropFirst()) : path
             let joined = (root as NSString).appendingPathComponent(relative)
             let standardized = (joined as NSString).standardizingPath

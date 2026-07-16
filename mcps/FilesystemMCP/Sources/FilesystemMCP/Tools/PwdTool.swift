@@ -2,7 +2,7 @@ import MCP
 import Foundation
 
 /// Returns the current working directory as seen by the file tools. When the
-/// server runs confined (`--confine`), this returns `/` (the chroot illusion)
+/// server runs isolated (`--isolate`), this returns `/` (the chroot illusion)
 /// so the real working-directory path is never exposed to the model; otherwise
 /// it returns the real working directory (or the home directory when no
 /// `--workdir` was given).

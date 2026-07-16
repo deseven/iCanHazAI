@@ -31,7 +31,7 @@ extension AllAppTests {
             for expected in ["list_connections", "list_mcps", "list_roles", "list_prompts",
                              "read_config", "write_config", "read_log",
                              "delete_connection", "delete_mcp", "delete_role", "delete_prompt",
-                             "mcp_stdio_check", "mcp_http_check", "connection_check"] {
+                             "check_mcp_stdio", "check_mcp_http", "check_mcp_bundled", "check_connection"] {
                 #expect(ConfiguratorTools.toolNames.contains(expected), "missing \(expected)")
             }
         }
@@ -401,86 +401,123 @@ extension AllAppTests {
             #expect(role.content.lowercased().contains("invalid"))
         }
 
-        // MARK: - mcp_stdio_check
+        // MARK: - check_mcp_stdio
 
-        @Test("mcp_stdio_check lists tools from a running stdio server")
+        @Test("check_mcp_stdio lists tools from a running stdio server")
         func mcpStdioCheckListsTools() async throws {
             // The bundled MCP binaries are built by build.sh before tests run
             // (same assumption the MCPTestHarness-based suites make).
             let path = try #require(MCPManager.builtinBinaryPath(for: "iCanHazAI-UtilsMCP"))
             let env = try TempEnv().env
-            let res = await call("mcp_stdio_check", env, ["command": "\"\(path)\""])
+            let res = await call("check_mcp_stdio", env, ["command": "\"\(path)\""])
             #expect(!res.isError, "error: \(res.content)")
             #expect(res.content.contains("calc"))
         }
 
-        @Test("mcp_stdio_check reports an error for a failing command")
+        @Test("check_mcp_stdio reports an error for a failing command")
         func mcpStdioCheckFails() async throws {
             let env = try TempEnv().env
             // A command that exits immediately with a non-zero status.
-            let res = await call("mcp_stdio_check", env, ["command": "this-binary-does-not-exist-xyz"])
+            let res = await call("check_mcp_stdio", env, ["command": "this-binary-does-not-exist-xyz"])
             #expect(res.isError)
         }
 
-        @Test("mcp_stdio_check rejects an empty command")
+        @Test("check_mcp_stdio rejects an empty command")
         func mcpStdioCheckEmpty() async throws {
             let env = try TempEnv().env
-            let res = await call("mcp_stdio_check", env, ["command": ""])
+            let res = await call("check_mcp_stdio", env, ["command": ""])
             #expect(res.isError)
             #expect(res.content.lowercased().contains("command"))
         }
 
-        // MARK: - mcp_http_check
+        // MARK: - check_mcp_http
 
-        @Test("mcp_http_check rejects an empty endpoint")
+        @Test("check_mcp_http rejects an empty endpoint")
         func mcpHttpCheckEmpty() async throws {
             let env = try TempEnv().env
-            let res = await call("mcp_http_check", env, ["endpoint": ""])
+            let res = await call("check_mcp_http", env, ["endpoint": ""])
             #expect(res.isError)
             #expect(res.content.lowercased().contains("endpoint"))
         }
 
-        @Test("mcp_http_check rejects an invalid endpoint URL")
+        @Test("check_mcp_http rejects an invalid endpoint URL")
         func mcpHttpCheckInvalidUrl() async throws {
             let env = try TempEnv().env
-            let res = await call("mcp_http_check", env, ["endpoint": "not a url"])
+            let res = await call("check_mcp_http", env, ["endpoint": "not a url"])
             #expect(res.isError)
             #expect(res.content.lowercased().contains("valid"))
         }
 
-        @Test("mcp_http_check errors on an unreachable endpoint")
+        @Test("check_mcp_http errors on an unreachable endpoint")
         func mcpHttpCheckUnreachable() async throws {
             let env = try TempEnv().env
             // Port 1 is reserved/unbindable, so the connection should fail fast.
-            let res = await call("mcp_http_check", env, ["endpoint": "http://127.0.0.1:1/mcp"])
+            let res = await call("check_mcp_http", env, ["endpoint": "http://127.0.0.1:1/mcp"])
             #expect(res.isError)
         }
 
-        // MARK: - connection_check
+        // MARK: - check_connection
 
-        @Test("connection_check errors on a missing connection")
+        // MARK: - check_mcp_bundled
+
+        @Test("check_mcp_bundled lists tools from a bundled server")
+        func mcpBundledCheckListsTools() async throws {
+            // The bundled MCP binaries are built by build.sh before tests run
+            // (same assumption the check_mcp_stdio test makes).
+            _ = try #require(MCPManager.builtinBinaryPath(for: "iCanHazAI-UtilsMCP"))
+            let env = try TempEnv().env
+            let res = await call("check_mcp_bundled", env, ["name": "Utils"])
+            #expect(!res.isError, "error: \(res.content)")
+            #expect(res.content.contains("calc"))
+        }
+
+        @Test("check_mcp_bundled rejects an unknown bundled server name")
+        func mcpBundledCheckUnknown() async throws {
+            let env = try TempEnv().env
+            let res = await call("check_mcp_bundled", env, ["name": "Nope"])
+            #expect(res.isError)
+            #expect(res.content.lowercased().contains("unknown"))
+            // The error should list the available bundled servers so the
+            // configurator can correct itself without another round-trip.
+            #expect(res.content.contains("Utils"))
+            #expect(res.content.contains("Filesystem"))
+            #expect(res.content.contains("Code"))
+            #expect(res.content.contains("Shell"))
+        }
+
+        @Test("check_mcp_bundled rejects an empty name")
+        func mcpBundledCheckEmpty() async throws {
+            let env = try TempEnv().env
+            let res = await call("check_mcp_bundled", env, ["name": ""])
+            #expect(res.isError)
+            #expect(res.content.lowercased().contains("name"))
+        }
+
+        // MARK: - check_connection
+
+        @Test("check_connection errors on a missing connection")
         func connectionCheckMissing() async throws {
             let env = try TempEnv().env
-            let res = await call("connection_check", env, ["id": "openai/nope"])
+            let res = await call("check_connection", env, ["id": "openai/nope"])
             #expect(res.isError)
             #expect(res.content.lowercased().contains("not found"))
         }
 
-        @Test("connection_check errors on a malformed id")
+        @Test("check_connection errors on a malformed id")
         func connectionCheckBadId() async throws {
             let env = try TempEnv().env
-            let res = await call("connection_check", env, ["id": "no-slash"])
+            let res = await call("check_connection", env, ["id": "no-slash"])
             #expect(res.isError)
         }
 
-        @Test("connection_check errors on an undecodable connection file")
+        @Test("check_connection errors on an undecodable connection file")
         func connectionCheckUndecodable() async throws {
             let env = try TempEnv().env
             _ = await call("write_connection", env, ["id": "openai/broken", "content": "{\"model\":\"m\"}"])
             // Corrupt the file on disk so loading/decoding fails.
             let url = env.openaiConnectionsURL.appendingPathComponent("broken.jsonc")
             try Data("{ not valid jsonc".utf8).write(to: url)
-            let res = await call("connection_check", env, ["id": "openai/broken"])
+            let res = await call("check_connection", env, ["id": "openai/broken"])
             #expect(res.isError)
         }
     }

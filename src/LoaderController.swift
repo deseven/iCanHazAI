@@ -117,10 +117,10 @@ final class LoaderController: ObservableObject {
     var visibilityHandler: ((Bool) -> Void)?
 
     /// Fired exactly once per `.startup` pass, at the moment every entry has
-    /// settled and the 1-second results-display delay has just begun — i.e. the
-    /// earliest point at which the main window should be revealed. The app
-    /// wires this to un-hide the main window (which is kept invisible during
-    /// boot so the loader is the only thing on screen while it loads).
+    /// settled and the 1-second results-display delay has just begun. The app
+    /// wires this to create and show the main window (which doesn't exist
+    /// during boot) and surface any configuration errors collected during
+    /// startup.
     var startupReadyHandler: (() -> Void)?
 
     private var hideTask: Task<Void, Never>?

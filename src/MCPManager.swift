@@ -823,8 +823,8 @@ actor MCPManager {
     /// `workingDirectory` (the chat's effective working directory, with `~`
     /// expanded) is forwarded as `--workdir` to servers that understand it, so
     /// relative paths resolve against it. When a server entry has
-    /// `directoryIsolation` set, `--confine` is also appended (chroot-like
-    /// confinement) for the servers that support it (Filesystem, Code). If the
+    /// `directoryIsolation` set, `--isolate` is also appended (chroot-like
+    /// isolation) for the servers that support it (Filesystem, Code). If the
     /// desired launch command differs from the already-running copy (e.g. the
     /// user changed the working directory), the old copy is torn down and a
     /// fresh one is spawned with the new args.
@@ -869,12 +869,12 @@ actor MCPManager {
     /// Builtin servers that accept `--workdir <path>` (setting the working
     /// directory for relative-path resolution). Utils ignores it.
     private static let workdirCapableServers: Set<String> = ["Filesystem", "Code", "Shell"]
-    /// Builtin servers that also accept `--confine` (chroot-like confinement).
-    /// Shell deliberately does no confinement.
-    private static let confineCapableServers: Set<String> = ["Filesystem", "Code"]
+    /// Builtin servers that also accept `--isolate` (chroot-like isolation).
+    /// Shell deliberately does no isolation.
+    private static let isolateCapableServers: Set<String> = ["Filesystem", "Code"]
 
     /// Returns a copy of `server` whose `command` has `--workdir` (and
-    /// optionally `--confine`) appended according to the role/chat settings.
+    /// optionally `--isolate`) appended according to the role/chat settings.
     /// Servers that don't understand these flags, or when no working directory
     /// is set, are returned unchanged. The working directory is `~`-expanded
     /// here (rather than relying on shell expansion, which is suppressed by
@@ -890,8 +890,8 @@ actor MCPManager {
               Self.workdirCapableServers.contains(server.name) else { return s }
         let expanded = (wd as NSString).standardizingPath
         var cmd = "\(base) --workdir \"\(expanded)\""
-        if directoryIsolation, Self.confineCapableServers.contains(server.name) {
-            cmd += " --confine"
+        if directoryIsolation, Self.isolateCapableServers.contains(server.name) {
+            cmd += " --isolate"
         }
         s.command = cmd
         return s
@@ -993,7 +993,7 @@ actor MCPManager {
     /// Calls a tool on a per-chat in-house copy. The copy is started lazily if
     /// it isn't currently running for `chatFilename`. `workingDirectory` and
     /// `directoryIsolation` are forwarded to the launch command (matching what
-    /// `ensureInHouseRunning` would use) so a lazily-started copy is confined
+    /// `ensureInHouseRunning` would use) so a lazily-started copy is isolated
     /// the same way as one started up front. On failure the per-chat copy is
     /// torn down so the next call starts fresh.
     func callInHouseTool(chatFilename: String, server: String, name: String, arguments: String, callID: String, workingDirectory: String?, directoryIsolation: Bool) async -> ToolResult {

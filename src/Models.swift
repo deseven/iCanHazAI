@@ -391,7 +391,7 @@ struct RoleMCP: Codable, Equatable, Hashable, Sendable {
     var autoAllow: [String]?
     /// When true, all available tools from this MCP are auto-approved.
     var autoAllowAll: Bool?
-    /// When true, the in-house server runs confined to the working directory.
+    /// When true, the in-house server runs isolated to the working directory.
     /// Only meaningful for `bundled::Filesystem` and `bundled::Code`.
     var directoryIsolation: Bool?
 
@@ -471,9 +471,9 @@ struct Role: Identifiable, Equatable, Hashable {
     /// nothing would use the selected directory.
     static let workdirCapableInternalMCPs: Set<String> = ["Filesystem", "Code", "Shell"]
 
-    /// The internal MCP servers that support `--confine` (chroot-like
-    /// confinement to the working directory). Shell deliberately does no
-    /// confinement. Used to validate `directory_isolation` entries.
+    /// The internal MCP servers that support `--isolate` (chroot-like
+    /// isolation to the working directory). Shell deliberately does no
+    /// isolation. Used to validate `directory_isolation` entries.
     static let isolationCapableInternalMCPs: Set<String> = ["Filesystem", "Code"]
 
     /// Whether this role selects at least one internal MCP that uses the working

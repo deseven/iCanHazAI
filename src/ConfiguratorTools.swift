@@ -104,13 +104,16 @@ enum ConfiguratorTools {
         ("delete_prompt",
          "Delete a Prompt by name.",
          #"{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}"#),
-        ("mcp_stdio_check",
+        ("check_mcp_stdio",
          "Check a stdio MCP server: run `command`, list the tools it reports, then terminate the server. Returns the tools as a Markdown list, or a relevant error.",
          #"{"type":"object","properties":{"command":{"type":"string","description":"Full command line to launch the stdio MCP server, including args."}},"required":["command"]}"#),
-        ("mcp_http_check",
+        ("check_mcp_http",
          "Check a streamable HTTP MCP server: connect to `endpoint`, list the tools it reports, then disconnect. Returns the tools as a Markdown list, or a relevant error.",
          #"{"type":"object","properties":{"endpoint":{"type":"string","description":"The streamable HTTP endpoint URL."},"token":{"type":"string","description":"Optional bearer token."}},"required":["endpoint"]}"#),
-        ("connection_check",
+        ("check_mcp_bundled",
+         "Check a bundled (built-in) MCP server: launch it, list the tools it reports, then terminate it. Returns the tools as a Markdown list, or a relevant error. Available bundled servers: Utils, Filesystem, Code, Shell.",
+         #"{"type":"object","properties":{"name":{"type":"string","description":"Bundled server name: Utils, Filesystem, Code, or Shell."}},"required":["name"]}"#),
+        ("check_connection",
          "Check a configured Connection by sending the prompt 'say hi'. Returns the model's answer, or a relevant error. `id` is the connection id \"type/name\".",
          #"{"type":"object","properties":{"id":{"type":"string","description":"Connection id \"type/name\"."}},"required":["id"]}"#),
     ]
@@ -200,14 +203,17 @@ enum ConfiguratorTools {
         case "delete_prompt":
             let n = try validated(try stringArg(args, "name"), protected: true)
             return (try delete(url: env.promptsURL.appendingPathComponent("\(n).md"), label: "Prompt \"\(n)\"", env: env), false)
-        case "mcp_stdio_check":
+        case "check_mcp_stdio":
             let command = try stringArg(args, "command")
             return (try await mcpStdioCheck(command: command), false)
-        case "mcp_http_check":
+        case "check_mcp_http":
             let endpoint = try stringArg(args, "endpoint")
             let token = args["token"] as? String
             return (try await mcpHttpCheck(endpoint: endpoint, token: token), false)
-        case "connection_check":
+        case "check_mcp_bundled":
+            let name = try stringArg(args, "name")
+            return (try await mcpBundledCheck(name: name), false)
+        case "check_connection":
             let id = try stringArg(args, "id")
             return (try await connectionCheck(id: id, env: env), false)
         default:
@@ -432,6 +438,36 @@ enum ConfiguratorTools {
             return formatToolList(tools)
         } catch {
             await MCPManager.shared.disconnect(name: name)
+            throw error
+        }
+    }
+
+    /// Launches a bundled (built-in) MCP server by `name`, lists its tools,
+    /// then terminates it. Resolves the server from
+    /// [`MCPManager.builtinServers()`](src/MCPManager.swift) (which locates the
+    /// bundled binary) and routes through
+    /// [`MCPManager.testConnection`](src/MCPManager.swift) — the same path the
+    /// other `*_check` tools use — so a missing or crashing binary is reported
+    /// with its stderr reason instead of hanging.
+    private static func mcpBundledCheck(name: String) async throws -> String {
+        guard !name.isEmpty else {
+            throw ConfiguratorToolError("name must not be empty.")
+        }
+        guard let builtin = MCPManager.builtinServers().first(where: { $0.name == name }) else {
+            let available = MCPManager.builtinServers().map(\.name).sorted().joined(separator: ", ")
+            throw ConfiguratorToolError("Unknown bundled server \"\(name)\". Available: \(available).")
+        }
+        let checkName = checkServerName()
+        let server = MCPServer(
+            name: checkName, prefix: "", transport: .stdio, runPolicy: .onDemand,
+            command: builtin.command, endpoint: nil, token: nil, tools: nil
+        )
+        do {
+            let (tools, _) = try await MCPManager.shared.testConnection(server)
+            await MCPManager.shared.disconnect(name: checkName)
+            return formatToolList(tools)
+        } catch {
+            await MCPManager.shared.disconnect(name: checkName)
             throw error
         }
     }

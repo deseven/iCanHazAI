@@ -78,7 +78,7 @@ enum ConfigValidation {
     /// - `directory_isolation` requires a working directory to be available —
     ///   either pre-set (`working_directory`) or user-pickable
     ///   (`working_directory_override_allowed = true`). Without one, the
-    ///   confinement target is undefined.
+    ///   isolation target is undefined.
     static func validateRole(_ config: RoleConfig) throws {
         let workdirCapable: Set<String> = ["Filesystem", "Code", "Shell"]
         let isolationCapable: Set<String> = ["Filesystem", "Code"]

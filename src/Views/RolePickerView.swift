@@ -26,6 +26,7 @@ struct RolePickerView: View {
 
     /// Currently highlighted role (driven by both keyboard and hover).
     @State private var selection: String?
+    @State private var rowHeights: [Int: CGFloat] = [:]
     @FocusState private var focused: Bool
 
     /// User-defined roles shown in the main scrollable list.
@@ -36,6 +37,33 @@ struct RolePickerView: View {
     private var allRoles: [Role] { userRoles + builtinRoles }
     /// The default role name from the app config, if any.
     private var defaultRoleName: String? { store.preferencesDefaultRole }
+
+    /// Number of user-defined roles that fit in the scroll area before a
+    /// scrollbar appears. Rows have variable heights (descriptions wrap), so
+    /// each row's height is measured at runtime and summed.
+    private let visibleRowCount = 5
+    /// Fallback per-row height until real measurements arrive, so the list has
+    /// a non-zero size on first render (rows must render to be measured).
+    private let estimatedRowHeight: CGFloat = 50
+
+    private func rowHeight(at index: Int) -> CGFloat {
+        rowHeights[index] ?? estimatedRowHeight
+    }
+
+    /// Scroll area height: the measured height of the first `visibleRowCount`
+    /// rows (or all rows when there are fewer), so a scrollbar only appears
+    /// once there are more than `visibleRowCount` user roles.
+    private var listHeight: CGFloat {
+        let count = userRoles.count
+        guard count > 0 else { return 0 }
+        let divider: CGFloat = 1
+        if count <= visibleRowCount {
+            let total = (0..<count).reduce(CGFloat(0)) { $0 + rowHeight(at: $1) }
+            return total + divider * CGFloat(max(count - 1, 0))
+        }
+        let firstN = (0..<visibleRowCount).reduce(CGFloat(0)) { $0 + rowHeight(at: $1) }
+        return firstN + divider * CGFloat(visibleRowCount - 1)
+    }
 
     /// Header title reflecting the picker's mode.
     private var headerTitle: String {
@@ -73,13 +101,14 @@ struct RolePickerView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, minHeight: estimatedRowHeight * CGFloat(visibleRowCount))
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 0) {
-                            ForEach(userRoles) { role in
-                                roleRow(role, isBuiltin: false)
+                            ForEach(Array(userRoles.enumerated()), id: \.element.id) { index, role in
+                                roleRow(role)
+                                    .measureRowHeight(at: index)
                                     .id(role.name)
                                 if role.id != userRoles.last?.id {
                                     Divider()
@@ -87,16 +116,20 @@ struct RolePickerView: View {
                             }
                         }
                     }
-
-                    Divider()
+                    .frame(height: listHeight)
+                    .onPreferenceChange(IndexedRowHeightKey.self) { rowHeights = $0 }
 
                     // Built-in roles pinned at the bottom, always visible.
-                    LazyVStack(spacing: 0) {
-                        ForEach(builtinRoles) { role in
-                            roleRow(role, isBuiltin: true)
-                                .id(role.name)
+                    VStack(spacing: 0) {
+                        PickerSectionHeader(title: "Built-in")
+                        LazyVStack(spacing: 0) {
+                            ForEach(builtinRoles) { role in
+                                roleRow(role)
+                                    .id(role.name)
+                            }
                         }
                     }
+                    .background(Color.secondary.opacity(0.05))
                     .onChange(of: selection) { _, newName in
                         guard let newName else { return }
                         proxy.scrollTo(newName, anchor: .center)
@@ -116,7 +149,7 @@ struct RolePickerView: View {
             }
             .padding(12)
         }
-        .frame(width: 380, height: 460)
+        .frame(width: 380)
         .focusable()
         .focused($focused)
         .focusEffectDisabled()
@@ -134,11 +167,10 @@ struct RolePickerView: View {
     }
 
     @ViewBuilder
-    private func roleRow(_ role: Role, isBuiltin: Bool) -> some View {
+    private func roleRow(_ role: Role) -> some View {
         RolePickerRow(
             role: role,
             isDefault: role.name == defaultRoleName,
-            isBuiltin: isBuiltin,
             isSelected: selection == role.name
         )
         .contentShape(Rectangle())
@@ -170,11 +202,10 @@ struct RolePickerView: View {
 private struct RolePickerRow: View {
     let role: Role
     var isDefault: Bool = false
-    var isBuiltin: Bool = false
     var isSelected: Bool = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .center, spacing: 10) {
             Image(systemName: role.icon)
                 .font(.title3)
                 .foregroundStyle(role.accentColor)
@@ -188,14 +219,6 @@ private struct RolePickerRow: View {
                         Image(systemName: "star.fill")
                             .font(.caption2)
                             .foregroundStyle(.yellow)
-                    }
-                    if isBuiltin {
-                        Text("Built-in")
-                            .font(.caption2)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(Color.accentColor.opacity(0.15), in: Capsule())
-                            .foregroundStyle(.secondary)
                     }
                 }
                 Text(role.description)

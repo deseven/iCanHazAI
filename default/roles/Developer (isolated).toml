@@ -1,12 +1,13 @@
-description = "Unrestricted coding agent equipped with all essential tools for code generation, testing, and version control."
+description = "Directory-isolated coding agent equipped with all essential tools for code generation and version control."
 prompt = "Developer"
-icon = "hammer"
+icon = "hammer.circle"
 accent = "blue"
 connection_override_allowed = true
 working_directory_override_allowed = true
 
 [[mcps]]
 mcp = "bundled::Utils"
+tools = []
 auto_allow_all = true
 
 [[mcps]]
@@ -17,7 +18,3 @@ directory_isolation = true
 [[mcps]]
 mcp = "bundled::Code"
 directory_isolation = true
-
-[[mcps]]
-mcp = "bundled::Shell"
-tools = ["shell"]

@@ -8,7 +8,7 @@ import MCP
 /// - `CodeMCPDefaultTests`: no args (paths relative to `~`, absolute allowed).
 /// - `CodeMCPWorkdirTests`: `--workdir <tmp>` (relative paths resolve against
 ///   the workdir, absolute paths still allowed, git runs with that cwd).
-/// - `CodeMCPConfineTests`: `--workdir <tmp> --confine` (chroot-like).
+/// - `CodeMCPIsolateTests`: `--workdir <tmp> --isolate` (chroot-like).
 ///
 /// Each suite shares one server process via [`UtilsMCPShared`](MCPTestHarness.swift).
 ///
@@ -213,28 +213,28 @@ struct CodeMCPWorkdirTests {
     }
 }
 
-@Suite("CodeMCP (--workdir --confine)", .serialized, .timeLimit(.minutes(1)))
-struct CodeMCPConfineTests {
+@Suite("CodeMCP (--workdir --isolate)", .serialized, .timeLimit(.minutes(1)))
+struct CodeMCPIsolateTests {
 
     let harness: MCPTestHarness
     let tmp: TempDir
 
     init() async throws {
         tmp = try TempDir()
-        harness = try await UtilsMCPShared.shared(.code, workdir: tmp.path, confine: true)
+        harness = try await UtilsMCPShared.shared(.code, workdir: tmp.path, isolate: true)
     }
 
     @Test("absolute path treated as relative to root")
     func absoluteAsRelative() async throws {
         let patch = """
         *** Begin Patch
-        *** Add File: /confined.txt
-        +confined content
+        *** Add File: /isolated.txt
+        +isolated content
         *** End Patch
         """
         let (_, err) = try await harness.callTool("apply_patch", ["patch": .string(patch)])
         #expect(!err)
-        #expect(tmp.exists("confined.txt"))
+        #expect(tmp.exists("isolated.txt"))
     }
 
     @Test("path escape via .. is rejected")

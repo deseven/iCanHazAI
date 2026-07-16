@@ -7,7 +7,7 @@ import MCP
 /// Two launch modes:
 /// - `ShellMCPDefaultTests`: no args (commands run with cwd `~`).
 /// - `ShellMCPWorkdirTests`: `--workdir <tmp>` (commands run with that cwd;
-///   no path confinement — `--confine` is not supported by Shell MCP).
+///   no path isolation — `--isolate` is not supported by Shell MCP).
 ///
 /// Each suite shares one server process via [`UtilsMCPShared`](MCPTestHarness.swift).
 /// Nested under `AllMCPTests` (see `AllTests.swift`) so its `.serialized`
@@ -174,7 +174,7 @@ struct ShellMCPWorkdirTests {
         #expect(text.contains(tmp.path))
     }
 
-    @Test("shell can still use an absolute cwd outside the workdir (no confinement)")
+    @Test("shell can still use an absolute cwd outside the workdir (no isolation)")
     func shellAbsoluteCwd() async throws {
         let other = try TempDir()
         let (text, err) = try await harness.callTool("shell", ["command": .string("pwd"), "cwd": .string(other.path)])

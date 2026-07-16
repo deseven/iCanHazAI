@@ -213,7 +213,7 @@ struct ChatView: View {
         if !store.selectedChatHasValidRole { return true }
         if !store.selectedChatHasConnection { return true }
         // Directory isolation requires a working directory before requests can
-        // be sent (the confined MCPs have no target to confine to otherwise).
+        // be sent (the isolated MCPs have no target to isolate to otherwise).
         if store.selectedChatWorkdirRequired { return true }
         if !pendingImages.isEmpty { return false }
         let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)

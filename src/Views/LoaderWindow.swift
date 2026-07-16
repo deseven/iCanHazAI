@@ -9,6 +9,9 @@ import AppKit
 /// the main config is read, so the loader appears instantly while the engine
 /// loads connections / prompts / roles / MCPs. Fades out (0.3s) one second
 /// after everything settles, via the `LoaderController.visibilityHandler` hook.
+/// The main window is already visible underneath (it opens normally at
+/// launch); the loader panel floats above it at `.statusBar` level and simply
+/// fades away once loading completes.
 ///
 /// Only acts during `.startup` mode; usage-mode loader activity is shown as an
 /// overlay on the main window instead (see `LoaderOverlay`).

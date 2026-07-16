@@ -1,8 +1,8 @@
 import Foundation
 
 /// Parses `--workdir <path>` from the command line. The Shell MCP does **no
-/// path confinement** — the workdir only sets the default working directory
-/// for `shell`/`shell_background` commands. `--confine` is not supported.
+/// path isolation** — the workdir only sets the default working directory
+/// for `shell`/`shell_background` commands. `--isolate` is not supported.
 enum WorkdirConfig {
     /// The default working directory for commands, or the expanded home
     /// directory when `--workdir` is absent.

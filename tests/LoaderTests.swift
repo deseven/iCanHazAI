@@ -22,8 +22,8 @@ extension AllAppTests {
     // `LoaderController` is a stateful singleton, so this suite relies on the
     // `.serialized` `AllAppTests` parent to run in isolation. It drives the
     // controller through its public startup API and verifies the
-    // `startupReadyHandler` (which gates main-window reveal) fires exactly once
-    // when every entry settles — and not before.
+    // `startupReadyHandler` (which creates the main window after loading)
+    // fires exactly once when every entry settles — and not before.
     @Suite("Loader startup readiness")
     struct LoaderStartupReadyTests {
         @Test("startupReadyHandler fires once everything settles, not before")

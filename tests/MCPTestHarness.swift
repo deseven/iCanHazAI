@@ -51,8 +51,8 @@ final class MCPTestHarness: @unchecked Sendable {
     /// - Parameters:
     ///   - server: Which bundled server to launch.
     ///   - workdir: Optional `--workdir <path>` argument.
-    ///   - confine: If true, appends `--confine` (only meaningful with workdir).
-    init(server: Server, workdir: String? = nil, confine: Bool = false) async throws {
+    ///   - isolate: If true, appends `--isolate` (only meaningful with workdir).
+    init(server: Server, workdir: String? = nil, isolate: Bool = false) async throws {
         self.workdir = workdir
         self.client = Client(name: "ichai-tests", version: "1.0.0")
 
@@ -60,7 +60,7 @@ final class MCPTestHarness: @unchecked Sendable {
         proc.executableURL = URL(fileURLWithPath: server.binaryPath)
         var args: [String] = []
         if let workdir { args += ["--workdir", workdir] }
-        if confine { args += ["--confine"] }
+        if isolate { args += ["--isolate"] }
         proc.arguments = args
 
         let stdin = Pipe()
@@ -291,18 +291,18 @@ actor SharedHarness {
     func harness(
         _ server: MCPTestHarness.Server,
         workdir: String? = nil,
-        confine: Bool = false
+        isolate: Bool = false
     ) async throws -> MCPTestHarness {
         var key = server.rawValue
         if let workdir { key += "@\(workdir)" }
-        if confine { key += "+confine" }
+        if isolate { key += "+isolate" }
 
         if let existing = tasks[key] {
             return try await existing.value
         }
 
         let task = Task {
-            try await MCPTestHarness(server: server, workdir: workdir, confine: confine)
+            try await MCPTestHarness(server: server, workdir: workdir, isolate: isolate)
         }
         tasks[key] = task
         return try await task.value
@@ -315,8 +315,8 @@ enum UtilsMCPShared {
     static func shared(
         _ server: MCPTestHarness.Server,
         workdir: String? = nil,
-        confine: Bool = false
+        isolate: Bool = false
     ) async throws -> MCPTestHarness {
-        try await SharedHarness.shared.harness(server, workdir: workdir, confine: confine)
+        try await SharedHarness.shared.harness(server, workdir: workdir, isolate: isolate)
     }
 }

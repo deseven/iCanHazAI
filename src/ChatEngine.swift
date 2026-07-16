@@ -1685,7 +1685,7 @@ actor ChatEngine {
         // copies, custom on-demand servers run in the shared pool. Always-on /
         // http servers are already connected from configuration. In-house copies
         // are launched with the chat's effective working directory and the
-        // per-entry isolation flag so Filesystem/Code/Shell confine themselves
+        // per-entry isolation flag so Filesystem/Code/Shell isolate themselves
         // to the role's working directory when configured.
         let inHouse = resolved.filter { $0.isBuiltin }.map { ($0.serverName, $0.directoryIsolation) }
         let custom = resolved.filter { !$0.isBuiltin }.map(\.serverName)
@@ -2320,7 +2320,7 @@ actor ChatEngine {
         guard var chat = records[idx].chat else { return }
         chat.workingDirectory = path
         saveChat(chat, filename: filename)
-        // The working directory drives in-house MCP `--workdir`/`--confine`:
+        // The working directory drives in-house MCP `--workdir`/`--isolate`:
         // relaunch the chat's copies so they pick up the new path.
         await scheduleInHouseRelaunch(filename: filename)
         emit(.chatsChanged(records))

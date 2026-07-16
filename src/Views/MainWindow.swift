@@ -82,6 +82,7 @@ struct MainWindow: View {
         }
         .onChange(of: store.chatInfoSidebarVisible) { _, _ in
             store.saveSidebarState()
+            MainWindowController.shared.applyMinSize()
         }
     }
 }

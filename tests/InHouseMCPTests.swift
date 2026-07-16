@@ -106,32 +106,32 @@ extension AllMCPTests {
             await MCPManager.shared.disconnectAllInHouse(chatFilename: chat)
         }
 
-        @Test("workdir + confine are forwarded to a per-chat Filesystem copy")
-        func workdirConfineForwarded() async throws {
-            let chat = "confine.json"
+        @Test("workdir + isolate are forwarded to a per-chat Filesystem copy")
+        func workdirIsolateForwarded() async throws {
+            let chat = "isolate.json"
             let tmp = try TempDir()
             _ = await MCPManager.shared.configure(MCPManager.builtinServers())
             defer { Task { await MCPManager.shared.disconnectAllInHouse(chatFilename: chat) } }
 
             // directoryIsolation = true → the copy launches with
-            // `--workdir <tmp> --confine`.
+            // `--workdir <tmp> --isolate`.
             await MCPManager.shared.ensureInHouseRunning(
                 chatFilename: chat,
                 servers: [("Filesystem", true)],
                 workingDirectory: tmp.path
             )
 
-            // --confine: an absolute path is treated as relative to the root,
-            // so "/confined.txt" lands inside the workdir.
+            // --isolate: an absolute path is treated as relative to the root,
+            // so "/isolated.txt" lands inside the workdir.
             let w = try await MCPManager.shared.callInHouseTool(
                 chatFilename: chat, server: "Filesystem", name: "write_file",
-                arguments: "{\"path\":\"/confined.txt\",\"content\":\"x\"}", callID: "w",
+                arguments: "{\"path\":\"/isolated.txt\",\"content\":\"x\"}", callID: "w",
                 workingDirectory: tmp.path, directoryIsolation: true
             )
             #expect(!w.isError)
-            #expect(tmp.exists("confined.txt"))
+            #expect(tmp.exists("isolated.txt"))
 
-            // Path escapes via .. are rejected under --confine.
+            // Path escapes via .. are rejected under --isolate.
             let e = try await MCPManager.shared.callInHouseTool(
                 chatFilename: chat, server: "Filesystem", name: "write_file",
                 arguments: "{\"path\":\"../../escaped.txt\",\"content\":\"y\"}", callID: "e",
@@ -157,7 +157,7 @@ extension AllMCPTests {
             _ = await MCPManager.shared.configure(MCPManager.builtinServers())
             defer { Task { await MCPManager.shared.disconnectAllInHouse(chatFilename: chat) } }
 
-            // Pass the `~` form; --workdir (no confine) makes relative paths
+            // Pass the `~` form; --workdir (no isolate) makes relative paths
             // resolve against the expanded home-based dir.
             await MCPManager.shared.ensureInHouseRunning(
                 chatFilename: chat,

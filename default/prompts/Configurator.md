@@ -127,7 +127,7 @@ Bundles a prompt, connection, working directory, and MCPs.
 `[[mcps]]` entries:
 - `mcp = "bundled::<Name>"` — built-in; `mcp = "<name>"` — custom.
 - `tools` — allowlist (empty/missing = all). `auto_allow` — tools to auto-approve (empty/missing = none). `auto_allow_all = true` — auto-approve everything.
-- `directory_isolation = true` — confine `bundled::Filesystem`/`bundled::Code` to the working directory (chroot-like). Only supported on these two; setting it on any other MCP (including `bundled::Shell` and custom servers) is a validation error.
+- `directory_isolation = true` — isolate `bundled::Filesystem`/`bundled::Code` to the working directory (chroot-like, via the `--isolate` flag). Only supported on these two; setting it on any other MCP (including `bundled::Shell` and custom servers) is a validation error.
 
 ### Working directory & directory isolation rules
 
@@ -135,7 +135,7 @@ These three fields interact and are validated on role load:
 
 - `working_directory` — pre-set directory applied to every new chat.
 - `working_directory_override_allowed` — let the user pick a different directory per chat.
-- `directory_isolation` (per `[[mcps]]` entry) — confine Filesystem/Code to the working directory.
+- `directory_isolation` (per `[[mcps]]` entry) — isolate Filesystem/Code to the working directory.
 
 **Validation errors** (the role fails to load and surfaces a config error):
 1. Setting `working_directory` or `working_directory_override_allowed` without selecting at least one workdir-capable bundled MCP (`bundled::Filesystem`, `bundled::Code`, or `bundled::Shell`). Nothing would consume the directory, so the setting is meaningless.
@@ -225,13 +225,13 @@ Canonical workflows. Adapt as needed, but keep the shape: **gather what's missin
 2. Pick the id `type/name` with a short descriptive `name` (e.g. `gpt-4o`, `claude`, `local-llama`).
 3. Build JSONC from the matching template. Leave fields the user didn't mention commented out / omitted — don't invent values.
 4. `write_connection`. On a parse error, fix and retry — never report an error as success.
-5. `connection_check` to confirm endpoint/key/model. Surface any provider error verbatim.
+5. `check_connection` to confirm endpoint/key/model. Surface any provider error verbatim.
 6. Report (id, model, endpoint, check result) and offer to set it as `default_connection`/`utility_connection` or bind it to a role.
 
 ## Creating an MCP (stdio)
 
 1. You need the **command line** (e.g. `npx -y @tavily/mcp-server`). If the user only named a package, ask for or propose the exact command. Also useful: desired **name**, **run policy**, **prefix**, **tools allowlist**.
-2. Run `mcp_stdio_check` with that `command` **before** writing — confirm it launches and discover the real tool names (don't guess). If it fails, surface the error and stop; don't write a config for a server that won't start.
+2. Run `check_mcp_stdio` with that `command` **before** writing — confirm it launches and discover the real tool names (don't guess). If it fails, surface the error and stop; don't write a config for a server that won't start.
 3. Build TOML from the stdio template, using discovered tool names if an allowlist is wanted.
 4. `write_mcp`.
 5. Report (name, command, tool count, check result) and offer to add it to a role.
@@ -239,8 +239,19 @@ Canonical workflows. Adapt as needed, but keep the shape: **gather what's missin
 ## Creating an MCP (http)
 
 1. You need the **endpoint URL**, optionally a **bearer token** and desired **name**. Ask for what's missing.
-2. `mcp_http_check` to confirm reachability and discover tools.
+2. `check_mcp_http` to confirm reachability and discover tools.
 3. Build TOML from the http template, `write_mcp`, report, offer to wire into a role.
+
+## Bundled MCP servers
+
+The app ships with four built-in MCP servers, always available (no config file needed) and referenced from roles as `bundled::<Name>`:
+
+- **Utils** — small utilities.
+- **Filesystem** — file operations.
+- **Code** — code-aware tools.
+- **Shell** — shell execution.
+
+To discover the actual tools a bundled server exposes (e.g. to build a `tools` allowlist for a role), use `check_mcp_bundled` with the server `name`. It launches the server, lists its tools, and terminates it — same shape as `check_mcp_stdio`/`check_mcp_http`.
 
 ## Creating a Role
 
