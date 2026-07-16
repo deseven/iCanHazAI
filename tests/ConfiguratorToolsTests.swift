@@ -115,6 +115,22 @@ extension AllAppTests {
             #expect(read.content == "You are friendly.")
         }
 
+        @Test("write_prompt rejects unknown variables; accepts known and escaped")
+        func promptVariableValidation() async throws {
+            let env = try TempEnv().env
+            // Unknown variable → rejected, nothing written.
+            let bad = await call("write_prompt", env, ["name": "Bad", "content": "Hi {stranger}"])
+            #expect(bad.isError)
+            #expect(bad.content.contains("{stranger}"))
+            #expect(!FileManager.default.fileExists(atPath: env.promptsURL.appendingPathComponent("Bad.md").path))
+
+            // Known variables + escaped literal brace → accepted.
+            let good = await call("write_prompt", env, ["name": "Good", "content": "\\{literal} {user} {date}"])
+            #expect(!good.isError)
+            let read = await call("read_prompt", env, ["name": "Good"])
+            #expect(read.content == "\\{literal} {user} {date}")
+        }
+
         // MARK: - App config
 
         @Test("write_config validates and read_config round-trips")

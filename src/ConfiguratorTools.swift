@@ -87,7 +87,7 @@ enum ConfiguratorTools {
          "Validate then write a Role configuration. `content` is TOML text.",
          #"{"type":"object","properties":{"name":{"type":"string"},"content":{"type":"string","description":"TOML Role config text."}},"required":["name","content"]}"#),
         ("write_prompt",
-         "Validate then write a Prompt. `content` is the prompt Markdown; it must be non-empty.",
+         "Validate then write a Prompt. `content` is the prompt Markdown; it must be non-empty and optionally contain valid variables in `{var}` format.",
          #"{"type":"object","properties":{"name":{"type":"string"},"content":{"type":"string","description":"Prompt Markdown text."}},"required":["name","content"]}"#),
         ("write_config",
          "Validate then write main application config. `content` is TOML text.",
@@ -312,6 +312,13 @@ enum ConfiguratorTools {
     private static func writePrompt(name: String, content: String, env: EnvironmentManager) throws -> String {
         guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ConfiguratorToolError("Prompt content must not be empty.")
+        }
+        let unknown = PromptVariables.unknownVariables(in: content)
+        if !unknown.isEmpty {
+            throw ConfiguratorToolError(
+                "\(PromptVariables.unknownVariablesMessage(unknown)). Known variables: \(PromptVariables.knownVariablesList). "
+                + "Use \\{...} to escape a literal brace."
+            )
         }
         let url = env.promptsURL.appendingPathComponent("\(name).md")
         try write(url: url, content: content, env: env)

@@ -261,35 +261,74 @@ final class EnvironmentManager: @unchecked Sendable {
     /// user file that shadows a protected name is ignored in favor of the
     /// bundled version.
     func loadAllPrompts() -> [Prompt] {
+        loadAllPromptsReportingErrors().loaded
+    }
+
+    /// Same as [`loadAllPrompts()`](src/EnvironmentManager.swift) but also returns
+    /// a [`ConfigError`](src/Models.swift) per prompt file that could not be read
+    /// or contains unknown variables. Used by `ChatEngine` to populate the
+    /// configuration-error registry. Protected built-in prompts are trusted app
+    /// content and are never validated here.
+    func loadAllPromptsReportingErrors() -> (loaded: [Prompt], errors: [ConfigError]) {
         let fm = FileManager.default
-        var result: [Prompt] = []
+        var loaded: [Prompt] = []
+        var errors: [ConfigError] = []
         if let files = try? fm.contentsOfDirectory(at: promptsURL, includingPropertiesForKeys: nil) {
             for url in files where url.pathExtension == "md" {
                 let name = url.deletingPathExtension().lastPathComponent
                 if Self.protectedBundleNames.contains(name) { continue }
                 debugLog("FileRead", "reading \(relativePath(url))")
-                guard let content = try? String(contentsOf: url, encoding: .utf8) else { continue }
-                result.append(Prompt(name: name, content: content))
+                guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+                    debugLog("Env", "⚠️ failed to read prompt \"\(name)\"")
+                    errors.append(ConfigError(kind: .prompt, entityName: name, message: "prompt file could not be read"))
+                    continue
+                }
+                let unknown = PromptVariables.unknownVariables(in: content)
+                if !unknown.isEmpty {
+                    let message = PromptVariables.unknownVariablesMessage(unknown)
+                    debugLog("Env", "⚠️ prompt \"\(name)\" has \(message)")
+                    errors.append(ConfigError(kind: .prompt, entityName: name, message: message))
+                    continue
+                }
+                loaded.append(Prompt(name: name, content: content))
             }
         }
         for name in Self.protectedBundleNames {
             if let prompt = Self.bundledPrompt(name: name) {
-                result.append(prompt)
+                loaded.append(prompt)
             }
         }
-        return result.sorted { $0.name < $1.name }
+        return (loaded.sorted { $0.name < $1.name }, errors)
     }
 
     /// Loads one prompt by name. Returns nil if not found. Protected built-in
     /// names are always resolved from the app bundle.
     func loadSinglePrompt(name: String) -> Prompt? {
+        loadSinglePromptReportingError(name: name).prompt
+    }
+
+    /// Same as [`loadSinglePrompt(name:)`](src/EnvironmentManager.swift) but also
+    /// returns a [`ConfigError`](src/Models.swift) when the file exists but
+    /// contains unknown variables. A missing file returns `(nil, nil)` — the
+    /// caller treats that as a removal (no error). Protected built-ins never
+    /// error.
+    func loadSinglePromptReportingError(name: String) -> (prompt: Prompt?, error: ConfigError?) {
         if Self.protectedBundleNames.contains(name) {
-            return Self.bundledPrompt(name: name)
+            return (Self.bundledPrompt(name: name), nil)
         }
         let url = promptsURL.appendingPathComponent("\(name).md")
         debugLog("FileRead", "reading \(relativePath(url))")
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        return Prompt(name: name, content: content)
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
+            debugLog("Env", "⚠️ failed to read prompt \"\(name)\"")
+            return (nil, nil)
+        }
+        let unknown = PromptVariables.unknownVariables(in: content)
+        if !unknown.isEmpty {
+            let message = PromptVariables.unknownVariablesMessage(unknown)
+            debugLog("Env", "⚠️ prompt \"\(name)\" has \(message)")
+            return (nil, ConfigError(kind: .prompt, entityName: name, message: message))
+        }
+        return (Prompt(name: name, content: content), nil)
     }
 
     // MARK: - Roles

@@ -165,5 +165,71 @@ extension AllAppTests {
             #expect(result.errors.isEmpty)
             #expect(result.loaded.isEmpty)
         }
+
+        // MARK: - Prompts
+
+        @Test("ConfigError.prompt kind label and configurator line")
+        func promptModelError() {
+            let err = ConfigError(kind: .prompt, entityName: "Greeter", message: "unknown prompt variable {foo}")
+            #expect(err.kindLabel == "Prompt")
+            #expect(err.id == "prompt:Greeter")
+            #expect(err.configuratorLine == #"Prompt `Greeter` is invalid (error: "unknown prompt variable {foo}")."#)
+        }
+
+        @Test("loadAllPromptsReportingErrors surfaces prompts with unknown variables")
+        func promptsReportErrors() throws {
+            let env = try TempEnv()
+            try Data("You are friendly.\n".utf8)
+                .write(to: env.env.promptsURL.appendingPathComponent("Good.md"))
+            try Data("Hi {stranger}\n".utf8)
+                .write(to: env.env.promptsURL.appendingPathComponent("Bad.md"))
+            // A prompt with only known variables and escaped braces is valid.
+            try Data("\\{literal} {user} {date}\n".utf8)
+                .write(to: env.env.promptsURL.appendingPathComponent("Ok.md"))
+
+            let result = env.env.loadAllPromptsReportingErrors()
+            let names = result.loaded.map(\.name)
+            #expect(names == ["Good", "Ok"])
+            #expect(result.errors.count == 1)
+            let err = try #require(result.errors.first)
+            #expect(err.kind == .prompt)
+            #expect(err.entityName == "Bad")
+            #expect(err.message.contains("{stranger}"))
+        }
+
+        @Test("loadSinglePromptReportingError returns nil+nil for missing, error for unknown vars")
+        func singlePromptReporting() throws {
+            let env = try TempEnv()
+            // Missing file → (nil, nil).
+            let missing = env.env.loadSinglePromptReportingError(name: "Nope")
+            #expect(missing.prompt == nil)
+            #expect(missing.error == nil)
+            // Unknown variable → (nil, error).
+            try Data("Hi {stranger}\n".utf8)
+                .write(to: env.env.promptsURL.appendingPathComponent("Bad.md"))
+            let bad = env.env.loadSinglePromptReportingError(name: "Bad")
+            #expect(bad.prompt == nil)
+            #expect(bad.error?.kind == .prompt)
+            #expect(bad.error?.entityName == "Bad")
+            // Valid prompt → (prompt, nil).
+            try Data("You are friendly.\n".utf8)
+                .write(to: env.env.promptsURL.appendingPathComponent("Good.md"))
+            let good = env.env.loadSinglePromptReportingError(name: "Good")
+            #expect(good.prompt?.name == "Good")
+            #expect(good.error == nil)
+        }
+
+        @Test("fixing a prompt with unknown variables clears its error on the next load")
+        func fixingPromptClearsError() throws {
+            let env = try TempEnv()
+            let url = env.env.promptsURL.appendingPathComponent("Bad.md")
+            try Data("Hi {stranger}\n".utf8).write(to: url)
+            #expect(env.env.loadAllPromptsReportingErrors().errors.count == 1)
+            // Overwrite with a valid prompt (escape the brace).
+            try Data("Hi \\{stranger}\n".utf8).write(to: url)
+            let result = env.env.loadAllPromptsReportingErrors()
+            #expect(result.errors.isEmpty)
+            #expect(result.loaded.count == 1)
+        }
     }
 }

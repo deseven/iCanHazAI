@@ -295,6 +295,8 @@ struct ConfigError: Identifiable, Equatable, Sendable, Hashable {
         case mcpConfig
         /// A custom MCP server failed to connect / list tools at runtime.
         case mcpFailure
+        /// A prompt `.md` file failed to validate (e.g. unknown variables).
+        case prompt
     }
 
     /// Human-readable label for the entity kind, shown in the errors window.
@@ -304,6 +306,7 @@ struct ConfigError: Identifiable, Equatable, Sendable, Hashable {
         case .role: return "Role"
         case .mcpConfig: return "MCP config"
         case .mcpFailure: return "MCP server"
+        case .prompt: return "Prompt"
         }
     }
 
@@ -319,6 +322,8 @@ struct ConfigError: Identifiable, Equatable, Sendable, Hashable {
             return "MCP server `\(entityName)` has an invalid config (error: \"\(message)\")."
         case .mcpFailure:
             return "MCP server `\(entityName)` failed on startup (error: \"\(message)\")."
+        case .prompt:
+            return "Prompt `\(entityName)` is invalid (error: \"\(message)\")."
         }
     }
 }

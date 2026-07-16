@@ -110,6 +110,16 @@ endpoint = "https://example.com/mcp"    # streamable HTTP URL
 
 Plain Markdown; the whole content is the system prompt. No special fields. `write_prompt` / `read_prompt` / `delete_prompt`.
 
+### Variables
+
+Prompts support `{variable}` placeholders substituted at request time (the raw text is stored unsubstituted, so each request gets fresh values). Known variables:
+
+- `{output_rendering}` — the chat renderer's capabilities (Markdown, code blocks, Mermaid/KaTeX depending on the user's feature toggles). Include this so the model knows what it can use.
+- `{user}` — the current system user name (the last path component of the home directory, e.g. `alice`).
+- `{date}` — the current date as `Thu Jun 16 2026`.
+
+Only `{identifier}`-shaped references are variables — braces around non-identifier content (e.g. JSON objects like `{"a": 1}`) pass through untouched, so code blocks need no escaping. To emit a literal `{name}` that would otherwise look like a variable, escape it as `\{name}`. Unknown variables (an unescaped `{name}` that isn't one of the known ones) are a validation error: the prompt is disabled and surfaced in the configuration-errors sheet, and `write_prompt` rejects it before writing.
+
 ## Roles
 
 Bundles a prompt, connection, working directory, and MCPs.
@@ -266,3 +276,5 @@ Canonical workflows. Adapt as needed, but keep the shape: **gather what's missin
 2. `delete_` it.
 3. Flag now-dangling references (same list as rename) and offer to clean them up. For roles, remind that `default_role` falls back to `"Assistant"` and that existing chats referencing the deleted role will have their input disabled and be prompted to pick a new role the next time they're opened.
 4. Report what was removed.
+
+{output_rendering}

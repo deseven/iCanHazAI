@@ -15,39 +15,6 @@ actor ChatEngine {
 
     static let shared = ChatEngine()
 
-    /// Information about the frontend's rendering capabilities, appended to
-    /// every role's system prompt so the model knows what it can use.
-    /// Built dynamically from the current config so disabled features are not
-    /// advertised to the model.
-    private func renderingCapabilities() async -> String {
-        let mermaid = await ConfigManager.shared.getMermaidEnabled()
-        let katex = await ConfigManager.shared.getKatexEnabled()
-        var lines: [String] = [
-            "",
-            "--- Rendering capabilities ---",
-            "Your responses are rendered in a chat UI with the following features:",
-            "- GitHub-Flavored Markdown (tables, strikethrough, task lists, autolinks)",
-            "- Syntax-highlighted code blocks (fenced with a language tag)",
-        ]
-        if katex {
-            lines.append("- LaTeX math via KaTeX: use `$...$` for inline and `$$...$$` for block equations")
-        } else {
-            lines.append("- LaTeX math is NOT supported")
-        }
-        if mermaid {
-            lines.append("- Mermaid diagrams: use a fenced code block with language `mermaid`")
-        } else {
-            lines.append("- Mermaid diagrams are NOT supported")
-        }
-        lines.append(contentsOf: [
-            "- Inline HTML is allowed",
-            "Use these features where appropriate to make your answers clearer.",
-            "--- End rendering capabilities ---",
-            "",
-        ])
-        return lines.joined(separator: "\n") + "\n"
-    }
-
     // MARK: - State
 
     private(set) var records: [ChatRecord] = []
@@ -226,7 +193,9 @@ actor ChatEngine {
         let rolesResult = env.loadAllRolesReportingErrors()
         roles = rolesResult.loaded
         replaceConfigErrors(kind: .role, with: rolesResult.errors)
-        prompts = env.loadAllPrompts()
+        let promptsResult = env.loadAllPromptsReportingErrors()
+        prompts = promptsResult.loaded
+        replaceConfigErrors(kind: .prompt, with: promptsResult.errors)
         let connsResult = env.loadConnectionsReportingErrors()
         connections = connsResult.loaded
         replaceConfigErrors(kind: .connection, with: connsResult.errors)
@@ -734,19 +703,27 @@ actor ChatEngine {
         if EnvironmentManager.protectedBundleNames.contains(name) { return }
         switch event {
         case .itemCreated, .itemClonedAtPath, .itemDataModified, .itemRenamed:
-            if let prompt = env.loadSinglePrompt(name: name) {
+            let (prompt, error) = env.loadSinglePromptReportingError(name: name)
+            if let prompt {
                 if let idx = prompts.firstIndex(where: { $0.name == name }) {
                     prompts[idx] = prompt
                 } else {
                     prompts.append(prompt)
                     prompts.sort { $0.name < $1.name }
                 }
+                clearConfigError(kind: .prompt, name: name)
             } else {
                 prompts.removeAll(where: { $0.name == name })
+                if let error {
+                    setConfigError(error)
+                } else {
+                    clearConfigError(kind: .prompt, name: name)
+                }
             }
             emit(.promptsChanged(prompts))
         case .itemRemoved:
             prompts.removeAll(where: { $0.name == name })
+            clearConfigError(kind: .prompt, name: name)
             emit(.promptsChanged(prompts))
         default:
             break
@@ -852,7 +829,9 @@ actor ChatEngine {
         let rolesResult = env.loadAllRolesReportingErrors()
         roles = rolesResult.loaded
         replaceConfigErrors(kind: .role, with: rolesResult.errors)
-        prompts = env.loadAllPrompts()
+        let promptsResult = env.loadAllPromptsReportingErrors()
+        prompts = promptsResult.loaded
+        replaceConfigErrors(kind: .prompt, with: promptsResult.errors)
         let connsResult = env.loadConnectionsReportingErrors()
         connections = connsResult.loaded
         replaceConfigErrors(kind: .connection, with: connsResult.errors)
@@ -1346,6 +1325,24 @@ actor ChatEngine {
         return prompts.first(where: { $0.name == name })?.content
     }
 
+    /// Builds the system message for a chat by loading the prompt's raw content
+    /// and substituting variables (`{output_rendering}`, `{user}`, `{date}`) at
+    /// request time. Returns nil when the role has no prompt or the referenced
+    /// prompt can't be found. Substitution happens here — never at load time —
+    /// so each request gets fresh values (e.g. the current date) and the raw
+    /// prompt text stays available for editing.
+    private func systemMessage(for chat: Chat) async -> ChatMessage? {
+        guard let promptContent = systemPromptContent(for: chat) else { return nil }
+        let mermaid = await ConfigManager.shared.getMermaidEnabled()
+        let katex = await ConfigManager.shared.getKatexEnabled()
+        let values: [String: String] = [
+            "output_rendering": PromptVariables.renderingCapabilities(mermaid: mermaid, katex: katex),
+            "user": PromptVariables.currentUserName(),
+            "date": PromptVariables.currentDate(),
+        ]
+        return ChatMessage(role: .system, content: PromptVariables.substitute(text: promptContent, values: values))
+    }
+
     /// Resolves the role's MCP entries against the known servers. Entries whose
     /// server doesn't exist (e.g. a deleted custom MCP) are dropped.
     private func resolvedMCPs(for chat: Chat) -> [ResolvedRoleMCP] {
@@ -1455,11 +1452,11 @@ actor ChatEngine {
         }
 
         // Build the message list including the system prompt from the role's
-        // prompt (or the chat's per-chat prompt override when allowed).
+        // prompt (or the chat's per-chat prompt override when allowed), with
+        // variables substituted at request time.
         var messages: [ChatMessage] = []
-        if let promptContent = systemPromptContent(for: baseChat) {
-            let caps = await renderingCapabilities()
-            messages.append(ChatMessage(role: .system, content: promptContent + caps))
+        if let systemMsg = await systemMessage(for: baseChat) {
+            messages.append(systemMsg)
         }
         messages.append(contentsOf: baseChat.messages)
         let userMessage = ChatMessage(role: .user, content: text, images: committed.isEmpty ? nil : committed)
@@ -1517,12 +1514,12 @@ actor ChatEngine {
         records[idx].chat = updatedChat
         emit(.chatsChanged(records))
 
-        // Rebuild the request history: system prompt (from the role's prompt)
-        // followed by all messages up to (and including) the last user message.
+        // Rebuild the request history: system prompt (from the role's prompt,
+        // with variables substituted) followed by all messages up to (and
+        // including) the last user message.
         var messages: [ChatMessage] = []
-        if let promptContent = systemPromptContent(for: updatedChat) {
-            let caps = await renderingCapabilities()
-            messages.append(ChatMessage(role: .system, content: promptContent + caps))
+        if let systemMsg = await systemMessage(for: updatedChat) {
+            messages.append(systemMsg)
         }
         messages.append(contentsOf: updatedChat.messages.dropLast())
 
