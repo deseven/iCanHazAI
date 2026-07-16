@@ -206,7 +206,7 @@ final class EnvironmentManager: @unchecked Sendable {
                 let chat = try JSONDecoder().decode(Chat.self, from: data)
                 result.append((filename: file.lastPathComponent, chat: chat))
             } catch {
-                debugLog("ChatStore", "⚠️ failed to load chat \(file.lastPathComponent) — \(error)")
+                debugLog("ChatDecode", "⚠️ failed to decode chat \(file.lastPathComponent): \(error)")
                 continue
             }
         }
@@ -224,7 +224,7 @@ final class EnvironmentManager: @unchecked Sendable {
             let data = try Data(contentsOf: url)
             return try JSONDecoder().decode(Chat.self, from: data)
         } catch {
-            debugLog("ChatStore", "⚠️ failed to load chat \(filename) — \(error)")
+            debugLog("ChatDecode", "⚠️ failed to decode chat \(filename): \(error)")
             return nil
         }
     }
@@ -405,6 +405,10 @@ final class EnvironmentManager: @unchecked Sendable {
     }
 
     // MARK: - Resource counts (for the startup loader)
+
+    /// Number of chat files on disk (the total the loader shows against the
+    /// cached/decoded count produced by `ChatStore.startupSync`).
+    func chatCount() -> Int { countFiles(in: chatsURL, ext: "json") }
 
     /// Number of connection files across both provider directories.
     func connectionCount() -> Int {

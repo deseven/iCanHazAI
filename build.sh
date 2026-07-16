@@ -150,8 +150,11 @@ do_run_app_tests() { swift test --filter AllAppTests; }
 do_run_mcp_tests() { swift test --filter AllMCPTests; }
 
 do_clean_app_cache() {
-    # Dev builds launch the app fresh; drop the SwiftData chat-metadata cache
-    # so schema changes (e.g. new cache columns) backfill cleanly on startup.
+    # Drop the SwiftData chat-metadata cache. The app self-heals an
+    # incompatible cache on launch (ChatStore recreates it from disk), so this
+    # is only a manual reset — wired to `./build.sh clean`, not every dev build
+    # (wiping it every build defeated the cache, forcing a full re-scan each
+    # startup).
     rm -rf "$HOME/iCanHazAI/.cache"
 }
 
@@ -270,6 +273,7 @@ if [ "$mode" = "clean" ]; then
     swift package clean
     # Legacy standalone-package build dirs (now folded into the main package).
     rm -rf "$loc"/mcps/*/.build "$loc"/shared/*/.build
+    do_clean_app_cache
     echo -e "  ${greenColor}${bold}Clean complete.${noColor}"
     exit 0
 fi
@@ -302,10 +306,6 @@ if [ "$mode" != "dev" ]; then
 fi
 
 add "Code-signing APP bundle..."     "failed to code-sign app bundle"            do_codesign
-
-if [ "$mode" = "dev" ]; then
-    add "Clearing app cache..."          "failed to clear app cache"                do_clean_app_cache
-fi
 
 if [ "$mode" = "release" ]; then
     add "Creating distribution ZIP..." "failed to pack $shortName.zip"            do_create_zip "$shortName.zip"

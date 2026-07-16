@@ -560,6 +560,7 @@ actor ChatEngine {
     private func resourceTotalCount(_ resource: AppResource) -> Int {
         switch resource {
         case .configuration: return 1
+        case .chats: return env.chatCount()
         case .connections: return env.connectionCount()
         case .prompts: return env.promptCount()
         case .roles: return env.roleCount()

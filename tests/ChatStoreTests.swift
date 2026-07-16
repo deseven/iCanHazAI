@@ -2,6 +2,23 @@ import Testing
 import Foundation
 @testable import iCanHazAI
 
+/// Runs `body` with stderr redirected to /dev/null, restoring it afterward.
+/// Used to silence the framework-level `CoreData: error:` log SwiftData emits
+/// when it fails to open a deliberately-corrupt store in the self-heal test.
+fileprivate func suppressingStderr<T>(_ body: () throws -> T) rethrows -> T {
+    let originalFD = dup(STDERR_FILENO)
+    let devNull = open("/dev/null", O_WRONLY)
+    dup2(devNull, STDERR_FILENO)
+    defer {
+        if originalFD != -1 {
+            dup2(originalFD, STDERR_FILENO)
+            close(originalFD)
+        }
+        if devNull != -1 { close(devNull) }
+    }
+    return try body()
+}
+
 /// Integration tests for [`ChatStore`](src/ChatStore.swift) backed by a real
 /// temp directory and a real SwiftData cache (see [`TempEnv`](tests/AppTestHarness.swift)).
 ///
@@ -231,6 +248,59 @@ struct ChatStoreTests {
         let entries = env.store.startupSync()
         #expect(entries == [])
         #expect(env.store.getEntry(filename: "broken.json") == nil)
+    }
+
+    @Test("startupSync reports fresh/decoded/failed counts via lastStartupSyncStats")
+    func startupSyncStats() throws {
+        // a.json: already cached and fresh (skipped re-read).
+        env.store.saveChat(Fixtures.chat(title: "Cached"), filename: "a.json")
+        // b.json: on disk but uncached (decoded this pass).
+        try env.writeChatDirect(Fixtures.chat(title: "New"), filename: "b.json")
+        // broken.json: undecodable (failed this pass).
+        try Data("{ broken".utf8).write(to: env.chatURL("broken.json"))
+
+        _ = env.store.startupSync()
+        let stats = try #require(env.store.lastStartupSyncStats())
+        #expect(stats.totalFiles == 3)
+        #expect(stats.freshCached == 1)
+        #expect(stats.decoded == 1)
+        #expect(stats.failed == 1)
+    }
+
+    @Test("ChatStore self-heals when the on-disk cache is corrupt")
+    func selfHealCorruptCache() throws {
+        // Use a standalone root (no pre-opened store) so corrupting the cache
+        // file is deterministic — an already-open connection could mask it.
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("ichai-selfheal-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let env = EnvironmentManager(rootURL: root)
+        env.ensureDirectories()
+
+        // A real chat file on disk that startupSync should recover.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let chat = Fixtures.chat(messages: [Fixtures.message(role: .user, content: "hi")], title: "Heal")
+        try encoder.encode(chat).write(to: env.chatsURL.appendingPathComponent("a.json"), options: .atomic)
+
+        // Pre-create a corrupt cache so ModelContainer can't open it.
+        let cacheDir = root.appendingPathComponent(".cache", isDirectory: true)
+        try fm.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        try Data("definitely not a sqlite database".utf8).write(to: cacheDir.appendingPathComponent("chat.cache"))
+
+        // The store self-heals: drops the corrupt cache and reopens empty.
+        // (stderr is suppressed only to hide the expected CoreData open-failure
+        // log the framework prints for the corrupt store.)
+        let store = try #require(try suppressingStderr { ChatStore(env: env) })
+        #expect(store.getAllEntries() == [])
+
+        // startupSync repopulates from the chat file on disk.
+        let entries = store.startupSync()
+        #expect(entries.count == 1)
+        #expect(entries.first?.name == "Heal")
     }
 
     // MARK: - External change hooks

@@ -58,6 +58,31 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         self.toolResults = toolResults
         self.tokenUsage = tokenUsage
     }
+
+    enum CodingKeys: String, CodingKey {
+        case id, role, content, thinking, error, timestamp, connectionName
+        case images, toolCalls, toolResults, tokenUsage
+    }
+
+    /// Tolerant decode: every field is optional at the JSON level. A missing or
+    /// wrong-typed field falls back to a default instead of throwing, so older
+    /// chat files (written before a field existed, or with a since-changed shape)
+    /// stay loadable. Only a structurally invalid object (not a JSON object at
+    /// all) throws, which lets `Chat` skip the individual message.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
+        role = (try? c.decode(MessageRole.self, forKey: .role)) ?? .user
+        content = (try? c.decode(String.self, forKey: .content)) ?? ""
+        thinking = try? c.decode(String.self, forKey: .thinking)
+        error = try? c.decode(String.self, forKey: .error)
+        timestamp = (try? c.decode(Date.self, forKey: .timestamp)) ?? Date()
+        connectionName = try? c.decode(String.self, forKey: .connectionName)
+        images = try? c.decode([ImageAttachment].self, forKey: .images)
+        toolCalls = try? c.decode([ToolCall].self, forKey: .toolCalls)
+        toolResults = try? c.decode([ToolResult].self, forKey: .toolResults)
+        tokenUsage = try? c.decode(TokenUsage.self, forKey: .tokenUsage)
+    }
 }
 
 // MARK: - Chat
@@ -89,6 +114,40 @@ struct Chat: Codable, Identifiable, Equatable {
         self.prompt = prompt
         self.workingDirectory = workingDirectory
         self.title = title
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, messages, connection, role, prompt, workingDirectory, title
+    }
+
+    /// Tolerant decode: all scalar fields are optional at the JSON level (a
+    /// missing/wrong-typed field falls back to a default), and messages are
+    /// recovered one-by-one so a single malformed message is dropped instead of
+    /// failing the whole chat. This keeps older chat files loadable after the
+    /// schema gains new fields. Only a structurally invalid JSON document (not an
+    /// object, or `messages` not an array) throws, which the loader reports.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
+        connection = try? c.decode(String.self, forKey: .connection)
+        role = try? c.decode(String.self, forKey: .role)
+        prompt = try? c.decode(String.self, forKey: .prompt)
+        workingDirectory = try? c.decode(String.self, forKey: .workingDirectory)
+        title = try? c.decode(String.self, forKey: .title)
+        let wrappers = (try? c.decode([SafeMessage].self, forKey: .messages)) ?? []
+        let recovered = wrappers.compactMap(\.message)
+        let dropped = wrappers.count - recovered.count
+        if dropped > 0 {
+            debugLog("ChatDecode", "⚠️ skipped \(dropped) undecodable message(s) in a chat")
+        }
+        messages = recovered
+    }
+
+    /// Decodes a single message, yielding nil if the element can't be decoded,
+    /// so a bad entry is skipped instead of failing the whole `messages` array.
+    private struct SafeMessage: Decodable {
+        let message: ChatMessage?
+        init(from decoder: Decoder) throws { message = try? ChatMessage(from: decoder) }
     }
 
     /// Wall-clock time of the most recent message, used to order chats in the

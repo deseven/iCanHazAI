@@ -8,6 +8,7 @@ import SwiftUI
 /// Each maps to a directory (or the root config) that the engine reloads.
 enum AppResource: String, Sendable, CaseIterable {
     case configuration
+    case chats
     case connections
     case prompts
     case roles
@@ -16,6 +17,7 @@ enum AppResource: String, Sendable, CaseIterable {
     var title: String {
         switch self {
         case .configuration: return "Configuration"
+        case .chats: return "Chats"
         case .connections: return "Connections"
         case .prompts: return "Prompts"
         case .roles: return "Roles"
@@ -149,6 +151,7 @@ final class LoaderController: ObservableObject {
         let env = EnvironmentManager.shared
         let counts: [AppResource: Int] = [
             .configuration: 1,
+            .chats: env.chatCount(),
             .connections: env.connectionCount(),
             .prompts: env.promptCount(),
             .roles: env.roleCount(),
@@ -243,6 +246,31 @@ final class LoaderController: ObservableObject {
         reevaluate()
     }
 
+    /// Marks the chats row complete from a [`ChatSyncStats`](src/ChatStore.swift)
+    /// result. The subtitle is "<total> (<freshCached> cached)" — the gap
+    /// between total and freshCached is the number of files re-decoded this
+    /// launch. Any decode failures flip the row to warning/failed and are noted.
+    func markChatsCompleted(total: Int, freshCached: Int, failed: Int) {
+        guard mode != .idle else { return }
+        guard var section = sections.first(where: { $0.id == "application" }),
+              let idx = section.entries.firstIndex(where: { $0.id == AppResource.chats.id }) else { return }
+        let reRead = max(0, total - freshCached)
+        let status: LoaderStatus
+        if total <= 0 || failed == 0 {
+            status = .success
+        } else if failed >= reRead {
+            status = .failed
+        } else {
+            status = .warning
+        }
+        section.entries[idx].status = status
+        var detail = "\(loaderPluralized(total, singular: "entry", plural: "entries")) (\(freshCached) cached)"
+        if failed > 0 { detail += ", \(failed) failed" }
+        section.entries[idx].detail = detail
+        replaceSection(section)
+        reevaluate()
+    }
+
     // MARK: - MCP column
 
     /// Updates the MCPs column from a configuration-state snapshot. During
@@ -302,6 +330,7 @@ final class LoaderController: ObservableObject {
     private func resourceSubtitle(_ resource: AppResource, count: Int) -> String {
         switch resource {
         case .configuration: return "main application config"
+        case .chats: return loaderPluralized(count, singular: "entry", plural: "entries")
         default: return loaderPluralized(count, singular: "entry", plural: "entries")
         }
     }

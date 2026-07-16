@@ -217,11 +217,13 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        callID = try c.decode(String.self, forKey: .callID)
-        content = try c.decode(String.self, forKey: .content)
-        isError = try c.decode(Bool.self, forKey: .isError)
-        isStreaming = try c.decodeIfPresent(Bool.self, forKey: .isStreaming) ?? false
-        isDenied = try c.decodeIfPresent(Bool.self, forKey: .isDenied) ?? false
+        // All fields are tolerant: a missing or wrong-typed value falls back to
+        // a default so an older tool-result shape can't fail the whole message.
+        callID = (try? c.decode(String.self, forKey: .callID)) ?? ""
+        content = (try? c.decode(String.self, forKey: .content)) ?? ""
+        isError = (try? c.decode(Bool.self, forKey: .isError)) ?? false
+        isStreaming = (try? c.decode(Bool.self, forKey: .isStreaming)) ?? false
+        isDenied = (try? c.decode(Bool.self, forKey: .isDenied)) ?? false
     }
 
     func encode(to encoder: Encoder) throws {

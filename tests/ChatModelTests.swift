@@ -95,6 +95,61 @@ struct ChatModelTests {
         #expect(chat.messages.isEmpty)
     }
 
+    // MARK: - Tolerant decoding (legacy / malformed chat files)
+
+    @Test("Chat ignores unknown top-level keys (e.g. a removed 'mcps' field)")
+    func chatIgnoresUnknownTopLevelKeys() throws {
+        let json = """
+        {"id":"00000000-0000-0000-0000-000000000001","messages":[],"mcps":["googledocs"],"foo":42}
+        """.data(using: .utf8)!
+        let chat = try JSONDecoder().decode(Chat.self, from: json)
+        #expect(chat.messages.isEmpty)
+    }
+
+    @Test("Chat skips a malformed message but keeps the valid ones")
+    func chatSkipsMalformedMessage() throws {
+        let json = """
+        {"id":"00000000-0000-0000-0000-000000000001","messages":[
+          {"id":"00000000-0000-0000-0000-000000000010","role":"user","content":"first","timestamp":1700000000},
+          "not even an object",
+          {"id":"00000000-0000-0000-0000-000000000011","role":"assistant","content":"second","timestamp":1700000010}
+        ]}
+        """.data(using: .utf8)!
+        let chat = try JSONDecoder().decode(Chat.self, from: json)
+        #expect(chat.messages.count == 2)
+        #expect(chat.messages.map(\.content) == ["first", "second"])
+    }
+
+    @Test("ChatMessage falls back to defaults for wrong-typed required fields")
+    func messageToleratesWrongTypes() throws {
+        // id is a number, role is unknown, content is a number, timestamp is a
+        // string — none match, but the message still decodes with defaults.
+        let json = """
+        {"id":123,"role":"bogus","content":456,"timestamp":"notadate"}
+        """.data(using: .utf8)!
+        let msg = try JSONDecoder().decode(ChatMessage.self, from: json)
+        #expect(msg.role == .user)
+        #expect(msg.content == "")
+        #expect(msg.thinking == nil)
+    }
+
+    @Test("ChatMessage decodes an empty object with defaults")
+    func messageDecodesEmptyObject() throws {
+        let msg = try JSONDecoder().decode(ChatMessage.self, from: "{}".data(using: .utf8)!)
+        #expect(msg.role == .user)
+        #expect(msg.content == "")
+        #expect(msg.toolCalls == nil)
+    }
+
+    @Test("ToolResult falls back to defaults when fields are missing")
+    func toolResultToleratesMissingFields() throws {
+        let result = try JSONDecoder().decode(ToolResult.self, from: "{}".data(using: .utf8)!)
+        #expect(result.callID == "")
+        #expect(result.content == "")
+        #expect(result.isError == false)
+        #expect(result.isStreaming == false)
+    }
+
     // MARK: - cacheName derivation
 
     @Test("cacheName is nil for a truly empty chat")

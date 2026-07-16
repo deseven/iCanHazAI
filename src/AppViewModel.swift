@@ -336,6 +336,12 @@ final class AppViewModel: ObservableObject {
         case .chatsChanged(let records):
             chatItems = records
             chatSummaries = records.map(ChatSummary.init)
+            // During startup, report the chat-cache sync (total vs already
+            // cached vs re-decoded) to the loader's chats row.
+            if LoaderController.shared.mode == .startup,
+               let stats = ChatStore.shared.lastStartupSyncStats() {
+                LoaderController.shared.markChatsCompleted(total: stats.totalFiles, freshCached: stats.freshCached, failed: stats.failed)
+            }
             if let selected = selectedChatID, records.contains(where: { $0.id == selected }) {
                 // Keep selection — if the chat is not loaded, load it so the
                 // UI can display its messages. This handles the initial

@@ -4,6 +4,21 @@
 import Foundation
 import SwiftData
 
+/// Summary of a [`ChatStore`](src/ChatStore.swift) `startupSync` pass, surfaced
+/// to the startup loader so it can show total chats vs how many were already
+/// cached (not re-parsed this launch). The difference `totalFiles - freshCached`
+/// is the number of files that had to be decoded again.
+struct ChatSyncStats: Sendable, Equatable {
+    /// Total chat `.json` files on disk.
+    let totalFiles: Int
+    /// Files whose cache entry was fresh (mod time matched) — skipped re-read.
+    let freshCached: Int
+    /// Stale/missing files re-read and decoded successfully this pass.
+    let decoded: Int
+    /// Stale/missing files that could not be decoded this pass.
+    let failed: Int
+}
+
 /// The chat data abstraction layer. Owns the SwiftData metadata cache and
 /// all chat file I/O. Callers (ChatEngine) never touch chat files directly —
 /// they go through this store to read, write, or delete chat data.
@@ -43,8 +58,24 @@ final class ChatStore: @unchecked Sendable {
         do {
             container = try ModelContainer(for: ChatCacheEntry.self, configurations: config)
         } catch {
-            debugLog("ChatStore", "failed to create ModelContainer: \(error)")
-            return nil
+            // The on-disk cache is incompatible with the current model (e.g. a
+            // schema change after an update that SwiftData can't migrate). Drop
+            // the store files and recreate from scratch — `startupSync` will
+            // repopulate the cache from the chat files on disk. This keeps the
+            // cache durable across normal launches while self-healing after an
+            // incompatible schema change (no need to wipe it on every build).
+            debugLog("ChatStore", "⚠️ cache store incompatible with model (\(error)); rebuilding cache from disk")
+            let dir = storeURL.deletingLastPathComponent()
+            let base = storeURL.lastPathComponent
+            for suffix in ["", "-shm", "-wal"] {
+                try? FileManager.default.removeItem(at: dir.appendingPathComponent("\(base)\(suffix)"))
+            }
+            do {
+                container = try ModelContainer(for: ChatCacheEntry.self, configurations: config)
+            } catch {
+                debugLog("ChatStore", "failed to create ModelContainer after cache reset: \(error)")
+                return nil
+            }
         }
     }
 
@@ -58,6 +89,11 @@ final class ChatStore: @unchecked Sendable {
         _context = ctx
         return ctx
     }
+
+    /// Result of the most recent `startupSync`, surfaced to the startup loader
+    /// (total chats vs already-cached vs re-decoded vs failed). Nil before the
+    /// first sync. Guarded by `queue`.
+    private var _lastSyncStats: ChatSyncStats?
 
     // MARK: - Startup sync
 
@@ -74,12 +110,17 @@ final class ChatStore: @unchecked Sendable {
     func startupSync() -> [ChatCacheInfo] {
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(at: env.chatsURL, includingPropertiesForKeys: [.contentModificationDateKey]) else {
-            queue.sync { clearAllCacheEntries() }
+            queue.sync {
+                clearAllCacheEntries()
+                _lastSyncStats = ChatSyncStats(totalFiles: 0, freshCached: 0, decoded: 0, failed: 0)
+            }
             return []
         }
 
         let chatFiles = files.filter { $0.pathExtension == "json" }
         var diskFilenames = Set<String>()
+        var failedDecodes = 0
+        var freshCached = 0
 
         for file in chatFiles {
             let filename = file.lastPathComponent
@@ -99,7 +140,7 @@ final class ChatStore: @unchecked Sendable {
                 debugLog("ChatStore", "no cache entry: \(filename)")
                 return false
             }
-            if isFresh { continue }
+            if isFresh { freshCached += 1; continue }
 
             // Cache is stale or missing — load the chat to extract metadata.
             debugLog("ChatStore", "startup sync — loading \(env.relativePath(file)) (stale or new cache entry)")
@@ -107,6 +148,10 @@ final class ChatStore: @unchecked Sendable {
                 queue.sync {
                     upsertCache(filename: filename, chat: chat, modificationTime: diskModTime)
                 }
+            } else {
+                // loadSingleChat already logged the decode error; track it for
+                // the end-of-sync summary so the count is visible at a glance.
+                failedDecodes += 1
             }
         }
 
@@ -119,7 +164,11 @@ final class ChatStore: @unchecked Sendable {
         }
 
         let final = queue.sync { fetchAllEntries() }
-        debugLog("ChatStore", "startup sync — done, \(final.count) entries")
+        let totalFiles = chatFiles.count
+        let decoded = max(0, totalFiles - freshCached - failedDecodes)
+        let stats = ChatSyncStats(totalFiles: totalFiles, freshCached: freshCached, decoded: decoded, failed: failedDecodes)
+        queue.sync { _lastSyncStats = stats }
+        debugLog("ChatStore", "startup sync — done, \(final.count) entries, \(stats.freshCached) fresh, \(stats.decoded) decoded, \(stats.failed) failed")
         return final
     }
 
@@ -129,6 +178,11 @@ final class ChatStore: @unchecked Sendable {
     func getAllEntries() -> [ChatCacheInfo] {
         queue.sync { fetchAllEntries() }
     }
+
+    /// Returns the stats from the most recent `startupSync` (total files, how
+    /// many were fresh-cached vs re-decoded vs failed). Nil before the first
+    /// sync. Used by the startup loader to render the chats row.
+    func lastStartupSyncStats() -> ChatSyncStats? { queue.sync { _lastSyncStats } }
 
     /// Returns a single cache entry by filename.
     func getEntry(filename: String) -> ChatCacheInfo? {
@@ -203,13 +257,23 @@ final class ChatStore: @unchecked Sendable {
 
     private func fetchAllEntries() -> [ChatCacheInfo] {
         let descriptor = FetchDescriptor<ChatCacheEntry>(sortBy: [SortDescriptor(\.modificationTime, order: .reverse)])
-        guard let entries = try? context.fetch(descriptor) else { return [] }
-        return entries.map { ChatCacheInfo(filename: $0.filename, name: $0.name, role: $0.role, modificationTime: $0.modificationTime) }
+        do {
+            let entries = try context.fetch(descriptor)
+            return entries.map { ChatCacheInfo(filename: $0.filename, name: $0.name, role: $0.role, modificationTime: $0.modificationTime) }
+        } catch {
+            debugLog("ChatStore", "⚠️ fetchAllEntries failed: \(error)")
+            return []
+        }
     }
 
     private func fetchEntry(filename: String) -> ChatCacheEntry? {
         let descriptor = FetchDescriptor<ChatCacheEntry>(predicate: #Predicate { $0.filename == filename })
-        return try? context.fetch(descriptor).first
+        do {
+            return try context.fetch(descriptor).first
+        } catch {
+            debugLog("ChatStore", "⚠️ fetchEntry failed for \(filename): \(error)")
+            return nil
+        }
     }
 
     private func upsertCache(filename: String, chat: Chat, modificationTime: Date) {
@@ -240,11 +304,14 @@ final class ChatStore: @unchecked Sendable {
     }
 
     private func clearAllCacheEntries() {
-        if let entries = try? context.fetch(FetchDescriptor<ChatCacheEntry>()) {
+        do {
+            let entries = try context.fetch(FetchDescriptor<ChatCacheEntry>())
             for entry in entries {
                 context.delete(entry)
             }
-            try? context.save()
+            try context.save()
+        } catch {
+            debugLog("ChatStore", "⚠️ clearAllCacheEntries failed: \(error)")
         }
     }
 }
