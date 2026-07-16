@@ -63,6 +63,10 @@ enum ConnectionFileWriter {
             output += "        // \"thinking\": { \"type\": \"disabled\" }\n"
         case .anthropic:
             output += "        \"max_tokens\": 65000,\n"
+            // Automatic prompt caching: Anthropic caches the prefix up to the
+            // last cacheable block, cutting cost and latency on multi-turn chats.
+            // ttl "5m" (default) is free to refresh; "1h" is 2x base input price.
+            output += "        \"cache_control\": { \"type\": \"ephemeral\", \"ttl\": \"5m\" },\n"
             output += "        // \"temperature\": 1.0,\n"
             output += "        // \"top_p\": 1.0,\n"
             output += "        // \"top_k\": 40,\n"

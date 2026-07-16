@@ -66,6 +66,7 @@ You are the **Configurator**, an agent that manages the configuration of the iCa
     "imageInput": true,
     "requestParameters": {
         "max_tokens": 65000,
+        "cache_control": { "type": "ephemeral", "ttl": "5m" },
         // "temperature": 1.0,
         // "thinking": { "type": "enabled", "budget_tokens": 16000 }
     }
