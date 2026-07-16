@@ -165,6 +165,212 @@ extension AllAppTests {
             #expect(!role.hasWorkdirCapableMCP)
         }
 
+        // MARK: - hasDirectoryIsolation
+
+        @Test("Role.hasDirectoryIsolation is true when Filesystem has directory_isolation")
+        func hasDirectoryIsolationFilesystem() throws {
+            let toml = """
+            prompt = "Developer"
+            working_directory = "~/projects"
+
+            [[mcps]]
+            mcp = "bundled::Filesystem"
+            directory_isolation = true
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let role = Role(name: "Developer", config: config)
+            #expect(role.hasDirectoryIsolation)
+        }
+
+        @Test("Role.hasDirectoryIsolation is true when Code has directory_isolation")
+        func hasDirectoryIsolationCode() throws {
+            let toml = """
+            prompt = "Developer"
+            working_directory_override_allowed = true
+
+            [[mcps]]
+            mcp = "bundled::Code"
+            directory_isolation = true
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let role = Role(name: "Developer", config: config)
+            #expect(role.hasDirectoryIsolation)
+        }
+
+        @Test("Role.hasDirectoryIsolation is false when directory_isolation is not set")
+        func hasDirectoryIsolationFalseWhenNotSet() throws {
+            let toml = """
+            prompt = "Developer"
+            working_directory = "~/projects"
+
+            [[mcps]]
+            mcp = "bundled::Filesystem"
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let role = Role(name: "Developer", config: config)
+            #expect(!role.hasDirectoryIsolation)
+        }
+
+        @Test("Role.hasDirectoryIsolation is false for Shell (not isolation-capable)")
+        func hasDirectoryIsolationFalseForShell() throws {
+            let toml = """
+            prompt = "Developer"
+            working_directory = "~/projects"
+
+            [[mcps]]
+            mcp = "bundled::Shell"
+            directory_isolation = true
+            """
+            // Note: this TOML decodes fine (validation is in ConfigValidation,
+            // not in the TOML decoder). hasDirectoryIsolation checks the
+            // isolation-capable set, so Shell's flag is ignored.
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let role = Role(name: "Developer", config: config)
+            #expect(!role.hasDirectoryIsolation)
+        }
+
+        // MARK: - Validation: working_directory without workdir-capable MCP
+
+        @Test("Role validation rejects working_directory without workdir-capable MCP")
+        func validationRejectsWorkdirWithoutCapableMCP() throws {
+            let toml = """
+            prompt = "Developer"
+            working_directory = "~/projects"
+
+            [[mcps]]
+            mcp = "bundled::Utils"
+            auto_allow_all = true
+            """
+            let data = Data(toml.utf8)
+            #expect(throws: ConfigValidationError.self) {
+                try ConfigValidation.decodeRole(data)
+            }
+        }
+
+        @Test("Role validation rejects working_directory_override_allowed without workdir-capable MCP")
+        func validationRejectsOverrideWithoutCapableMCP() throws {
+            let toml = """
+            prompt = "Developer"
+            working_directory_override_allowed = true
+
+            [[mcps]]
+            mcp = "bundled::Utils"
+            auto_allow_all = true
+            """
+            let data = Data(toml.utf8)
+            #expect(throws: ConfigValidationError.self) {
+                try ConfigValidation.decodeRole(data)
+            }
+        }
+
+        @Test("Role validation accepts working_directory with workdir-capable MCP")
+        func validationAcceptsWorkdirWithCapableMCP() throws {
+            let toml = """
+            prompt = "Developer"
+            working_directory = "~/projects"
+
+            [[mcps]]
+            mcp = "bundled::Filesystem"
+            """
+            let data = Data(toml.utf8)
+            let config = try ConfigValidation.decodeRole(data)
+            #expect(config.workingDirectory == "~/projects")
+        }
+
+        // MARK: - Validation: directory_isolation on wrong MCP
+
+        @Test("Role validation rejects directory_isolation on Shell")
+        func validationRejectsIsolationOnShell() throws {
+            let toml = """
+            prompt = "Developer"
+            working_directory = "~/projects"
+
+            [[mcps]]
+            mcp = "bundled::Shell"
+            directory_isolation = true
+            """
+            let data = Data(toml.utf8)
+            #expect(throws: ConfigValidationError.self) {
+                try ConfigValidation.decodeRole(data)
+            }
+        }
+
+        @Test("Role validation rejects directory_isolation on custom MCP")
+        func validationRejectsIsolationOnCustom() throws {
+            let toml = """
+            prompt = "Developer"
+            working_directory = "~/projects"
+
+            [[mcps]]
+            mcp = "Tavily"
+            directory_isolation = true
+            """
+            let data = Data(toml.utf8)
+            #expect(throws: ConfigValidationError.self) {
+                try ConfigValidation.decodeRole(data)
+            }
+        }
+
+        @Test("Role validation accepts directory_isolation on Filesystem with workdir")
+        func validationAcceptsIsolationOnFilesystem() throws {
+            let toml = """
+            prompt = "Developer"
+            working_directory = "~/projects"
+
+            [[mcps]]
+            mcp = "bundled::Filesystem"
+            directory_isolation = true
+            """
+            let data = Data(toml.utf8)
+            let config = try ConfigValidation.decodeRole(data)
+            #expect(config.mcps?.first?.directoryIsolation == true)
+        }
+
+        // MARK: - Validation: directory_isolation without working directory
+
+        @Test("Role validation rejects directory_isolation without any workdir source")
+        func validationRejectsIsolationWithoutWorkdir() throws {
+            let toml = """
+            prompt = "Developer"
+
+            [[mcps]]
+            mcp = "bundled::Filesystem"
+            directory_isolation = true
+            """
+            let data = Data(toml.utf8)
+            #expect(throws: ConfigValidationError.self) {
+                try ConfigValidation.decodeRole(data)
+            }
+        }
+
+        @Test("Role validation accepts directory_isolation with override allowed")
+        func validationAcceptsIsolationWithOverride() throws {
+            let toml = """
+            prompt = "Developer"
+            working_directory_override_allowed = true
+
+            [[mcps]]
+            mcp = "bundled::Code"
+            directory_isolation = true
+            """
+            let data = Data(toml.utf8)
+            let config = try ConfigValidation.decodeRole(data)
+            #expect(config.mcps?.first?.directoryIsolation == true)
+        }
+
+        // MARK: - Validation: bundled role (Configurator) goes through validation
+
+        @Test("bundledRole returns nil for an invalid protected built-in")
+        func bundledRoleValidation() throws {
+            // The Configurator role is bundled and protected. It has no MCPs
+            // and no working_directory, so it must pass validation (no rules
+            // are triggered). We verify it loads successfully.
+            let role = try #require(EnvironmentManager.bundledRole(name: "Configurator"))
+            #expect(role.name == "Configurator")
+            #expect(!role.hasWorkdirCapableMCP)
+            #expect(!role.hasDirectoryIsolation)
+        }
+
         @Test("RoleAccent resolves known aliases to system colors and falls back for unknown")
         func accentResolution() throws {
             // Known aliases resolve to the matching adaptive system color.

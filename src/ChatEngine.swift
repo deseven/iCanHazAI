@@ -1140,6 +1140,13 @@ actor ChatEngine {
                 chat.connection = conn
             }
         }
+        // Pre-set the working directory from the role so every new chat starts
+        // with the role's directory applied (no need for the user to pick it).
+        // The per-chat override is only honored when the role allows overrides,
+        // but the pre-set value is always applied when the role defines one.
+        if let roleWorkdir = role?.workingDirectory, !roleWorkdir.isEmpty {
+            chat.workingDirectory = roleWorkdir
+        }
         // In-memory only — no disk write until the first message is sent.
         let record = ChatRecord(filename: filename, chat: chat)
         records.insert(record, at: 0)

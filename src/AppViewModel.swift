@@ -44,6 +44,20 @@ final class AppViewModel: ObservableObject {
             // Once the user opens a chat awaiting approval, the renderer shows
             // its Allow/Deny buttons directly — no need to keep blinking it.
             if let id = selectedChatID { blinkingChatIDs.remove(id) }
+            // Chat-related sheets (role picker, workdir picker, pending
+            // edit/delete/deny) only apply to the chat that was active when
+            // they were opened. When the active chat changes they're no longer
+            // applicable, so dismiss them. This also fixes a startup race where
+            // a role-picker for a chat whose role failed to load could linger
+            // over a freshly-opened Configurator chat (e.g. via "Fix with
+            // Configurator" from the config-errors sheet).
+            if Self.chatChanged(from: oldValue, to: selectedChatID) {
+                showRolePicker = false
+                showWorkdirPicker = false
+                pendingEditMessageID = nil
+                pendingDeleteMessageID = nil
+                pendingDenyToolCallID = nil
+            }
         }
     }
     @Published var errorMessage: String?
@@ -514,6 +528,16 @@ final class AppViewModel: ObservableObject {
         return !availableRoles.contains(where: { $0.name == name })
     }
 
+    /// Pure decision: whether the active chat actually changed between two
+    /// selection values. Used by the `selectedChatID` didSet to gate dismissal
+    /// of chat-related sheets (role picker, workdir picker, pending
+    /// edit/delete/deny). Extracted so it can be unit-tested without driving
+    /// the full UI. Two `nil` values (e.g. the initial assignment on startup)
+    /// are treated as "no change" so the sheets aren't needlessly reset.
+    nonisolated static func chatChanged(from old: String?, to new: String?) -> Bool {
+        old != new
+    }
+
     /// Whether the currently selected chat needs a role assigned (its role is
     /// missing or doesn't exist among the loaded roles).
     var selectedChatNeedsRoleAssignment: Bool {
@@ -581,24 +605,56 @@ final class AppViewModel: ObservableObject {
         selectedRole?.promptOverrideAllowed ?? false
     }
 
-    /// The effective working directory for the selected chat (override when
-    /// allowed, otherwise the role's working directory).
+    /// The effective working directory for the selected chat. The per-chat
+    /// override is honored when the role allows overrides; otherwise the role's
+    /// pre-set working directory is used. New chats are seeded with the role's
+    /// working directory (see `ChatEngine.createNewChat`), so the per-chat value
+    /// mirrors the role's when overrides aren't allowed.
     var selectedChatWorkingDirectory: String? {
         guard let chat = selectedChatItem?.chat, let role = selectedRole else { return nil }
-        if role.workingDirectoryOverrideAllowed, let override = chat.workingDirectory {
+        if role.workingDirectoryOverrideAllowed, let override = chat.workingDirectory, !override.isEmpty {
             return override
         }
         return role.workingDirectory
     }
 
-    /// Whether the working-directory picker should be shown for the selected
-    /// chat. Requires the role to allow working-directory overrides AND to
-    /// select at least one internal MCP that actually uses the working
-    /// directory (Filesystem, Code, or Shell). Without such an MCP there's
-    /// nothing to consume the selected directory, so the picker is hidden.
+    /// Whether the working-directory picker should be shown in the chat toolbar.
+    ///
+    /// The picker is shown when the role selects at least one workdir-capable
+    /// bundled MCP (Filesystem, Code, or Shell) AND either:
+    /// - the role pre-sets a working directory (the toolbar shows it; the user
+    ///   can change it only when `working_directory_override_allowed` is true),
+    ///   or
+    /// - the role allows the user to pick a working directory
+    ///   (`working_directory_override_allowed = true`), in which case the
+    ///   toolbar shows "No directory" until the user picks one.
+    ///
+    /// When the role has no workdir-capable MCP, the directory is meaningless
+    /// (nothing consumes it), so the picker is hidden regardless of the
+    /// override flag.
     var selectedChatWorkdirPickerVisible: Bool {
         guard let role = selectedRole else { return false }
-        return role.workingDirectoryOverrideAllowed && role.hasWorkdirCapableMCP
+        guard role.hasWorkdirCapableMCP else { return false }
+        if role.workingDirectory?.isEmpty == false { return true }
+        return role.workingDirectoryOverrideAllowed
+    }
+
+    /// Whether the user is allowed to change the working directory for the
+    /// selected chat (i.e. the picker button is enabled). True only when the
+    /// role allows overrides. When false, the directory is fixed by the role.
+    var selectedChatWorkdirPickerEnabled: Bool {
+        selectedRole?.workingDirectoryOverrideAllowed ?? false
+    }
+
+    /// Whether the selected chat requires a working directory before the user
+    /// can send a request. True when the role enables `directory_isolation` on
+    /// at least one isolation-capable bundled MCP (Filesystem or Code) and no
+    /// directory is currently set (neither the role's pre-set value nor a
+    /// user-picked override). Drives the red "No directory" placeholder and the
+    /// send gate.
+    var selectedChatWorkdirRequired: Bool {
+        guard let role = selectedRole, role.hasDirectoryIsolation else { return false }
+        return selectedChatWorkingDirectory?.isEmpty ?? true
     }
 
     /// Whether the last message in the selected chat is from the user. Used to

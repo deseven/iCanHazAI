@@ -97,5 +97,32 @@ extension AllAppTests {
             )
             #expect(AppViewModel.chatNeedsRoleAssignment(rec, availableRoles: [assistantRole()]) == true)
         }
+
+        // MARK: - chatChanged (sheet dismissal gate)
+
+        @Test("chatChanged is true when switching between two different chats")
+        func chatChangedDifferentChats() {
+            #expect(AppViewModel.chatChanged(from: "a.json", to: "b.json") == true)
+        }
+
+        @Test("chatChanged is true when going from a chat to none")
+        func chatChangedToNil() {
+            #expect(AppViewModel.chatChanged(from: "a.json", to: nil) == true)
+        }
+
+        @Test("chatChanged is true when going from none to a chat")
+        func chatChangedFromNil() {
+            #expect(AppViewModel.chatChanged(from: nil, to: "a.json") == true)
+        }
+
+        @Test("chatChanged is false when the same chat is re-selected")
+        func chatChangedSameChat() {
+            #expect(AppViewModel.chatChanged(from: "a.json", to: "a.json") == false)
+        }
+
+        @Test("chatChanged is false when both values are nil (startup no-op)")
+        func chatChangedBothNil() {
+            #expect(AppViewModel.chatChanged(from: nil, to: nil) == false)
+        }
     }
 }

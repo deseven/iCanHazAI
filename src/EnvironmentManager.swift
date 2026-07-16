@@ -70,7 +70,7 @@ final class EnvironmentManager: @unchecked Sendable {
             return nil
         }
         do {
-            let config = try TOMLDecoder().decode(RoleConfig.self, from: data)
+            let config = try ConfigValidation.decodeRole(data)
             return Role(name: name, config: config)
         } catch {
             debugLog("Env", "⚠️ failed to decode bundled role \"\(name)\" — \(error)")

@@ -212,6 +212,9 @@ struct ChatView: View {
         if store.isStreaming { return false }
         if !store.selectedChatHasValidRole { return true }
         if !store.selectedChatHasConnection { return true }
+        // Directory isolation requires a working directory before requests can
+        // be sent (the confined MCPs have no target to confine to otherwise).
+        if store.selectedChatWorkdirRequired { return true }
         if !pendingImages.isEmpty { return false }
         let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { return false }
@@ -276,11 +279,12 @@ struct ChatView: View {
                         Label(workdirLabel, systemImage: "folder")
                             .labelStyle(.titleAndIcon)
                             .lineLimit(1)
+                            .foregroundStyle(workdirColor)
                     }
                     .buttonStyle(.borderless)
                     .fixedSize()
-                    .help("Working directory")
-                    .disabled(store.isStreaming)
+                    .help(workdirHelp)
+                    .disabled(store.isStreaming || !store.selectedChatWorkdirPickerEnabled)
                 }
 
                 // MCP count indicator: MCPs are selected at the role level.
@@ -306,10 +310,27 @@ struct ChatView: View {
         }
 
         private var workdirLabel: String {
-            if let path = store.selectedChatWorkingDirectory {
+            if let path = store.selectedChatWorkingDirectory, !path.isEmpty {
                 return (path as NSString).abbreviatingWithTildeInPath
             }
             return "No directory"
+        }
+
+        /// Red when directory isolation is active but no directory is set
+        /// (the chat is blocked until the user picks one); otherwise the
+        /// default foreground.
+        private var workdirColor: Color {
+            store.selectedChatWorkdirRequired ? .red : .primary
+        }
+
+        private var workdirHelp: String {
+            if store.selectedChatWorkdirRequired {
+                return "A working directory is required (directory isolation is enabled)"
+            }
+            if !store.selectedChatWorkdirPickerEnabled {
+                return "Working directory (set by role)"
+            }
+            return "Working directory"
         }
     }
 

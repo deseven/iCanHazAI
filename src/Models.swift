@@ -466,6 +466,11 @@ struct Role: Identifiable, Equatable, Hashable {
     /// nothing would use the selected directory.
     static let workdirCapableInternalMCPs: Set<String> = ["Filesystem", "Code", "Shell"]
 
+    /// The internal MCP servers that support `--confine` (chroot-like
+    /// confinement to the working directory). Shell deliberately does no
+    /// confinement. Used to validate `directory_isolation` entries.
+    static let isolationCapableInternalMCPs: Set<String> = ["Filesystem", "Code"]
+
     /// Whether this role selects at least one internal MCP that uses the working
     /// directory (Filesystem, Code, or Shell). Drives whether the working-
     /// directory picker is shown in the chat toolbar.
@@ -475,6 +480,21 @@ struct Role: Identifiable, Equatable, Hashable {
             guard entry.mcp.hasPrefix("bundled::") else { return false }
             let name = String(entry.mcp.dropFirst("bundled::".count))
             return Self.workdirCapableInternalMCPs.contains(name)
+        }
+    }
+
+    /// Whether this role enables `directory_isolation` on at least one
+    /// isolation-capable bundled MCP (Filesystem or Code). When true, a working
+    /// directory is required for the chat: either pre-set by the role or picked
+    /// by the user. Drives the red "No directory" placeholder and the send
+    /// gate when no directory is set.
+    var hasDirectoryIsolation: Bool {
+        guard let mcps = config.mcps else { return false }
+        return mcps.contains { entry in
+            guard entry.directoryIsolation == true else { return false }
+            guard entry.mcp.hasPrefix("bundled::") else { return false }
+            let name = String(entry.mcp.dropFirst("bundled::".count))
+            return Self.isolationCapableInternalMCPs.contains(name)
         }
     }
 }

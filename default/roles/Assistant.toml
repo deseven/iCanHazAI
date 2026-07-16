@@ -3,7 +3,6 @@ prompt = "Assistant"
 icon = "sparkles"
 accent = "purple"
 connection_override_allowed = true
-working_directory_override_allowed = true
 
 [[mcps]]
 mcp = "bundled::Utils"

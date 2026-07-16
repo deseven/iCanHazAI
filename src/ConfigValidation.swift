@@ -52,12 +52,72 @@ enum ConfigValidation {
         }
     }
 
-    /// Validates and decodes a role (TOML).
+    /// Validates and decodes a role (TOML). Beyond TOML decoding, enforces the
+    /// cross-field rules documented in [`validateRole`](src/ConfigValidation.swift).
     static func decodeRole(_ data: Data) throws -> RoleConfig {
         do {
-            return try TOMLDecoder().decode(RoleConfig.self, from: data)
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: data)
+            try validateRole(config)
+            return config
+        } catch let error as ConfigValidationError {
+            throw error
         } catch {
             throw ConfigValidationError("role config is invalid: \(error)")
+        }
+    }
+
+    /// Cross-field validation for a decoded [`RoleConfig`](src/Models.swift).
+    ///
+    /// - `working_directory` / `working_directory_override_allowed` require at
+    ///   least one workdir-capable bundled MCP (`bundled::Filesystem`,
+    ///   `bundled::Code`, or `bundled::Shell`). Without one, the directory
+    ///   setting is meaningless because nothing consumes it.
+    /// - `directory_isolation` is only meaningful on `bundled::Filesystem` and
+    ///   `bundled::Code`. Setting it on any other MCP (including `bundled::Shell`
+    ///   and custom servers) is an error.
+    /// - `directory_isolation` requires a working directory to be available —
+    ///   either pre-set (`working_directory`) or user-pickable
+    ///   (`working_directory_override_allowed = true`). Without one, the
+    ///   confinement target is undefined.
+    static func validateRole(_ config: RoleConfig) throws {
+        let workdirCapable: Set<String> = ["Filesystem", "Code", "Shell"]
+        let isolationCapable: Set<String> = ["Filesystem", "Code"]
+
+        let mcps = config.mcps ?? []
+
+        let bundledNames = mcps.compactMap { entry -> String? in
+            guard entry.mcp.hasPrefix("bundled::") else { return nil }
+            return String(entry.mcp.dropFirst("bundled::".count))
+        }
+        let hasWorkdirCapableMCP = bundledNames.contains { workdirCapable.contains($0) }
+
+        let hasWorkdir = config.workingDirectory?.isEmpty == false
+        let hasOverride = config.workingDirectoryOverrideAllowed ?? false
+
+        if (hasWorkdir || hasOverride) && !hasWorkdirCapableMCP {
+            throw ConfigValidationError(
+                "role config sets working_directory or working_directory_override_allowed "
+                + "but selects no workdir-capable bundled MCP (Filesystem, Code, or Shell)"
+            )
+        }
+
+        for entry in mcps {
+            guard entry.directoryIsolation == true else { continue }
+            let isBundled = entry.mcp.hasPrefix("bundled::")
+            let name = isBundled ? String(entry.mcp.dropFirst("bundled::".count)) : entry.mcp
+            if !isBundled || !isolationCapable.contains(name) {
+                throw ConfigValidationError(
+                    "role config sets directory_isolation on \"\(entry.mcp)\", "
+                    + "but it is only supported on bundled::Filesystem and bundled::Code"
+                )
+            }
+            if !hasWorkdir && !hasOverride {
+                throw ConfigValidationError(
+                    "role config sets directory_isolation on \"\(entry.mcp)\" "
+                    + "but provides no working directory (set working_directory "
+                    + "or working_directory_override_allowed = true)"
+                )
+            }
         }
     }
 

@@ -117,7 +117,26 @@ Bundles a prompt, connection, working directory, and MCPs.
 `[[mcps]]` entries:
 - `mcp = "bundled::<Name>"` — built-in; `mcp = "<name>"` — custom.
 - `tools` — allowlist (empty/missing = all). `auto_allow` — tools to auto-approve (empty/missing = none). `auto_allow_all = true` — auto-approve everything.
-- `directory_isolation = true` — confine `bundled::Filesystem`/`bundled::Code` to the role's working directory.
+- `directory_isolation = true` — confine `bundled::Filesystem`/`bundled::Code` to the working directory (chroot-like). Only supported on these two; setting it on any other MCP (including `bundled::Shell` and custom servers) is a validation error.
+
+### Working directory & directory isolation rules
+
+These three fields interact and are validated on role load:
+
+- `working_directory` — pre-set directory applied to every new chat.
+- `working_directory_override_allowed` — let the user pick a different directory per chat.
+- `directory_isolation` (per `[[mcps]]` entry) — confine Filesystem/Code to the working directory.
+
+**Validation errors** (the role fails to load and surfaces a config error):
+1. Setting `working_directory` or `working_directory_override_allowed` without selecting at least one workdir-capable bundled MCP (`bundled::Filesystem`, `bundled::Code`, or `bundled::Shell`). Nothing would consume the directory, so the setting is meaningless.
+2. Setting `directory_isolation = true` on any MCP other than `bundled::Filesystem` and `bundled::Code` (including `bundled::Shell` and custom servers).
+3. Setting `directory_isolation = true` without providing a working directory (neither `working_directory` nor `working_directory_override_allowed = true`). Confinement needs a target directory.
+
+**Toolbar behavior** (when a workdir-capable MCP is selected):
+- `working_directory` set, override allowed → directory shown, user can change it.
+- `working_directory` set, override not allowed → directory shown, fixed (button disabled).
+- `working_directory` not set, override allowed → "No directory" shown; user must pick one. When `directory_isolation` is also active, the placeholder is red and sending is blocked until a directory is picked.
+- `working_directory` not set, override not allowed → directory picker hidden.
 
 ```toml
 description = "Web research role with search and note-taking tools."  # shown in picker when creating a new chat
