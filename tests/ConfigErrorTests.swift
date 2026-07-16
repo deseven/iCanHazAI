@@ -188,7 +188,9 @@ extension AllAppTests {
                 .write(to: env.env.promptsURL.appendingPathComponent("Ok.md"))
 
             let result = env.env.loadAllPromptsReportingErrors()
-            let names = result.loaded.map(\.name)
+            // Protected built-ins (Configurator) are always appended from the
+            // bundle; filter them out to assert only the user-dir prompts.
+            let names = result.loaded.filter { !$0.isBuiltin }.map(\.name)
             #expect(names == ["Good", "Ok"])
             #expect(result.errors.count == 1)
             let err = try #require(result.errors.first)
@@ -229,7 +231,7 @@ extension AllAppTests {
             try Data("Hi \\{stranger}\n".utf8).write(to: url)
             let result = env.env.loadAllPromptsReportingErrors()
             #expect(result.errors.isEmpty)
-            #expect(result.loaded.count == 1)
+            #expect(result.loaded.filter { !$0.isBuiltin }.count == 1)
         }
     }
 }
