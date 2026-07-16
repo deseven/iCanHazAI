@@ -1282,7 +1282,7 @@ actor ChatEngine {
     // MARK: - Role resolution
 
     /// A role's MCP entry resolved against the known servers: the bare server
-    /// name (with `internal::` stripped), whether it's a builtin, the tool
+    /// name (with `bundled::` stripped), whether it's a builtin, the tool
     /// selection filter, the auto-allow set, and directory-isolation flag.
     struct ResolvedRoleMCP: Equatable {
         let serverName: String
@@ -1346,8 +1346,8 @@ actor ChatEngine {
         let builtinNames = Set(builtinMcps.map(\.name))
         let customNames = Set(mcps.map(\.name))
         return entries.compactMap { entry in
-            let isBuiltin = entry.mcp.hasPrefix("internal::")
-            let serverName = isBuiltin ? String(entry.mcp.dropFirst("internal::".count)) : entry.mcp
+            let isBuiltin = entry.mcp.hasPrefix("bundled::")
+            let serverName = isBuiltin ? String(entry.mcp.dropFirst("bundled::".count)) : entry.mcp
             if isBuiltin {
                 guard builtinNames.contains(serverName) else { return nil }
             } else {
