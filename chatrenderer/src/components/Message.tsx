@@ -14,6 +14,7 @@ import type { ChatMessage, MessageImage } from "../types";
 import { renderMarkdown, renderInline, renderMermaidIn, restoreCachedMermaid, endsWithUnclosedMermaid } from "../markdown";
 import { sendToHost } from "../bridge";
 import { debugLog } from "../debug";
+import { parseToolArgs, isEmptyArgs } from "../toolArgs";
 import { Copy, SquarePen, Trash2, Brain, User, Bot, Settings, AlertTriangle, RotateCcw, ChevronRight, ChevronDown, Wrench, Terminal } from "lucide-preact";
 import type { ToolCallData, ToolResultData } from "../types";
 
@@ -64,13 +65,26 @@ function AvatarIcon({ role }: { role: string }) {
   }
 }
 
-/** Pretty-print a JSON arguments string; falls back to the raw string. */
-function prettyPrintArgs(args: string): string {
-  try {
-    return JSON.stringify(JSON.parse(args), null, 2);
-  } catch {
-    return args;
+/** Render tool-call arguments as a human-readable key/value list.
+ *  Falls back to a plain <pre> with the raw string when the arguments aren't
+ *  a valid JSON object (e.g. malformed JSON, a JSON array, or a scalar). */
+function ToolArgsView({ args }: { args: string }) {
+  const entries = useMemo(() => parseToolArgs(args), [args]);
+  if (entries === null) {
+    return <pre class="tool-call-args">{args}</pre>;
   }
+  return (
+    <dl class="tool-args">
+      {entries.map((e) => (
+        <div class="tool-arg" key={e.key}>
+          <dt class="tool-arg-key">{e.key}</dt>
+          <dd class={`tool-arg-value${e.multiline ? " tool-arg-value-multiline" : ""}`}>
+            {e.value}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
 }
 
 /** Strip the `mcp__{server}__` namespace prefix for display. */
@@ -144,10 +158,12 @@ function ToolBlock({
       </button>
       {open && (
         <div class="tool-content">
-          <div class="tool-call">
-            <div class="tool-call-label">Arguments</div>
-            <pre class="tool-call-args">{prettyPrintArgs(call.arguments)}</pre>
-          </div>
+          {!isEmptyArgs(call.arguments) && (
+            <div class="tool-call">
+              <div class="tool-call-label">Arguments</div>
+              <ToolArgsView args={call.arguments} />
+            </div>
+          )}
           {result && (
             <div class={`tool-result${result.isError && !result.isDenied ? " tool-result-error" : ""}`}>
               <div class="tool-call-label">

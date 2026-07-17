@@ -985,6 +985,13 @@ body {
   padding: 8px 10px;
 }
 
+.tool-call {
+  /* Separator lives here as a border-bottom so it disappears entirely when
+     arguments are hidden (the whole .tool-call is omitted in that case). */
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+
 .tool-call-label {
   font-size: 10px;
   text-transform: uppercase;
@@ -999,15 +1006,56 @@ body {
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
-  color: var(--text-primary);
+  color: var(--text);
 }
 
-.tool-result {
-  border-top: 1px solid var(--border);
-  padding-top: 8px;
+/* Formatted key/value list for tool-call arguments. Keys are dimmed (grey),
+   values use the primary text color (white in dark, black in light). */
+.tool-args {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
+
+.tool-arg {
+  display: grid;
+  grid-template-columns: minmax(60px, max-content) 1fr;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.tool-arg-key {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  /* Trailing colon via content keeps the markup clean. */
+}
+
+.tool-arg-key::after {
+  content: ":";
+}
+
+.tool-arg-value {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-width: 0;
+}
+
+/* Multi-line values (strings with newlines, pretty-printed JSON) get a subtle
+   left indent so the continuation lines align under the value, not the key. */
+.tool-arg-value-multiline {
+  padding-left: 0;
+}
+
 
 .tool-result-error .tool-call-args,
+.tool-result-error .tool-arg-value,
 .tool-result-error-text {
   color: var(--error-text);
 }
@@ -1037,8 +1085,6 @@ body {
 }
 
 .tool-approval {
-  border-top: 1px solid var(--border);
-  padding-top: 8px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1046,7 +1092,7 @@ body {
 
 .tool-approval-label {
   font-size: 12px;
-  color: var(--text-primary);
+  color: var(--text);
   font-weight: 500;
 }
 
@@ -1059,7 +1105,7 @@ body {
   appearance: none;
   border: 1px solid var(--border);
   background: var(--thinking-bg);
-  color: var(--text-primary);
+  color: var(--text);
   font-size: 12px;
   font-family: var(--font-sans);
   font-weight: 600;

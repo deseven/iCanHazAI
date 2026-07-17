@@ -14,6 +14,7 @@ const root = dirname(fileURLToPath(import.meta.url));
 const outDir = join(root, "dist");
 
 const watch = process.argv.includes("--watch");
+const testOnly = process.argv.includes("--test-only");
 
 // esbuild is a transpiler and deliberately does not type-check. We gate the
 // production build on `tsc --noEmit` so type errors fail the build. Skipped in
@@ -26,6 +27,35 @@ function typecheck() {
   );
   if (res.status !== 0) {
     console.error("Type-check failed; aborting build.");
+    process.exit(res.status ?? 1);
+  }
+}
+
+// Bundle the test files with esbuild (resolving TS imports) into a single
+// CommonJS file, then run them with Node's built-in test runner. Fails the
+// build if any test fails. Skipped in watch mode for speed.
+async function runTests() {
+  const testEntry = join(root, "tests", "toolArgs.test.ts");
+  const testOut = join(outDir, "tests", "toolArgs.test.cjs");
+  await esbuild.build({
+    ...commonOptions,
+    entryPoints: [testEntry],
+    outfile: testOut,
+    format: "cjs",
+    minify: false,
+    sourcemap: false,
+    // Tests import node built-ins; keep them external.
+    external: ["node:test", "node:assert", "node:assert/strict"],
+  });
+  const res = spawnSync(process.execPath, ["--test", testOut], {
+    stdio: "inherit",
+    cwd: root,
+  });
+  // Clean up the test bundle so it isn't swept into the app bundle by
+  // build.sh's `cp dist/*`.
+  await rm(join(outDir, "tests"), { recursive: true, force: true });
+  if (res.status !== 0) {
+    console.error("Tests failed; aborting build.");
     process.exit(res.status ?? 1);
   }
 }
@@ -91,6 +121,11 @@ if (watch) {
   console.log("Watching for changes...");
 } else {
   typecheck();
+  await runTests();
+  if (testOnly) {
+    console.log("Tests passed.");
+    process.exit(0);
+  }
   await esbuild.build(coreOptions);
   await esbuild.build(katexOptions);
   await esbuild.build(mermaidOptions);

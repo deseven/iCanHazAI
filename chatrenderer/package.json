@@ -6,7 +6,8 @@
   "scripts": {
     "build": "node build.mjs",
     "dev": "node build.mjs --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node build.mjs --test-only"
   },
   "keywords": [],
   "author": "",
@@ -21,6 +22,7 @@
     "preact": "^10.29.2"
   },
   "devDependencies": {
+    "@types/node": "^22.20.1",
     "esbuild": "^0.28.1",
     "typescript": "^6.0.3"
   }
