@@ -198,23 +198,33 @@ extension AllAppTests {
         @Test("ls recursive is capped at depth 1")
         func lsRecursiveDepthCapped() async throws {
             let tmp = try TestDir()
-            // node_modules/react/index.js        (L2 dir, L3 file)
-            // node_modules/react/dom/node.js     (L3 dir, L4 file)
-            // node_modules/express/main.js       (L2 dir, L3 file)
+            // node_modules/                     (L1 dir)
+            // node_modules/react/               (L2 dir — top-level dep)
+            // node_modules/react/index.js       (L3 file — inside dep, skipped)
+            // node_modules/react/dom/           (L3 dir — deeper, skipped)
+            // node_modules/react/dom/node.js    (L4 file — deeper, skipped)
+            // node_modules/express/             (L2 dir — top-level dep)
+            // node_modules/express/main.js      (L3 file — inside dep, skipped)
+            // src/                              (L1 dir)
+            // src/app.ts                        (L2 file — direct child of L1 dir, shown)
             try tmp.write("node_modules/react/index.js", content: "")
             try tmp.write("node_modules/react/dom/node.js", content: "")
             try tmp.write("node_modules/express/main.js", content: "")
+            try tmp.write("src/app.ts", content: "")
             let (text, err) = await Self.call("ls", BuiltinTools.filesystemGroup, ["path": tmp.path, "recursive": true])
             #expect(!err)
-            // Depth 1: node_modules itself (direct child).
+            // Depth 1: direct children of the listed root.
             #expect(text.contains("node_modules/"))
-            // Depth 1: top-level dep folders inside node_modules.
+            #expect(text.contains("src/"))
+            // Depth 1: one level into subdirectories (top-level dep folders).
             #expect(text.contains("node_modules/react/"))
             #expect(text.contains("node_modules/express/"))
-            // Depth 1: files directly inside a dep folder are still shown.
-            #expect(text.contains("node_modules/react/index.js"))
-            #expect(text.contains("node_modules/express/main.js"))
-            // Anything deeper than depth 1 must be absent.
+            // Depth 1: files directly inside a direct-child directory are shown.
+            #expect(text.contains("src/app.ts"))
+            // Anything deeper than depth 1 must be absent: contents of the
+            // top-level dep folders are not descended into.
+            #expect(!text.contains("node_modules/react/index.js"))
+            #expect(!text.contains("node_modules/express/main.js"))
             #expect(!text.contains("node_modules/react/dom/"))
             #expect(!text.contains("node_modules/react/dom/node.js"))
         }
