@@ -5,7 +5,6 @@ set -euo pipefail
 name="iCanHazAI"
 shortName="ichai"
 ident="wtf.d7.icanhazai"
-mcps=(iCanHazAI-UtilsMCP iCanHazAI-FilesystemMCP iCanHazAI-CodeMCP iCanHazAI-ShellMCP)
 loc="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 logFile="$loc/build.log"
 
@@ -130,8 +129,7 @@ do_build_web() {
     cd "$loc"
 }
 
-# One `swift build` builds the app and all four bundled MCP servers from the
-# single package graph. Dev = arm64 only; otherwise universal (arm64+x86_64).
+# One `swift build` builds the app. Dev = arm64 only; otherwise universal (arm64+x86_64).
 do_build_swift() {
     if [ "$mode" = "dev" ]; then
         swift build -c "$buildConfig" --arch arm64
@@ -140,14 +138,7 @@ do_build_swift() {
     fi
 }
 
-# Debug builds of the MCP servers (host arch) for the integration tests —
-# the test harness spawns .build/debug/<Server>.
-do_build_mcps_debug() {
-    swift build --product iCanHazAI-UtilsMCP --product iCanHazAI-FilesystemMCP --product iCanHazAI-CodeMCP --product iCanHazAI-ShellMCP
-}
-
 do_run_app_tests() { swift test --filter AllAppTests; }
-do_run_mcp_tests() { swift test --filter AllMCPTests; }
 
 do_clean_app_cache() {
     # Drop the SwiftData chat-metadata cache. The app self-heals an
@@ -160,7 +151,7 @@ do_clean_app_cache() {
 
 do_create_bundle() {
     local app="$loc/dist/$name.app"
-    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/ChatRenderer" "$app/Contents/Resources/MCPServers" "$app/Contents/Resources/Default"
+    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/ChatRenderer" "$app/Contents/Resources/Default"
 
     cp "$buildDir/$name" "$app/Contents/MacOS/$name"
     cp "$loc/Info.plist" "$app/Contents/Info.plist"
@@ -168,29 +159,11 @@ do_create_bundle() {
     cp -R "$loc/default/prompts" "$app/Contents/Resources/Default/prompts"
     cp -R "$loc/default/roles" "$app/Contents/Resources/Default/roles"
     cp "$loc/chatrenderer/dist/"* "$app/Contents/Resources/ChatRenderer/"
-    # Copy the just-built MCP servers (arm64 in dev, universal otherwise).
-    local srv
-    for srv in "${mcps[@]}"; do
-        cp "$buildDir/$srv" "$app/Contents/Resources/MCPServers/$srv"
-    done
 }
 
 do_codesign() {
     local app="$loc/dist/$name.app"
     xattr -cr "$app"
-
-    # Sign nested Mach-O binaries explicitly first — --deep does not reliably
-    # apply hardened runtime + secure timestamp to nested executables, which
-    # notarization rejects.
-    local srv mcpDir="$app/Contents/Resources/MCPServers"
-    for srv in "${mcps[@]}"; do
-        [ -f "$mcpDir/$srv" ] || continue
-        if [ "$can_sign" = true ]; then
-            codesign --force --sign "$ICHAI_SIGNING_IDENTITY" --options runtime --timestamp "$mcpDir/$srv"
-        else
-            codesign --force --sign - -r="designated => identifier \"$ident\"" "$mcpDir/$srv"
-        fi
-    done
 
     if [ "$can_sign" = true ]; then
         codesign --force --deep --sign "$ICHAI_SIGNING_IDENTITY" --options runtime --timestamp "$app"
@@ -285,8 +258,6 @@ do_clean_dist
 
 if [ "$mode" = "test" ]; then
     add "Running app tests..."        "app tests failed"                          do_run_app_tests
-    add "Building bundled MCPs (debug)..." "failed to build bundled MCPs" do_build_mcps_debug
-    add "Running MCP tests..."        "MCP tests failed"                          do_run_mcp_tests
     run_pipeline
     echo ""
     echo -e "  ${greenColor}${bold}Tests passed!${noColor}"
@@ -301,8 +272,6 @@ add "Creating APP bundle..."         "failed to create app bundle"              
 # Tests gate signing for release builds.
 if [ "$mode" != "dev" ]; then
     add "Running app tests..."            "app tests failed"                       do_run_app_tests
-    add "Building bundled MCPs (debug)..." "failed to build bundled MCPs" do_build_mcps_debug
-    add "Running MCP tests..."            "MCP tests failed"                       do_run_mcp_tests
 fi
 
 add "Code-signing APP bundle..."     "failed to code-sign app bundle"            do_codesign

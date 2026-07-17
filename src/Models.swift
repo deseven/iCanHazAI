@@ -478,8 +478,10 @@ struct Prompt: Identifiable, Equatable, Hashable {
 
 // MARK: - Role config (TOML)
 
-/// One MCP entry within a role config. `mcp` is either `bundled::<name>` for
-/// a built-in server or `<name>` for a custom server config.
+/// One custom MCP entry within a role config. Built-in tool groups
+/// (Utils/Filesystem/Code/Shell) are described as top-level TOML groups
+/// (`[utils]`, `[filesystem]`, …) and decoded into `RoleConfig` directly;
+/// only custom MCP servers use `[[mcps]]` array-of-tables entries.
 struct RoleMCP: Codable, Equatable, Hashable, Sendable {
     var mcp: String
     /// Tool selection from this MCP. Empty/nil means all available tools.
@@ -488,12 +490,32 @@ struct RoleMCP: Codable, Equatable, Hashable, Sendable {
     var autoAllow: [String]?
     /// When true, all available tools from this MCP are auto-approved.
     var autoAllowAll: Bool?
-    /// When true, the in-house server runs isolated to the working directory.
-    /// Only meaningful for `bundled::Filesystem` and `bundled::Code`.
-    var directoryIsolation: Bool?
 
     enum CodingKeys: String, CodingKey {
         case mcp
+        case tools
+        case autoAllow = "auto_allow"
+        case autoAllowAll = "auto_allow_all"
+    }
+}
+
+/// Configuration for a single built-in tool group (`[utils]`, `[filesystem]`,
+/// `[code]`, `[shell]`). An empty group (just `[utils]` with no keys) enables
+/// the group with all defaults: all tools allowed, none auto-approved, no
+/// directory isolation.
+struct RoleToolGroup: Codable, Equatable, Hashable, Sendable {
+    /// Tool selection from this group. Empty/nil means all available tools.
+    var tools: [String]?
+    /// Tools to auto-approve (raw tool names). Empty/nil = none.
+    var autoAllow: [String]?
+    /// When true, all tools from this group are auto-approved.
+    var autoAllowAll: Bool?
+    /// When true, the group runs isolated to the working directory (chroot-like).
+    /// Only meaningful for Filesystem and Code; setting it on any other group is
+    /// a validation error.
+    var directoryIsolation: Bool?
+
+    enum CodingKeys: String, CodingKey {
         case tools
         case autoAllow = "auto_allow"
         case autoAllowAll = "auto_allow_all"
@@ -510,6 +532,14 @@ struct RoleConfig: Codable, Equatable, Hashable {
     var workingDirectoryOverrideAllowed: Bool?
     var connection: String?
     var connectionOverrideAllowed: Bool?
+    /// Built-in tool groups. A group key is present (non-nil) when its `[group]`
+    /// table appears in the TOML — even an empty table enables the group with
+    /// defaults. Nil means the group is disabled.
+    var utils: RoleToolGroup?
+    var filesystem: RoleToolGroup?
+    var code: RoleToolGroup?
+    var shell: RoleToolGroup?
+    /// Custom MCP servers selected by this role.
     var mcps: [RoleMCP]?
     /// SF Symbol name used to badge this role's chats in the sidebar and the
     /// role picker. Nil → falls back to `Role.defaultIcon`.
@@ -527,6 +557,10 @@ struct RoleConfig: Codable, Equatable, Hashable {
         case workingDirectoryOverrideAllowed = "working_directory_override_allowed"
         case connection
         case connectionOverrideAllowed = "connection_override_allowed"
+        case utils
+        case filesystem
+        case code
+        case shell
         case mcps
         case icon
         case accent
@@ -559,45 +593,54 @@ struct Role: Identifiable, Equatable, Hashable {
     var connection: String? { config.connection }
     /// SF Symbol for this role, falling back to `defaultIcon`.
     var icon: String { config.icon ?? Role.defaultIcon }
-    /// Number of MCPs selected by this role.
-    var mcpCount: Int { config.mcps?.count ?? 0 }
 
-    /// The internal MCP servers that consume the working directory (via
-    /// `--workdir`). When a role selects at least one of these, the per-chat
-    /// working-directory picker is meaningful; otherwise it's hidden because
-    /// nothing would use the selected directory.
-    static let workdirCapableInternalMCPs: Set<String> = ["Filesystem", "Code", "Shell"]
-
-    /// The internal MCP servers that support `--isolate` (chroot-like
-    /// isolation to the working directory). Shell deliberately does no
-    /// isolation. Used to validate `directory_isolation` entries.
-    static let isolationCapableInternalMCPs: Set<String> = ["Filesystem", "Code"]
-
-    /// Whether this role selects at least one internal MCP that uses the working
-    /// directory (Filesystem, Code, or Shell). Drives whether the working-
-    /// directory picker is shown in the chat toolbar.
-    var hasWorkdirCapableMCP: Bool {
-        guard let mcps = config.mcps else { return false }
-        return mcps.contains { entry in
-            guard entry.mcp.hasPrefix("bundled::") else { return false }
-            let name = String(entry.mcp.dropFirst("bundled::".count))
-            return Self.workdirCapableInternalMCPs.contains(name)
+    /// The enabled built-in tool groups, in canonical order. A group is
+    /// enabled when its `[group]` table is present in the role TOML.
+    var enabledGroups: [String] {
+        BuiltinTools.groupOrder.filter { group in
+            switch group {
+            case BuiltinTools.utilsGroup: return config.utils != nil
+            case BuiltinTools.filesystemGroup: return config.filesystem != nil
+            case BuiltinTools.codeGroup: return config.code != nil
+            case BuiltinTools.shellGroup: return config.shell != nil
+            default: return false
+            }
         }
     }
 
-    /// Whether this role enables `directory_isolation` on at least one
-    /// isolation-capable bundled MCP (Filesystem or Code). When true, a working
-    /// directory is required for the chat: either pre-set by the role or picked
-    /// by the user. Drives the red "No directory" placeholder and the send
-    /// gate when no directory is set.
-    var hasDirectoryIsolation: Bool {
-        guard let mcps = config.mcps else { return false }
-        return mcps.contains { entry in
-            guard entry.directoryIsolation == true else { return false }
-            guard entry.mcp.hasPrefix("bundled::") else { return false }
-            let name = String(entry.mcp.dropFirst("bundled::".count))
-            return Self.isolationCapableInternalMCPs.contains(name)
+    /// The `RoleToolGroup` config for a built-in group, or nil when the group
+    /// is not enabled.
+    func groupConfig(_ group: String) -> RoleToolGroup? {
+        switch group {
+        case BuiltinTools.utilsGroup: return config.utils
+        case BuiltinTools.filesystemGroup: return config.filesystem
+        case BuiltinTools.codeGroup: return config.code
+        case BuiltinTools.shellGroup: return config.shell
+        default: return nil
         }
+    }
+
+    /// Number of tool sources selected by this role (built-in groups + custom
+    /// MCPs). Used by the chat header indicator.
+    var mcpCount: Int { enabledGroups.count + (config.mcps?.count ?? 0) }
+
+    /// Whether this role selects at least one workdir-capable built-in group
+    /// (Filesystem, Code, or Shell). Drives whether the working-directory
+    /// picker is shown in the chat toolbar.
+    var hasWorkdirCapableMCP: Bool {
+        enabledGroups.contains { BuiltinTools.workdirCapableGroups.contains($0) }
+    }
+
+    /// Whether this role enables `directory_isolation` on at least one
+    /// isolation-capable built-in group (Filesystem or Code). When true, a
+    /// working directory is required for the chat: either pre-set by the role
+    /// or picked by the user. Drives the red "No directory" placeholder and
+    /// the send gate when no directory is set.
+    var hasDirectoryIsolation: Bool {
+        for group in enabledGroups where BuiltinTools.isolationCapableGroups.contains(group) {
+            if groupConfig(group)?.directoryIsolation == true { return true }
+        }
+        return false
     }
 }
 

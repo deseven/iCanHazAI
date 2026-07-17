@@ -69,51 +69,58 @@ enum ConfigValidation {
     /// Cross-field validation for a decoded [`RoleConfig`](src/Models.swift).
     ///
     /// - `working_directory` / `working_directory_override_allowed` require at
-    ///   least one workdir-capable bundled MCP (`bundled::Filesystem`,
-    ///   `bundled::Code`, or `bundled::Shell`). Without one, the directory
-    ///   setting is meaningless because nothing consumes it.
-    /// - `directory_isolation` is only meaningful on `bundled::Filesystem` and
-    ///   `bundled::Code`. Setting it on any other MCP (including `bundled::Shell`
-    ///   and custom servers) is an error.
+    ///   least one workdir-capable built-in group (Filesystem, Code, or Shell).
+    ///   Without one, the directory setting is meaningless because nothing
+    ///   consumes it.
+    /// - `directory_isolation` is only meaningful on the Filesystem and Code
+    ///   groups. Setting it on any other group (including Shell) is an error.
     /// - `directory_isolation` requires a working directory to be available —
     ///   either pre-set (`working_directory`) or user-pickable
     ///   (`working_directory_override_allowed = true`). Without one, the
     ///   isolation target is undefined.
     static func validateRole(_ config: RoleConfig) throws {
-        let workdirCapable: Set<String> = ["Filesystem", "Code", "Shell"]
-        let isolationCapable: Set<String> = ["Filesystem", "Code"]
-
-        let mcps = config.mcps ?? []
-
-        let bundledNames = mcps.compactMap { entry -> String? in
-            guard entry.mcp.hasPrefix("bundled::") else { return nil }
-            return String(entry.mcp.dropFirst("bundled::".count))
+        let enabledGroups = BuiltinTools.groupOrder.filter { group in
+            switch group {
+            case BuiltinTools.utilsGroup: return config.utils != nil
+            case BuiltinTools.filesystemGroup: return config.filesystem != nil
+            case BuiltinTools.codeGroup: return config.code != nil
+            case BuiltinTools.shellGroup: return config.shell != nil
+            default: return false
+            }
         }
-        let hasWorkdirCapableMCP = bundledNames.contains { workdirCapable.contains($0) }
+
+        let hasWorkdirCapableGroup = enabledGroups.contains {
+            BuiltinTools.workdirCapableGroups.contains($0)
+        }
 
         let hasWorkdir = config.workingDirectory?.isEmpty == false
         let hasOverride = config.workingDirectoryOverrideAllowed ?? false
 
-        if (hasWorkdir || hasOverride) && !hasWorkdirCapableMCP {
+        if (hasWorkdir || hasOverride) && !hasWorkdirCapableGroup {
             throw ConfigValidationError(
                 "role config sets working_directory or working_directory_override_allowed "
-                + "but selects no workdir-capable bundled MCP (Filesystem, Code, or Shell)"
+                + "but selects no workdir-capable built-in group (Filesystem, Code, or Shell)"
             )
         }
 
-        for entry in mcps {
-            guard entry.directoryIsolation == true else { continue }
-            let isBundled = entry.mcp.hasPrefix("bundled::")
-            let name = isBundled ? String(entry.mcp.dropFirst("bundled::".count)) : entry.mcp
-            if !isBundled || !isolationCapable.contains(name) {
+        // Check directory_isolation on each enabled group.
+        let groupConfigs: [(String, RoleToolGroup?)] = [
+            (BuiltinTools.filesystemGroup, config.filesystem),
+            (BuiltinTools.codeGroup, config.code),
+            (BuiltinTools.shellGroup, config.shell),
+            (BuiltinTools.utilsGroup, config.utils),
+        ]
+        for (group, groupConfig) in groupConfigs {
+            guard let groupConfig, groupConfig.directoryIsolation == true else { continue }
+            if !BuiltinTools.isolationCapableGroups.contains(group) {
                 throw ConfigValidationError(
-                    "role config sets directory_isolation on \"\(entry.mcp)\", "
-                    + "but it is only supported on bundled::Filesystem and bundled::Code"
+                    "role config sets directory_isolation on group \"\(group)\", "
+                    + "but it is only supported on Filesystem and Code"
                 )
             }
             if !hasWorkdir && !hasOverride {
                 throw ConfigValidationError(
-                    "role config sets directory_isolation on \"\(entry.mcp)\" "
+                    "role config sets directory_isolation on group \"\(group)\" "
                     + "but provides no working directory (set working_directory "
                     + "or working_directory_override_allowed = true)"
                 )

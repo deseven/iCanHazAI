@@ -26,6 +26,10 @@ struct RolePickerView: View {
 
     /// Currently highlighted role (driven by both keyboard and hover).
     @State private var selection: String?
+    /// True when the latest `selection` change came from keyboard navigation
+    /// (or initial appear) rather than hover. Only keyboard-driven changes
+    /// scroll the list, so moving the mouse over rows no longer recenters it.
+    @State private var isKeyboardSelection: Bool = false
     @State private var rowHeights: [Int: CGFloat] = [:]
     @FocusState private var focused: Bool
 
@@ -131,7 +135,8 @@ struct RolePickerView: View {
                     }
                     .background(Color.secondary.opacity(0.05))
                     .onChange(of: selection) { _, newName in
-                        guard let newName else { return }
+                        guard let newName, isKeyboardSelection else { return }
+                        isKeyboardSelection = false
                         proxy.scrollTo(newName, anchor: .center)
                     }
                 }
@@ -157,6 +162,7 @@ struct RolePickerView: View {
         .onKeyPress(.downArrow) { moveSelection(by: 1); return .handled }
         .onKeyPress(.return) { pickCurrent(); return .handled }
         .onAppear {
+            isKeyboardSelection = true
             if let dr = defaultRoleName, allRoles.contains(where: { $0.name == dr }) {
                 selection = dr
             } else {
@@ -185,6 +191,7 @@ struct RolePickerView: View {
         guard !allRoles.isEmpty else { return }
         let current = allRoles.firstIndex(where: { $0.name == selection }) ?? 0
         let newIndex = min(max(current + delta, 0), allRoles.count - 1)
+        isKeyboardSelection = true
         selection = allRoles[newIndex].name
     }
 

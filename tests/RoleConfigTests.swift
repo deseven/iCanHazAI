@@ -19,13 +19,11 @@ extension AllAppTests {
             connection = "openai/DeepSeek"
             connection_override_allowed = true
 
-            [[mcps]]
-            mcp = "bundled::Utils"
+            [utils]
             tools = []
             auto_allow_all = true
 
-            [[mcps]]
-            mcp = "bundled::Filesystem"
+            [filesystem]
             auto_allow = ["ls", "read_file", "stat"]
             directory_isolation = true
 
@@ -42,15 +40,15 @@ extension AllAppTests {
             #expect(config.workingDirectoryOverrideAllowed == true)
             #expect(config.connection == "openai/DeepSeek")
             #expect(config.connectionOverrideAllowed == true)
+            // Built-in groups
+            #expect(config.utils?.autoAllowAll == true)
+            #expect(config.filesystem?.autoAllow == ["ls", "read_file", "stat"])
+            #expect(config.filesystem?.directoryIsolation == true)
+            // Custom MCPs
             let mcps = try #require(config.mcps)
-            #expect(mcps.count == 3)
-            #expect(mcps[0].mcp == "bundled::Utils")
-            #expect(mcps[0].autoAllowAll == true)
-            #expect(mcps[1].mcp == "bundled::Filesystem")
-            #expect(mcps[1].autoAllow == ["ls", "read_file", "stat"])
-            #expect(mcps[1].directoryIsolation == true)
-            #expect(mcps[2].mcp == "Tavily")
-            #expect(mcps[2].tools == ["tavily_search", "tavily_extract"])
+            #expect(mcps.count == 1)
+            #expect(mcps[0].mcp == "Tavily")
+            #expect(mcps[0].tools == ["tavily_search", "tavily_extract"])
         }
 
         @Test("RoleConfig applies defaults for omitted optional fields")
@@ -93,17 +91,15 @@ extension AllAppTests {
             #expect(role.accentColor == RoleAccent.color(for: "purple"))
         }
 
-        @Test("Role.hasWorkdirCapableMCP is true when a workdir-capable internal MCP is selected")
+        @Test("Role.hasWorkdirCapableMCP is true when a workdir-capable group is selected")
         func hasWorkdirCapableMCPTrue() throws {
             let toml = """
             prompt = "Developer"
 
-            [[mcps]]
-            mcp = "bundled::Utils"
+            [utils]
             auto_allow_all = true
 
-            [[mcps]]
-            mcp = "bundled::Filesystem"
+            [filesystem]
             directory_isolation = true
             """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
@@ -111,29 +107,27 @@ extension AllAppTests {
             #expect(role.hasWorkdirCapableMCP)
         }
 
-        @Test("Role.hasWorkdirCapableMCP is true for Code and Shell internal MCPs")
+        @Test("Role.hasWorkdirCapableMCP is true for Code and Shell groups")
         func hasWorkdirCapableMCPCodeShell() throws {
-            for name in ["Code", "Shell"] {
+            for group in ["code", "shell"] {
                 let toml = """
                 prompt = "Developer"
 
-                [[mcps]]
-                mcp = "bundled::\(name)"
+                [\(group)]
                 """
                 let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
                 let role = Role(name: "Developer", config: config)
-                #expect(role.hasWorkdirCapableMCP, "expected hasWorkdirCapableMCP for bundled::\(name)")
+                #expect(role.hasWorkdirCapableMCP, "expected hasWorkdirCapableMCP for [\(group)]")
             }
         }
 
-        @Test("Role.hasWorkdirCapableMCP is false when only non-workdir MCPs are selected")
+        @Test("Role.hasWorkdirCapableMCP is false when only non-workdir groups are selected")
         func hasWorkdirCapableMCPFalse() throws {
             // Utils is internal but doesn't use the working directory.
             let toml = """
             prompt = "Developer"
 
-            [[mcps]]
-            mcp = "bundled::Utils"
+            [utils]
             auto_allow_all = true
             """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
@@ -141,8 +135,8 @@ extension AllAppTests {
             #expect(!role.hasWorkdirCapableMCP)
         }
 
-        @Test("Role.hasWorkdirCapableMCP is false when no MCPs are selected")
-        func hasWorkdirCapableMCPFalseNoMCPs() throws {
+        @Test("Role.hasWorkdirCapableMCP is false when no groups are selected")
+        func hasWorkdirCapableMCPFalseNoGroups() throws {
             let toml = """
             prompt = "Developer"
             """
@@ -151,7 +145,7 @@ extension AllAppTests {
             #expect(!role.hasWorkdirCapableMCP)
         }
 
-        @Test("Role.hasWorkdirCapableMCP is false for custom (non-internal) MCPs")
+        @Test("Role.hasWorkdirCapableMCP is false for custom (non-group) MCPs only")
         func hasWorkdirCapableMCPFalseCustom() throws {
             let toml = """
             prompt = "Developer"
@@ -173,8 +167,7 @@ extension AllAppTests {
             prompt = "Developer"
             working_directory = "~/projects"
 
-            [[mcps]]
-            mcp = "bundled::Filesystem"
+            [filesystem]
             directory_isolation = true
             """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
@@ -188,8 +181,7 @@ extension AllAppTests {
             prompt = "Developer"
             working_directory_override_allowed = true
 
-            [[mcps]]
-            mcp = "bundled::Code"
+            [code]
             directory_isolation = true
             """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
@@ -203,8 +195,7 @@ extension AllAppTests {
             prompt = "Developer"
             working_directory = "~/projects"
 
-            [[mcps]]
-            mcp = "bundled::Filesystem"
+            [filesystem]
             """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
@@ -217,8 +208,7 @@ extension AllAppTests {
             prompt = "Developer"
             working_directory = "~/projects"
 
-            [[mcps]]
-            mcp = "bundled::Shell"
+            [shell]
             directory_isolation = true
             """
             // Note: this TOML decodes fine (validation is in ConfigValidation,
@@ -229,16 +219,15 @@ extension AllAppTests {
             #expect(!role.hasDirectoryIsolation)
         }
 
-        // MARK: - Validation: working_directory without workdir-capable MCP
+        // MARK: - Validation: working_directory without workdir-capable group
 
-        @Test("Role validation rejects working_directory without workdir-capable MCP")
-        func validationRejectsWorkdirWithoutCapableMCP() throws {
+        @Test("Role validation rejects working_directory without workdir-capable group")
+        func validationRejectsWorkdirWithoutCapableGroup() throws {
             let toml = """
             prompt = "Developer"
             working_directory = "~/projects"
 
-            [[mcps]]
-            mcp = "bundled::Utils"
+            [utils]
             auto_allow_all = true
             """
             let data = Data(toml.utf8)
@@ -247,14 +236,13 @@ extension AllAppTests {
             }
         }
 
-        @Test("Role validation rejects working_directory_override_allowed without workdir-capable MCP")
-        func validationRejectsOverrideWithoutCapableMCP() throws {
+        @Test("Role validation rejects working_directory_override_allowed without workdir-capable group")
+        func validationRejectsOverrideWithoutCapableGroup() throws {
             let toml = """
             prompt = "Developer"
             working_directory_override_allowed = true
 
-            [[mcps]]
-            mcp = "bundled::Utils"
+            [utils]
             auto_allow_all = true
             """
             let data = Data(toml.utf8)
@@ -263,21 +251,20 @@ extension AllAppTests {
             }
         }
 
-        @Test("Role validation accepts working_directory with workdir-capable MCP")
-        func validationAcceptsWorkdirWithCapableMCP() throws {
+        @Test("Role validation accepts working_directory with workdir-capable group")
+        func validationAcceptsWorkdirWithCapableGroup() throws {
             let toml = """
             prompt = "Developer"
             working_directory = "~/projects"
 
-            [[mcps]]
-            mcp = "bundled::Filesystem"
+            [filesystem]
             """
             let data = Data(toml.utf8)
             let config = try ConfigValidation.decodeRole(data)
             #expect(config.workingDirectory == "~/projects")
         }
 
-        // MARK: - Validation: directory_isolation on wrong MCP
+        // MARK: - Validation: directory_isolation on wrong group
 
         @Test("Role validation rejects directory_isolation on Shell")
         func validationRejectsIsolationOnShell() throws {
@@ -285,24 +272,7 @@ extension AllAppTests {
             prompt = "Developer"
             working_directory = "~/projects"
 
-            [[mcps]]
-            mcp = "bundled::Shell"
-            directory_isolation = true
-            """
-            let data = Data(toml.utf8)
-            #expect(throws: ConfigValidationError.self) {
-                try ConfigValidation.decodeRole(data)
-            }
-        }
-
-        @Test("Role validation rejects directory_isolation on custom MCP")
-        func validationRejectsIsolationOnCustom() throws {
-            let toml = """
-            prompt = "Developer"
-            working_directory = "~/projects"
-
-            [[mcps]]
-            mcp = "Tavily"
+            [shell]
             directory_isolation = true
             """
             let data = Data(toml.utf8)
@@ -317,13 +287,12 @@ extension AllAppTests {
             prompt = "Developer"
             working_directory = "~/projects"
 
-            [[mcps]]
-            mcp = "bundled::Filesystem"
+            [filesystem]
             directory_isolation = true
             """
             let data = Data(toml.utf8)
             let config = try ConfigValidation.decodeRole(data)
-            #expect(config.mcps?.first?.directoryIsolation == true)
+            #expect(config.filesystem?.directoryIsolation == true)
         }
 
         // MARK: - Validation: directory_isolation without working directory
@@ -333,8 +302,7 @@ extension AllAppTests {
             let toml = """
             prompt = "Developer"
 
-            [[mcps]]
-            mcp = "bundled::Filesystem"
+            [filesystem]
             directory_isolation = true
             """
             let data = Data(toml.utf8)
@@ -349,20 +317,19 @@ extension AllAppTests {
             prompt = "Developer"
             working_directory_override_allowed = true
 
-            [[mcps]]
-            mcp = "bundled::Code"
+            [code]
             directory_isolation = true
             """
             let data = Data(toml.utf8)
             let config = try ConfigValidation.decodeRole(data)
-            #expect(config.mcps?.first?.directoryIsolation == true)
+            #expect(config.code?.directoryIsolation == true)
         }
 
         // MARK: - Validation: bundled role (Configurator) goes through validation
 
         @Test("bundledRole returns nil for an invalid protected built-in")
         func bundledRoleValidation() throws {
-            // The Configurator role is bundled and protected. It has no MCPs
+            // The Configurator role is bundled and protected. It has no groups
             // and no working_directory, so it must pass validation (no rules
             // are triggered). We verify it loads successfully.
             let role = try #require(EnvironmentManager.bundledRole(name: "Configurator"))
@@ -395,8 +362,7 @@ extension AllAppTests {
             description = "Tester"
             prompt = "Tester"
 
-            [[mcps]]
-            mcp = "bundled::Utils"
+            [utils]
             auto_allow_all = true
             """
             try Data(roleTOML.utf8).write(to: env.env.rolesURL.appendingPathComponent("Tester.toml"))

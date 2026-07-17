@@ -25,6 +25,10 @@ struct WorkdirPickerView: View {
     let onPick: (String) -> Void
 
     @State private var selection: WorkdirSelection?
+    /// True when the latest `selection` change came from keyboard navigation
+    /// (or initial appear) rather than hover. Only keyboard-driven changes
+    /// scroll the list, so moving the mouse over rows no longer recenters it.
+    @State private var isKeyboardSelection: Bool = false
     @State private var addPicker: Bool = false
     @State private var rowHeight: CGFloat = 50
     @FocusState private var focused: Bool
@@ -128,7 +132,8 @@ struct WorkdirPickerView: View {
                     }
                     .onPreferenceChange(RowHeightKey.self) { if $0 > 0 { rowHeight = $0 } }
                     .onChange(of: selection) { _, newSelection in
-                        guard let newSelection else { return }
+                        guard let newSelection, isKeyboardSelection else { return }
+                        isKeyboardSelection = false
                         proxy.scrollTo(newSelection, anchor: .center)
                     }
                 }
@@ -156,6 +161,7 @@ struct WorkdirPickerView: View {
         .onKeyPress(.downArrow) { moveSelection(by: 1); return .handled }
         .onKeyPress(.return) { pickCurrent(); return .handled }
         .onAppear {
+            isKeyboardSelection = true
             if let roleDefault = roleDefaultWorkdir {
                 selection = .roleDefault(roleDefault)
             } else if let current = currentWorkdir, directories.contains(current) {
@@ -274,6 +280,7 @@ struct WorkdirPickerView: View {
         guard !allEntries.isEmpty else { return }
         let current = selection.flatMap { allEntries.firstIndex(of: $0) } ?? 0
         let newIndex = min(max(current + delta, 0), allEntries.count - 1)
+        isKeyboardSelection = true
         selection = allEntries[newIndex]
     }
 

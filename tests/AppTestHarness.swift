@@ -3,8 +3,8 @@ import Testing
 import FSEventsWrapper
 @testable import iCanHazAI
 
-// `AllAppTests` (the `.serialized` parent suite for main-app tests) is declared
-// in `AllTests.swift` alongside `AllMCPTests`. App test suites extend it:
+// `AllAppTests` (the `.serialized` parent suite for every test in this target)
+// is declared in `AllTests.swift`. App test suites extend it:
 // `extension AllAppTests { @Suite struct ... }`.
 
 // MARK: - Errors

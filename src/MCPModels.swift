@@ -25,9 +25,8 @@ enum MCPRunPolicy: String, Codable, Sendable {
     case onDemand = "on_demand"
 }
 
-/// A configured MCP server. One server per file in `~/iCanHazAI/mcp/<name>.toml`,
-/// or an in-house server defined in code (`isBuiltin`). `id` is the
-/// filesystem-safe name (unique).
+/// A configured MCP server. One server per file in `~/iCanHazAI/mcp/<name>.toml`.
+/// `id` is the filesystem-safe name (unique).
 struct MCPServer: Identifiable, Equatable, Sendable {
     var id: String { name }
     let name: String
@@ -60,15 +59,8 @@ struct MCPServer: Identifiable, Equatable, Sendable {
     /// tools whose `name` matches an entry here are advertised to the LLM and
     /// callable. An empty array (or nil) means all tools are allowed.
     var tools: [String]?
-    /// True for in-house (bundled) MCP servers that are always present in the
-    /// list regardless of on-disk config, and run as per-chat copies. Custom
-    /// servers loaded from disk are `false`.
-    let isBuiltin: Bool
 
-    /// Memberwise initializer. `isBuiltin` defaults to `false` so existing
-    /// call sites (the wizard, the config loader) that construct custom
-    /// servers stay source-compatible; in-house servers pass `true`.
-    init(name: String, prefix: String, transport: MCPTransport, runPolicy: MCPRunPolicy?, command: String?, endpoint: String?, token: String?, tools: [String]?, isBuiltin: Bool = false) {
+    init(name: String, prefix: String, transport: MCPTransport, runPolicy: MCPRunPolicy?, command: String?, endpoint: String?, token: String?, tools: [String]?) {
         self.name = name
         self.prefix = prefix
         self.transport = transport
@@ -77,7 +69,6 @@ struct MCPServer: Identifiable, Equatable, Sendable {
         self.endpoint = endpoint
         self.token = token
         self.tools = tools
-        self.isBuiltin = isBuiltin
     }
 }
 
@@ -124,8 +115,7 @@ extension MCPServer {
             command: config.command,
             endpoint: config.endpoint,
             token: config.token,
-            tools: config.tools,
-            isBuiltin: false
+            tools: config.tools
         )
     }
 

@@ -25,15 +25,15 @@ actor ChatEngine {
     /// all chat file I/O. The engine never reads/writes chat files directly.
     private let store = ChatStore.shared
     /// Custom MCP servers loaded from disk (`~/iCanHazAI/mcp/*.toml`), kept in
-    /// sync via FSEvents. In-house (builtin) servers are prepended separately
-    /// in `rebuildMcpList()` so they always lead the list.
+    /// sync via FSEvents. Built-in tool groups (Utils/Filesystem/Code/Shell)
+    /// are no longer MCP servers — they run in-process via
+    /// [`BuiltinTools`](src/BuiltinTools.swift).
     private var customMcps: [MCPServer] = []
-    /// The full server list shown to the UI: in-house servers first, then
-    /// custom servers sorted by name. Rebuilt whenever either set changes.
+    /// The full server list shown to the UI: custom servers sorted by name.
+    /// Built-in tool groups are not represented here (they're configured per
+    /// role via `[utils]`/`[filesystem]`/`[code]`/`[shell]` groups, not as
+    /// MCP server entries).
     private(set) var mcps: [MCPServer] = []
-    /// The in-house servers, captured once at startup. They don't change at
-    /// runtime (their binaries are bundled), so this is stable.
-    private let builtinMcps: [MCPServer] = MCPManager.builtinServers()
     /// Live MCP configuration status, mirrored from `MCPManager`'s status
     /// sink. Drives the configuration overlay. The UI layer adds the display
     /// delay; the engine only carries the logical state.
@@ -685,15 +685,10 @@ actor ChatEngine {
                     clearConfigError(kind: .role, name: name)
                 }
             }
-            // Working directory / MCP isolation may have changed: relaunch
-            // in-house MCP copies for chats using this role so they pick up the
-            // new args on the next request (deferred if a chat is streaming).
-            relaunchInHouseForRole(name)
             emit(.rolesChanged(roles))
         case .itemRemoved:
             roles.removeAll(where: { $0.name == name })
             clearConfigError(kind: .role, name: name)
-            relaunchInHouseForRole(name)
             emit(.rolesChanged(roles))
         default:
             break
@@ -970,11 +965,11 @@ actor ChatEngine {
         debugLog("MCP", "reloaded \(customMcps.count) custom server config(s) from disk")
     }
 
-    /// Rebuilds the combined `mcps` list (in-house first, then custom sorted
-    /// by name) and emits the change. In-house servers always lead the list so
-    /// the UI can render the separator between them and the custom ones.
+    /// Rebuilds the `mcps` list (custom servers sorted by name) and emits the
+    /// change. Built-in tool groups are not MCP servers and are not listed
+    /// here.
     private func rebuildMcpList() {
-        mcps = builtinMcps + customMcps.sorted { $0.name < $1.name }
+        mcps = customMcps.sorted { $0.name < $1.name }
         emit(.mcpsChanged(mcps))
     }
 
@@ -1154,9 +1149,6 @@ actor ChatEngine {
         env.deleteAllImages(for: filename)
         records.removeAll(where: { $0.filename == filename })
         if selectedFilename == filename { selectedFilename = nil }
-        // Tear down any per-chat in-house MCP copies owned by this chat so we
-        // don't leak subprocesses after the chat is gone.
-        Task { await MCPManager.shared.disconnectAllInHouse(chatFilename: filename) }
         emit(.chatsChanged(records))
     }
 
@@ -1295,12 +1287,13 @@ actor ChatEngine {
 
     // MARK: - Role resolution
 
-    /// A role's MCP entry resolved against the known servers: the bare server
-    /// name (with `bundled::` stripped), whether it's a builtin, the tool
-    /// selection filter, the auto-allow set, and directory-isolation flag.
-    struct ResolvedRoleMCP: Equatable {
-        let serverName: String
-        let isBuiltin: Bool
+    /// A resolved tool source: either a built-in group (Utils/Filesystem/Code/
+    /// Shell, running in-process) or a custom MCP server (running as a
+    /// subprocess). Carries the tool selection filter, the auto-allow set, and
+    /// (for built-in groups) the directory-isolation flag.
+    struct ResolvedToolSource: Equatable {
+        let name: String
+        let isBuiltinGroup: Bool
         let toolsFilter: [String]
         let autoAllow: Set<String>
         let autoAllowAll: Bool
@@ -1371,75 +1364,51 @@ actor ChatEngine {
         return ChatMessage(role: .system, content: PromptVariables.substitute(text: promptContent, values: values))
     }
 
-    /// Resolves the role's MCP entries against the known servers. Entries whose
-    /// server doesn't exist (e.g. a deleted custom MCP) are dropped.
-    private func resolvedMCPs(for chat: Chat) -> [ResolvedRoleMCP] {
-        guard let role = self.role(for: chat), let entries = role.config.mcps else { return [] }
-        let builtinNames = Set(builtinMcps.map(\.name))
-        let customNames = Set(mcps.map(\.name))
-        return entries.compactMap { entry in
-            let isBuiltin = entry.mcp.hasPrefix("bundled::")
-            let serverName = isBuiltin ? String(entry.mcp.dropFirst("bundled::".count)) : entry.mcp
-            if isBuiltin {
-                guard builtinNames.contains(serverName) else { return nil }
-            } else {
-                guard customNames.contains(serverName) else { return nil }
-            }
-            return ResolvedRoleMCP(
-                serverName: serverName,
-                isBuiltin: isBuiltin,
-                toolsFilter: entry.tools ?? [],
-                autoAllow: Set(entry.autoAllow ?? []),
-                autoAllowAll: entry.autoAllowAll ?? false,
-                directoryIsolation: entry.directoryIsolation ?? false
-            )
+    /// Resolves the role's tool sources: enabled built-in groups (in-process)
+    /// plus custom MCP servers whose config exists. Custom MCP entries whose
+    /// server doesn't exist (e.g. a deleted config) are dropped.
+    private func resolvedToolSources(for chat: Chat) -> [ResolvedToolSource] {
+        guard let role = self.role(for: chat) else { return [] }
+        var sources: [ResolvedToolSource] = []
+        // Built-in groups: enabled when their `[group]` table is present.
+        for group in role.enabledGroups {
+            let cfg = role.groupConfig(group) ?? RoleToolGroup()
+            sources.append(ResolvedToolSource(
+                name: group,
+                isBuiltinGroup: true,
+                toolsFilter: cfg.tools ?? [],
+                autoAllow: Set(cfg.autoAllow ?? []),
+                autoAllowAll: cfg.autoAllowAll ?? false,
+                directoryIsolation: cfg.directoryIsolation ?? false
+            ))
         }
+        // Custom MCP servers: only those whose config exists.
+        let customNames = Set(mcps.map(\.name))
+        if let entries = role.config.mcps {
+            for entry in entries where customNames.contains(entry.mcp) {
+                sources.append(ResolvedToolSource(
+                    name: entry.mcp,
+                    isBuiltinGroup: false,
+                    toolsFilter: entry.tools ?? [],
+                    autoAllow: Set(entry.autoAllow ?? []),
+                    autoAllowAll: entry.autoAllowAll ?? false,
+                    directoryIsolation: false
+                ))
+            }
+        }
+        return sources
     }
 
     /// The effective working directory for a chat: the per-chat override when
     /// the role allows it, otherwise the role's working directory. Nil when
-    /// neither is set. Forwarded to in-house MCP servers that support
-    /// `--workdir` (Filesystem, Code, Shell) so relative paths resolve against
-    /// it. `~` is expanded by `MCPManager` when building the launch command.
+    /// neither is set. Forwarded to built-in Filesystem/Code/Shell tools so
+    /// relative paths resolve against it.
     private func effectiveWorkingDirectory(for chat: Chat) -> String? {
         guard let role = self.role(for: chat) else { return nil }
         if role.workingDirectoryOverrideAllowed, let override = chat.workingDirectory, !override.isEmpty {
             return override
         }
         return role.workingDirectory
-    }
-
-    /// Filenames whose in-house MCP copies must be torn down once the current
-    /// request finishes. Populated when the working directory or role config
-    /// changes mid-stream — we can't kill a copy mid-tool-call without failing
-    /// the in-flight call — and drained by `finishStream`.
-    private var pendingInHouseRelaunch: Set<String> = []
-
-    /// Tears down the per-chat in-house MCP copies for `filename` so the next
-    /// request relaunches them with the current working directory / isolation
-    /// flags. If a request is streaming for this chat, the teardown is deferred
-    /// to `finishStream` to avoid killing an in-flight tool call.
-    private func scheduleInHouseRelaunch(filename: String) async {
-        if isStreaming(filename: filename) {
-            pendingInHouseRelaunch.insert(filename)
-        } else {
-            pendingInHouseRelaunch.remove(filename)
-            await MCPManager.shared.disconnectAllInHouse(chatFilename: filename)
-        }
-    }
-
-    /// Schedules an in-house relaunch for every chat currently using `roleName`.
-    /// Used when a role's config (working directory, MCP isolation) is edited
-    /// on disk, so running copies pick up the new args on the next request.
-    private func relaunchInHouseForRole(_ roleName: String) {
-        let affected = records.filter { $0.effectiveRoleName == roleName }.map(\.filename)
-        for filename in affected {
-            if isStreaming(filename: filename) {
-                pendingInHouseRelaunch.insert(filename)
-            } else {
-                Task { await MCPManager.shared.disconnectAllInHouse(chatFilename: filename) }
-            }
-        }
     }
 
     // MARK: - Sending messages
@@ -1689,80 +1658,76 @@ actor ChatEngine {
         finishStream(filename: filename)
     }
 
-    /// Gathers tool definitions from the chat's role-selected MCPs using the
-    /// cached tool lists populated during MCP configuration. The role's per-MCP
+    /// Gathers tool definitions from the chat's role-selected tool sources:
+    /// built-in groups (in-process, always available) and custom MCP servers
+    /// (using cached tool lists from configuration). The role's per-source
     /// `tools` selection is applied (intersected with the server's own tool
-    /// allowlist). Servers that failed configuration (no cached tools) are
-    /// silently excluded. On-demand / in-house stdio servers are started before
-    /// the request.
-    ///
-    /// No per-request listTools call is made: the cache is authoritative for
-    /// the duration of a configuration pass. If a server becomes unreachable
-    /// mid-conversation, `callTool` returns a clear error in the RESULT field
-    /// and the model can retry on the next call.
+    /// allowlist for custom MCPs). Custom servers that failed configuration
+    /// (no cached tools) are silently excluded. On-demand custom stdio servers
+    /// are started before the request.
     private func gatherTools(filename: String) async -> [ToolDefinition] {
         guard let idx = records.firstIndex(where: { $0.filename == filename }),
               let chat = records[idx].chat else { return [] }
-        let resolved = resolvedMCPs(for: chat)
-        // The configurator role has no MCP servers — it uses in-process config
-        // tools instead — so don't bail out when its resolved MCP list is empty.
+        let resolved = resolvedToolSources(for: chat)
+        // The configurator role has no tool sources — it uses in-process config
+        // tools instead — so don't bail out when its resolved list is empty.
         let isConfigurator = role(for: chat)?.name == ConfiguratorTools.configuratorRoleName
         guard !resolved.isEmpty || isConfigurator else { return [] }
 
-        // Route each server by kind: in-house (builtin) servers run as per-chat
-        // copies, custom on-demand servers run in the shared pool. Always-on /
-        // http servers are already connected from configuration. In-house copies
-        // are launched with the chat's effective working directory and the
-        // per-entry isolation flag so Filesystem/Code/Shell isolate themselves
-        // to the role's working directory when configured.
-        let inHouse = resolved.filter { $0.isBuiltin }.map { ($0.serverName, $0.directoryIsolation) }
-        let custom = resolved.filter { !$0.isBuiltin }.map(\.serverName)
-        if !inHouse.isEmpty {
-            let workdir = effectiveWorkingDirectory(for: chat)
-            await MCPManager.shared.ensureInHouseRunning(
-                chatFilename: filename,
-                servers: inHouse,
-                workingDirectory: workdir
-            )
-        }
+        // Start on-demand custom stdio servers before the request.
+        let custom = resolved.filter { !$0.isBuiltinGroup }.map(\.name)
         if !custom.isEmpty {
             await MCPManager.shared.ensureOnDemandRunning(custom)
         }
 
         var defs: [ToolDefinition] = []
-        var perServerCounts: [(String, Int)] = []
+        var perSourceCounts: [(String, Int)] = []
         for r in resolved {
-            // Read the cached tool list. Servers with no cache entry either
-            // failed configuration or were never configured; skip them.
-            guard let tools = await MCPManager.shared.cachedTools(for: r.serverName) else {
-                debugLog("MCP", "no cached tools — server=\"\(r.serverName)\", chat=\(filename) (skipped)")
-                perServerCounts.append((r.serverName, 0))
-                continue
+            if r.isBuiltinGroup {
+                // Built-in groups: tools are always available (in-process).
+                let groupTools = BuiltinTools.tools(for: r.name)
+                let roleAllow = Set(r.toolsFilter)
+                let filtered = groupTools.filter { t in
+                    roleAllow.isEmpty || roleAllow.contains(t.name)
+                }
+                perSourceCounts.append((r.name, filtered.count))
+                defs.append(contentsOf: filtered.map { tool in
+                    ToolDefinition(
+                        serverName: r.name,
+                        prefix: "",
+                        name: tool.name,
+                        description: tool.description,
+                        inputSchema: tool.schema
+                    )
+                })
+            } else {
+                // Custom MCP server: read the cached tool list.
+                guard let tools = await MCPManager.shared.cachedTools(for: r.name) else {
+                    debugLog("MCP", "no cached tools — server=\"\(r.name)\", chat=\(filename) (skipped)")
+                    perSourceCounts.append((r.name, 0))
+                    continue
+                }
+                let serverConfig = await MCPManager.shared.serverConfig(for: r.name)
+                let serverAllow = Set(serverConfig?.tools ?? [])
+                let roleAllow = Set(r.toolsFilter)
+                let filtered = tools.filter { t in
+                    (serverAllow.isEmpty || serverAllow.contains(t.name)) &&
+                    (roleAllow.isEmpty || roleAllow.contains(t.name))
+                }
+                perSourceCounts.append((r.name, filtered.count))
+                let prefix = serverConfig?.prefix ?? r.name
+                defs.append(contentsOf: filtered.map { tool in
+                    ToolDefinition(
+                        serverName: r.name,
+                        prefix: prefix,
+                        name: tool.name,
+                        description: tool.description,
+                        inputSchema: tool.inputSchema
+                    )
+                })
             }
-            // Apply both the server's own tool allowlist and the role's tool
-            // selection. An empty list means "all tools".
-            let serverConfig = await MCPManager.shared.serverConfig(for: r.serverName)
-            let serverAllow = Set(serverConfig?.tools ?? [])
-            let roleAllow = Set(r.toolsFilter)
-            let filtered = tools.filter { t in
-                (serverAllow.isEmpty || serverAllow.contains(t.name)) &&
-                (roleAllow.isEmpty || roleAllow.contains(t.name))
-            }
-            perServerCounts.append((r.serverName, filtered.count))
-            let prefix = serverConfig?.prefix ?? r.serverName
-            defs.append(contentsOf: filtered.map { tool in
-                ToolDefinition(
-                    serverName: r.serverName,
-                    prefix: prefix,
-                    name: tool.name,
-                    description: tool.description,
-                    inputSchema: tool.inputSchema
-                )
-            })
         }
-        // Deduplicate by namespaced name. Some MCP servers expose tools with
-        // duplicate names, which makes the LLM API reject the request with
-        // "Tool names must be unique". Keep the first occurrence.
+        // Deduplicate by namespaced name.
         var seen = Set<String>()
         var unique: [ToolDefinition] = []
         var dropped = 0
@@ -1776,15 +1741,13 @@ actor ChatEngine {
         if dropped > 0 {
             debugLog("MCP", "deduplicated tools — dropped \(dropped) duplicate name(s), chat=\(filename)")
         }
-        // The bundled Configurator role uses a set of in-process config
-        // tools (no subprocess) instead of MCP servers. They are dispatched
-        // directly from `executeToolCall`, bypassing `MCPManager`.
+        // The bundled Configurator role uses in-process config tools.
         if role(for: chat)?.name == ConfiguratorTools.configuratorRoleName {
             unique.append(contentsOf: ConfiguratorTools.toolDefinitions)
         }
-        debugLog("MCP", "gathered tools — chat=\(filename), total=\(unique.count), servers=\(resolved.count)")
-        for (serverName, count) in perServerCounts {
-            debugLog("MCP", "  server=\"\(serverName)\" contributed \(count) tool(s)")
+        debugLog("MCP", "gathered tools — chat=\(filename), total=\(unique.count), sources=\(resolved.count)")
+        for (sourceName, count) in perSourceCounts {
+            debugLog("MCP", "  source=\"\(sourceName)\" contributed \(count) tool(s)")
         }
         return unique
     }
@@ -1801,14 +1764,14 @@ actor ChatEngine {
         scheduleCoalescedEmit()
     }
 
-    /// Executes a single tool call via `MCPManager`. Returns the tool result.
-    /// `filename` is the owning chat's filename, forwarded to `MCPManager` so
-    /// progress notifications route to this chat's live `tool`-role message.
+    /// Executes a single tool call. Built-in group tools run in-process via
+    /// [`BuiltinTools`](src/BuiltinTools.swift); custom MCP server tools run via
+    /// [`MCPManager`](src/MCPManager.swift). Configurator tools run in-process
+    /// too. Returns the tool result.
+    ///
     /// `tools` is the exact set of tool definitions advertised to the model for
     /// this turn; the call name is matched directly against their
-    /// `namespacedName` to recover the owning server + raw tool name, which
-    /// avoids the ambiguity of splitting on the first underscore (prefixless
-    /// servers expose tools like `tavily_search` whose own name contains `_`).
+    /// `namespacedName` to recover the owning source + raw tool name.
     ///
     /// Tools flagged as auto-allowed by the chat's role (`auto_allow` /
     /// `auto_allow_all`) skip the approval prompt and execute immediately.
@@ -1818,32 +1781,31 @@ actor ChatEngine {
         // prefix parsing, which mis-splits prefixless tools.
         guard let match = tools.first(where: { $0.namespacedName == call.name }) else {
             debugLog("Tool", "no advertised tool matches name \"\(call.name)\" — chat=\(filename)")
-            return ToolResult(callID: call.id, content: "No MCP tool found for name \"\(call.name)\".", isError: true)
+            return ToolResult(callID: call.id, content: "No tool found for name \"\(call.name)\".", isError: true)
         }
-        let serverName = match.serverName
+        let sourceName = match.serverName
         let toolName = match.name
 
         // In-process configurator tools run directly in the app (no MCP
         // subprocess) and are always auto-approved: their writes are validated
         // before touching disk, so there's nothing destructive to confirm.
-        if serverName == ConfiguratorTools.serverName {
+        if sourceName == ConfiguratorTools.serverName {
             debugLog("Tool", "executing configurator tool \(toolName) — callID=\(call.id), chat=\(filename)")
             return await ConfiguratorTools.call(name: toolName, arguments: call.arguments, callID: call.id)
         }
 
         // Auto-allow: if the role marks this tool (or all tools from this
-        // server) as auto-approved, skip the approval prompt entirely.
+        // source) as auto-approved, skip the approval prompt entirely.
         let chat = records.first(where: { $0.filename == filename })?.chat
-        let resolved = chat.map { resolvedMCPs(for: $0) } ?? []
-        let autoAllowed = resolved.first(where: { $0.serverName == serverName })?.autoAllows(tool: toolName) ?? false
-        // Working directory + isolation for the owning in-house server, used
-        // when a per-chat copy is (re)started lazily from this call.
+        let resolved = chat.map { resolvedToolSources(for: $0) } ?? []
+        let autoAllowed = resolved.first(where: { $0.name == sourceName })?.autoAllows(tool: toolName) ?? false
+        // Working directory + isolation for built-in groups.
         let workdir = chat.flatMap { effectiveWorkingDirectory(for: $0) }
-        let isolation = resolved.first(where: { $0.serverName == serverName })?.directoryIsolation ?? false
+        let isolation = resolved.first(where: { $0.name == sourceName })?.directoryIsolation ?? false
 
         let approval: ToolApproval
         if autoAllowed {
-            debugLog("Tool", "auto-allowed \(serverName)/\(toolName) — callID=\(call.id), chat=\(filename)")
+            debugLog("Tool", "auto-allowed \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
             approval = .allow
         } else {
             // The approval hook. Suspends until the user allows or denies the
@@ -1855,21 +1817,17 @@ actor ChatEngine {
 
         switch approval {
         case .allow:
-            debugLog("Tool", "executing \(serverName)/\(toolName) — callID=\(call.id), chat=\(filename)")
-            // In-house servers run as per-chat copies; custom servers use the
-            // shared connection pool. Routing uses `builtinMcps` (captured at
-            // init) so it doesn't depend on the configure pass.
+            debugLog("Tool", "executing \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
             let result: ToolResult
-            if builtinMcps.contains(where: { $0.name == serverName }) {
-                result = await MCPManager.shared.callInHouseTool(
-                    chatFilename: filename, server: serverName, name: toolName,
-                    arguments: call.arguments, callID: call.id,
-                    workingDirectory: workdir, directoryIsolation: isolation
-                )
+            if BuiltinTools.allGroups.contains(sourceName) {
+                // Built-in group: run in-process with the chat's workdir.
+                let wd = Workdir(root: workdir, isolated: isolation)
+                result = await BuiltinTools.call(name: toolName, arguments: call.arguments, callID: call.id, group: sourceName, workdir: wd)
             } else {
-                result = await MCPManager.shared.callTool(server: serverName, name: toolName, arguments: call.arguments, callID: call.id, chatFilename: filename)
+                // Custom MCP server: use the shared connection pool.
+                result = await MCPManager.shared.callTool(server: sourceName, name: toolName, arguments: call.arguments, callID: call.id, chatFilename: filename)
             }
-            debugLog("Tool", "result \(serverName)/\(toolName) — isError=\(result.isError), contentSize=\(result.content.count), chat=\(filename)")
+            debugLog("Tool", "result \(sourceName)/\(toolName) — isError=\(result.isError), contentSize=\(result.content.count), chat=\(filename)")
             return result
         case .deny(let reason):
             let message = ToolApproval.denialMessage(for: reason)
@@ -2104,12 +2062,6 @@ actor ChatEngine {
         }
         records[idx].isStreaming = false
         streamTasks[filename] = nil
-        // If a working-directory / role change was deferred while this chat was
-        // streaming, tear down its in-house MCP copies now so the next request
-        // relaunches them with the current args.
-        if pendingInHouseRelaunch.remove(filename) != nil {
-            Task { await MCPManager.shared.disconnectAllInHouse(chatFilename: filename) }
-        }
         // Flag as unread so the user is notified of new activity — but only if
         // this isn't the chat the user is currently looking at. When the
         // finished chat is the selected one the user has already seen the
@@ -2327,9 +2279,6 @@ actor ChatEngine {
         guard var chat = records[idx].chat else { return }
         chat.role = roleName
         saveChat(chat, filename: filename)
-        // The new role may carry a different working directory / isolation
-        // config: relaunch the chat's in-house MCP copies accordingly.
-        await scheduleInHouseRelaunch(filename: filename)
         emit(.chatsChanged(records))
     }
 
@@ -2350,9 +2299,6 @@ actor ChatEngine {
         guard var chat = records[idx].chat else { return }
         chat.workingDirectory = path
         saveChat(chat, filename: filename)
-        // The working directory drives in-house MCP `--workdir`/`--isolate`:
-        // relaunch the chat's copies so they pick up the new path.
-        await scheduleInHouseRelaunch(filename: filename)
         emit(.chatsChanged(records))
     }
 

@@ -123,12 +123,13 @@ Only `{identifier}`-shaped references are variables — braces around non-identi
 
 ## Roles
 
-Bundles a prompt, connection, working directory, and MCPs.
+Bundles a prompt, connection, working directory, and tools. Tools come from two sources:
 
-`[[mcps]]` entries:
-- `mcp = "bundled::<Name>"` — built-in; `mcp = "<name>"` — custom.
-- `tools` — allowlist (empty/missing = all). `auto_allow` — tools to auto-approve (empty/missing = none). `auto_allow_all = true` — auto-approve everything.
-- `directory_isolation = true` — isolate `bundled::Filesystem`/`bundled::Code` to the working directory (chroot-like, via the `--isolate` flag). Only supported on these two; setting it on any other MCP (including `bundled::Shell` and custom servers) is a validation error.
+1. **Built-in tool groups** — `[utils]`, `[filesystem]`, `[code]`, `[shell]`. These run in-process (no subprocess). A group is enabled simply by mentioning it; an empty group (e.g. `[utils]` with no keys) enables all its tools with defaults. Each group accepts:
+   - `tools` — allowlist (empty/missing = all). `auto_allow` — tools to auto-approve (empty/missing = none). `auto_allow_all = true` — auto-approve everything.
+   - `directory_isolation = true` (Filesystem/Code only) — isolate to the working directory (chroot-like). Only supported on these two groups; setting it on any other group (including Shell) is a validation error.
+
+2. **Custom MCP servers** — `[[mcps]]` array-of-tables entries, each with `mcp = "<name>"` (matching a configured MCP server), plus `tools`/`auto_allow`/`auto_allow_all`.
 
 ### Working directory & directory isolation rules
 
@@ -136,14 +137,14 @@ These three fields interact and are validated on role load:
 
 - `working_directory` — pre-set directory applied to every new chat.
 - `working_directory_override_allowed` — let the user pick a different directory per chat.
-- `directory_isolation` (per `[[mcps]]` entry) — isolate Filesystem/Code to the working directory.
+- `directory_isolation` (per group) — isolate Filesystem/Code to the working directory.
 
 **Validation errors** (the role fails to load and surfaces a config error):
-1. Setting `working_directory` or `working_directory_override_allowed` without selecting at least one workdir-capable bundled MCP (`bundled::Filesystem`, `bundled::Code`, or `bundled::Shell`). Nothing would consume the directory, so the setting is meaningless.
-2. Setting `directory_isolation = true` on any MCP other than `bundled::Filesystem` and `bundled::Code` (including `bundled::Shell` and custom servers).
+1. Setting `working_directory` or `working_directory_override_allowed` without selecting at least one workdir-capable group (Filesystem, Code, or Shell). Nothing would consume the directory, so the setting is meaningless.
+2. Setting `directory_isolation = true` on any group other than Filesystem and Code (including Shell).
 3. Setting `directory_isolation = true` without providing a working directory (neither `working_directory` nor `working_directory_override_allowed = true`). Confinement needs a target directory.
 
-**Toolbar behavior** (when a workdir-capable MCP is selected):
+**Toolbar behavior** (when a workdir-capable group is selected):
 - `working_directory` set, override allowed → directory shown, user can change it.
 - `working_directory` set, override not allowed → directory shown, fixed (button disabled).
 - `working_directory` not set, override allowed → "No directory" shown; user must pick one. When `directory_isolation` is also active, the placeholder is red and sending is blocked until a directory is picked.
@@ -162,18 +163,14 @@ icon = "magnifyingglass"                    # SF Symbol; optional, defaults to "
 # mint, cyan, brown, gray. Omit/unknown = macOS accent color. Adaptive to light/dark.
 accent = "purple"
 
-[[mcps]]
-mcp = "bundled::Utils"
-tools = []
+[utils]
 auto_allow_all = true
 
-[[mcps]]
-mcp = "bundled::Filesystem"
+[filesystem]
 auto_allow = ["ls", "read_file", "stat"]
 directory_isolation = true
 
-[[mcps]]
-mcp = "bundled::Code"
+[code]
 directory_isolation = true
 
 [[mcps]]
@@ -243,16 +240,16 @@ Canonical workflows. Adapt as needed, but keep the shape: **gather what's missin
 2. `check_mcp_http` to confirm reachability and discover tools.
 3. Build TOML from the http template, `write_mcp`, report, offer to wire into a role.
 
-## Bundled MCP servers
+## Built-in tool groups
 
-The app ships with four built-in MCP servers, always available (no config file needed) and referenced from roles as `bundled::<Name>`:
+The app ships with four built-in tool groups, always available (no config file needed) and enabled in roles via their `[group]` table:
 
-- **Utils** — small utilities.
-- **Filesystem** — file operations.
-- **Code** — code-aware tools.
-- **Shell** — shell execution.
+- **Utils** (`[utils]`) — small utilities: `calc`, `datetime`, `uuid`, `hash`, `base64_encode`, `base64_decode`, `sleep`.
+- **Filesystem** (`[filesystem]`) — file operations: `ls`, `read_file`, `write_file`, `find_file`, `find_text`, `mkdir`, `mv`, `rm`, `stat`, `pwd`.
+- **Code** (`[code]`) — code-aware tools: `apply_patch`, `git`.
+- **Shell** (`[shell]`) — shell execution: `shell`, `applescript`.
 
-To discover the actual tools a bundled server exposes (e.g. to build a `tools` allowlist for a role), use `check_mcp_bundled` with the server `name`. It launches the server, lists its tools, and terminates it — same shape as `check_mcp_stdio`/`check_mcp_http`.
+These run in-process (no subprocess), so there's no `check_mcp_bundled` tool — the tool list above is authoritative. To build a `tools` allowlist for a role, pick from the names listed above.
 
 ## Creating a Role
 

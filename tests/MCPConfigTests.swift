@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import TOML
+import Logging
 @testable import iCanHazAI
 
 // Tests for the TOML-based MCP server config (`MCPConfig` / `MCPServer`).
@@ -83,8 +84,7 @@ extension AllAppTests {
                 command: "npx -y @tavily/mcp-server",
                 endpoint: nil,
                 token: nil,
-                tools: ["tavily_search"],
-                isBuiltin: false
+                tools: ["tavily_search"]
             )
             let encoded = try TOMLEncoder().encode(server.config)
             let text = try #require(String(data: encoded, encoding: .utf8))
@@ -100,6 +100,37 @@ extension AllAppTests {
             #expect(again.runPolicy == server.runPolicy)
             #expect(again.command == server.command)
             #expect(again.tools == server.tools)
+        }
+
+        @Test("MCPDebugLogHandler forwards to debugLog without infinite recursion")
+        func logHandlerDoesNotRecurse() async throws {
+            // Regression: MCPDebugLogHandler previously implemented the deprecated
+            // `log(level:...Source:...)` with a capital `Source` label, which did
+            // not satisfy the LogHandler protocol requirement. The default
+            // implementations then called each other ~1000+ times until the stack
+            // overflowed (EXC_BAD_ACCESS / SIGBUS) on app launch.
+            DebugLogger.stopFileLogging()
+            DebugLogger.setEnabled(false)
+            defer {
+                DebugLogger.stopFileLogging()
+                DebugLogger.setEnabled(false)
+            }
+
+            let tmpRoot = FileManager.default.temporaryDirectory
+                .appendingPathComponent("ichai-mcplog-\(UUID().uuidString)", isDirectory: true)
+            DebugLogger.startFileLogging(rootURL: tmpRoot)
+
+            let logger = Logger(label: "test.mcp") { _ in MCPDebugLogHandler() }
+            let marker = "mcp-handler-marker-\(UUID().uuidString)"
+            logger.debug(.init(stringLiteral: marker))
+
+            // Give the file write a moment to flush.
+            try await Task.sleep(for: .milliseconds(50))
+
+            let url = try #require(DebugLogger.currentLogFileURL)
+            let contents = try String(contentsOf: url, encoding: .utf8)
+            #expect(contents.contains("MCP/SDK"))
+            #expect(contents.contains(marker))
         }
     }
 }

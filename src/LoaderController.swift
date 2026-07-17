@@ -168,7 +168,7 @@ final class LoaderController: ObservableObject {
                 refreshCount: n
             )
         }
-        let mcps = MCPManager.builtinServers() + env.loadMCPs().sorted { $0.name < $1.name }
+        let mcps = env.loadMCPs().sorted { $0.name < $1.name }
         // MCP rows show "pending" as their subtitle immediately; the tool count
         // replaces it once the server reports back.
         let mcpEntries = mcps.map {

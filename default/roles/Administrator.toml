@@ -4,14 +4,11 @@ icon = "terminal"
 accent = "green"
 connection_override_allowed = true
 
-[[mcps]]
-mcp = "bundled::Utils"
+[utils]
 auto_allow_all = true
 
-[[mcps]]
-mcp = "bundled::Filesystem"
+[filesystem]
 auto_allow = ["ls", "read_file", "stat", "find_file", "find_text", "pwd"]
 
-[[mcps]]
-mcp = "bundled::Shell"
-tools = ["shell", "shell_background", "shell_read_output"]
+[shell]
+tools = ["shell"]

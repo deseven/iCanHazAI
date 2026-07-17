@@ -4,7 +4,5 @@ icon = "sparkles"
 accent = "purple"
 connection_override_allowed = true
 
-[[mcps]]
-mcp = "bundled::Utils"
-tools = []
+[utils]
 auto_allow_all = true

@@ -31,7 +31,7 @@ extension AllAppTests {
             for expected in ["list_connections", "list_mcps", "list_roles", "list_prompts",
                              "read_config", "write_config", "read_log",
                              "delete_connection", "delete_mcp", "delete_role", "delete_prompt",
-                             "check_mcp_stdio", "check_mcp_http", "check_mcp_bundled", "check_connection"] {
+                             "check_mcp_stdio", "check_mcp_http", "check_connection"] {
                 #expect(ConfiguratorTools.toolNames.contains(expected), "missing \(expected)")
             }
         }
@@ -403,17 +403,6 @@ extension AllAppTests {
 
         // MARK: - check_mcp_stdio
 
-        @Test("check_mcp_stdio lists tools from a running stdio server")
-        func mcpStdioCheckListsTools() async throws {
-            // The bundled MCP binaries are built by build.sh before tests run
-            // (same assumption the MCPTestHarness-based suites make).
-            let path = try #require(MCPManager.builtinBinaryPath(for: "iCanHazAI-UtilsMCP"))
-            let env = try TempEnv().env
-            let res = await call("check_mcp_stdio", env, ["command": "\"\(path)\""])
-            #expect(!res.isError, "error: \(res.content)")
-            #expect(res.content.contains("calc"))
-        }
-
         @Test("check_mcp_stdio reports an error for a failing command")
         func mcpStdioCheckFails() async throws {
             let env = try TempEnv().env
@@ -457,41 +446,6 @@ extension AllAppTests {
         }
 
         // MARK: - check_connection
-
-        // MARK: - check_mcp_bundled
-
-        @Test("check_mcp_bundled lists tools from a bundled server")
-        func mcpBundledCheckListsTools() async throws {
-            // The bundled MCP binaries are built by build.sh before tests run
-            // (same assumption the check_mcp_stdio test makes).
-            _ = try #require(MCPManager.builtinBinaryPath(for: "iCanHazAI-UtilsMCP"))
-            let env = try TempEnv().env
-            let res = await call("check_mcp_bundled", env, ["name": "Utils"])
-            #expect(!res.isError, "error: \(res.content)")
-            #expect(res.content.contains("calc"))
-        }
-
-        @Test("check_mcp_bundled rejects an unknown bundled server name")
-        func mcpBundledCheckUnknown() async throws {
-            let env = try TempEnv().env
-            let res = await call("check_mcp_bundled", env, ["name": "Nope"])
-            #expect(res.isError)
-            #expect(res.content.lowercased().contains("unknown"))
-            // The error should list the available bundled servers so the
-            // configurator can correct itself without another round-trip.
-            #expect(res.content.contains("Utils"))
-            #expect(res.content.contains("Filesystem"))
-            #expect(res.content.contains("Code"))
-            #expect(res.content.contains("Shell"))
-        }
-
-        @Test("check_mcp_bundled rejects an empty name")
-        func mcpBundledCheckEmpty() async throws {
-            let env = try TempEnv().env
-            let res = await call("check_mcp_bundled", env, ["name": ""])
-            #expect(res.isError)
-            #expect(res.content.lowercased().contains("name"))
-        }
 
         // MARK: - check_connection
 

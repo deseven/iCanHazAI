@@ -20,9 +20,9 @@ private let mcpLogger = Logger(label: "iCanHazAI.mcp") { _ in
 }
 
 /// A `LogHandler` that forwards to `debugLog("MCP/SDK", message)`.
-private struct MCPDebugLogHandler: LogHandler {
-    func log(level: Logging.Logger.Level, message: Logging.Logger.Message, metadata: Logging.Logger.Metadata?, source: String, file: String, function: String, line: UInt) {
-        debugLog("MCP/SDK", "\(level): \(message)")
+struct MCPDebugLogHandler: LogHandler {
+    func log(event: Logging.LogEvent) {
+        debugLog("MCP/SDK", "\(event.level): \(event.message)")
     }
     subscript(metadataKey key: String) -> Logging.Logger.Metadata.Value? {
         get { nil }
@@ -47,10 +47,16 @@ struct MCPTool: Sendable, Equatable {
     let inputSchema: String
 }
 
-/// Owns the runtime MCP client connections. A singleton `actor` that keeps
+/// Owns the runtime MCP client connections for **custom** MCP servers (loaded
+/// from `~/iCanHazAI/mcp/*.toml`). A singleton `actor` that keeps
 /// `MCP.Client` instances alive, reconnects on config change, caches the
-/// discovered tool list per server, and exposes `callTool()` for the
-/// agent loop. Lives alongside `ChatEngine`.
+/// discovered tool list per server, and exposes `callTool()` for the agent
+/// loop. Lives alongside `ChatEngine`.
+///
+/// Built-in tool groups (Utils/Filesystem/Code/Shell) are no longer MCP
+/// servers — they run in-process via [`BuiltinTools`](src/BuiltinTools.swift)
+/// and are dispatched directly from `ChatEngine.executeToolCall`, bypassing
+/// this manager entirely.
 ///
 /// The configuration flow (`configure`/`reconfigure`) is driven by
 /// `ChatEngine`. It connects stdio servers, queries tools, discards servers
@@ -65,87 +71,6 @@ struct MCPTool: Sendable, Equatable {
 actor MCPManager {
 
     static let shared = MCPManager()
-
-    // MARK: - In-house (builtin) MCP servers
-
-    /// The in-house MCP servers, always present in the list regardless of
-    /// on-disk config. Each is a stdio on-demand server that runs as a
-    /// per-chat copy when selected. `command` points at the bundled binary
-    /// (or the SwiftPM build output in dev/test). Servers whose binary can't
-    /// be located are omitted — the app still works, just without them.
-    static func builtinServers() -> [MCPServer] {
-        // (display name, tool prefix, binary name). Ordered as in build.sh.
-        // `binary` is the SwiftPM product name (prefixed `iCanHazAI-` so the
-        // spawned processes are distinguishable in `ps` / Activity Monitor).
-        // `prefix` is empty: in-house tools are exposed under their own names
-        // (e.g. `shell`, `calc`) without namespacing.
-        let defs: [(name: String, prefix: String, binary: String)] = [
-            ("Utils",      "", "iCanHazAI-UtilsMCP"),
-            ("Filesystem", "", "iCanHazAI-FilesystemMCP"),
-            ("Code",       "", "iCanHazAI-CodeMCP"),
-            ("Shell",      "", "iCanHazAI-ShellMCP"),
-        ]
-        return defs.compactMap { d in
-            guard let path = builtinBinaryPath(for: d.binary) else {
-                debugLog("MCP", "in-house server \"\(d.name)\" binary not found (\(d.binary)), skipping")
-                return nil
-            }
-            // Quote the path so `exec` survives spaces in the build path.
-            return MCPServer(
-                name: d.name,
-                prefix: d.prefix,
-                transport: .stdio,
-                runPolicy: .onDemand,
-                command: "\"\(path)\"",
-                endpoint: nil,
-                token: nil,
-                tools: nil,
-                isBuiltin: true
-            )
-        }
-    }
-
-    /// Locates a bundled MCP server binary. Checks the app bundle's
-    /// `Contents/Resources/MCPServers/` first (production and dev bundles),
-    /// then the SwiftPM build output (for `swift run` / tests): walks up from
-    /// the main bundle (or CWD) to find the package root containing `mcps/`.
-    nonisolated static func builtinBinaryPath(for binary: String) -> String? {
-        let fm = FileManager.default
-        // 1. Bundled app: Contents/Resources/MCPServers/<binary>
-        if let dir = Bundle.main.url(forResource: "MCPServers", withExtension: nil) {
-            let p = dir.appendingPathComponent(binary).path
-            if fm.isExecutableFile(atPath: p) { return p }
-        }
-        // 2. SwiftPM build output relative to the package root.
-        let root = packageRoot()
-        let candidates = [
-            "\(root)/.build/debug/\(binary)",
-            "\(root)/.build/arm64-apple-macosx/debug/\(binary)",
-            "\(root)/.build/apple/Products/release/\(binary)",
-        ]
-        for c in candidates where fm.isExecutableFile(atPath: c) { return c }
-        return nil
-    }
-
-    /// Walks up from the main bundle's directory (falling back to CWD) until
-    /// a `mcps/` directory is found, identifying the package root. Mirrors
-    /// `MCPTestHarness.packageRoot` for use at runtime.
-    nonisolated private static func packageRoot() -> String {
-        let fm = FileManager.default
-        var url = Bundle.main.bundleURL.deletingLastPathComponent()
-        // If running unbundled (swift run), Bundle.main.bundleURL is the
-        // .build/<arch>/debug dir; the walk-up still finds the package root.
-        if url.path == "." || !fm.fileExists(atPath: url.path) {
-            url = URL(fileURLWithPath: fm.currentDirectoryPath)
-        }
-        while url.path != "/" {
-            if fm.fileExists(atPath: url.appendingPathComponent("mcps").path) {
-                return url.path
-            }
-            url = url.deletingLastPathComponent()
-        }
-        return fm.currentDirectoryPath
-    }
 
     /// A connected MCP server: its config, the SDK client, and (for stdio) the
     /// spawned subprocess so we can terminate it on disconnect.
@@ -182,19 +107,8 @@ actor MCPManager {
     /// Pending idle-shutdown tasks for on-demand servers, keyed by server name.
     /// Cancelled when activity resumes or the server is disconnected.
     private var idleTasks: [String: Task<Void, Never>] = [:]
-
-    // MARK: - Per-chat (in-house) connections
-    /// In-house (builtin) MCP servers run as a separate process copy per chat
-    /// that has them selected, so two chats using UtilsMCP get two independent
-    /// subprocesses. These dicts are keyed by `chatFilename` then by server
-    /// name. The tool list is shared via `toolsCache` (all copies of a given
-    /// in-house server expose identical tools), so only the connection itself
-    /// is per-chat.
-    private var perChatConnections: [String: [String: Connection]] = [:]
-    private var perChatLastActivity: [String: [String: Date]] = [:]
-    private var perChatIdleTasks: [String: [String: Task<Void, Never>]] = [:]
-    /// Seconds an on-demand server stays alive after the last tool activity
-    /// before being shut down.
+    /// Seconds an on-demand custom server stays alive after the last tool
+    /// activity before being shut down.
     private let idleTimeout: TimeInterval = 600
     /// Grace period (seconds) given to a stdio subprocess before attempting
     /// the MCP handshake during configuration/wizard connects. If the process
@@ -407,7 +321,6 @@ actor MCPManager {
     func resetAll() async {
         debugLog("MCP", "resetAll — clearing all connections and caches")
         await disconnectAll()
-        await disconnectAllInHouse()
         knownServers.removeAll()
         toolsCache.removeAll()
         lastActivity.removeAll()
@@ -443,9 +356,8 @@ actor MCPManager {
 
     /// Spawns the stdio subprocess (or builds the http transport), performs the
     /// MCP `initialize` handshake, and returns a live `Connection` without
-    /// storing it. Shared by the shared-connection `connect(_:)` and the
-    /// per-chat in-house connect path. On failure the spawned process is
-    /// terminated and the error is rethrown.
+    /// storing it. Shared by the shared-connection `connect(_:)`. On failure
+    /// the spawned process is terminated and the error is rethrown.
     private func makeConnection(_ server: MCPServer) async throws -> Connection {
         let transport: any Transport
         var process: Process? = nil
@@ -805,157 +717,6 @@ actor MCPManager {
         }
     }
 
-    // MARK: - Per-chat in-house server lifecycle
-
-    /// Whether `name` refers to an in-house (builtin) MCP server. In-house
-    /// servers run as per-chat copies rather than the shared connection pool.
-    func isBuiltinServer(_ name: String) -> Bool {
-        knownServers[name]?.isBuiltin == true
-    }
-
-    /// Ensures a per-chat copy of each selected in-house server is running for
-    /// `chatFilename` before a chat request. If a copy is already running for
-    /// that chat (with a matching launch command), its idle timer is refreshed;
-    /// otherwise a fresh subprocess is spawned. Servers without a cached tool
-    /// list (failed/never configured) are skipped. Called by
-    /// `ChatEngine.gatherTools`.
-    ///
-    /// `workingDirectory` (the chat's effective working directory, with `~`
-    /// expanded) is forwarded as `--workdir` to servers that understand it, so
-    /// relative paths resolve against it. When a server entry has
-    /// `directoryIsolation` set, `--isolate` is also appended (chroot-like
-    /// isolation) for the servers that support it (Filesystem, Code). If the
-    /// desired launch command differs from the already-running copy (e.g. the
-    /// user changed the working directory), the old copy is torn down and a
-    /// fresh one is spawned with the new args.
-    func ensureInHouseRunning(
-        chatFilename: String,
-        servers: [(name: String, directoryIsolation: Bool)],
-        workingDirectory: String?
-    ) async {
-        for entry in servers {
-            let name = entry.name
-            guard let server = knownServers[name], server.isBuiltin else { continue }
-            let launchServer = makeInHouseCommand(
-                server: server,
-                workingDirectory: workingDirectory,
-                directoryIsolation: entry.directoryIsolation
-            )
-            if let existing = perChatConnections[chatFilename]?[name] {
-                if existing.server.command == launchServer.command {
-                    touchInHouseActivity(chatFilename: chatFilename, server: name)
-                    continue
-                }
-                // The workdir / isolation flags changed since the copy was
-                // started — tear it down so a fresh one spawns with the new args.
-                debugLog("MCP", "ensureInHouseRunning — relaunching copy (args changed) — server=\"\(name)\", chat=\(chatFilename)")
-                await disconnectInHouse(chatFilename: chatFilename, server: name)
-            }
-            guard toolsCache[name] != nil else { continue }
-            debugLog("MCP", "ensureInHouseRunning — starting per-chat copy — server=\"\(name)\", chat=\(chatFilename), command=\(launchServer.command ?? "")")
-            do {
-                let conn = try await makeConnection(launchServer)
-                if perChatConnections[chatFilename] == nil { perChatConnections[chatFilename] = [:] }
-                perChatConnections[chatFilename]?[name] = conn
-                debugLog("MCP", "in-house copy connected — server=\"\(name)\", chat=\(chatFilename)")
-            } catch {
-                debugLog("MCP", "⚠️ in-house copy connect failed — server=\"\(name)\", chat=\(chatFilename): \(error.localizedDescription)")
-                reportError("MCP server \"\(name)\" failed to start for chat: \(error.localizedDescription)")
-            }
-            touchInHouseActivity(chatFilename: chatFilename, server: name)
-        }
-    }
-
-    /// Builtin servers that accept `--workdir <path>` (setting the working
-    /// directory for relative-path resolution). Utils ignores it.
-    private static let workdirCapableServers: Set<String> = ["Filesystem", "Code", "Shell"]
-    /// Builtin servers that also accept `--isolate` (chroot-like isolation).
-    /// Shell deliberately does no isolation.
-    private static let isolateCapableServers: Set<String> = ["Filesystem", "Code"]
-
-    /// Returns a copy of `server` whose `command` has `--workdir` (and
-    /// optionally `--isolate`) appended according to the role/chat settings.
-    /// Servers that don't understand these flags, or when no working directory
-    /// is set, are returned unchanged. The working directory is `~`-expanded
-    /// here (rather than relying on shell expansion, which is suppressed by
-    /// quoting) and double-quoted so paths with spaces survive `exec`.
-    private func makeInHouseCommand(
-        server: MCPServer,
-        workingDirectory: String?,
-        directoryIsolation: Bool
-    ) -> MCPServer {
-        var s = server
-        guard let base = s.command, !base.isEmpty,
-              let wd = workingDirectory, !wd.isEmpty,
-              Self.workdirCapableServers.contains(server.name) else { return s }
-        let expanded = (wd as NSString).standardizingPath
-        var cmd = "\(base) --workdir \"\(expanded)\""
-        if directoryIsolation, Self.isolateCapableServers.contains(server.name) {
-            cmd += " --isolate"
-        }
-        s.command = cmd
-        return s
-    }
-
-    /// Records activity and (re)schedules the per-chat idle-shutdown task.
-    private func touchInHouseActivity(chatFilename: String, server: String) {
-        if perChatLastActivity[chatFilename] == nil { perChatLastActivity[chatFilename] = [:] }
-        perChatLastActivity[chatFilename]?[server] = Date()
-        if perChatIdleTasks[chatFilename] == nil { perChatIdleTasks[chatFilename] = [:] }
-        perChatIdleTasks[chatFilename]?[server]?.cancel()
-        let task = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64((self?.idleTimeout ?? 600) * 1_000_000_000))
-            guard let self else { return }
-            await self.handleInHouseIdleTimeout(chatFilename: chatFilename, server: server)
-        }
-        perChatIdleTasks[chatFilename]?[server] = task
-    }
-
-    /// Actor-isolated per-chat idle-timeout handler. Shuts the per-chat copy
-    /// down if no activity has occurred since the timer was scheduled.
-    private func handleInHouseIdleTimeout(chatFilename: String, server: String) async {
-        guard let last = perChatLastActivity[chatFilename]?[server] else { return }
-        let elapsed = Date().timeIntervalSince(last)
-        guard elapsed >= idleTimeout else { return }
-        debugLog("MCP", "idle timeout — shutting down in-house copy — server=\"\(server)\", chat=\(chatFilename), after \(Int(elapsed))s")
-        await disconnectInHouse(chatFilename: chatFilename, server: server)
-    }
-
-    /// Tears down a single per-chat in-house connection.
-    func disconnectInHouse(chatFilename: String, server: String) async {
-        perChatIdleTasks[chatFilename]?.removeValue(forKey: server)?.cancel()
-        perChatLastActivity[chatFilename]?.removeValue(forKey: server)
-        guard let conn = perChatConnections[chatFilename]?.removeValue(forKey: server) else { return }
-        debugLog("MCP", "disconnectInHouse — server=\"\(server)\", chat=\(chatFilename)")
-        await conn.client.disconnect()
-        if let process = conn.process {
-            process.terminate()
-            await awaitProcessExit(process)
-        }
-    }
-
-    /// Tears down all per-chat in-house connections for one chat (used on chat
-    /// deletion) or for all chats when `chatFilename` is nil (reset/shutdown).
-    func disconnectAllInHouse(chatFilename: String? = nil) async {
-        let chats: [String]
-        if let chatFilename {
-            chats = [chatFilename]
-        } else {
-            chats = Array(perChatConnections.keys)
-        }
-        for chat in chats {
-            let names = perChatConnections[chat].map { Array($0.keys) } ?? []
-            for name in names {
-                await disconnectInHouse(chatFilename: chat, server: name)
-            }
-            perChatConnections.removeValue(forKey: chat)
-            perChatLastActivity.removeValue(forKey: chat)
-            if let tasks = perChatIdleTasks.removeValue(forKey: chat) {
-                for t in tasks.values { t.cancel() }
-            }
-        }
-    }
-
     // MARK: - Tool calling
 
     /// Calls a tool on `server` with JSON-encoded `arguments` and maps the
@@ -969,7 +730,7 @@ actor MCPManager {
     /// content (with `isError: false` per spec — the tool call didn't
     /// "fail" from the model's perspective, the server was just momentarily
     /// unreachable). The server is NOT permanently disabled; the next tool
-    /// call will retry the connection. On-demand stdio servers are started
+    /// call retries the connection. On-demand stdio servers are started
     /// lazily here if needed.
     func callTool(server: String, name: String, arguments: String, callID: String, chatFilename: String) async -> ToolResult {
         debugLog("MCP", "callTool — server=\"\(server)\", tool=\"\(name)\", callID=\(callID), chat=\(chatFilename)")
@@ -990,33 +751,9 @@ actor MCPManager {
         })
     }
 
-    /// Calls a tool on a per-chat in-house copy. The copy is started lazily if
-    /// it isn't currently running for `chatFilename`. `workingDirectory` and
-    /// `directoryIsolation` are forwarded to the launch command (matching what
-    /// `ensureInHouseRunning` would use) so a lazily-started copy is isolated
-    /// the same way as one started up front. On failure the per-chat copy is
-    /// torn down so the next call starts fresh.
-    func callInHouseTool(chatFilename: String, server: String, name: String, arguments: String, callID: String, workingDirectory: String?, directoryIsolation: Bool) async -> ToolResult {
-        debugLog("MCP", "callInHouseTool — server=\"\(server)\", tool=\"\(name)\", callID=\(callID), chat=\(chatFilename)")
-        await ensureInHouseRunning(
-            chatFilename: chatFilename,
-            servers: [(server, directoryIsolation)],
-            workingDirectory: workingDirectory
-        )
-        guard let conn = perChatConnections[chatFilename]?[server] else {
-            debugLog("MCP", "callInHouseTool — server \"\(server)\" unreachable for chat=\(chatFilename), returning error in RESULT")
-            return ToolResult(callID: callID, content: "MCP server \"\(server)\" is currently unreachable. Please retry.", isError: false)
-        }
-        touchInHouseActivity(chatFilename: chatFilename, server: server)
-        return await performCall(conn: conn, server: server, name: name, arguments: arguments, callID: callID, chatFilename: chatFilename, onFailure: { [weak self] in
-            await self?.disconnectInHouse(chatFilename: chatFilename, server: server)
-        })
-    }
-
-    /// Shared tool-call core used by both the shared-connection `callTool` and
-    /// the per-chat `callInHouseTool`. Parses arguments, attaches a progress
+    /// Shared tool-call core. Parses arguments, attaches a progress
     /// token, invokes the client, and maps content. `onFailure` is invoked
-    /// when the call throws (so each path tears down its own connection).
+    /// when the call throws (so the connection is torn down).
     private func performCall(conn: Connection, server: String, name: String, arguments: String, callID: String, chatFilename: String, onFailure: @escaping () async -> Void) async -> ToolResult {
         // Parse the raw JSON arguments string into an MCP `Value`.
         let argsValue: [String: Value]?

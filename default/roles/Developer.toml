@@ -5,19 +5,13 @@ accent = "blue"
 connection_override_allowed = true
 working_directory_override_allowed = true
 
-[[mcps]]
-mcp = "bundled::Utils"
+[utils]
 auto_allow_all = true
 
-[[mcps]]
-mcp = "bundled::Filesystem"
-auto_allow = ["ls", "read_file", "stat"]
-directory_isolation = true
+[filesystem]
+auto_allow = ["ls", "read_file", "stat", "pwd"]
 
-[[mcps]]
-mcp = "bundled::Code"
-directory_isolation = true
+[code]
 
-[[mcps]]
-mcp = "bundled::Shell"
+[shell]
 tools = ["shell"]

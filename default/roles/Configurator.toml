@@ -2,3 +2,5 @@ description = "A role for editing ICanHazAI configuration. Simply state what you
 prompt = "Configurator"
 icon = "gearshape"
 connection_override_allowed = true
+
+# this is a special role that uses a special set of tools

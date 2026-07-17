@@ -30,46 +30,6 @@ let package = Package(
             ],
             path: "src"
         ),
-        // Bundled stdio MCP servers. Each is an independent executable copied
-        // into the app bundle under Contents/Resources/MCPServers/. Built as
-        // one SwiftPM graph with the app; build a single server on demand with
-        // `swift build --target iCanHazAI-UtilsMCP`. Product names are prefixed
-        // with `iCanHazAI-` so the spawned processes are distinguishable from
-        // unrelated system processes in `ps` / Activity Monitor.
-        .executableTarget(
-            name: "iCanHazAI-UtilsMCP",
-            dependencies: [
-                .product(name: "MCP", package: "swift-sdk"),
-                .product(name: "ProcessExit", package: "ProcessExit")
-            ],
-            path: "mcps/UtilsMCP/Sources/UtilsMCP"
-        ),
-        .executableTarget(
-            name: "iCanHazAI-FilesystemMCP",
-            dependencies: [
-                .product(name: "MCP", package: "swift-sdk"),
-                .product(name: "ImageTools", package: "ImageTools"),
-                .product(name: "ProcessExit", package: "ProcessExit")
-            ],
-            path: "mcps/FilesystemMCP/Sources/FilesystemMCP"
-        ),
-        .executableTarget(
-            name: "iCanHazAI-CodeMCP",
-            dependencies: [
-                .product(name: "MCP", package: "swift-sdk"),
-                .product(name: "ProcessExit", package: "ProcessExit")
-            ],
-            path: "mcps/CodeMCP/Sources/CodeMCP"
-        ),
-        .executableTarget(
-            name: "iCanHazAI-ShellMCP",
-            dependencies: [
-                .product(name: "MCP", package: "swift-sdk"),
-                .product(name: "ProcessExit", package: "ProcessExit"),
-                .product(name: "LoginShell", package: "LoginShell")
-            ],
-            path: "mcps/ShellMCP/Sources/ShellMCP"
-        ),
         .testTarget(
             name: "iCanHazAITests",
             dependencies: [
