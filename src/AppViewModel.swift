@@ -760,14 +760,34 @@ final class AppViewModel: ObservableObject {
     }
 
     /// Creates a new chat with the chosen role (called from the role picker).
+    /// When the role requires a user-picked working directory (override allowed,
+    /// no role-default directory), the workdir picker is presented right after
+    /// the chat is created so the user isn't left at a dead "No directory" chat.
     func createNewChat(role roleName: String) {
         showRolePicker = false
+        let needsWorkdir = roleNeedsWorkdirPick(roleName)
         Task {
             let filename = await engine.createNewChat(role: roleName)
             selectedChatID = filename
             await engine.selectChat(filename: filename)
             await engine.markViewed(filename: filename)
+            if needsWorkdir { showWorkdirPicker = true }
         }
+    }
+
+    /// True when a role requires the user to pick a working directory: it has a
+    /// workdir-capable bundled MCP, allows overrides, and doesn't pre-set a
+    /// directory. Used to auto-present the workdir picker after a role is picked.
+    private func roleNeedsWorkdirPick(_ roleName: String) -> Bool {
+        guard let role = roles.first(where: { $0.name == roleName }) else { return false }
+        return Self.roleNeedsWorkdirPick(role)
+    }
+
+    /// Pure decision logic (testable without an app instance).
+    nonisolated static func roleNeedsWorkdirPick(_ role: Role) -> Bool {
+        guard role.hasWorkdirCapableMCP else { return false }
+        guard role.workingDirectoryOverrideAllowed else { return false }
+        return role.workingDirectory?.isEmpty ?? true
     }
 
     /// Unified role-picker confirmation. Dispatches based on the current
@@ -778,12 +798,20 @@ final class AppViewModel: ObservableObject {
         showRolePicker = false
         switch mode {
         case .newChat:
+            // `createNewChat(role:)` auto-presents the workdir picker when the
+            // role requires a user-picked directory.
             createNewChat(role: roleName)
         case .assignToExisting(let filename):
             // A role was assigned — clear any dismissal record so a future
             // role deletion re-prompts the picker.
             dismissedRoleAssignmentFor.remove(filename)
             setRole(roleName)
+            if roleNeedsWorkdirPick(roleName) {
+                // Don't auto-prompt if this chat already has a working directory.
+                let hasWorkdir = chatItems
+                    .first(where: { $0.id == filename })?.chat?.workingDirectory?.isEmpty == false
+                if !hasWorkdir { showWorkdirPicker = true }
+            }
         }
     }
 

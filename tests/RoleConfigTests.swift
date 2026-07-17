@@ -466,6 +466,61 @@ extension AllAppTests {
             #expect(prompt.isBuiltin)
             #expect(prompt.content != "# shadow prompt")
         }
+
+        // MARK: - roleNeedsWorkdirPick
+
+        @Test("roleNeedsWorkdirPick is true when override allowed, no preset dir, workdir-capable MCP")
+        func roleNeedsWorkdirPickTrue() throws {
+            let toml = """
+            prompt = "Developer"
+            working_directory_override_allowed = true
+
+            [filesystem]
+            directory_isolation = true
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let role = Role(name: "Developer", config: config)
+            #expect(AppViewModel.roleNeedsWorkdirPick(role))
+        }
+
+        @Test("roleNeedsWorkdirPick is false when a working directory is pre-set")
+        func roleNeedsWorkdirPickFalsePresetDir() throws {
+            let toml = """
+            prompt = "Developer"
+            working_directory = "~/projects"
+            working_directory_override_allowed = true
+
+            [filesystem]
+            directory_isolation = true
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let role = Role(name: "Developer", config: config)
+            #expect(!AppViewModel.roleNeedsWorkdirPick(role))
+        }
+
+        @Test("roleNeedsWorkdirPick is false when overrides are not allowed")
+        func roleNeedsWorkdirPickFalseNoOverride() throws {
+            let toml = """
+            prompt = "Developer"
+
+            [filesystem]
+            directory_isolation = true
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let role = Role(name: "Developer", config: config)
+            #expect(!AppViewModel.roleNeedsWorkdirPick(role))
+        }
+
+        @Test("roleNeedsWorkdirPick is false when no workdir-capable MCP")
+        func roleNeedsWorkdirPickFalseNoCapableMCP() throws {
+            let toml = """
+            prompt = "Developer"
+            working_directory_override_allowed = true
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let role = Role(name: "Developer", config: config)
+            #expect(!AppViewModel.roleNeedsWorkdirPick(role))
+        }
     }
 }
 
