@@ -195,6 +195,42 @@ extension AllAppTests {
             #expect(text.contains("beta.txt"))
         }
 
+        @Test("ls recursive is capped at depth 1")
+        func lsRecursiveDepthCapped() async throws {
+            let tmp = try TestDir()
+            // node_modules/react/index.js        (L2 dir, L3 file)
+            // node_modules/react/dom/node.js     (L3 dir, L4 file)
+            // node_modules/express/main.js       (L2 dir, L3 file)
+            try tmp.write("node_modules/react/index.js", content: "")
+            try tmp.write("node_modules/react/dom/node.js", content: "")
+            try tmp.write("node_modules/express/main.js", content: "")
+            let (text, err) = await Self.call("ls", BuiltinTools.filesystemGroup, ["path": tmp.path, "recursive": true])
+            #expect(!err)
+            // Depth 1: node_modules itself (direct child).
+            #expect(text.contains("node_modules/"))
+            // Depth 1: top-level dep folders inside node_modules.
+            #expect(text.contains("node_modules/react/"))
+            #expect(text.contains("node_modules/express/"))
+            // Depth 1: files directly inside a dep folder are still shown.
+            #expect(text.contains("node_modules/react/index.js"))
+            #expect(text.contains("node_modules/express/main.js"))
+            // Anything deeper than depth 1 must be absent.
+            #expect(!text.contains("node_modules/react/dom/"))
+            #expect(!text.contains("node_modules/react/dom/node.js"))
+        }
+
+        @Test("ls recursive is capped at 1000 entries")
+        func lsRecursiveEntryCapped() async throws {
+            let tmp = try TestDir()
+            for i in 0..<1200 {
+                try tmp.write("f\(i).txt", content: "")
+            }
+            let (text, err) = await Self.call("ls", BuiltinTools.filesystemGroup, ["path": tmp.path, "recursive": true])
+            #expect(!err)
+            let count = text.split(separator: "\n", omittingEmptySubsequences: true).count
+            #expect(count == 1000)
+        }
+
         @Test("mkdir creates a directory")
         func mkdirCreates() async throws {
             let tmp = try TestDir()

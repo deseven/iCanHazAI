@@ -128,7 +128,7 @@ enum BuiltinTools {
     private static let filesystemToolDefs: [BuiltinToolDef] = [
         BuiltinToolDef(name: "ls",
             description: "List files and directories at a path. Returns one entry per line, directories suffixed with '/'.",
-            schema: #"{"type":"object","properties":{"path":{"type":"string","description":"Directory path to list. \#(Workdir.pathDescription)"},"recursive":{"type":"boolean","description":"If true, list recursively. Default false."}},"required":["path"]}"#),
+            schema: #"{"type":"object","properties":{"path":{"type":"string","description":"Directory path to list. \#(Workdir.pathDescription)"},"recursive":{"type":"boolean","description":"If true, list recursively to a fixed depth of 1 (direct children plus one level into subdirectories) with a cap of 1000 entries. Default false."}},"required":["path"]}"#),
         BuiltinToolDef(name: "read_file",
             description: "Read a file. Text files support offset/limit line ranges and are returned with line numbers. From binary files only images are supported.",
             schema: #"{"type":"object","properties":{"path":{"type":"string","description":"File path to read. \#(Workdir.pathDescription)"},"offset":{"type":"integer","description":"1-based starting line number for text files. Defaults to 1."},"limit":{"type":"integer","description":"Maximum number of lines to read for text files. Defaults to 2000."}},"required":["path"]}"#),
@@ -497,18 +497,30 @@ enum BuiltinTools {
             throw BuiltinToolError("invalid argument 'path': not a directory: \(path)")
         }
 
+        // Recursive listing is capped at a fixed depth of 1 (direct children
+        // plus one level into subdirectories) and a total of 1000 entries, to
+        // keep output bounded for large trees (e.g. node_modules).
+        let maxDepth = 1
+        let maxEntries = 1000
+
         var lines: [String] = []
         if recursive {
             guard let enumerator = fm.enumerator(at: URL(fileURLWithPath: resolved), includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else {
                 throw BuiltinToolError("invalid argument 'path': failed to enumerate: \(path)")
             }
             let root = resolved
-            let allURLs = enumerator.allObjects.compactMap { $0 as? URL }
-            for url in allURLs {
+            while let item = enumerator.nextObject() {
+                guard let url = item as? URL else { continue }
+                let level = enumerator.level
+                if level > maxDepth + 1 { continue }
                 let rel = relativize(url.path, root: root)
                 var isD: ObjCBool = false
                 fm.fileExists(atPath: url.path, isDirectory: &isD)
                 lines.append(isD.boolValue ? "\(rel)/" : rel)
+                if isD.boolValue && level >= maxDepth + 1 {
+                    enumerator.skipDescendants()
+                }
+                if lines.count >= maxEntries { break }
             }
         } else {
             let entries = (try? fm.contentsOfDirectory(atPath: resolved)) ?? []
@@ -517,6 +529,7 @@ enum BuiltinTools {
                 var isD: ObjCBool = false
                 fm.fileExists(atPath: full, isDirectory: &isD)
                 lines.append(isD.boolValue ? "\(e)/" : e)
+                if lines.count >= maxEntries { break }
             }
         }
         return (lines.joined(separator: "\n"), false)
