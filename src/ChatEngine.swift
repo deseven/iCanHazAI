@@ -1130,6 +1130,12 @@ actor ChatEngine {
         if let roleWorkdir = role?.workingDirectory, !roleWorkdir.isEmpty {
             chat.workingDirectory = roleWorkdir
         }
+        // Seed the chat's active custom MCPs from the role. The selection is
+        // stored per chat so it stays stable if the role is edited later, and
+        // can be changed per chat when the role allows MCP overrides.
+        if let roleMCPs = role?.config.mcps, !roleMCPs.isEmpty {
+            chat.mcps = roleMCPs.map(\.mcp)
+        }
         // In-memory only — no disk write until the first message is sent.
         let record = ChatRecord(filename: filename, chat: chat)
         records.insert(record, at: 0)
@@ -1229,11 +1235,30 @@ actor ChatEngine {
     /// Loads a chat from disk via the store if it's not already in memory.
     /// No-op if the chat is already loaded or doesn't exist in records.
     /// Emits `chatsChanged` after loading so the UI reflects the new state.
+    /// The chat's stored MCP selection is sanitized on load: entries whose
+    /// server config no longer exists are silently dropped (and the cleaned
+    /// chat is persisted when something was dropped).
     func ensureChatLoaded(filename: String) async {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         guard records[idx].chat == nil else { return }
         records[idx].chat = store.loadChat(filename: filename)
+        if var chat = records[idx].chat, sanitizeMCPSelection(&chat) {
+            saveChat(chat, filename: filename)
+        }
         emit(.chatsChanged(records))
+    }
+
+    /// Drops names of MCP servers whose config no longer exists (and
+    /// duplicates) from the chat's stored per-chat selection. Returns true
+    /// when the chat was changed.
+    private func sanitizeMCPSelection(_ chat: inout Chat) -> Bool {
+        guard let selected = chat.mcps else { return false }
+        let existing = Set(mcps.map(\.name))
+        var seen: Set<String> = []
+        let kept = selected.filter { existing.contains($0) && seen.insert($0).inserted }
+        guard kept.count != selected.count else { return false }
+        chat.mcps = kept.isEmpty ? nil : kept
+        return true
     }
 
     /// Persists a chat to disk via the store and updates the in-memory record
@@ -1364,9 +1389,10 @@ actor ChatEngine {
         return ChatMessage(role: .system, content: PromptVariables.substitute(text: promptContent, values: values))
     }
 
-    /// Resolves the role's tool sources: enabled built-in groups (in-process)
-    /// plus custom MCP servers whose config exists. Custom MCP entries whose
-    /// server doesn't exist (e.g. a deleted config) are dropped.
+    /// Resolves the chat's tool sources: the role's enabled built-in groups
+    /// (in-process) plus the chat's active custom MCP servers whose config
+    /// exists. Custom MCP entries whose server doesn't exist (e.g. a deleted
+    /// config) are dropped.
     private func resolvedToolSources(for chat: Chat) -> [ResolvedToolSource] {
         guard let role = self.role(for: chat) else { return [] }
         var sources: [ResolvedToolSource] = []
@@ -1382,19 +1408,29 @@ actor ChatEngine {
                 directoryIsolation: cfg.directoryIsolation ?? false
             ))
         }
-        // Custom MCP servers: only those whose config exists.
+        // Custom MCP servers: the chat's own selection (seeded from the role,
+        // possibly overridden per chat). Chats that predate the per-chat
+        // selection (nil) fall back to the role's entries. Servers whose
+        // config no longer exists are dropped; entries also present in the
+        // role keep the role's tool selection and auto-allow rules, extra
+        // per-chat additions get all tools with no auto-allow.
         let customNames = Set(mcps.map(\.name))
-        if let entries = role.config.mcps {
-            for entry in entries where customNames.contains(entry.mcp) {
-                sources.append(ResolvedToolSource(
-                    name: entry.mcp,
-                    isBuiltinGroup: false,
-                    toolsFilter: entry.tools ?? [],
-                    autoAllow: Set(entry.autoAllow ?? []),
-                    autoAllowAll: entry.autoAllowAll ?? false,
-                    directoryIsolation: false
-                ))
-            }
+        let roleEntries = Dictionary(
+            (role.config.mcps ?? []).map { ($0.mcp, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let selectedNames = chat.mcps ?? (role.config.mcps ?? []).map(\.mcp)
+        var seen: Set<String> = []
+        for name in selectedNames where customNames.contains(name) && seen.insert(name).inserted {
+            let entry = roleEntries[name]
+            sources.append(ResolvedToolSource(
+                name: name,
+                isBuiltinGroup: false,
+                toolsFilter: entry?.tools ?? [],
+                autoAllow: Set(entry?.autoAllow ?? []),
+                autoAllowAll: entry?.autoAllowAll ?? false,
+                directoryIsolation: false
+            ))
         }
         return sources
     }
@@ -2322,12 +2358,27 @@ actor ChatEngine {
         emit(.chatsChanged(records))
     }
 
-    /// Updates the selected role for a chat.
+    /// Updates the selected role for a chat. The chat's active custom MCP
+    /// selection is re-seeded from the new role (mirroring `createNewChat`).
     func setRole(filename: String, roleName: String) async {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         await ensureChatLoaded(filename: filename)
         guard var chat = records[idx].chat else { return }
         chat.role = roleName
+        let roleMCPs = roles.first(where: { $0.name == roleName })?.config.mcps ?? []
+        chat.mcps = roleMCPs.isEmpty ? nil : roleMCPs.map(\.mcp)
+        saveChat(chat, filename: filename)
+        emit(.chatsChanged(records))
+    }
+
+    /// Updates the per-chat custom MCP selection (names of active servers).
+    /// Only meaningful when the chat's role allows MCP overrides; the engine
+    /// stores the value regardless and resolution falls back to it.
+    func setChatMCPs(filename: String, names: [String]) async {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        await ensureChatLoaded(filename: filename)
+        guard var chat = records[idx].chat else { return }
+        chat.mcps = names.isEmpty ? nil : names
         saveChat(chat, filename: filename)
         emit(.chatsChanged(records))
     }

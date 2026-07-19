@@ -217,10 +217,11 @@ enum Fixtures {
         role: String? = nil,
         prompt: String? = nil,
         workingDirectory: String? = nil,
+        mcps: [String]? = nil,
         title: String? = nil,
         archive: Bool? = nil
     ) -> Chat {
-        Chat(id: id, messages: messages, connection: connection, role: role, prompt: prompt, workingDirectory: workingDirectory, title: title, archive: archive)
+        Chat(id: id, messages: messages, connection: connection, role: role, prompt: prompt, workingDirectory: workingDirectory, mcps: mcps, title: title, archive: archive)
     }
 
     /// A chat with one user + one assistant message, useful for cache/display tests.

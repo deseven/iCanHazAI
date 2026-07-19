@@ -54,6 +54,7 @@ final class AppViewModel: ObservableObject {
             if Self.chatChanged(from: oldValue, to: selectedChatID) {
                 showRolePicker = false
                 showWorkdirPicker = false
+                showMCPPicker = false
                 pendingEditMessageID = nil
                 pendingDeleteMessageID = nil
                 pendingDenyToolCallID = nil
@@ -120,6 +121,8 @@ final class AppViewModel: ObservableObject {
     @Published var workingDirectories: [String] = []
     /// Whether the working-directory picker sheet is currently shown.
     @Published var showWorkdirPicker: Bool = false
+    /// Whether the MCP picker sheet is currently shown.
+    @Published var showMCPPicker: Bool = false
 
     // MARK: - Private
 
@@ -674,6 +677,36 @@ final class AppViewModel: ObservableObject {
         return selectedChatWorkingDirectory?.isEmpty ?? true
     }
 
+    /// Names of the custom MCP servers active for the selected chat: the
+    /// chat's own selection (seeded from the role), falling back to the role's
+    /// entries for chats that predate the per-chat selection. Names whose
+    /// server config no longer exists are dropped, order is preserved.
+    var selectedChatMCPNames: [String] {
+        guard let chat = selectedChatItem?.chat, let role = selectedRole else { return [] }
+        let existing = Set(mcps.map(\.name))
+        let selected = chat.mcps ?? (role.config.mcps ?? []).map(\.mcp)
+        var seen: Set<String> = []
+        return selected.filter { existing.contains($0) && seen.insert($0).inserted }
+    }
+
+    /// Whether the MCP control should be shown in the chat toolbar. Hidden
+    /// entirely when no custom MCP servers are configured. When the role
+    /// doesn't allow MCP overrides, it's only shown to display the active
+    /// selection — hidden again when that selection is empty.
+    var selectedChatMCPControlVisible: Bool {
+        guard !mcps.isEmpty else { return false }
+        guard selectedRole != nil else { return false }
+        if selectedChatMCPPickerEnabled { return true }
+        return !selectedChatMCPNames.isEmpty
+    }
+
+    /// Whether the user is allowed to change the MCP selection for the
+    /// selected chat (i.e. the toolbar control opens the picker). True only
+    /// when the role allows MCP overrides.
+    var selectedChatMCPPickerEnabled: Bool {
+        selectedRole?.mcpsOverrideAllowed ?? false
+    }
+
     /// Whether the last message in the selected chat is from the user. Used to
     /// allow pressing send with empty input to trigger an assistant reply on
     /// that last user message (e.g. after the agent's answer was removed).
@@ -893,6 +926,12 @@ final class AppViewModel: ObservableObject {
     func setWorkingDirectory(_ path: String?) {
         guard let filename = selectedChatID else { return }
         Task { await engine.setWorkingDirectory(filename: filename, path: path) }
+    }
+
+    /// Updates the per-chat custom MCP selection for the selected chat.
+    func setChatMCPs(_ names: [String]) {
+        guard let filename = selectedChatID else { return }
+        Task { await engine.setChatMCPs(filename: filename, names: names) }
     }
 
     /// Adds a working directory to the user-managed list in the app config

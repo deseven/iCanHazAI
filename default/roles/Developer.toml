@@ -3,6 +3,7 @@ prompt = "Developer"
 icon = "hammer"
 accent = "blue"
 connection_override_allowed = true
+mcps_override_allowed = true
 working_directory_override_allowed = true
 
 [utils]

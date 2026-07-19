@@ -27,7 +27,7 @@ enum MCPRunPolicy: String, Codable, Sendable {
 
 /// A configured MCP server. One server per file in `~/iCanHazAI/mcp/<name>.toml`.
 /// `id` is the filesystem-safe name (unique).
-struct MCPServer: Identifiable, Equatable, Sendable {
+struct MCPServer: Identifiable, Equatable, Hashable, Sendable {
     var id: String { name }
     let name: String
     /// Short, lowercase-alphanumeric identifier used to namespace this server's

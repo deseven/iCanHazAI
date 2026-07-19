@@ -205,6 +205,17 @@ struct ChatView: View {
                 }
             )
         }
+        .sheet(isPresented: $store.showMCPPicker) {
+            MCPPickerView(
+                servers: store.mcps,
+                initiallySelected: Set(store.selectedChatMCPNames),
+                onCancel: { store.showMCPPicker = false },
+                onApply: { names in
+                    store.setChatMCPs(names)
+                    store.showMCPPicker = false
+                }
+            )
+        }
     }
 
     /// Whether the send/stop button should be disabled.
@@ -233,9 +244,11 @@ struct ChatView: View {
     /// when the inspector panel opens — unlike toolbar items which span the full
     /// titlebar width regardless of the inspector.
     ///
-    /// The connection picker, prompt picker, and working-directory picker are
-    /// shown only when the chat's role allows the corresponding override. MCPs
-    /// are selected at the role level, so only a count indicator is shown.
+    /// The connection picker, prompt picker, working-directory picker, and MCP
+    /// picker are shown only when the chat's role allows the corresponding
+    /// override. The MCP control is hidden entirely when no custom MCP servers
+    /// are configured; without override permission it only displays the
+    /// role's selection (and hides when that's empty).
     private struct ChatHeaderBar: View {
         @EnvironmentObject var store: AppViewModel
         let onToggleInfo: () -> Void
@@ -272,27 +285,54 @@ struct ChatView: View {
                     .disabled(store.isStreaming)
                 }
 
+                // The workdir and MCP controls share the same look: an icon
+                // plus tag(s), white when the role allows overrides (clickable
+                // picker), grey when the value is fixed by the role. Red marks
+                // a missing required directory. `allowsHitTesting` is used
+                // instead of `disabled` so the colors aren't dimmed.
                 if store.selectedChatWorkdirPickerVisible {
                     Button {
                         store.showWorkdirPicker = true
                     } label: {
-                        Label(workdirLabel, systemImage: "folder")
-                            .labelStyle(.titleAndIcon)
-                            .lineLimit(1)
-                            .foregroundStyle(workdirColor)
+                        HStack(spacing: 4) {
+                            Image(systemName: "folder")
+                            toolbarTag(workdirLabel)
+                        }
+                        .font(.callout)
+                        .lineLimit(1)
+                        .foregroundStyle(workdirColor)
                     }
                     .buttonStyle(.borderless)
                     .fixedSize()
                     .help(workdirHelp)
-                    .disabled(store.isStreaming || !store.selectedChatWorkdirPickerEnabled)
+                    .allowsHitTesting(store.selectedChatWorkdirPickerEnabled && !store.isStreaming)
                 }
 
-                // MCP count indicator: MCPs are selected at the role level.
-                if let role = store.selectedRole {
-                    Label("\(role.mcpCount)", systemImage: "wrench.and.screwdriver")
-                        .labelStyle(.titleAndIcon)
-                        .foregroundStyle(.secondary)
-                        .help("\(role.mcpCount) MCP server(s) selected by role “\(role.name)”")
+                // MCP control: tags for the chat's active custom MCP servers.
+                // Opens the multi-select picker when the role allows overrides;
+                // otherwise it's a read-only display of the role's selection.
+                if store.selectedChatMCPControlVisible {
+                    Button {
+                        store.showMCPPicker = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "wrench.and.screwdriver")
+                            if store.selectedChatMCPNames.isEmpty {
+                                toolbarTag("No MCPs selected")
+                            } else {
+                                ForEach(store.selectedChatMCPNames, id: \.self) { name in
+                                    toolbarTag(name)
+                                }
+                            }
+                        }
+                        .font(.callout)
+                        .lineLimit(1)
+                        .foregroundStyle(mcpColor)
+                    }
+                    .buttonStyle(.borderless)
+                    .fixedSize()
+                    .help(mcpHelp)
+                    .allowsHitTesting(store.selectedChatMCPPickerEnabled && !store.isStreaming)
                 }
 
                 Spacer()
@@ -309,6 +349,15 @@ struct ChatView: View {
             .frame(height: 36)
         }
 
+        /// A grey-capsule tag used by the workdir and MCP toolbar controls.
+        private func toolbarTag(_ text: String) -> some View {
+            Text(text)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(Color.secondary.opacity(0.15))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
+
         private var workdirLabel: String {
             if let path = store.selectedChatWorkingDirectory, !path.isEmpty {
                 return (path as NSString).abbreviatingWithTildeInPath
@@ -317,10 +366,24 @@ struct ChatView: View {
         }
 
         /// Red when directory isolation is active but no directory is set
-        /// (the chat is blocked until the user picks one); otherwise the
-        /// default foreground.
+        /// (the chat is blocked until the user picks one); white when the
+        /// directory can be changed; grey when it's fixed by the role.
         private var workdirColor: Color {
-            store.selectedChatWorkdirRequired ? .red : .primary
+            if store.selectedChatWorkdirRequired { return .red }
+            return store.selectedChatWorkdirPickerEnabled ? .primary : .secondary
+        }
+
+        /// White when the MCP selection can be changed; grey when it's fixed
+        /// by the role.
+        private var mcpColor: Color {
+            store.selectedChatMCPPickerEnabled ? .primary : .secondary
+        }
+
+        private var mcpHelp: String {
+            if store.selectedChatMCPPickerEnabled {
+                return "MCP servers active for this chat"
+            }
+            return "MCP servers (set by role)"
         }
 
         private var workdirHelp: String {

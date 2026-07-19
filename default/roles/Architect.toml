@@ -3,6 +3,7 @@ prompt = "Architect"
 icon = "ruler"
 accent = "orange"
 connection_override_allowed = true
+mcps_override_allowed = true
 
 [utils]
 auto_allow_all = true

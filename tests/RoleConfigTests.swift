@@ -18,6 +18,7 @@ extension AllAppTests {
             working_directory_override_allowed = true
             connection = "openai/DeepSeek"
             connection_override_allowed = true
+            mcps_override_allowed = true
 
             [utils]
             tools = []
@@ -40,6 +41,8 @@ extension AllAppTests {
             #expect(config.workingDirectoryOverrideAllowed == true)
             #expect(config.connection == "openai/DeepSeek")
             #expect(config.connectionOverrideAllowed == true)
+            #expect(config.mcpsOverrideAllowed == true)
+            #expect(Role(name: "Developer", config: config).mcpsOverrideAllowed == true)
             // Built-in groups
             #expect(config.utils?.autoAllowAll == true)
             #expect(config.filesystem?.autoAllow == ["ls", "read_file", "stat"])
@@ -62,6 +65,7 @@ extension AllAppTests {
             #expect(role.promptOverrideAllowed == false)
             #expect(role.connectionOverrideAllowed == false)
             #expect(role.workingDirectoryOverrideAllowed == false)
+            #expect(role.mcpsOverrideAllowed == false)
             #expect(role.mcpCount == 0)
             // No icon set → falls back to the generic default.
             #expect(role.icon == Role.defaultIcon)
@@ -364,6 +368,9 @@ extension AllAppTests {
 
             [utils]
             auto_allow_all = true
+
+            [[mcps]]
+            mcp = "Tavily"
             """
             try Data(roleTOML.utf8).write(to: env.env.rolesURL.appendingPathComponent("Tester.toml"))
             try Data("# You are a tester".utf8).write(to: env.env.promptsURL.appendingPathComponent("Tester.md"))
@@ -375,6 +382,8 @@ extension AllAppTests {
             let role = try #require(roles.first(where: { $0.name == "Tester" }))
             #expect(role.name == "Tester")
             #expect(role.description == "Tester")
+            // mcpCount covers custom MCPs only — the [utils] built-in group
+            // is not an MCP server and is not counted.
             #expect(role.mcpCount == 1)
 
             let prompt = try #require(env.env.loadSinglePrompt(name: "Tester"))

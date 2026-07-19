@@ -103,6 +103,12 @@ struct Chat: Codable, Identifiable, Equatable {
     /// Per-chat working-directory override. Only honored when the role's
     /// `working_directory_override_allowed` is true.
     var workingDirectory: String?
+    /// Names of the custom MCP servers active for this chat. Seeded from the
+    /// role's `[[mcps]]` entries when the chat is created (or the role is
+    /// assigned); editable per chat only when the role's
+    /// `mcps_override_allowed` is true. Nil for chats that predate the field —
+    /// they fall back to the role's MCP selection.
+    var mcps: [String]?
     /// Optional user-defined display title. When nil the UI derives a title
     /// from the first user message (or "New chat").
     var title: String?
@@ -110,19 +116,20 @@ struct Chat: Codable, Identifiable, Equatable {
     /// from the default sidebar view. Completely optional in the JSON — older
     /// chat files without this key decode as non-archived.
     var archive: Bool?
-    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, prompt: String? = nil, workingDirectory: String? = nil, title: String? = nil, archive: Bool? = nil) {
+    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, prompt: String? = nil, workingDirectory: String? = nil, mcps: [String]? = nil, title: String? = nil, archive: Bool? = nil) {
         self.id = id
         self.messages = messages
         self.connection = connection
         self.role = role
         self.prompt = prompt
         self.workingDirectory = workingDirectory
+        self.mcps = mcps
         self.title = title
         self.archive = archive
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, messages, connection, role, prompt, workingDirectory, title, archive
+        case id, messages, connection, role, prompt, workingDirectory, mcps, title, archive
     }
 
     /// Tolerant decode: all scalar fields are optional at the JSON level (a
@@ -138,6 +145,7 @@ struct Chat: Codable, Identifiable, Equatable {
         role = try? c.decode(String.self, forKey: .role)
         prompt = try? c.decode(String.self, forKey: .prompt)
         workingDirectory = try? c.decode(String.self, forKey: .workingDirectory)
+        mcps = try? c.decode([String].self, forKey: .mcps)
         title = try? c.decode(String.self, forKey: .title)
         archive = try? c.decode(Bool.self, forKey: .archive)
         let wrappers = (try? c.decode([SafeMessage].self, forKey: .messages)) ?? []
@@ -541,6 +549,10 @@ struct RoleConfig: Codable, Equatable, Hashable {
     var shell: RoleToolGroup?
     /// Custom MCP servers selected by this role.
     var mcps: [RoleMCP]?
+    /// When true, chats with this role may add/remove custom MCP servers via
+    /// the chat toolbar picker. Defaults to false: the chat simply uses the
+    /// role's MCP selection.
+    var mcpsOverrideAllowed: Bool?
     /// SF Symbol name used to badge this role's chats in the sidebar and the
     /// role picker. Nil → falls back to `Role.defaultIcon`.
     var icon: String?
@@ -562,6 +574,7 @@ struct RoleConfig: Codable, Equatable, Hashable {
         case code
         case shell
         case mcps
+        case mcpsOverrideAllowed = "mcps_override_allowed"
         case icon
         case accent
     }
@@ -589,6 +602,7 @@ struct Role: Identifiable, Equatable, Hashable {
     var promptOverrideAllowed: Bool { config.promptOverrideAllowed ?? false }
     var connectionOverrideAllowed: Bool { config.connectionOverrideAllowed ?? false }
     var workingDirectoryOverrideAllowed: Bool { config.workingDirectoryOverrideAllowed ?? false }
+    var mcpsOverrideAllowed: Bool { config.mcpsOverrideAllowed ?? false }
     var workingDirectory: String? { config.workingDirectory }
     var connection: String? { config.connection }
     /// SF Symbol for this role, falling back to `defaultIcon`.
@@ -620,9 +634,10 @@ struct Role: Identifiable, Equatable, Hashable {
         }
     }
 
-    /// Number of tool sources selected by this role (built-in groups + custom
-    /// MCPs). Used by the chat header indicator.
-    var mcpCount: Int { enabledGroups.count + (config.mcps?.count ?? 0) }
+    /// Number of custom MCP servers selected by this role. Built-in tool
+    /// groups (Utils/Filesystem/Code/Shell) are not MCP servers and are not
+    /// counted. Used by the chat header indicator.
+    var mcpCount: Int { config.mcps?.count ?? 0 }
 
     /// Whether this role selects at least one workdir-capable built-in group
     /// (Filesystem, Code, or Shell). Drives whether the working-directory

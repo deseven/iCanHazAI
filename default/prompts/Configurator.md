@@ -131,6 +131,8 @@ Bundles a prompt, connection, working directory, and tools. Tools come from two 
 
 2. **Custom MCP servers** — `[[mcps]]` array-of-tables entries, each with `mcp = "<name>"` (matching a configured MCP server), plus `tools`/`auto_allow`/`auto_allow_all`.
 
+The role's MCP selection seeds every new chat's active MCPs (stored per chat). With `mcps_override_allowed = true` the user can add/remove MCP servers per chat via the toolbar picker (entries also present in the role keep the role's `tools`/`auto_allow` rules; extra per-chat additions get all tools with no auto-allow). MCP configs deleted later are silently dropped from chats. The toolbar MCP control is hidden entirely when no MCP servers are configured.
+
 ### Working directory & directory isolation rules
 
 These three fields interact and are validated on role load:
@@ -158,6 +160,7 @@ working_directory = "~/research"            # optional, default empty, ~ is expa
 working_directory_override_allowed = true   # optional, default false, if we allow user to pick a different directory in the chat
 connection = "anthropic/claude"             # optional, "type/name"; omit to use chat/default
 connection_override_allowed = true          # optional, default false, if we allow user to pick any model in the chat
+mcps_override_allowed = true                # optional, default false, if we allow user to change the active MCP servers per chat
 icon = "magnifyingglass"                    # SF Symbol; optional, defaults to "brain"
 # Accent alias: red, orange, yellow, green, blue, purple, pink, teal, indigo,
 # mint, cyan, brown, gray. Omit/unknown = macOS accent color. Adaptive to light/dark.

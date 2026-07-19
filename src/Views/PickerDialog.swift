@@ -4,9 +4,10 @@
 import SwiftUI
 
 /// A reusable modal picker dialog used by the role picker, working-directory
-/// picker, and future pickers. Renders a header, a scrollable list of items
-/// with an optional pinned bottom section (e.g. built-in roles, the role's
-/// default working directory), and a footer with keyboard hints + Cancel.
+/// picker, MCP picker, and future pickers. Renders a header, a scrollable
+/// list of items with an optional pinned bottom section (e.g. built-in roles,
+/// the role's default working directory), and a footer with keyboard hints +
+/// Cancel.
 ///
 /// Keyboard navigation: ↑/↓ moves the selection across both the scrollable and
 /// pinned items, ↵ selects. Hover updates the selection without scrolling.
@@ -16,7 +17,19 @@ import SwiftUI
 /// Callers provide a `rowContent` builder for the row's inner content (icon,
 /// title, subtitle, trailing actions); this view applies padding, the
 /// selection highlight, hover, and tap handling.
+///
+/// Multi-select mode (`multiSelect` non-nil, used by the MCP picker): tap or
+/// space toggles the highlighted item instead of picking it, ↵ applies the
+/// selection (the footer gains a default "Apply" button before "Cancel"), and
+/// Esc still cancels. The toggle state itself is owned by the caller.
 struct PickerDialog<Item: Identifiable & Hashable>: View {
+    /// Multi-select behavior. When set, the dialog toggles items instead of
+    /// picking one: `onToggle` fires on tap/space, `onApply` on ↵/Apply.
+    struct MultiSelect {
+        let onToggle: (Item) -> Void
+        let onApply: () -> Void
+    }
+
     let title: String
     let subtitle: String?
     /// Scrollable items shown in the main list.
@@ -39,6 +52,8 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
     let onSelect: (Item) -> Void
     let onCancel: () -> Void
     let initialSelection: Item?
+    /// When non-nil, the dialog runs in multi-select mode (see `MultiSelect`).
+    var multiSelect: MultiSelect? = nil
 
     /// Currently highlighted item (driven by both keyboard and hover).
     @State private var selection: Item?
@@ -146,10 +161,14 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
             Divider()
 
             HStack {
-                Text("↑↓ navigate · ↵ select")
+                Text(multiSelect != nil ? "↑↓ navigate · space toggle · ↵ apply" : "↑↓ navigate · ↵ select")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
+                if let multiSelect {
+                    Button("Apply", action: multiSelect.onApply)
+                        .keyboardShortcut(.defaultAction)
+                }
                 Button("Cancel", action: onCancel)
                     .keyboardShortcut(.cancelAction)
             }
@@ -161,7 +180,11 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
         .focusEffectDisabled()
         .onKeyPress(.upArrow) { moveSelection(by: -1); return .handled }
         .onKeyPress(.downArrow) { moveSelection(by: 1); return .handled }
-        .onKeyPress(.return) { pickCurrent(); return .handled }
+        .onKeyPress(.space) { toggleCurrent(); return multiSelect != nil ? .handled : .ignored }
+        .onKeyPress(.return) {
+            if let multiSelect { multiSelect.onApply() } else { pickCurrent() }
+            return .handled
+        }
         .onAppear {
             isKeyboardSelection = true
             selection = initialSelection
@@ -180,7 +203,9 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
             .onHover { hovering in
                 if hovering { selection = item }
             }
-            .onTapGesture { onSelect(item) }
+            .onTapGesture {
+                if let multiSelect { multiSelect.onToggle(item) } else { onSelect(item) }
+            }
             .id(item.id)
     }
 
@@ -191,6 +216,19 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
         let newIndex = min(max(current + delta, 0), allItems.count - 1)
         isKeyboardSelection = true
         selection = allItems[newIndex]
+    }
+
+    /// Toggles the currently highlighted item in multi-select mode (falling
+    /// back to the first when the highlight no longer exists in the list).
+    /// No-op in single-select mode.
+    private func toggleCurrent() {
+        guard let multiSelect else { return }
+        let all = allItems
+        if let sel = selection, all.contains(sel) {
+            multiSelect.onToggle(sel)
+        } else if let first = all.first {
+            multiSelect.onToggle(first)
+        }
     }
 
     /// Selects the currently highlighted item (falling back to the first when

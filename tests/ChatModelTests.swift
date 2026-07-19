@@ -65,6 +65,7 @@ struct ChatModelTests {
             role: "Developer",
             prompt: "Developer",
             workingDirectory: "~/projects/MyProject",
+            mcps: ["Tavily", "googledocs"],
             title: "My Chat"
         )
         let data = try JSONEncoder().encode(original)
@@ -92,18 +93,29 @@ struct ChatModelTests {
         #expect(chat.title == nil)
         #expect(chat.prompt == nil)
         #expect(chat.workingDirectory == nil)
+        #expect(chat.mcps == nil)
         #expect(chat.messages.isEmpty)
     }
 
     // MARK: - Tolerant decoding (legacy / malformed chat files)
 
-    @Test("Chat ignores unknown top-level keys (e.g. a removed 'mcps' field)")
-    func chatIgnoresUnknownTopLevelKeys() throws {
+    @Test("Chat decodes the per-chat MCP selection and ignores unknown keys")
+    func chatDecodesMCPSelection() throws {
         let json = """
         {"id":"00000000-0000-0000-0000-000000000001","messages":[],"mcps":["googledocs"],"foo":42}
         """.data(using: .utf8)!
         let chat = try JSONDecoder().decode(Chat.self, from: json)
         #expect(chat.messages.isEmpty)
+        #expect(chat.mcps == ["googledocs"])
+    }
+
+    @Test("Chat tolerates a wrong-typed 'mcps' field (falls back to nil)")
+    func chatToleratesWrongTypedMCPs() throws {
+        let json = """
+        {"id":"00000000-0000-0000-0000-000000000001","messages":[],"mcps":"googledocs"}
+        """.data(using: .utf8)!
+        let chat = try JSONDecoder().decode(Chat.self, from: json)
+        #expect(chat.mcps == nil)
     }
 
     @Test("Chat skips a malformed message but keeps the valid ones")
