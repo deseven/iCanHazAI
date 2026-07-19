@@ -1803,6 +1803,36 @@ actor ChatEngine {
         let workdir = chat.flatMap { effectiveWorkingDirectory(for: $0) }
         let isolation = resolved.first(where: { $0.name == sourceName })?.directoryIsolation ?? false
 
+        // For write_file/apply_patch, build a unified diff now so the renderer
+        // can show it during the approval prompt (and after execution). The
+        // diff is computed against the file's current on-disk content, so it
+        // must be built before the tool runs. Cleared on denial since the
+        // changes were never applied.
+        //
+        // If a write_file call is missing arguments, there's nothing for the
+        // user to approve — fail fast. apply_patch goes through a full dry-run
+        // (parse + plan against on-disk state, no writes): when it fails, the
+        // tool call would fail identically, so we skip the approval prompt and
+        // relay the exact error to the model.
+        if sourceName == BuiltinTools.filesystemGroup, toolName == "write_file" {
+            let wd = Workdir(root: workdir, isolated: isolation)
+            if let d = DiffBuilder.diffForWriteFile(arguments: call.arguments, workdir: wd) {
+                setToolCallDiff(callID: call.id, filename: filename, diff: d)
+            } else {
+                debugLog("Tool", "write_file arguments invalid (no diff) — callID=\(call.id), chat=\(filename)")
+                return ToolResult(callID: call.id, content: "Invalid arguments: expected 'path' and 'content' strings.", isError: true)
+            }
+        } else if sourceName == BuiltinTools.codeGroup, toolName == "apply_patch" {
+            let wd = Workdir(root: workdir, isolated: isolation)
+            switch DiffBuilder.preflightApplyPatch(arguments: call.arguments, workdir: wd) {
+            case .ok(let d):
+                if let d { setToolCallDiff(callID: call.id, filename: filename, diff: d) }
+            case .error(let message):
+                debugLog("Tool", "apply_patch dry-run failed — callID=\(call.id), chat=\(filename)")
+                return ToolResult(callID: call.id, content: message, isError: true)
+            }
+        }
+
         let approval: ToolApproval
         if autoAllowed {
             debugLog("Tool", "auto-allowed \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
@@ -1832,10 +1862,30 @@ actor ChatEngine {
         case .deny(let reason):
             let message = ToolApproval.denialMessage(for: reason)
             debugLog("Tool", "denied callID=\(call.id) — \(message), chat=\(filename)")
+            // The changes were never applied, so drop the diff to avoid keeping
+            // stale data around.
+            setToolCallDiff(callID: call.id, filename: filename, diff: nil)
             // `isError` stays true so the provider treats this as a tool error,
             // but `isDenied` lets the renderer show "denied" rather than "error".
             return ToolResult(callID: call.id, content: message, isError: true, isDenied: true)
         }
+    }
+
+    /// Sets the `diff` field on a tool call (matched by `callID`) on the last
+    /// assistant message of the chat, so the renderer can show a colorized diff
+    /// instead of raw arguments. Pass `nil` to clear it (e.g. on denial).
+    /// Persists in-memory only and emits.
+    private func setToolCallDiff(callID: String, filename: String, diff: String?) {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        guard var chat = records[idx].chat else { return }
+        guard let aIdx = chat.messages.indices.reversed().first(where: { chat.messages[$0].role == .assistant }),
+              var calls = chat.messages[aIdx].toolCalls,
+              let cIdx = calls.firstIndex(where: { $0.id == callID }) else { return }
+        calls[cIdx].diff = diff
+        chat.messages[aIdx].toolCalls = calls
+        records[idx].chat = chat
+        flushCoalescedEmit()
+        emit(.chatsChanged(records))
     }
 
     /// The tool-call approval decision point. Marks the call as pending, draws

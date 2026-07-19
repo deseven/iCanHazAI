@@ -148,16 +148,24 @@ struct ToolCall: Codable, Identifiable, Equatable, Sendable {
     /// by which point this is false, so it never reaches disk in a `true`
     /// state. Decoded defensively (defaults to false) for old chat files.
     var pendingApproval: Bool = false
+    /// Optional pre-rendered unified diff for `write_file`/`apply_patch` calls.
+    /// Built by [`DiffBuilder`](src/DiffBuilder.swift) from the file's before/
+    /// after content so the renderer can show a colorized diff instead of raw
+    /// JSON arguments. Nil for tools that don't produce diffs, or when the
+    /// arguments are invalid. Cleared on denial since the changes were never
+    /// applied. Decoded defensively (defaults to nil) for old chat files.
+    var diff: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, arguments, pendingApproval
+        case id, name, arguments, pendingApproval, diff
     }
 
-    init(id: String, name: String, arguments: String, pendingApproval: Bool = false) {
+    init(id: String, name: String, arguments: String, pendingApproval: Bool = false, diff: String? = nil) {
         self.id = id
         self.name = name
         self.arguments = arguments
         self.pendingApproval = pendingApproval
+        self.diff = diff
     }
 
     init(from decoder: Decoder) throws {
@@ -166,6 +174,7 @@ struct ToolCall: Codable, Identifiable, Equatable, Sendable {
         name = try c.decode(String.self, forKey: .name)
         arguments = try c.decode(String.self, forKey: .arguments)
         pendingApproval = try c.decodeIfPresent(Bool.self, forKey: .pendingApproval) ?? false
+        diff = try c.decodeIfPresent(String.self, forKey: .diff)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -174,6 +183,7 @@ struct ToolCall: Codable, Identifiable, Equatable, Sendable {
         try c.encode(name, forKey: .name)
         try c.encode(arguments, forKey: .arguments)
         try c.encode(pendingApproval, forKey: .pendingApproval)
+        try c.encodeIfPresent(diff, forKey: .diff)
     }
 }
 

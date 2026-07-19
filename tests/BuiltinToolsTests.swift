@@ -466,6 +466,224 @@ extension AllAppTests {
             #expect(text.contains("escapes"))
         }
 
+        @Test("apply_patch End of File as hunk opener appends at EOF")
+        func patchEndOfFileOpener() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("append.txt")
+            try tmp.write("append.txt", content: "first\nlast line\n")
+            let patch = """
+            *** Begin Patch
+            *** Update File: \(path)
+            *** End of File
+             last line
+            +appended line
+            *** End Patch
+            """
+            let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
+            #expect(!err, "patch failed: \(text)")
+            #expect(try tmp.read("append.txt") == "first\nlast line\nappended line\n")
+        }
+
+        @Test("apply_patch End of File as separator anchors the following hunk at EOF")
+        func patchEndOfFileSeparator() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("sep.txt")
+            try tmp.write("sep.txt", content: "one\ntwo\nthree\nfour\n")
+            let patch = """
+            *** Begin Patch
+            *** Update File: \(path)
+            @@
+             one
+            -two
+            +TWO
+            *** End of File
+             four
+            +five
+            *** End Patch
+            """
+            let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
+            #expect(!err, "patch failed: \(text)")
+            #expect(try tmp.read("sep.txt") == "one\nTWO\nthree\nfour\nfive\n")
+        }
+
+        @Test("apply_patch trailing End of File still anchors its own hunk at EOF")
+        func patchEndOfFileStrictAnchor() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("dup.txt")
+            try tmp.write("dup.txt", content: "x\nmid\nx\n")
+            let patch = """
+            *** Begin Patch
+            *** Update File: \(path)
+            -x
+            +CHANGED
+            *** End of File
+            *** End Patch
+            """
+            let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
+            #expect(!err, "patch failed: \(text)")
+            // The EOF anchor must hit the LAST "x", not the first.
+            #expect(try tmp.read("dup.txt") == "x\nmid\nCHANGED\n")
+        }
+
+        @Test("apply_patch parse error reports the format problem and line")
+        func patchParseErrorMessage() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("err.txt")
+            try tmp.write("err.txt", content: "a\nb\n")
+            let patch = """
+            *** Begin Patch
+            *** Update File: \(path)
+            @@
+             a
+            +b2
+            stray line without prefix
+            *** End Patch
+            """
+            let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
+            #expect(err)
+            #expect(text.contains("Invalid apply_patch format"), "unexpected message: \(text)")
+            #expect(text.contains("Line 6"), "expected a line number: \(text)")
+            #expect(text.contains("@@"), "expected a hint about the @@ marker: \(text)")
+        }
+
+        @Test("apply_patch multi-op: update+move, add, delete in one call")
+        func patchMultiOp() async throws {
+            let tmp = try TestDir()
+            try tmp.write("base.txt", content: "alpha\n")
+            try tmp.write("doomed.txt", content: "bye\n")
+            let patch = """
+            *** Begin Patch
+            *** Update File: \(tmp.sub("base.txt"))
+            *** Move to: \(tmp.sub("renamed.txt"))
+             alpha
+            +beta
+            *** Add File: \(tmp.sub("fresh.txt"))
+            +created
+            *** Delete File: \(tmp.sub("doomed.txt"))
+            *** End Patch
+            """
+            let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
+            #expect(!err, "patch failed: \(text)")
+            #expect(!tmp.exists("base.txt"))
+            #expect(try tmp.read("renamed.txt") == "alpha\nbeta\n")
+            #expect(try tmp.read("fresh.txt") == "created\n")
+            #expect(!tmp.exists("doomed.txt"))
+        }
+
+        @Test("apply_patch add then update the same file in one call")
+        func patchAddThenUpdateSameFile() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("two-step.txt")
+            let patch = """
+            *** Begin Patch
+            *** Add File: \(path)
+            +first
+            *** Update File: \(path)
+             first
+            +second
+            *** End Patch
+            """
+            let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
+            #expect(!err, "patch failed: \(text)")
+            #expect(try tmp.read("two-step.txt") == "first\nsecond\n")
+        }
+
+        @Test("apply_patch failure leaves earlier operations unapplied")
+        func patchAtomicOnFailure() async throws {
+            let tmp = try TestDir()
+            let patch = """
+            *** Begin Patch
+            *** Add File: \(tmp.sub("partial.txt"))
+            +should not exist
+            *** Delete File: \(tmp.sub("missing.txt"))
+            *** End Patch
+            """
+            let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
+            #expect(err)
+            #expect(text.contains("missing.txt"), "unexpected message: \(text)")
+            #expect(!tmp.exists("partial.txt"), "failed patch must not write anything")
+        }
+
+        @Test("apply_patch stacked @@ markers produce a targeted error")
+        func patchStackedContextMarkers() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("stacked.txt")
+            try tmp.write("stacked.txt", content: "class A:\n    def f():\n        pass\n")
+            let patch = """
+            *** Begin Patch
+            *** Update File: \(path)
+            @@ class A:
+            @@     def f():
+            -        pass
+            +        return 1
+            *** End Patch
+            """
+            let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
+            #expect(err)
+            #expect(text.contains("stacked @@"), "unexpected message: \(text)")
+        }
+
+        @Test("apply_patch anchor repeated in body gets a diagnostic error")
+        func patchRepeatedAnchorDiagnostic() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("anchor.txt")
+            try tmp.write("anchor.txt", content: "one\ntwo\nthree\nfour\n")
+            // The @@ anchor "two" is repeated as the first body context line —
+            // the body can never match after the anchor.
+            let patch = """
+            *** Begin Patch
+            *** Update File: \(path)
+            @@ two
+             two
+            -three
+            +THREE
+             four
+            *** End Patch
+            """
+            let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
+            #expect(err)
+            #expect(text.contains("line 2"), "expected the matched line number: \(text)")
+            #expect(text.contains("repeated"), "expected the anchor-repeat hint: \(text)")
+        }
+
+        @Test("apply_patch overlapping hunks get a top-to-bottom diagnostic")
+        func patchOverlappingHunksDiagnostic() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("overlap.txt")
+            try tmp.write("overlap.txt", content: "one\ntwo\nthree\nfour\nfive\n")
+            // Hunk 1's trailing context ("three") is hunk 2's @@ anchor — the
+            // sequential matcher has already consumed past it.
+            let patch = """
+            *** Begin Patch
+            *** Update File: \(path)
+            @@
+             one
+            -two
+            +TWO
+             three
+            @@ three
+            -four
+            +FOUR
+             five
+            *** End Patch
+            """
+            let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
+            #expect(err)
+            #expect(text.contains("top-to-bottom"), "expected the ordering hint: \(text)")
+        }
+
+        @Test("apply_patch tolerates trailing whitespace on structural lines")
+        func patchTrailingWhitespaceMarkers() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("ws.txt")
+            try tmp.write("ws.txt", content: "a\nb\n")
+            // "@@ " with a trailing space is a bare @@ (codex parity).
+            let patch = "*** Begin Patch\n*** Update File: \(path)\n@@ \n a\n-b\n+b2\n*** End Patch\n"
+            let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
+            #expect(!err, "patch failed: \(text)")
+            #expect(try tmp.read("ws.txt") == "a\nb2\n")
+        }
+
         static func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir = .none) async -> (text: String, isError: Bool) {
             let arguments = (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
             let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir)

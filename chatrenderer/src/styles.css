@@ -1053,6 +1053,23 @@ body {
   padding-left: 0;
 }
 
+/* Diff view for write_file/apply_patch tool calls. The host sends a pre-built
+   unified diff; highlight.js's `diff` language marks added/removed lines with
+   .hljs-addition/.hljs-deletion (colored above in the hljs section). */
+.tool-diff-container {
+  margin: 0;
+  overflow-x: auto;
+}
+
+.tool-diff {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+  padding: 6px 8px;
+}
 
 .tool-result-error .tool-call-args,
 .tool-result-error .tool-arg-value,

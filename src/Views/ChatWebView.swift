@@ -1061,12 +1061,17 @@ struct ChatMessageData: Codable, Equatable {
         /// True while the engine is waiting for the user to approve this call.
         /// Drives the renderer's Allow/Deny buttons.
         var pendingApproval: Bool = false
+        /// Optional pre-rendered unified diff for `write_file`/`apply_patch`
+        /// calls. When present, the renderer shows this diff instead of the
+        /// raw arguments. Nil for tools that don't produce diffs.
+        let diff: String?
 
-        init(id: String, name: String, arguments: String, pendingApproval: Bool = false) {
+        init(id: String, name: String, arguments: String, pendingApproval: Bool = false, diff: String? = nil) {
             self.id = id
             self.name = name
             self.arguments = arguments
             self.pendingApproval = pendingApproval
+            self.diff = diff
         }
     }
 
@@ -1103,7 +1108,7 @@ extension ChatMessage {
             )
         }
         let toolCalls = toolCalls?.map {
-            ChatMessageData.ToolCallData(id: $0.id, name: $0.name, arguments: $0.arguments, pendingApproval: $0.pendingApproval)
+            ChatMessageData.ToolCallData(id: $0.id, name: $0.name, arguments: $0.arguments, pendingApproval: $0.pendingApproval, diff: $0.diff)
         }
         let toolResults = toolResults?.map {
             ChatMessageData.ToolResultData(callID: $0.callID, content: $0.content, isError: $0.isError, isStreaming: $0.isStreaming, isDenied: $0.isDenied)

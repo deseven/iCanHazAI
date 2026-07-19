@@ -11,7 +11,7 @@ import { useMemo, useState, useRef, useEffect, useLayoutEffect, useCallback } fr
 import { memo } from "preact/compat";
 import { createPortal } from "preact/compat";
 import type { ChatMessage, MessageImage } from "../types";
-import { renderMarkdown, renderInline, renderMermaidIn, restoreCachedMermaid, endsWithUnclosedMermaid } from "../markdown";
+import { renderMarkdown, renderInline, renderMermaidIn, restoreCachedMermaid, endsWithUnclosedMermaid, renderDiff } from "../markdown";
 import { sendToHost } from "../bridge";
 import { debugLog } from "../debug";
 import { parseToolArgs, isEmptyArgs } from "../toolArgs";
@@ -87,6 +87,21 @@ function ToolArgsView({ args }: { args: string }) {
   );
 }
 
+/** Render a pre-computed unified diff (from the host) as a colorized code
+ *  block via highlight.js's `diff` language. The host builds the diff for
+ *  `write_file`/`apply_patch` calls so the renderer can show what changed
+ *  instead of raw JSON arguments. */
+function ToolDiffView({ diff }: { diff: string }) {
+  const html = useMemo(() => renderDiff(diff), [diff]);
+  if (!html) return null;
+  return (
+    <div
+      class="tool-diff-container"
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
+
 /** Strip the `mcp__{server}__` namespace prefix for display. */
 function shortToolName(name: string): string {
   if (name.startsWith("mcp__")) {
@@ -158,12 +173,17 @@ function ToolBlock({
       </button>
       {open && (
         <div class="tool-content">
-          {!isEmptyArgs(call.arguments) && (
+          {call.diff ? (
+            <div class="tool-call">
+              <div class="tool-call-label">Diff</div>
+              <ToolDiffView diff={call.diff} />
+            </div>
+          ) : !isEmptyArgs(call.arguments) ? (
             <div class="tool-call">
               <div class="tool-call-label">Arguments</div>
               <ToolArgsView args={call.arguments} />
             </div>
-          )}
+          ) : null}
           {result && (
             <div class={`tool-result${result.isError && !result.isDenied ? " tool-result-error" : ""}`}>
               <div class="tool-call-label">

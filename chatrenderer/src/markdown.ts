@@ -287,6 +287,27 @@ export function renderInline(src: string): string {
   return md.renderInline(src);
 }
 
+/**
+ * Highlight a unified-diff string for display in a tool-call block. Uses
+ * highlight.js's `diff` language, which marks added/removed lines with
+ * `hljs-addition`/`hljs-deletion` classes (colored via styles.css). Returns
+ * the highlighted HTML wrapped in a `<pre><code>` container. Falls back to a
+ * plain escaped `<pre>` if the diff language isn't available.
+ */
+export function renderDiff(src: string): string {
+  const trimmed = src.trim();
+  if (!trimmed) return "";
+  try {
+    return (
+      '<pre class="hljs tool-diff"><code>' +
+      hljs.highlight(trimmed, { language: "diff", ignoreIllegals: true }).value +
+      "</code></pre>"
+    );
+  } catch {
+    return '<pre class="hljs tool-diff"><code>' + md.utils.escapeHtml(trimmed) + "</code></pre>";
+  }
+}
+
 // ── Mermaid post-render ──────────────────────────────────────────────
 //
 // Mermaid diagrams cannot be rendered synchronously inside the markdown-it

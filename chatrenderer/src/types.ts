@@ -20,6 +20,11 @@ export interface ToolCallData {
   /** True while the host is waiting for the user to approve this call. When
    *  set, the block is forced open and Allow/Deny buttons are shown. */
   pendingApproval?: boolean;
+  /** Optional pre-rendered unified diff for `write_file`/`apply_patch` calls.
+   *  When present, the renderer shows this diff (via highlight.js's diff
+   *  language) instead of the raw arguments. Nil for tools that don't produce
+   *  diffs. */
+  diff?: string | null;
 }
 
 /** The result of executing a tool call. */

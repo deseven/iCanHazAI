@@ -758,27 +758,46 @@ enum BuiltinTools {
 
     // MARK: - Code tools
 
-    private static func applyPatch(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
-        let patch = try requireString(args, "patch")
-        let parsed: ParsedPatch
+    /// Outcome of dry-running an apply_patch call: planned operations ready to
+    /// execute, or the exact user-facing error message the tool would report.
+    enum ApplyPatchPlan {
+        case success([PlannedPatchOp])
+        case failure(String)
+    }
+
+    /// Parses an apply_patch call and dry-runs it against the workdir (no
+    /// writes). On success returns the planned file operations; on failure
+    /// returns the exact error message the tool would report, so callers doing
+    /// a pre-approval check can fail fast with a useful message.
+    static func planApplyPatch(args: [String: Any], workdir: Workdir) -> ApplyPatchPlan {
         do {
-            parsed = try PatchParser.parse(patch)
+            let patch = try requireString(args, "patch")
+            let parsed = try PatchParser.parse(patch)
+            return .success(try PatchApplier.plan(hunks: parsed.hunks, workdir: workdir))
         } catch let e as PatchParseError {
-            return ("Failed to apply patch: \(e.description)", false)
+            return .failure("Invalid apply_patch format: \(e.description)")
+        } catch let e as ApplyPatchError {
+            return .failure("Failed to apply patch: \(e.description)")
+        } catch let e as BuiltinToolError {
+            return .failure("Error: \(e.description)")
         } catch {
-            return ("Failed to apply patch: \(error)", false)
+            return .failure("Error: \(error.localizedDescription)")
+        }
+    }
+
+    private static func applyPatch(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
+        let ops: [PlannedPatchOp]
+        switch planApplyPatch(args: args, workdir: workdir) {
+        case .success(let planned): ops = planned
+        case .failure(let message): return (message, true)
         }
 
         let fm = FileManager.default
         var summary: [String] = []
 
-        for hunk in parsed.hunks {
-            switch hunk {
-            case .addFile(let path, let contents):
-                let resolved = try workdir.resolve(path)
-                if fm.fileExists(atPath: resolved) {
-                    return ("Failed to apply patch: \(path) already exists", false)
-                }
+        for op in ops {
+            switch op {
+            case .addFile(let path, let resolved, let contents):
                 let dir = (resolved as NSString).deletingLastPathComponent
                 if !fm.fileExists(atPath: dir) {
                     try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -786,44 +805,16 @@ enum BuiltinTools {
                 try Data(contents.utf8).write(to: URL(fileURLWithPath: resolved), options: .atomic)
                 summary.append("Added: \(path)")
 
-            case .deleteFile(let path):
-                let resolved = try workdir.resolve(path)
-                guard fm.fileExists(atPath: resolved) else {
-                    return ("Failed to apply patch: \(path) does not exist", false)
-                }
+            case .deleteFile(let path, let resolved, _):
                 try fm.removeItem(atPath: resolved)
                 summary.append("Deleted: \(path)")
 
-            case .updateFile(let path, let movePath, let chunks):
-                let resolved = try workdir.resolve(path)
-                guard fm.fileExists(atPath: resolved) else {
-                    return ("Failed to apply patch: \(path) does not exist", false)
-                }
-                let original: String
-                if let data = fm.contents(atPath: resolved),
-                   let s = String(data: data, encoding: .utf8) {
-                    original = s
-                } else {
-                    return ("Failed to apply patch: \(path) is not readable as UTF-8", false)
-                }
-
-                let newContent: String
-                do {
-                    newContent = try PatchApplier.applyChunksToContent(
-                        originalContent: original,
-                        filePath: path,
-                        chunks: chunks
-                    )
-                } catch let e as ApplyPatchError {
-                    return ("Failed to apply patch: \(e.description)", false)
-                }
-
+            case .updateFile(let path, let resolved, let movePath, let moveResolved, let chunkCount, _, let newContent):
                 let tempURL = URL(fileURLWithPath: resolved)
                     .deletingLastPathComponent()
                     .appendingPathComponent(".ichai-patch-tmp-\(UUID().uuidString)")
                 try Data(newContent.utf8).write(to: tempURL, options: .atomic)
-                if let movePath {
-                    let moveResolved = try workdir.resolve(movePath)
+                if let movePath, let moveResolved {
                     let moveDir = (moveResolved as NSString).deletingLastPathComponent
                     if !fm.fileExists(atPath: moveDir) {
                         try fm.createDirectory(atPath: moveDir, withIntermediateDirectories: true)
@@ -831,11 +822,11 @@ enum BuiltinTools {
                     _ = try? fm.removeItem(atPath: moveResolved)
                     try fm.moveItem(atPath: tempURL.path, toPath: moveResolved)
                     try fm.removeItem(atPath: resolved)
-                    summary.append("Updated: \(path) → \(movePath) (\(chunks.count) hunks)")
+                    summary.append("Updated: \(path) → \(movePath) (\(chunkCount) hunks)")
                 } else {
                     _ = try? fm.removeItem(atPath: resolved)
                     try fm.moveItem(atPath: tempURL.path, toPath: resolved)
-                    summary.append("Updated: \(path) (\(chunks.count) hunks)")
+                    summary.append("Updated: \(path) (\(chunkCount) hunks)")
                 }
             }
         }

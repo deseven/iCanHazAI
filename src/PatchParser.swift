@@ -51,6 +51,15 @@ struct ParsedPatch {
 }
 
 enum PatchParser {
+    /// Trailing-whitespace-trimmed view of a structural line (markers, @@
+    /// headers). Body lines must never go through this — their content is
+    /// significant.
+    private static func trimEnd(_ s: String) -> String {
+        var s = s
+        while let last = s.last, last == " " || last == "\t" || last == "\r" { s.removeLast() }
+        return s
+    }
+
     static func parse(_ patch: String) throws -> ParsedPatch {
         let trimmed = patch.trimmingCharacters(in: .whitespacesAndNewlines)
         var lines = trimmed.components(separatedBy: "\n")
@@ -123,6 +132,10 @@ enum PatchParser {
             }
 
             var chunks: [UpdateFileChunk] = []
+            // Set when an *** End of File marker appears between chunks: models
+            // frequently use it as a hunk opener/separator meaning "the NEXT
+            // hunk applies at end of file" (strictly it terminates a hunk).
+            var eofAnchorPending = false
             while i < lines.count {
                 // Skip blank lines between chunks.
                 if lines[i].trimmingCharacters(in: .whitespaces).isEmpty {
@@ -130,13 +143,27 @@ enum PatchParser {
                     i += 1
                     continue
                 }
+                if trimEnd(lines[i]) == EOF_MARKER {
+                    eofAnchorPending = true
+                    consumed += 1
+                    i += 1
+                    continue
+                }
                 // Stop at the next file operation marker.
                 if lines[i].hasPrefix("***") { break }
 
-                let r = try parseUpdateFileChunk(lines, i, lineNumber + consumed, allowMissingContext: chunks.isEmpty)
+                var r = try parseUpdateFileChunk(lines, i, lineNumber + consumed, allowMissingContext: chunks.isEmpty || eofAnchorPending)
+                if eofAnchorPending {
+                    r.chunk.isEndOfFile = true
+                    eofAnchorPending = false
+                }
                 chunks.append(r.chunk)
                 consumed += r.linesConsumed
                 i += r.linesConsumed
+            }
+            // A trailing marker with no following chunk anchors the previous one.
+            if eofAnchorPending, !chunks.isEmpty {
+                chunks[chunks.count - 1].isEndOfFile = true
             }
 
             guard !chunks.isEmpty else {
@@ -156,11 +183,13 @@ enum PatchParser {
         var changeContext: String? = nil
         var idx = start
 
-        if lines[idx] == EMPTY_CONTEXT {
+        // Structural lines tolerate trailing whitespace (codex parity).
+        let structural = trimEnd(lines[idx])
+        if structural == EMPTY_CONTEXT {
             changeContext = nil
             idx += 1
-        } else if lines[idx].hasPrefix(CONTEXT_MARKER) {
-            changeContext = String(lines[idx].dropFirst(CONTEXT_MARKER.count))
+        } else if structural.hasPrefix(CONTEXT_MARKER) {
+            changeContext = String(structural.dropFirst(CONTEXT_MARKER.count))
             idx += 1
         } else if !allowMissingContext {
             throw PatchParseError(message: "Expected update hunk to start with a @@ context marker, got: '\(lines[idx])'", lineNumber: lineNumber)
@@ -176,10 +205,28 @@ enum PatchParser {
         while i < lines.count {
             let line = lines[i]
 
-            if line == EOF_MARKER {
+            if trimEnd(line) == EOF_MARKER {
+                // Peek past blank lines to tell how the marker is being used.
+                var j = i + 1
+                while j < lines.count, lines[j].trimmingCharacters(in: .whitespaces).isEmpty { j += 1 }
+                let bodyFollows = j < lines.count && lines[j].first.map { $0 == " " || $0 == "+" || $0 == "-" } == true
+
                 if parsed == 0 {
-                    throw PatchParseError(message: "Update hunk does not contain any lines", lineNumber: lineNumber + 1)
+                    // Lenient: the marker opens a hunk (appears before any body
+                    // lines) — anchor this chunk at end of file and keep reading.
+                    guard bodyFollows else {
+                        throw PatchParseError(message: "Update hunk does not contain any lines", lineNumber: lineNumber + 1)
+                    }
+                    chunk.isEndOfFile = true
+                    i += 1
+                    continue
                 }
+                if bodyFollows {
+                    // Lenient: the marker separates hunks and the NEXT chunk is
+                    // the one anchored at end of file — leave it for the caller.
+                    return (chunk, parsed + (idx - start))
+                }
+                // Strict form: the marker terminates this chunk (EOF-anchored).
                 chunk.isEndOfFile = true
                 parsed += 1
                 i += 1
@@ -209,6 +256,9 @@ enum PatchParser {
                 parsed += 1
             default:
                 if parsed == 0 {
+                    if line.hasPrefix(EMPTY_CONTEXT) {
+                        throw PatchParseError(message: "Unexpected stacked @@ marker: '\(line)'. Each hunk starts with a single @@ line — combine nested context into one anchor (e.g. '@@ class UserService def greet():')", lineNumber: lineNumber + 1)
+                    }
                     throw PatchParseError(message: "Unexpected line found in update hunk: '\(line)'. Every line should start with ' ' (context), '+' (added), or '-' (removed)", lineNumber: lineNumber + 1)
                 }
                 return (chunk, parsed + (idx - start))
@@ -245,7 +295,7 @@ enum PatchApplier {
             // If a chunk has a change_context, find it first.
             if let ctx = chunk.changeContext {
                 guard let idx = SeekSequence.seek(lines: originalLines, pattern: [ctx], start: lineIndex, eof: false) else {
-                    throw ApplyPatchError(message: "Failed to find context '\(ctx)' in \(filePath)")
+                    throw ApplyPatchError(message: contextNotFoundMessage(ctx: ctx, filePath: filePath, originalLines: originalLines, lineIndex: lineIndex))
                 }
                 lineIndex = idx + 1
             }
@@ -280,13 +330,35 @@ enum PatchApplier {
                 replacements.append(Replacement(start: f, oldLength: pattern.count, newLines: newSlice))
                 lineIndex = f + pattern.count
             } else {
-                let preview = chunk.oldLines.joined(separator: "\n")
-                let truncated = preview.count > 200 ? String(preview.prefix(200)) + "..." : preview
-                throw ApplyPatchError(message: "Failed to find expected lines in \(filePath):\n\(truncated)")
+                throw ApplyPatchError(message: expectedLinesNotFoundMessage(pattern: pattern, filePath: filePath, originalLines: originalLines, lineIndex: lineIndex, isEndOfFile: chunk.isEndOfFile))
             }
         }
 
         return replacements.sorted { $0.start < $1.start }
+    }
+
+    /// Matching is strict (codex-compatible): hunks apply top-to-bottom and a
+    /// body is searched for only after its @@ anchor. When a seek fails we
+    /// re-scan the whole file — not to apply, but to tell the model exactly
+    /// why it failed and how to fix the patch.
+    private static func contextNotFoundMessage(ctx: String, filePath: String, originalLines: [String], lineIndex: Int) -> String {
+        if lineIndex > 0, let earlier = SeekSequence.seek(lines: originalLines, pattern: [ctx], start: 0, eof: false) {
+            return "Failed to find context '\(ctx)' in \(filePath): it matches line \(earlier + 1), but a previous hunk already consumed up to line \(lineIndex). Hunks must apply top-to-bottom without overlapping — merge or reorder them."
+        }
+        return "Failed to find context '\(ctx)' in \(filePath) — the @@ context must exactly match a single line in the file (copy it verbatim; line numbers don't work)"
+    }
+
+    private static func expectedLinesNotFoundMessage(pattern: [String], filePath: String, originalLines: [String], lineIndex: Int, isEndOfFile: Bool) -> String {
+        let preview = pattern.joined(separator: "\n")
+        let truncated = preview.count > 200 ? String(preview.prefix(200)) + "..." : preview
+        if isEndOfFile {
+            if let anywhere = SeekSequence.seek(lines: originalLines, pattern: pattern, start: 0, eof: false) {
+                return "Failed to find expected lines in \(filePath): they match line \(anywhere + 1), but the hunk is marked *** End of File, which anchors it at the end of the file. Remove the marker if the change isn't at the end.\nExpected lines:\n\(truncated)"
+            }
+        } else if lineIndex > 0, let earlier = SeekSequence.seek(lines: originalLines, pattern: pattern, start: 0, eof: false), earlier < lineIndex {
+            return "Failed to find expected lines in \(filePath): they match line \(earlier + 1), but the hunk body must come after its @@ anchor and after all previous hunks (currently searching from line \(lineIndex + 1)). If the @@ anchor line is repeated as the hunk's first context line, remove it from the body.\nExpected lines:\n\(truncated)"
+        }
+        return "Failed to find expected lines in \(filePath):\n\(truncated)\nMake sure the context lines match the file exactly — re-read the file if it may have changed."
     }
 
     /// Apply replacements to the original lines, returning the modified lines.
@@ -316,6 +388,87 @@ enum PatchApplier {
         }
         return newLines.joined(separator: "\n")
     }
+
+    /// Dry-run a patch: resolve every file operation against the workdir and
+    /// compute the resulting contents without writing anything. Operations
+    /// observe each other's effects through an in-memory overlay, matching the
+    /// sequential semantics of execution (e.g. Add then Update the same file
+    /// in one patch works). Throws the same errors execution would hit.
+    static func plan(hunks: [PatchHunk], workdir: Workdir) throws -> [PlannedPatchOp] {
+        let fm = FileManager.default
+        // Virtual file state: .some(content) = exists, .none = deleted.
+        // A missing key means untouched by the patch — consult disk.
+        var overlay: [String: String?] = [:]
+
+        func exists(_ resolved: String) -> Bool {
+            if let state = overlay[resolved] { return state != nil }
+            return fm.fileExists(atPath: resolved)
+        }
+        /// Returns nil when the path doesn't exist (or has no readable data,
+        /// e.g. a directory). Throws when the data isn't valid UTF-8.
+        func content(_ resolved: String, path: String) throws -> String? {
+            if let state = overlay[resolved] { return state }
+            guard fm.fileExists(atPath: resolved) else { return nil }
+            guard let data = fm.contents(atPath: resolved) else { return nil }
+            guard let s = String(data: data, encoding: .utf8) else {
+                throw ApplyPatchError(message: "\(path) is not readable as UTF-8")
+            }
+            return s
+        }
+
+        var ops: [PlannedPatchOp] = []
+        for hunk in hunks {
+            switch hunk {
+            case .addFile(let path, let contents):
+                let resolved = try workdir.resolve(path)
+                if exists(resolved) {
+                    throw ApplyPatchError(message: "\(path) already exists")
+                }
+                overlay[resolved] = contents
+                ops.append(.addFile(path: path, resolved: resolved, contents: contents))
+
+            case .deleteFile(let path):
+                let resolved = try workdir.resolve(path)
+                guard exists(resolved) else {
+                    throw ApplyPatchError(message: "\(path) does not exist")
+                }
+                let original = try content(resolved, path: path)
+                overlay[resolved] = nil
+                ops.append(.deleteFile(path: path, resolved: resolved, original: original))
+
+            case .updateFile(let path, let movePath, let chunks):
+                let resolved = try workdir.resolve(path)
+                guard exists(resolved) else {
+                    throw ApplyPatchError(message: "\(path) does not exist")
+                }
+                guard let original = try content(resolved, path: path) else {
+                    throw ApplyPatchError(message: "\(path) is not readable as UTF-8")
+                }
+                let newContent = try applyChunksToContent(
+                    originalContent: original,
+                    filePath: path,
+                    chunks: chunks
+                )
+                let moveResolved = try movePath.map { try workdir.resolve($0) }
+                if let moveResolved {
+                    overlay[resolved] = nil
+                    overlay[moveResolved] = newContent
+                } else {
+                    overlay[resolved] = newContent
+                }
+                ops.append(.updateFile(path: path, resolved: resolved, movePath: movePath, moveResolved: moveResolved, chunkCount: chunks.count, original: original, newContent: newContent))
+            }
+        }
+        return ops
+    }
+}
+
+/// A single file change produced by dry-running a patch — fully resolved and
+/// ready to execute (BuiltinTools) or render as a diff (DiffBuilder).
+enum PlannedPatchOp {
+    case addFile(path: String, resolved: String, contents: String)
+    case deleteFile(path: String, resolved: String, original: String?)
+    case updateFile(path: String, resolved: String, movePath: String?, moveResolved: String?, chunkCount: Int, original: String, newContent: String)
 }
 
 // MARK: - SeekSequence (multi-pass sequence matching)
@@ -393,8 +546,11 @@ enum SeekSequence {
         if pattern.isEmpty { return start }
         if pattern.count > lines.count { return nil }
 
-        let searchStart = eof && lines.count >= pattern.count ? lines.count - pattern.count : start
         let maxStart = lines.count - pattern.count
+        let searchStart = eof ? maxStart : start
+        // Fewer lines remain than the pattern needs (e.g. an @@ anchor found
+        // near the end of a short file) — it can never match.
+        guard searchStart <= maxStart else { return nil }
 
         for i in searchStart...maxStart { if exactMatch(lines, pattern, i) { return i } }
         for i in searchStart...maxStart { if trimEndMatch(lines, pattern, i) { return i } }
