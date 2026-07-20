@@ -221,10 +221,6 @@ struct iCanHazAIApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandGroup(after: .textEditing) {
-                Button("New Chat") {
-                    AppViewModel.shared?.createNewChat()
-                }
-                .keyboardShortcut("t", modifiers: .command)
                 Button("Find in Chat…") {
                     AppViewModel.shared?.startSearchInChat()
                 }
@@ -235,20 +231,6 @@ struct iCanHazAIApp: App {
                     PreferencesView.show()
                 }
                 .keyboardShortcut(",", modifiers: .command)
-            }
-
-            CommandMenu("Role") {
-                Button("Roles: \(viewModel.roles.count)") {}
-                    .disabled(true)
-                Button("Prompts: \(viewModel.prompts.count)") {}
-                    .disabled(true)
-                Divider()
-                Button("Reveal Roles in Finder…") {
-                    NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.rolesURL])
-                }
-                Button("Reveal Prompts in Finder…") {
-                    NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.promptsURL])
-                }
             }
 
             CommandMenu("Connection") {
@@ -267,18 +249,47 @@ struct iCanHazAIApp: App {
             CommandMenu("MCP") {
                 Button("MCP Servers: \(viewModel.mcps.count)") {}
                     .disabled(true)
+                Button("Reveal MCP Servers in Finder…") {
+                    NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.mcpsURL])
+                }
                 Button("Reinitialize MCP Servers…") {
                     AppViewModel.shared?.reloadMCPs()
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
-                Button("Reveal MCP Servers in Finder…") {
-                    NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.mcpsURL])
-                }
                 Divider()
                 Button("New MCP Server…") {
                     MCPWizardView.show(onFinish: { AppViewModel.shared?.refreshPreferences() })
                 }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
+            }
+
+            CommandMenu("Prompt") {
+                Button("Prompts: \(viewModel.prompts.count)") {}
+                    .disabled(true)
+                Button("Reveal Prompts in Finder…") {
+                    NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.promptsURL])
+                }
+            }
+
+            CommandMenu("Role") {
+                Button("Roles: \(viewModel.roles.count)") {}
+                    .disabled(true)
+                Button("Reveal Roles in Finder…") {
+                    NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.rolesURL])
+                }
+            }
+
+            CommandMenu("Chat") {
+                Button("Chats: \(viewModel.chatItems.count)") {}
+                    .disabled(true)
+                Button("Reveal Chats in Finder…") {
+                    NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.chatsURL])
+                }
+                Divider()
+                Button("New Chat…") {
+                    AppViewModel.shared?.createNewChat()
+                }
+                .keyboardShortcut("t", modifiers: .command)
             }
         }
     }

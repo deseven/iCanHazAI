@@ -244,8 +244,6 @@ do_upload() { share "$1"; }
 
 if [ "$mode" = "clean" ]; then
     swift package clean
-    # Legacy standalone-package build dirs (now folded into the main package).
-    rm -rf "$loc"/mcps/*/.build "$loc"/shared/*/.build
     do_clean_app_cache
     echo -e "  ${greenColor}${bold}Clean complete.${noColor}"
     exit 0
@@ -266,7 +264,7 @@ fi
 
 add "Resolving dependencies..."      "failed to resolve dependencies"            do_resolve_deps
 add "Building chat renderer (web)..." "failed to build chat renderer"            do_build_web
-add "Compiling Swift (app + MCPs)..." "failed to compile $shortName"             do_build_swift
+add "Compiling Swift (app)..." "failed to compile $shortName"             do_build_swift
 add "Creating APP bundle..."         "failed to create app bundle"               do_create_bundle
 
 # Tests gate signing for release builds.

@@ -1567,8 +1567,8 @@ actor ChatEngine {
     /// Starts (or restarts) the tool-calling loop for the given chat. The loop
     /// iterates: stream a completion with tools attached → if the model emitted
     /// tool calls, execute them via `MCPManager`, append the results, and stream
-    /// again. Repeats until the model responds with no tool calls or the
-    /// max-iteration guard is hit.
+    /// again. Repeats until the model responds with no tool calls, an error
+    /// occurs, or the user cancels the stream.
     private func runToolLoop(for filename: String, connection: Connection, messages: [ChatMessage]) {
         debugLog("Stream", "start — chat=\(filename), connection=\(connection.id)")
         if let idx = records.firstIndex(where: { $0.filename == filename }) {
@@ -1589,10 +1589,11 @@ actor ChatEngine {
     private func performToolLoop(filename: String, connection: Connection, messages: [ChatMessage]) async {
         // The working message history grows as tool calls + results are appended.
         var history = messages
-        // Max iterations to prevent infinite tool-calling loops.
-        let maxIterations = 10
 
-        for _ in 0..<maxIterations {
+        // Unbounded: the loop terminates naturally when the model stops
+        // emitting tool calls, on error, or on user cancellation. See the
+        // doc comment on `runToolLoop` for rationale.
+        while true {
             // Gather tools from the chat's active MCP servers. Individual
             // server failures are collected and surfaced but don't abort the
             // whole request — the model still gets the working servers' tools.
@@ -1688,10 +1689,6 @@ actor ChatEngine {
                 return
             }
         }
-
-        // Max iterations exceeded — surface an error and stop.
-        recordError("Tool-calling loop exceeded \(maxIterations) iterations.", filename: filename)
-        finishStream(filename: filename)
     }
 
     /// Gathers tool definitions from the chat's role-selected tool sources:
