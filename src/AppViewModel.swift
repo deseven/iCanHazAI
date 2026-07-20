@@ -938,7 +938,11 @@ final class AppViewModel: ObservableObject {
     /// (deduped, preserving order). The directory picker offers these to the
     /// user when picking a per-chat working directory.
     func addWorkingDirectory(_ path: String) {
-        let normalized = (path as NSString).standardizingPath
+        // SSH specs (`ssh::host/path`) are kept verbatim — local path
+        // standardization would mangle them.
+        let normalized = SSHSpec.isSSH(path)
+            ? path.trimmingCharacters(in: .whitespaces)
+            : (path as NSString).standardizingPath
         guard !normalized.isEmpty else { return }
         guard !workingDirectories.contains(normalized) else { return }
         workingDirectories.append(normalized)

@@ -1718,13 +1718,17 @@ actor ChatEngine {
 
         var defs: [ToolDefinition] = []
         var perSourceCounts: [(String, Int)] = []
+        // Local-only tools (macOS automation) are meaningless against an SSH
+        // working directory and are not advertised at all.
+        let sshWorkdir = effectiveWorkingDirectory(for: chat).map { SSHSpec.isSSH($0) } ?? false
         for r in resolved {
             if r.isBuiltinGroup {
                 // Built-in groups: tools are always available (in-process).
                 let groupTools = BuiltinTools.tools(for: r.name)
                 let roleAllow = Set(r.toolsFilter)
                 let filtered = groupTools.filter { t in
-                    roleAllow.isEmpty || roleAllow.contains(t.name)
+                    if sshWorkdir, BuiltinTools.sshUnavailableToolNames.contains(t.name) { return false }
+                    return roleAllow.isEmpty || roleAllow.contains(t.name)
                 }
                 perSourceCounts.append((r.name, filtered.count))
                 defs.append(contentsOf: filtered.map { tool in
@@ -1838,6 +1842,9 @@ actor ChatEngine {
         // Working directory + isolation for built-in groups.
         let workdir = chat.flatMap { effectiveWorkingDirectory(for: $0) }
         let isolation = resolved.first(where: { $0.name == sourceName })?.directoryIsolation ?? false
+        // Per-chat identity for SSH control-socket naming (one master
+        // connection per chat+host).
+        let chatID = chat?.id.uuidString ?? filename
 
         // For write_file/apply_patch, build a unified diff now so the renderer
         // can show it during the approval prompt (and after execution). The
@@ -1850,22 +1857,28 @@ actor ChatEngine {
         // (parse + plan against on-disk state, no writes): when it fails, the
         // tool call would fail identically, so we skip the approval prompt and
         // relay the exact error to the model.
+        // Pre-approval diff previews read the local filesystem only; SSH
+        // workdirs skip them (the tools themselves still validate remotely).
         if sourceName == BuiltinTools.filesystemGroup, toolName == "write_file" {
-            let wd = Workdir(root: workdir, isolated: isolation)
-            if let d = DiffBuilder.diffForWriteFile(arguments: call.arguments, workdir: wd) {
-                setToolCallDiff(callID: call.id, filename: filename, diff: d)
-            } else {
-                debugLog("Tool", "write_file arguments invalid (no diff) — callID=\(call.id), chat=\(filename)")
-                return ToolResult(callID: call.id, content: "Invalid arguments: expected 'path' and 'content' strings.", isError: true)
+            let wd = Workdir(root: workdir, isolated: isolation, chatID: chatID)
+            if wd.ssh == nil {
+                if let d = DiffBuilder.diffForWriteFile(arguments: call.arguments, workdir: wd) {
+                    setToolCallDiff(callID: call.id, filename: filename, diff: d)
+                } else {
+                    debugLog("Tool", "write_file arguments invalid (no diff) — callID=\(call.id), chat=\(filename)")
+                    return ToolResult(callID: call.id, content: "Invalid arguments: expected 'path' and 'content' strings.", isError: true)
+                }
             }
         } else if sourceName == BuiltinTools.codeGroup, toolName == "apply_patch" {
-            let wd = Workdir(root: workdir, isolated: isolation)
-            switch DiffBuilder.preflightApplyPatch(arguments: call.arguments, workdir: wd) {
-            case .ok(let d):
-                if let d { setToolCallDiff(callID: call.id, filename: filename, diff: d) }
-            case .error(let message):
-                debugLog("Tool", "apply_patch dry-run failed — callID=\(call.id), chat=\(filename)")
-                return ToolResult(callID: call.id, content: message, isError: true)
+            let wd = Workdir(root: workdir, isolated: isolation, chatID: chatID)
+            if wd.ssh == nil {
+                switch DiffBuilder.preflightApplyPatch(arguments: call.arguments, workdir: wd) {
+                case .ok(let d):
+                    if let d { setToolCallDiff(callID: call.id, filename: filename, diff: d) }
+                case .error(let message):
+                    debugLog("Tool", "apply_patch dry-run failed — callID=\(call.id), chat=\(filename)")
+                    return ToolResult(callID: call.id, content: message, isError: true)
+                }
             }
         }
 
@@ -1887,7 +1900,7 @@ actor ChatEngine {
             let result: ToolResult
             if BuiltinTools.allGroups.contains(sourceName) {
                 // Built-in group: run in-process with the chat's workdir.
-                let wd = Workdir(root: workdir, isolated: isolation)
+                let wd = Workdir(root: workdir, isolated: isolation, chatID: chatID)
                 result = await BuiltinTools.call(name: toolName, arguments: call.arguments, callID: call.id, group: sourceName, workdir: wd)
             } else {
                 // Custom MCP server: use the shared connection pool.

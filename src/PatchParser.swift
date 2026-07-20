@@ -394,26 +394,37 @@ enum PatchApplier {
     /// observe each other's effects through an in-memory overlay, matching the
     /// sequential semantics of execution (e.g. Add then Update the same file
     /// in one patch works). Throws the same errors execution would hit.
-    static func plan(hunks: [PatchHunk], workdir: Workdir) throws -> [PlannedPatchOp] {
-        let fm = FileManager.default
+    ///
+    /// File access goes through injectable closures keyed by resolved path —
+    /// the local defaults hit the filesystem directly, while the SSH-backed
+    /// apply_patch pre-fetches remote contents and serves them from memory.
+    static func plan(
+        hunks: [PatchHunk],
+        workdir: Workdir,
+        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
+        fileContent: (String) throws -> String? = { resolved in
+            let fm = FileManager.default
+            guard fm.fileExists(atPath: resolved) else { return nil }
+            guard let data = fm.contents(atPath: resolved) else { return nil }
+            guard let s = String(data: data, encoding: .utf8) else {
+                throw ApplyPatchError(message: "\(resolved) is not readable as UTF-8")
+            }
+            return s
+        }
+    ) throws -> [PlannedPatchOp] {
         // Virtual file state: .some(content) = exists, .none = deleted.
-        // A missing key means untouched by the patch — consult disk.
+        // A missing key means untouched by the patch — consult the provider.
         var overlay: [String: String?] = [:]
 
         func exists(_ resolved: String) -> Bool {
             if let state = overlay[resolved] { return state != nil }
-            return fm.fileExists(atPath: resolved)
+            return fileExists(resolved)
         }
         /// Returns nil when the path doesn't exist (or has no readable data,
         /// e.g. a directory). Throws when the data isn't valid UTF-8.
         func content(_ resolved: String, path: String) throws -> String? {
             if let state = overlay[resolved] { return state }
-            guard fm.fileExists(atPath: resolved) else { return nil }
-            guard let data = fm.contents(atPath: resolved) else { return nil }
-            guard let s = String(data: data, encoding: .utf8) else {
-                throw ApplyPatchError(message: "\(path) is not readable as UTF-8")
-            }
-            return s
+            return try fileContent(resolved)
         }
 
         var ops: [PlannedPatchOp] = []

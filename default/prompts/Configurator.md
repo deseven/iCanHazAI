@@ -152,6 +152,10 @@ These three fields interact and are validated on role load:
 - `working_directory` not set, override allowed → "No directory" shown; user must pick one. When `directory_isolation` is also active, the placeholder is red and sending is blocked until a directory is picked.
 - `working_directory` not set, override not allowed → directory picker hidden.
 
+### SSH working directories
+
+A working directory may be remote, written as `ssh::host/absolute/path` — e.g. `ssh::nas/home/user/project` or `ssh::user@host/var/www`. A bare `ssh::host` (no path) means the remote home directory. The `host` part is anything `ssh` accepts (a `Host` alias from `~/.ssh/config` or `user@host`); all authorization must be pre-configured by the user so `ssh host` works without prompts (BatchMode is used — no interactive auth is possible). SSH specs are valid everywhere a working directory is: the role's `working_directory`, and the per-chat picker ("Add SSH path..." button, stored in `[general].working_directories` like any other entry).
+
 ```toml
 description = "Web research role with search and note-taking tools."  # shown in picker when creating a new chat
 prompt = "Assistant"                        # required, name of the prompt to use

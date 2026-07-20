@@ -12,11 +12,36 @@ import LoginShell
 /// resolved root path and isolation flag so Filesystem/Code tools resolve paths
 /// correctly. When `isolated` is true, absolute paths are treated as relative
 /// to the root (chroot-like) and path escapes are rejected.
+///
+/// A root of the form `ssh::host/path` (see [`SSHSpec`](src/SSHManager.swift:13))
+/// switches the chat's workdir-capable tools to remote execution over SSH. In
+/// that case `root` holds the remote absolute path (nil = remote home) and all
+/// path handling is string-based POSIX normalization — the remote filesystem
+/// is never touched during resolution (symlink escapes on the remote side are
+/// explicitly the user's problem).
 struct Workdir: Sendable {
     let root: String?
     let isolated: Bool
+    let ssh: SSHContext?
+    /// Set when the root carried the `ssh::` prefix but failed to parse;
+    /// surfaced as a tool error instead of silently treating it as local.
+    let sshSpecError: String?
 
-    init(root: String?, isolated: Bool) {
+    init(root: String?, isolated: Bool, chatID: String? = nil) {
+        if let root, SSHSpec.isSSH(root) {
+            switch SSHSpec.parse(root) {
+            case .success(let spec):
+                self.root = spec.path
+                self.ssh = SSHContext(host: spec.host, chatID: chatID ?? "shared")
+                self.sshSpecError = nil
+            case .failure(let reason):
+                self.root = nil
+                self.ssh = nil
+                self.sshSpecError = "invalid SSH working directory \"\(root)\": \(reason)"
+            }
+            self.isolated = isolated
+            return
+        }
         if let root, !root.isEmpty {
             let standardized = (root as NSString).standardizingPath
             self.root = URL(fileURLWithPath: standardized).resolvingSymlinksInPath().path
@@ -24,6 +49,8 @@ struct Workdir: Sendable {
             self.root = nil
         }
         self.isolated = isolated
+        self.ssh = nil
+        self.sshSpecError = nil
     }
 
     var currentDirectory: String {
@@ -37,6 +64,7 @@ struct Workdir: Sendable {
     var defaultCwd: String { root ?? NSHomeDirectory() }
 
     func resolve(_ path: String) throws -> String {
+        if ssh != nil { return try resolveRemote(path) }
         if isolated, let root {
             let relative = path.hasPrefix("/") ? String(path.dropFirst()) : path
             let joined = (root as NSString).appendingPathComponent(relative)
@@ -53,6 +81,51 @@ struct Workdir: Sendable {
             let joined = (base as NSString).appendingPathComponent(path)
             return (joined as NSString).standardizingPath
         }
+    }
+
+    /// Remote path resolution: pure string manipulation, no filesystem access.
+    /// A relative path with no root stays relative (resolved by the remote
+    /// shell against the login directory, i.e. the remote home).
+    private func resolveRemote(_ path: String) throws -> String {
+        if isolated, let root {
+            let relative = path.hasPrefix("/") ? String(path.dropFirst()) : path
+            // Root "/" contains every absolute path by definition.
+            if root == "/" { return Self.posixNormalize("/" + relative) }
+            let joined = root + "/" + relative
+            let normalized = Self.posixNormalize(joined)
+            guard normalized == root || normalized.hasPrefix(root + "/") else {
+                throw BuiltinToolError("path escapes the workdir")
+            }
+            return normalized
+        }
+        if path.hasPrefix("/") { return Self.posixNormalize(path) }
+        guard let root else { return Self.posixNormalize(path) }
+        return Self.posixNormalize(root + "/" + path)
+    }
+
+    /// Collapses `.`/`..`/duplicate slashes without touching the filesystem
+    /// (unlike `NSString.standardizingPath`, which also expands tildes — wrong
+    /// for remote paths where `~` would mean the remote user's home).
+    static func posixNormalize(_ path: String) -> String {
+        let isAbsolute = path.hasPrefix("/")
+        var parts: [String] = []
+        for segment in path.split(separator: "/", omittingEmptySubsequences: true) {
+            switch segment {
+            case ".":
+                continue
+            case "..":
+                if let last = parts.last, last != ".." {
+                    parts.removeLast()
+                } else if !isAbsolute {
+                    parts.append("..")
+                }
+            default:
+                parts.append(String(segment))
+            }
+        }
+        let joined = parts.joined(separator: "/")
+        if isAbsolute { return "/" + joined }
+        return joined.isEmpty ? "." : joined
     }
 
     static let none = Workdir(root: nil, isolated: false)
@@ -76,7 +149,7 @@ struct BuiltinToolDef: Sendable {
     let schema: String
 }
 
-private typealias ToolOutput = (content: String, isError: Bool)
+typealias ToolOutput = (content: String, isError: Bool)
 
 // MARK: - BuiltinTools
 
@@ -96,6 +169,11 @@ enum BuiltinTools {
     static let groupOrder: [String] = [utilsGroup, filesystemGroup, codeGroup, shellGroup]
     static let workdirCapableGroups: Set<String> = [filesystemGroup, codeGroup, shellGroup]
     static let isolationCapableGroups: Set<String> = [filesystemGroup, codeGroup]
+
+    /// Tools that only make sense against the local machine (macOS
+    /// automation) and are not advertised when the chat's working directory
+    /// is an SSH path.
+    static let sshUnavailableToolNames: Set<String> = ["applescript"]
 
     private static let shellPath = LoginShell.path()
 
@@ -238,6 +316,22 @@ enum BuiltinTools {
     }
 
     private static func dispatch(name: String, group: String, args: [String: Any], workdir: Workdir) async throws -> ToolOutput {
+        // SSH workdir: route workdir-capable tools to the remote
+        // implementations. Utils and applescript always run locally.
+        if let ssh = workdir.ssh {
+            switch (group, name) {
+            case (filesystemGroup, _):
+                return try await BuiltinToolsSSH.filesystem(name: name, args: args, workdir: workdir, ssh: ssh)
+            case (codeGroup, _):
+                return try await BuiltinToolsSSH.code(name: name, args: args, workdir: workdir, ssh: ssh)
+            case (shellGroup, "shell"):
+                return try await BuiltinToolsSSH.shell(args: args, workdir: workdir, ssh: ssh)
+            default:
+                break
+            }
+        } else if let specError = workdir.sshSpecError, workdirCapableGroups.contains(group) {
+            throw BuiltinToolError(specError)
+        }
         switch (group, name) {
         // Utils
         case (utilsGroup, "calc"): return try await calc(args)
@@ -282,25 +376,25 @@ enum BuiltinTools {
         return obj
     }
 
-    private static func requireString(_ args: [String: Any], _ key: String) throws -> String {
+    static func requireString(_ args: [String: Any], _ key: String) throws -> String {
         guard let v = args[key] as? String else {
             throw BuiltinToolError("missing required argument '\(key)'")
         }
         return v
     }
 
-    private static func optionalString(_ args: [String: Any], _ key: String) -> String? {
+    static func optionalString(_ args: [String: Any], _ key: String) -> String? {
         args[key] as? String
     }
 
-    private static func optionalInt(_ args: [String: Any], _ key: String) -> Int? {
+    static func optionalInt(_ args: [String: Any], _ key: String) -> Int? {
         guard let v = args[key] else { return nil }
         if let i = v as? Int { return i }
         if let n = v as? NSNumber { return n.intValue }
         return nil
     }
 
-    private static func optionalBool(_ args: [String: Any], _ key: String) -> Bool? {
+    static func optionalBool(_ args: [String: Any], _ key: String) -> Bool? {
         args[key] as? Bool
     }
 
@@ -312,7 +406,7 @@ enum BuiltinTools {
         throw BuiltinToolError("invalid argument '\(key)': expected number")
     }
 
-    private static func requireStringArray(_ args: [String: Any], _ key: String) throws -> [String] {
+    static func requireStringArray(_ args: [String: Any], _ key: String) throws -> [String] {
         guard let v = args[key], let arr = v as? [Any] else {
             throw BuiltinToolError("missing required argument '\(key)'")
         }
@@ -380,13 +474,13 @@ enum BuiltinTools {
 
     // MARK: - File helpers
 
-    private static func isText(_ data: Data) -> Bool {
+    static func isText(_ data: Data) -> Bool {
         let sample = data.count > 8192 ? data.prefix(8192) : data
         if sample.contains(0) { return false }
         return String(data: sample, encoding: .utf8) != nil
     }
 
-    private static func relativize(_ absPath: String, root: String) -> String {
+    static func relativize(_ absPath: String, root: String) -> String {
         var p = absPath
         if p == root { return "" }
         if p.hasPrefix(root + "/") {
@@ -557,7 +651,13 @@ enum BuiltinTools {
         guard let data = fm.contents(atPath: resolved) else {
             throw BuiltinToolError("invalid argument 'path': could not read: \(path)")
         }
+        return try formatFileContent(data, path: path, offset: offset, limit: limit)
+    }
 
+    /// Shared read_file formatting pipeline (image detection, text slicing
+    /// with line numbers, truncation), used by both the local and the
+    /// SSH-backed implementations once the raw bytes are in hand.
+    static func formatFileContent(_ data: Data, path: String, offset: Int, limit: Int) throws -> ToolOutput {
         if ImageProcessor.isSupported(data) {
             let mimeType = imageMimeType(for: data) ?? "image"
             return ("[image: \(mimeType)]", false)
@@ -594,7 +694,7 @@ enum BuiltinTools {
         return (out.joined(separator: "\n"), false)
     }
 
-    private static func imageMimeType(for data: Data) -> String? {
+    static func imageMimeType(for data: Data) -> String? {
         guard let uti = ImageProcessor.typeIdentifier(for: data) else { return nil }
         switch uti {
         case "public.png": return "image/png"
