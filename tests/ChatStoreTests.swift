@@ -61,6 +61,17 @@ struct ChatStoreTests {
         #expect(loaded == chat)
     }
 
+    @Test("saveChat persists the per-chat auto_allow list")
+    func saveThenLoadAutoAllow() throws {
+        var chat = Fixtures.simpleChat()
+        chat.autoAllow = ["read_file", "mcp__Tavily__search"]
+        env.store.saveChat(chat, filename: "a.json")
+
+        let raw = try String(contentsOf: env.chatURL("a.json"), encoding: .utf8)
+        #expect(raw.contains("\"auto_allow\""))
+        #expect(env.store.loadChat(filename: "a.json")?.autoAllow == ["read_file", "mcp__Tavily__search"])
+    }
+
     @Test("saveChat writes pretty-printed, sorted-key JSON to disk")
     func saveChatEncoding() throws {
         env.store.saveChat(Fixtures.simpleChat(), filename: "a.json")

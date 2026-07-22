@@ -303,6 +303,23 @@ body {
   animation: spin 0.7s linear infinite;
 }
 
+/* Shown inside the streaming assistant message while it's still empty —
+   i.e. the request was sent but no thinking/content has arrived yet. */
+.msg-pending {
+  display: flex;
+  align-items: center;
+  padding: 2px 0;
+}
+
+.msg-pending-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -928,6 +945,10 @@ body {
   gap: 6px;
   padding: 0;
   width: fit-content;
+  /* Reserve enough vertical space for the status badges (done/error/denied)
+     so the line doesn't grow — and shift surrounding content — when a badge
+     appears. */
+  min-height: 18px;
 }
 
 .tool-name {
@@ -967,6 +988,11 @@ body {
 .tool-badge-denied {
   color: #b8860b;
   background: color-mix(in srgb, #b8860b 16%, transparent);
+}
+
+.tool-badge-cancelled {
+  color: var(--text-secondary, #888);
+  background: color-mix(in srgb, var(--text-secondary, #888) 14%, transparent);
 }
 
 .tool-badge-running {
@@ -1142,6 +1168,14 @@ body {
 
 .tool-approval-allow:hover {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.tool-approval-allow-chat {
+  color: var(--accent);
+}
+
+.tool-approval-allow-chat:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .tool-approval-deny:hover {

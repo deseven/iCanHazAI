@@ -94,7 +94,35 @@ struct ChatModelTests {
         #expect(chat.prompt == nil)
         #expect(chat.workingDirectory == nil)
         #expect(chat.mcps == nil)
+        #expect(chat.autoAllow == nil)
         #expect(chat.messages.isEmpty)
+    }
+
+    @Test("Chat round-trips the per-chat auto_allow list")
+    func chatRoundTripsAutoAllow() throws {
+        let original = Fixtures.chat(autoAllow: ["read_file", "mcp__Tavily__search"])
+        let data = try JSONEncoder().encode(original)
+        // The JSON key is snake_case, matching the role config files.
+        let raw = String(data: data, encoding: .utf8)!
+        #expect(raw.contains("\"auto_allow\""))
+        let decoded = try JSONDecoder().decode(Chat.self, from: data)
+        #expect(decoded == original)
+        #expect(decoded.autoAllow == ["read_file", "mcp__Tavily__search"])
+    }
+
+    @Test("Chat decodes auto_allow and tolerates a wrong-typed value")
+    func chatDecodesAutoAllow() throws {
+        let json = """
+        {"id":"00000000-0000-0000-0000-000000000001","messages":[],"auto_allow":["list_files"]}
+        """.data(using: .utf8)!
+        let chat = try JSONDecoder().decode(Chat.self, from: json)
+        #expect(chat.autoAllow == ["list_files"])
+
+        let bad = """
+        {"id":"00000000-0000-0000-0000-000000000001","messages":[],"auto_allow":"list_files"}
+        """.data(using: .utf8)!
+        let badChat = try JSONDecoder().decode(Chat.self, from: bad)
+        #expect(badChat.autoAllow == nil)
     }
 
     // MARK: - Tolerant decoding (legacy / malformed chat files)
@@ -482,6 +510,221 @@ struct ChatModelTests {
     func denialMessageWithReason() {
         let msg = ToolApproval.denialMessage(for: "  not allowed now  ")
         #expect(msg == "User denied this tool call with the following reason: not allowed now")
+    }
+
+    // MARK: - finalizeStoppedTurn
+
+    private func assistantWithCalls(_ ids: [String]) -> ChatMessage {
+        Fixtures.message(
+            role: .assistant,
+            content: "",
+            toolCalls: ids.map { ToolCall(id: $0, name: "tool", arguments: "{}") }
+        )
+    }
+
+    private func toolMessage(_ callID: String) -> ChatMessage {
+        Fixtures.message(
+            role: .tool,
+            content: "",
+            toolResults: [ToolResult(callID: callID, content: "ok", isError: false)]
+        )
+    }
+
+    private func cancelledResults(_ messages: [ChatMessage]) -> [ToolResult] {
+        messages.flatMap { $0.toolResults ?? [] }.filter(\.isCancelled)
+    }
+
+    @Test("stop with an empty placeholder assistant removes it")
+    func finalizeRemovesEmptyPlaceholder() {
+        var messages = [
+            Fixtures.message(role: .user, content: "hi"),
+            Fixtures.message(role: .assistant, content: "")
+        ]
+        messages.finalizeStoppedTurn()
+        #expect(messages.count == 1)
+        #expect(messages.last?.role == .user)
+    }
+
+    @Test("stop keeps an assistant message with partial content")
+    func finalizeKeepsPartialContent() {
+        var messages = [
+            Fixtures.message(role: .user, content: "hi"),
+            Fixtures.message(role: .assistant, content: "partial ans")
+        ]
+        messages.finalizeStoppedTurn()
+        #expect(messages.count == 2)
+        #expect(messages.last?.content == "partial ans")
+    }
+
+    @Test("stop keeps an assistant message with only thinking")
+    func finalizeKeepsThinkingOnly() {
+        var messages = [
+            Fixtures.message(role: .user, content: "hi"),
+            Fixtures.message(role: .assistant, content: "", thinking: "reasoning…")
+        ]
+        messages.finalizeStoppedTurn()
+        #expect(messages.count == 2)
+    }
+
+    @Test("stop keeps an assistant message with an error")
+    func finalizeKeepsError() {
+        var messages = [
+            Fixtures.message(role: .user, content: "hi"),
+            Fixtures.message(role: .assistant, content: "", error: "boom")
+        ]
+        messages.finalizeStoppedTurn()
+        #expect(messages.count == 2)
+        #expect(messages.last?.error == "boom")
+    }
+
+    @Test("stop during approval keeps the call and synthesizes a cancelled result")
+    func finalizeSynthesizesCancelledResult() {
+        var messages = [
+            Fixtures.message(role: .user, content: "hi"),
+            assistantWithCalls(["call_1"])
+        ]
+        messages[1].toolCalls?[0].pendingApproval = true
+        messages.finalizeStoppedTurn()
+        // The assistant message stays (the model asked for the call), a
+        // cancelled result is appended, and no approval state lingers.
+        #expect(messages.count == 3)
+        #expect(messages[1].toolCalls?.count == 1)
+        #expect(messages[1].toolCalls?[0].pendingApproval == false)
+        let cancelled = cancelledResults(messages)
+        #expect(cancelled.count == 1)
+        #expect(cancelled[0].callID == "call_1")
+        #expect(cancelled[0].isError == true)
+        #expect(cancelled[0].content == [ChatMessage].cancelledToolResultContent)
+    }
+
+    @Test("stop mid-execution keeps real results and cancels only the missing ones")
+    func finalizeKeepsExecutedResults() {
+        var messages = [
+            Fixtures.message(role: .user, content: "hi"),
+            assistantWithCalls(["call_1", "call_2"]),
+            toolMessage("call_1")
+        ]
+        messages.finalizeStoppedTurn()
+        // The executed call's real result stays; only call_2 is cancelled.
+        #expect(messages.count == 4)
+        #expect(messages[2].toolResults?.first?.content == "ok")
+        #expect(messages[2].toolResults?.first?.isCancelled == false)
+        let cancelled = cancelledResults(messages)
+        #expect(cancelled.count == 1)
+        #expect(cancelled[0].callID == "call_2")
+    }
+
+    @Test("stop clears the diff preview of a call that never ran")
+    func finalizeClearsDiffOfUnexecutedCall() {
+        var messages = [
+            Fixtures.message(role: .user, content: "hi"),
+            assistantWithCalls(["call_1"])
+        ]
+        messages[1].toolCalls?[0].diff = "@@ diff preview @@"
+        messages.finalizeStoppedTurn()
+        #expect(messages[1].toolCalls?[0].diff == nil)
+    }
+
+    @Test("stop while tool-call arguments are still streaming drops the truncated call")
+    func finalizeDropsTruncatedCalls() {
+        var messages = [
+            Fixtures.message(role: .user, content: "hi"),
+            Fixtures.message(
+                role: .assistant,
+                content: "",
+                toolCalls: [ToolCall(id: "", name: "", arguments: "{\"path\":")]
+            )
+        ]
+        messages.finalizeStoppedTurn()
+        // The call never became executable and nothing else streamed, so the
+        // message is now an empty placeholder and is removed too.
+        #expect(messages.count == 1)
+        #expect(messages.last?.role == .user)
+    }
+
+    @Test("stop drops truncated calls but keeps the message's streamed content")
+    func finalizeDropsTruncatedCallsKeepsContent() {
+        var messages = [
+            Fixtures.message(role: .user, content: "hi"),
+            Fixtures.message(
+                role: .assistant,
+                content: "Let me check that file.",
+                toolCalls: [ToolCall(id: "", name: "", arguments: "{\"path\":")]
+            )
+        ]
+        messages.finalizeStoppedTurn()
+        #expect(messages.count == 2)
+        #expect(messages[1].content == "Let me check that file.")
+        #expect(messages[1].toolCalls == nil)
+    }
+
+    @Test("stop after a complete tool turn followed by an empty placeholder keeps the turn")
+    func finalizeKeepsCompleteTurnRemovesPlaceholder() {
+        var messages = [
+            Fixtures.message(role: .user, content: "hi"),
+            assistantWithCalls(["call_1"]),
+            toolMessage("call_1"),
+            Fixtures.message(role: .assistant, content: "")
+        ]
+        messages.finalizeStoppedTurn()
+        #expect(messages.count == 3)
+        #expect(messages.last?.role == .tool)
+        #expect(cancelledResults(messages).isEmpty)
+    }
+
+    @Test("stop finalizes only the last incomplete loop, keeping earlier completed loops")
+    func finalizeKeepsEarlierCompleteLoops() {
+        var messages = [
+            Fixtures.message(role: .user, content: "hi"),
+            assistantWithCalls(["call_1"]),
+            toolMessage("call_1"),
+            Fixtures.message(role: .assistant, content: "intermediate answer"),
+            assistantWithCalls(["call_2"]),
+            toolMessage("call_2"),
+            Fixtures.message(role: .assistant, content: "done")
+        ]
+        messages.finalizeStoppedTurn()
+        // Everything is complete — nothing changes.
+        #expect(messages.count == 7)
+        #expect(cancelledResults(messages).isEmpty)
+
+        var stopped = [
+            Fixtures.message(role: .user, content: "hi"),
+            assistantWithCalls(["call_1"]),
+            toolMessage("call_1"),
+            Fixtures.message(role: .assistant, content: "intermediate answer"),
+            assistantWithCalls(["call_2"])
+        ]
+        stopped.finalizeStoppedTurn()
+        // Earlier loops are untouched; only call_2 gets a cancelled result.
+        #expect(stopped.count == 6)
+        #expect(stopped[3].content == "intermediate answer")
+        let cancelled = cancelledResults(stopped)
+        #expect(cancelled.count == 1)
+        #expect(cancelled[0].callID == "call_2")
+    }
+
+    @Test("stop on a chat with no assistant messages is a no-op")
+    func finalizeNoAssistantNoOp() {
+        var messages = [Fixtures.message(role: .user, content: "hi")]
+        messages.finalizeStoppedTurn()
+        #expect(messages.count == 1)
+    }
+
+    @Test("ToolResult round-trips isCancelled through JSON")
+    func toolResultRoundTripsCancelled() throws {
+        let original = ToolResult(callID: "call_1", content: "cancelled", isError: true, isCancelled: true)
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(ToolResult.self, from: data)
+        #expect(decoded == original)
+        #expect(decoded.isCancelled == true)
+    }
+
+    @Test("ToolResult decodes legacy JSON without isCancelled as false")
+    func toolResultDecodesLegacyCancelled() throws {
+        let json = #"{"callID":"call_1","content":"4","isError":false}"#.data(using: .utf8)!
+        let r = try JSONDecoder().decode(ToolResult.self, from: json)
+        #expect(r.isCancelled == false)
     }
 }
 

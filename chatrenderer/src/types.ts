@@ -37,6 +37,9 @@ export interface ToolResultData {
   /** True when the result is a user denial (not a tool failure). Shown as a
    *  "denied" badge instead of "error". */
   isDenied?: boolean;
+  /** True when the result was synthesized on stop for a call that never
+   *  executed. Shown as a "cancelled" badge instead of "error". */
+  isCancelled?: boolean;
 }
 
 export interface ChatMessage {
@@ -106,4 +109,5 @@ export type BridgeMessage =
   | { type: "ready" }
   | { type: "requestOlder"; chatId: string }
   | { type: "allowToolCall"; callId: string }
+  | { type: "allowToolCallForChat"; callId: string }
   | { type: "denyToolCall"; callId: string };

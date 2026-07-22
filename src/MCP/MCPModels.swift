@@ -202,17 +202,23 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
     /// renderer shows a "denied" badge instead of "error". Decoded
     /// defensively (defaults to false) for old chat files.
     var isDenied: Bool = false
+    /// True when this result was synthesized on stop for a call that never
+    /// executed. `isError` stays true so the provider treats it as a tool
+    /// error, but the renderer shows a "cancelled" badge instead of "error".
+    /// Decoded defensively (defaults to false) for old chat files.
+    var isCancelled: Bool = false
 
     enum CodingKeys: String, CodingKey {
-        case callID, content, isError, isStreaming, isDenied
+        case callID, content, isError, isStreaming, isDenied, isCancelled
     }
 
-    init(callID: String, content: String, isError: Bool, isStreaming: Bool = false, isDenied: Bool = false) {
+    init(callID: String, content: String, isError: Bool, isStreaming: Bool = false, isDenied: Bool = false, isCancelled: Bool = false) {
         self.callID = callID
         self.content = content
         self.isError = isError
         self.isStreaming = isStreaming
         self.isDenied = isDenied
+        self.isCancelled = isCancelled
     }
 
     init(from decoder: Decoder) throws {
@@ -224,6 +230,7 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
         isError = (try? c.decode(Bool.self, forKey: .isError)) ?? false
         isStreaming = (try? c.decode(Bool.self, forKey: .isStreaming)) ?? false
         isDenied = (try? c.decode(Bool.self, forKey: .isDenied)) ?? false
+        isCancelled = (try? c.decode(Bool.self, forKey: .isCancelled)) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -233,6 +240,7 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
         try c.encode(isError, forKey: .isError)
         try c.encode(isStreaming, forKey: .isStreaming)
         try c.encode(isDenied, forKey: .isDenied)
+        try c.encode(isCancelled, forKey: .isCancelled)
     }
 }
 

@@ -147,6 +147,12 @@ function ToolBlock({
     setOpen(defaultOpen);
     sendToHost({ type: "allowToolCall", callId: call.id });
   };
+  const onAllowForChat = () => {
+    // Same as Allow, plus the host remembers this tool as auto-approved for
+    // the current chat.
+    setOpen(defaultOpen);
+    sendToHost({ type: "allowToolCallForChat", callId: call.id });
+  };
   const onDeny = () => {
     // The host presents a reason sheet; the block stays open meanwhile.
     sendToHost({ type: "denyToolCall", callId: call.id });
@@ -162,10 +168,13 @@ function ToolBlock({
         {result && !result.isStreaming && result.isDenied && (
           <span class="tool-badge tool-badge-denied">denied</span>
         )}
-        {result && !result.isStreaming && !result.isDenied && result.isError && (
+        {result && !result.isStreaming && !result.isDenied && result.isCancelled && (
+          <span class="tool-badge tool-badge-cancelled">cancelled</span>
+        )}
+        {result && !result.isStreaming && !result.isDenied && !result.isCancelled && result.isError && (
           <span class="tool-badge tool-badge-error">error</span>
         )}
-        {result && !result.isStreaming && !result.isDenied && !result.isError && (
+        {result && !result.isStreaming && !result.isDenied && !result.isCancelled && !result.isError && (
           <span class="tool-badge tool-badge-ok">done</span>
         )}
         {result?.isStreaming && <span class="tool-badge tool-badge-running">running</span>}
@@ -185,7 +194,7 @@ function ToolBlock({
             </div>
           ) : null}
           {result && (
-            <div class={`tool-result${result.isError && !result.isDenied ? " tool-result-error" : ""}`}>
+            <div class={`tool-result${result.isError && !result.isDenied && !result.isCancelled ? " tool-result-error" : ""}`}>
               <div class="tool-call-label">
                 {result.isStreaming ? "Result (streaming…)" : "Result"}
               </div>
@@ -201,7 +210,14 @@ function ToolBlock({
                   class="tool-approval-btn tool-approval-allow"
                   onClick={onAllow}
                 >
-                  Allow
+                  Allow once
+                </button>
+                <button
+                  type="button"
+                  class="tool-approval-btn tool-approval-allow-chat"
+                  onClick={onAllowForChat}
+                >
+                  Allow for this chat
                 </button>
                 <button
                   type="button"
@@ -383,6 +399,15 @@ export const MessageItem = memo(function MessageItem({
   const hasContent = !!message.content && message.content.trim().length > 0;
   const hasImages = !!message.images && message.images.length > 0;
   const hasToolCalls = !!message.toolCalls && message.toolCalls.length > 0;
+  // The request was sent but nothing (thinking, content, tool calls) has
+  // arrived yet — show a spinner instead of a blank message.
+  const isPending =
+    isStreaming &&
+    message.role === "assistant" &&
+    !hasThinking &&
+    !hasContent &&
+    !hasToolCalls &&
+    !hasError;
 
   const hoverDetail = [
     formatTimestamp(message.timestamp),
@@ -436,6 +461,12 @@ export const MessageItem = memo(function MessageItem({
             </button>
           </span>
         </div>
+
+        {isPending && (
+          <div class="msg-pending" aria-label="Waiting for response">
+            <span class="msg-pending-spinner" aria-hidden="true" />
+          </div>
+        )}
 
         {hasThinking && (
           <div class="thinking-block">
@@ -503,7 +534,7 @@ export const MessageItem = memo(function MessageItem({
           message.toolResults.map((r) => (
             <div class="tool-block" key={r.callID}>
               <div class="tool-result-only">
-                <pre class={`tool-call-args${r.isError && !r.isDenied ? " tool-result-error-text" : ""}`}>{r.content}</pre>
+                <pre class={`tool-call-args${r.isError && !r.isDenied && !r.isCancelled ? " tool-result-error-text" : ""}`}>{r.content}</pre>
               </div>
             </div>
           ))

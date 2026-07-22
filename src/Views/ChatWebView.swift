@@ -666,9 +666,9 @@ final class ChatWebViewModel: ObservableObject {
                     var folded = out[aIdx].toolResults ?? []
                     for r in results {
                         if let i = folded.firstIndex(where: { $0.callID == r.callID }) {
-                            folded[i] = ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming, isDenied: r.isDenied)
+                            folded[i] = ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming, isDenied: r.isDenied, isCancelled: r.isCancelled)
                         } else {
-                            folded.append(ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming, isDenied: r.isDenied))
+                            folded.append(ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming, isDenied: r.isDenied, isCancelled: r.isCancelled))
                         }
                     }
                     out[aIdx].toolResults = folded
@@ -752,6 +752,8 @@ final class ChatWebViewModel: ObservableObject {
             break
         case .allowToolCall(let callId):
             store.allowToolCall(callID: callId)
+        case .allowToolCallForChat(let callId):
+            store.allowToolCallForChat(callID: callId)
         case .denyToolCall(let callId):
             store.pendingDenyToolCallID = callId
         }
@@ -937,6 +939,9 @@ enum BridgeMessageData: Codable {
     case requestOlder(chatId: String)
     /// User approved a pending tool call (Allow button).
     case allowToolCall(callId: String)
+    /// User approved a pending tool call and asked to auto-approve this tool
+    /// for the rest of the chat (Allow for this chat button).
+    case allowToolCallForChat(callId: String)
     /// User requested to deny a pending tool call (Deny button); the host
     /// presents a reason sheet before resolving.
     case denyToolCall(callId: String)
@@ -974,6 +979,9 @@ enum BridgeMessageData: Codable {
         case .allowToolCall(let callId):
             try c.encode("allowToolCall", forKey: .type)
             try c.encode(callId, forKey: .callId)
+        case .allowToolCallForChat(let callId):
+            try c.encode("allowToolCallForChat", forKey: .type)
+            try c.encode(callId, forKey: .callId)
         case .denyToolCall(let callId):
             try c.encode("denyToolCall", forKey: .type)
             try c.encode(callId, forKey: .callId)
@@ -1000,6 +1008,8 @@ enum BridgeMessageData: Codable {
             self = .requestOlder(chatId: try c.decode(String.self, forKey: .chatId))
         case "allowToolCall":
             self = .allowToolCall(callId: try c.decode(String.self, forKey: .callId))
+        case "allowToolCallForChat":
+            self = .allowToolCallForChat(callId: try c.decode(String.self, forKey: .callId))
         case "denyToolCall":
             self = .denyToolCall(callId: try c.decode(String.self, forKey: .callId))
         default:
@@ -1085,13 +1095,17 @@ struct ChatMessageData: Codable, Equatable {
         /// True when the result is a user denial (not a tool failure). The
         /// renderer shows a "denied" badge instead of "error".
         let isDenied: Bool
+        /// True when the result was synthesized on stop for a call that never
+        /// executed. The renderer shows a "cancelled" badge instead of "error".
+        let isCancelled: Bool
 
-        init(callID: String, content: String, isError: Bool, isStreaming: Bool, isDenied: Bool = false) {
+        init(callID: String, content: String, isError: Bool, isStreaming: Bool, isDenied: Bool = false, isCancelled: Bool = false) {
             self.callID = callID
             self.content = content
             self.isError = isError
             self.isStreaming = isStreaming
             self.isDenied = isDenied
+            self.isCancelled = isCancelled
         }
     }
 }
@@ -1111,7 +1125,7 @@ extension ChatMessage {
             ChatMessageData.ToolCallData(id: $0.id, name: $0.name, arguments: $0.arguments, pendingApproval: $0.pendingApproval, diff: $0.diff)
         }
         let toolResults = toolResults?.map {
-            ChatMessageData.ToolResultData(callID: $0.callID, content: $0.content, isError: $0.isError, isStreaming: $0.isStreaming, isDenied: $0.isDenied)
+            ChatMessageData.ToolResultData(callID: $0.callID, content: $0.content, isError: $0.isError, isStreaming: $0.isStreaming, isDenied: $0.isDenied, isCancelled: $0.isCancelled)
         }
         return ChatMessageData(
             id: id.uuidString,

@@ -1476,6 +1476,15 @@ actor ChatEngine {
             baseChat.messages.remove(at: lastIdx)
         }
 
+        // Safety net for chats persisted with an incomplete tool-call turn
+        // (a stop before this was handled reliably): an assistant `tool_calls`
+        // message without all of its results is rejected by providers.
+        // Finalize it the same way a stop would.
+        baseChat.messages.finalizeStoppedTurn()
+        if baseChat.messages != chat.messages, let idx = records.firstIndex(where: { $0.filename == filename }) {
+            records[idx].chat = baseChat
+        }
+
         // Commit pending images to disk now that the user has actually sent.
         // Each attachment is resized/re-encoded and saved into the chat's
         // image folder; the returned ImageAttachment refs are persisted on
@@ -1663,6 +1672,12 @@ actor ChatEngine {
                     // `executeToolCall` awaits user approval, which can be
                     // cancelled (stop). Throws `CancellationError` in that case.
                     let toolResult = try await executeToolCall(call, filename: filename, tools: toolDefs)
+                    // A stop requested during execution must unwind here:
+                    // MCP/built-in tool calls may swallow task cancellation
+                    // and return a result instead of throwing. Without this
+                    // check the loop would keep appending results (and start
+                    // new approvals) for a stream that's already stopped.
+                    try Task.checkCancellation()
                     // Append the result as a `tool`-role message and persist.
                     appendToolResult(toolResult, filename: filename)
                     // Mirror into the working history so the next stream
@@ -1673,6 +1688,7 @@ actor ChatEngine {
                 // Create a new assistant message for the model's follow-up
                 // response so it doesn't get appended to the tool-result
                 // message.
+                try Task.checkCancellation()
                 appendAssistantMessage(filename: filename, connection: connection)
 
                 // Loop again: the model will see the tool results and either
@@ -1813,6 +1829,9 @@ actor ChatEngine {
     /// Tools flagged as auto-allowed by the chat's role (`auto_allow` /
     /// `auto_allow_all`) skip the approval prompt and execute immediately.
     private func executeToolCall(_ call: ToolCall, filename: String, tools: [ToolDefinition]) async throws -> ToolResult {
+        // Don't start new work (or a new approval prompt) once the stream was
+        // stopped — the task is cancelled but MCP/built-in calls don't throw.
+        try Task.checkCancellation()
         // Match the model-issued call name directly against the namespaced
         // names we advertised. This is unambiguous and doesn't depend on
         // prefix parsing, which mis-splits prefixless tools.
@@ -1832,10 +1851,12 @@ actor ChatEngine {
         }
 
         // Auto-allow: if the role marks this tool (or all tools from this
-        // source) as auto-approved, skip the approval prompt entirely.
+        // source) as auto-approved, or the user previously allowed this tool
+        // for this chat ("Allow for this chat"), skip the approval prompt.
         let chat = records.first(where: { $0.filename == filename })?.chat
         let resolved = chat.map { resolvedToolSources(for: $0) } ?? []
-        let autoAllowed = resolved.first(where: { $0.name == sourceName })?.autoAllows(tool: toolName) ?? false
+        let autoAllowed = (resolved.first(where: { $0.name == sourceName })?.autoAllows(tool: toolName) ?? false)
+            || (chat?.autoAllow?.contains(call.name) ?? false)
         // Working directory + isolation for built-in groups.
         let workdir = chat.flatMap { effectiveWorkingDirectory(for: $0) }
         let isolation = resolved.first(where: { $0.name == sourceName })?.directoryIsolation ?? false
@@ -1957,6 +1978,29 @@ actor ChatEngine {
         pending.continuation.resume(returning: approval)
     }
 
+    /// Approves a pending tool call and remembers the tool as auto-approved
+    /// for this chat only: the call's namespaced name is appended to the
+    /// chat's `auto_allow` list (persisted), so future calls to the same tool
+    /// skip the approval prompt. No-op when there's no pending approval or
+    /// the call can't be found; resolves with `.allow` either way when a
+    /// pending approval exists.
+    func allowToolCallForChat(callID: String) {
+        guard let pending = pendingApprovals[callID] else { return }
+        if let idx = records.firstIndex(where: { $0.filename == pending.filename }),
+           var chat = records[idx].chat,
+           let call = chat.messages.lazy.compactMap(\.toolCalls).joined().first(where: { $0.id == callID }) {
+            var allowed = chat.autoAllow ?? []
+            if !allowed.contains(call.name) {
+                allowed.append(call.name)
+                chat.autoAllow = allowed
+                records[idx].chat = chat
+                saveChat(chat, filename: pending.filename)
+                debugLog("Tool", "auto-allowing \(call.name) for chat \(pending.filename)")
+            }
+        }
+        resolveToolCallApproval(callID: callID, approval: .allow)
+    }
+
     /// Sets the `pendingApproval` flag on a tool call (matched by `callID`) on
     /// the last assistant message of the chat, so the renderer expands the
     /// block and shows Allow/Deny buttons. Persists in-memory only and emits.
@@ -1975,10 +2019,8 @@ actor ChatEngine {
 
     /// Cancels every pending approval for a chat (used when the user stops the
     /// stream). Resumes each continuation with `CancellationError` so the
-    /// streaming loop unwinds, then drops the incomplete tool-call turn (the
-    // trailing assistant message carrying tool calls + any partial results)
-    /// so the conversation isn't left with a `tool_call` that has no matching
-    /// `tool_result` — a state providers reject on the next request.
+    /// streaming loop unwinds. The incomplete turn itself is dropped by
+    /// `stopStreaming` (via `trimStoppedTurn`), not here.
     private func cancelPendingApprovals(filename: String) {
         let toCancel = pendingApprovals.filter { $0.value.filename == filename }
         guard !toCancel.isEmpty else { return }
@@ -1986,25 +2028,11 @@ actor ChatEngine {
             pendingApprovals.removeValue(forKey: callID)
             pending.continuation.resume(throwing: CancellationError())
         }
-        trimIncompleteToolTurn(filename: filename)
         flushCoalescedEmit()
         emit(.chatsChanged(records))
         for (callID, _) in toCancel {
             emit(.toolApprovalResolved(filename: filename, callID: callID))
         }
-    }
-
-    /// Removes the last assistant message and everything after it, but only if
-    /// that assistant message carries tool calls — i.e. the turn was a
-    /// tool-call turn that didn't complete (some results are missing). Leaves
-    /// normal (content-only) assistant messages intact.
-    private func trimIncompleteToolTurn(filename: String) {
-        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
-        guard var chat = records[idx].chat else { return }
-        guard let lastAssistant = chat.messages.indices.reversed().first(where: { chat.messages[$0].role == .assistant }) else { return }
-        guard chat.messages[lastAssistant].toolCalls?.isEmpty == false else { return }
-        chat.messages.removeSubrange(lastAssistant...)
-        records[idx].chat = chat
     }
 
     /// Appends a tool result as its own `tool`-role `ChatMessage` (tagged with
@@ -2016,6 +2044,16 @@ actor ChatEngine {
     private func appendToolResult(_ result: ToolResult, filename: String) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         guard var chat = records[idx].chat else { return }
+        // Ignore late results for calls that are no longer in the chat — e.g.
+        // a cancelled tool finishing after `stopStreaming` already trimmed the
+        // incomplete turn. Appending here would leave a dangling `tool`-role
+        // message with no matching tool call.
+        guard chat.messages.contains(where: {
+            $0.role == .assistant && $0.toolCalls?.contains(where: { $0.id == result.callID }) == true
+        }) else {
+            debugLog("Tool", "ignoring result for unknown/trimmed call — callID=\(result.callID), chat=\(filename)")
+            return
+        }
         // If a streaming placeholder `tool`-role message exists for this
         // callID, replace it in place with the final result.
         if let tIdx = chat.messages.indices.reversed().first(where: {
@@ -2041,6 +2079,9 @@ actor ChatEngine {
     /// `appendToolResult` replaces the placeholder with the final result.
     private func updateStreamingToolResult(chatFilename: String, callID: String, partial: String) {
         guard let idx = records.firstIndex(where: { $0.filename == chatFilename }) else { return }
+        // Ignore late progress after a stop: the turn was finalized and its
+        // unexecuted calls already carry synthesized "cancelled" results.
+        guard records[idx].isStreaming else { return }
         guard var chat = records[idx].chat else { return }
         // Find the `tool`-role message carrying an in-flight result for this
         // callID and append to its streaming content.
@@ -2059,7 +2100,12 @@ actor ChatEngine {
         // No existing `tool`-role message yet — the progress notification
         // arrived before `appendToolResult` created one. Create a streaming
         // placeholder now so the user sees output immediately. It will be
-        // replaced by the final result when the call completes.
+        // replaced by the final result when the call completes. Skip when no
+        // assistant message carries this call (e.g. the turn was trimmed by a
+        // stop) — appending would leave a dangling `tool`-role message.
+        guard chat.messages.contains(where: {
+            $0.role == .assistant && $0.toolCalls?.contains(where: { $0.id == callID }) == true
+        }) else { return }
         let placeholder = ToolResult(callID: callID, content: partial + "\n", isError: false, isStreaming: true)
         chat.messages.append(ChatMessage(role: .tool, content: "", toolResults: [placeholder]))
         records[idx].chat = chat
@@ -2087,7 +2133,9 @@ actor ChatEngine {
     private func applyChunk(_ chunk: StreamChunk, filename: String) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         guard var chat = records[idx].chat else { return }
-        guard let lastIdx = chat.messages.indices.last else { return }
+        // Late chunks can arrive after a stop trimmed the placeholder; only
+        // ever write to an assistant message, never to a user/tool message.
+        guard let lastIdx = chat.messages.indices.last, chat.messages[lastIdx].role == .assistant else { return }
         switch chunk {
         case .thinking(let text):
             let existing = chat.messages[lastIdx].thinking ?? ""
@@ -2196,12 +2244,20 @@ actor ChatEngine {
     func stopStreaming(filename: String) {
         debugLog("Stream", "stop requested — chat=\(filename)")
         // If we were awaiting tool-call approval, resume those continuations
-        // with a cancellation and drop the incomplete tool-call turn so the
-        // conversation isn't left with a dangling tool_call. Done before
-        // flipping `isStreaming` so the trimmed state is what we emit.
+        // with a cancellation so the loop unwinds.
         cancelPendingApprovals(filename: filename)
         streamTasks[filename]?.cancel()
         if let idx = records.firstIndex(where: { $0.filename == filename }) {
+            // Finalize the incomplete trailing turn: empty placeholder
+            // assistant messages are removed, and tool calls that never got a
+            // result receive a synthesized "cancelled" result — a state
+            // providers accept, which also tells the model exactly which
+            // actions did and didn't happen. Only the last (incomplete) turn
+            // is touched; earlier completed tool-call loops are kept.
+            if var chat = records[idx].chat {
+                chat.messages.finalizeStoppedTurn()
+                records[idx].chat = chat
+            }
             records[idx].isStreaming = false
             // Flush any pending coalesced emit first so the latest streamed
             // content is visible, then emit the stopped state immediately so

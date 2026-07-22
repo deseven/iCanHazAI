@@ -133,6 +133,8 @@ Bundles a prompt, connection, working directory, and tools. Tools come from two 
 
 The role's MCP selection seeds every new chat's active MCPs (stored per chat). With `mcps_override_allowed = true` the user can add/remove MCP servers per chat via the toolbar picker (entries also present in the role keep the role's `tools`/`auto_allow` rules; extra per-chat additions get all tools with no auto-allow). MCP configs deleted later are silently dropped from chats. The toolbar MCP control is hidden entirely when no MCP servers are configured.
 
+Separate from role config: when approving a tool call, the user can pick "Allow for this chat", which stores the tool's namespaced name in the chat file's own optional `auto_allow` list. That list appends to the role's auto-allow rules but applies only to that single chat; it lives in the chat data (not in any config file) and currently can't be edited or undone from the UI.
+
 ### Working directory & directory isolation rules
 
 These three fields interact and are validated on role load:

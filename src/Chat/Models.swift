@@ -85,6 +85,77 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
+// MARK: - Stopped-turn finalizing
+
+extension ChatMessage {
+    /// True when the message carries nothing worth keeping: no content, no
+    /// thinking, no error, no tool calls. These are the placeholder assistant
+    /// messages created before a stream starts.
+    var isEmptyPlaceholder: Bool {
+        role == .assistant
+            && content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (thinking?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            && error == nil
+            && (toolCalls?.isEmpty ?? true)
+    }
+}
+
+extension Array where Element == ChatMessage {
+    /// The canned result content synthesized for tool calls that never
+    /// executed because the stream was stopped.
+    static let cancelledToolResultContent = "Tool call was cancelled by the user before it was executed."
+
+    /// Finalizes the incomplete trailing turn left behind when a stream is
+    /// stopped mid-flight, so the history stays provider-valid *and* truthful
+    /// about side effects that already happened:
+    ///
+    /// 1. Trailing placeholder assistant messages (nothing streamed into them
+    ///    yet) are removed.
+    /// 2. If the remaining tail is an assistant message with tool calls:
+    ///    - stream-truncated calls (stop arrived while arguments were still
+    ///      streaming — empty id/name, never executable) are dropped;
+    ///    - every remaining call without a result gets a synthesized
+    ///      "cancelled" tool result appended, so the model knows the action
+    ///      did *not* happen (and providers get the required one-result-per-
+    ///      call shape);
+    ///    - calls that did execute keep their real results — the model must
+    ///      know those side effects happened.
+    ///
+    /// Complete tool turns and assistant messages with partial content are
+    /// kept untouched.
+    mutating func finalizeStoppedTurn() {
+        while last?.isEmptyPlaceholder == true {
+            removeLast()
+        }
+        guard let aIdx = indices.reversed().first(where: { self[$0].role == .assistant }),
+              var calls = self[aIdx].toolCalls, !calls.isEmpty else { return }
+
+        // Drop calls that were cut off mid-stream and never became real.
+        calls.removeAll { $0.id.isEmpty || $0.name.isEmpty }
+        guard !calls.isEmpty else {
+            // Nothing executable was ever issued. The message keeps whatever
+            // content/thinking it streamed; if that's nothing, remove it too.
+            self[aIdx].toolCalls = nil
+            if self[aIdx].isEmptyPlaceholder { remove(at: aIdx) }
+            return
+        }
+
+        let answered = Set(self[(aIdx + 1)...].flatMap { $0.toolResults ?? [] }.map(\.callID))
+        for i in calls.indices {
+            // The stream is over: no approval UI should linger, and a diff
+            // preview for a call that never ran must not survive.
+            calls[i].pendingApproval = false
+            if !answered.contains(calls[i].id) {
+                calls[i].diff = nil
+                append(ChatMessage(role: .tool, content: "", toolResults: [
+                    ToolResult(callID: calls[i].id, content: Self.cancelledToolResultContent, isError: true, isCancelled: true)
+                ]))
+            }
+        }
+        self[aIdx].toolCalls = calls
+    }
+}
+
 // MARK: - Chat
 
 struct Chat: Codable, Identifiable, Equatable {
@@ -116,7 +187,11 @@ struct Chat: Codable, Identifiable, Equatable {
     /// from the default sidebar view. Completely optional in the JSON — older
     /// chat files without this key decode as non-archived.
     var archive: Bool?
-    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, prompt: String? = nil, workingDirectory: String? = nil, mcps: [String]? = nil, title: String? = nil, archive: Bool? = nil) {
+    /// Tool call names (namespaced, as advertised to the model) the user chose
+    /// to auto-approve for this chat only, via the "Allow for this chat"
+    /// button. Appends to the role's auto-allow rules. Completely optional.
+    var autoAllow: [String]?
+    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, prompt: String? = nil, workingDirectory: String? = nil, mcps: [String]? = nil, title: String? = nil, archive: Bool? = nil, autoAllow: [String]? = nil) {
         self.id = id
         self.messages = messages
         self.connection = connection
@@ -126,10 +201,12 @@ struct Chat: Codable, Identifiable, Equatable {
         self.mcps = mcps
         self.title = title
         self.archive = archive
+        self.autoAllow = autoAllow
     }
 
     enum CodingKeys: String, CodingKey {
         case id, messages, connection, role, prompt, workingDirectory, mcps, title, archive
+        case autoAllow = "auto_allow"
     }
 
     /// Tolerant decode: all scalar fields are optional at the JSON level (a
@@ -148,6 +225,7 @@ struct Chat: Codable, Identifiable, Equatable {
         mcps = try? c.decode([String].self, forKey: .mcps)
         title = try? c.decode(String.self, forKey: .title)
         archive = try? c.decode(Bool.self, forKey: .archive)
+        autoAllow = try? c.decode([String].self, forKey: .autoAllow)
         let wrappers = (try? c.decode([SafeMessage].self, forKey: .messages)) ?? []
         let recovered = wrappers.compactMap(\.message)
         let dropped = wrappers.count - recovered.count

@@ -473,6 +473,13 @@ final class AppViewModel: ObservableObject {
         Task { await engine.resolveToolCallApproval(callID: callID, approval: .allow) }
     }
 
+    /// Resolves a pending tool-call approval and remembers the tool as
+    /// auto-approved for this chat ("Allow for this chat" button).
+    func allowToolCallForChat(callID: String) {
+        chatWebViewModel?.scrollToBottom()
+        Task { await engine.allowToolCallForChat(callID: callID) }
+    }
+
     /// Denies a pending tool-call approval with an (optional) reason.
     /// Forces the chat to the bottom so the follow-up assistant message stays
     /// in view as it streams in.
