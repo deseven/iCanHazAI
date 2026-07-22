@@ -5,9 +5,9 @@ import Foundation
 import TOML
 
 /// Shared config-text validation used by both the standard file loaders
-/// ([`EnvironmentManager`](src/EnvironmentManager.swift),
-/// [`ConfigManager`](src/ConfigManager.swift)) and the in-process
-/// [`ConfiguratorTools`](src/ConfiguratorTools.swift) write tools.
+/// ([`EnvironmentManager`](src/Environment/EnvironmentManager.swift),
+/// [`ConfigManager`](src/Config/ConfigManager.swift)) and the in-process
+/// [`ConfiguratorTools`](src/Config/ConfiguratorTools.swift) write tools.
 ///
 /// The underlying decoders (`JSONDecoder`, `TOMLDecoder`) produce generic
 /// "The data couldn't be read because it is missing." messages that don't say
@@ -53,7 +53,7 @@ enum ConfigValidation {
     }
 
     /// Validates and decodes a role (TOML). Beyond TOML decoding, enforces the
-    /// cross-field rules documented in [`validateRole`](src/ConfigValidation.swift).
+    /// cross-field rules documented in [`validateRole`](src/Config/ConfigValidation.swift).
     static func decodeRole(_ data: Data) throws -> RoleConfig {
         do {
             let config = try TOMLDecoder().decode(RoleConfig.self, from: data)
@@ -66,7 +66,7 @@ enum ConfigValidation {
         }
     }
 
-    /// Cross-field validation for a decoded [`RoleConfig`](src/Models.swift).
+    /// Cross-field validation for a decoded [`RoleConfig`](src/Chat/Models.swift).
     ///
     /// - `working_directory` / `working_directory_override_allowed` require at
     ///   least one workdir-capable built-in group (Filesystem, Code, or Shell).

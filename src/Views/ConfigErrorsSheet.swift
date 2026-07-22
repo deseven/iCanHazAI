@@ -4,7 +4,7 @@
 import SwiftUI
 
 /// The sheet shown when the user presses the title-bar configuration-errors
-/// button. Lists every current [`ConfigError`](src/Models.swift) and offers two
+/// button. Lists every current [`ConfigError`](src/Chat/Models.swift) and offers two
 /// actions: dismiss ("Acknowledged") or open a new Configurator chat pre-filled
 /// with the errors ("Fix with Configurator").
 struct ConfigErrorsSheet: View {

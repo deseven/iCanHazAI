@@ -5,8 +5,8 @@ import Foundation
 
 /// SSH-backed implementations of the Filesystem, Code, and Shell builtin
 /// tools, used when the chat's working directory is an `ssh::host/path` spec
-/// (see [`Workdir`](src/BuiltinTools.swift:11) and
-/// [`SSHManager`](src/SSHManager.swift:47)).
+/// (see [`Workdir`](src/Tools/BuiltinTools.swift:11) and
+/// [`SSHManager`](src/SSH/SSHManager.swift:47)).
 ///
 /// Every tool is a small POSIX sh script piped into `ssh -T -S <sock> host`
 /// stdin (no remote command argv, so there is exactly one shell-quoting

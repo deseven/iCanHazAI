@@ -4,7 +4,7 @@
 import Foundation
 import SwiftData
 
-/// Summary of a [`ChatStore`](src/ChatStore.swift) `startupSync` pass, surfaced
+/// Summary of a [`ChatStore`](src/Chat/ChatStore.swift) `startupSync` pass, surfaced
 /// to the startup loader so it can show total chats vs how many were already
 /// cached (not re-parsed this launch). The difference `totalFiles - freshCached`
 /// is the number of files that had to be decoded again.

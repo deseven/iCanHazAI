@@ -19,14 +19,14 @@ fileprivate func suppressingStderr<T>(_ body: () throws -> T) rethrows -> T {
     return try body()
 }
 
-/// Integration tests for [`ChatStore`](src/ChatStore.swift) backed by a real
+/// Integration tests for [`ChatStore`](src/Chat/ChatStore.swift) backed by a real
 /// temp directory and a real SwiftData cache (see [`TempEnv`](tests/AppTestHarness.swift)).
 ///
 /// These exercise the store's full contract: save/load round-trips, cache
 /// upsert/lookup, deletion, `startupSync` reconciliation (fresh, stale, missing,
 /// undecodable), and the external-change hooks (`handleExternalChange` /
 /// `handleExternalDeletion`) that the FSEvents router in
-/// [`ChatEngine`](src/ChatEngine.swift) calls. The FSEvents delivery itself is
+/// [`ChatEngine`](src/Chat/ChatEngine.swift) calls. The FSEvents delivery itself is
 /// covered by [`ChatStoreFSEventsTests`](tests/ChatStoreTests.swift) below.
 ///
 /// Each test gets its own `TempEnv` (fresh temp root + fresh ChatStore + fresh
@@ -485,10 +485,10 @@ struct ChatStoreTests {
 
 // MARK: - FSEvents integration
 
-/// Verifies that [`EnvironmentWatcher`](src/EnvironmentWatcher.swift) actually
+/// Verifies that [`EnvironmentWatcher`](src/Environment/EnvironmentWatcher.swift) actually
 /// delivers FSEvents for chat-file changes, and that routing those events
 /// through the store's external-change hooks (as
-/// [`ChatEngine.handleFSEvent`](src/ChatEngine.swift:279) does) keeps the cache
+/// [`ChatEngine.handleFSEvent`](src/Chat/ChatEngine.swift:279) does) keeps the cache
 /// in sync. These are real filesystem events on a temp directory, so they use
 /// generous timeouts via [`FSEventCollector`](tests/AppTestHarness.swift).
 extension AllAppTests {

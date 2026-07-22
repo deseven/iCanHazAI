@@ -5,11 +5,11 @@ import Foundation
 
 /// A lightweight debug logging facility for the app.
 ///
-/// The single entry point is [`debugLog(topic:message:)`](src/DebugLogger.swift)
-/// (or the free-function shorthand [`debugLog(_:_:)`](src/DebugLogger.swift)).
+/// The single entry point is [`debugLog(topic:message:)`](src/Utilities/DebugLogger.swift)
+/// (or the free-function shorthand [`debugLog(_:_:)`](src/Utilities/DebugLogger.swift)).
 ///
 /// Every call is written to `~/iCanHazAI/app.log` (once
-/// [`DebugLogger.startFileLogging()`](src/DebugLogger.swift) has been called),
+/// [`DebugLogger.startFileLogging()`](src/Utilities/DebugLogger.swift) has been called),
 /// regardless of the "App Debug" preference. This is essential for diagnosing
 /// issues that only reproduce when the app is launched from Finder (where
 /// stdout is discarded). The file is truncated on each launch so it only
@@ -22,7 +22,7 @@ import Foundation
 /// The enabled flag is cached behind a `DispatchQueue`-protected box so that
 /// `debugLog` can be called from any thread/actor without hopping to
 /// `ConfigManager`. The flag is refreshed by
-/// [`DebugLogger.setEnabled(_:)`](src/DebugLogger.swift) whenever preferences
+/// [`DebugLogger.setEnabled(_:)`](src/Utilities/DebugLogger.swift) whenever preferences
 /// are loaded or toggled.
 enum DebugLogger {
 

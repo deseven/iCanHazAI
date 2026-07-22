@@ -246,7 +246,7 @@ final class LoaderController: ObservableObject {
         reevaluate()
     }
 
-    /// Marks the chats row complete from a [`ChatSyncStats`](src/ChatStore.swift)
+    /// Marks the chats row complete from a [`ChatSyncStats`](src/Chat/ChatStore.swift)
     /// result. The subtitle is "<total> (<freshCached> cached)" — the gap
     /// between total and freshCached is the number of files re-decoded this
     /// launch. Any decode failures flip the row to warning/failed and are noted.

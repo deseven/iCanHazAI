@@ -264,8 +264,8 @@ final class EnvironmentManager: @unchecked Sendable {
         loadAllPromptsReportingErrors().loaded
     }
 
-    /// Same as [`loadAllPrompts()`](src/EnvironmentManager.swift) but also returns
-    /// a [`ConfigError`](src/Models.swift) per prompt file that could not be read
+    /// Same as [`loadAllPrompts()`](src/Environment/EnvironmentManager.swift) but also returns
+    /// a [`ConfigError`](src/Chat/Models.swift) per prompt file that could not be read
     /// or contains unknown variables. Used by `ChatEngine` to populate the
     /// configuration-error registry. Protected built-in prompts are trusted app
     /// content and are never validated here.
@@ -307,8 +307,8 @@ final class EnvironmentManager: @unchecked Sendable {
         loadSinglePromptReportingError(name: name).prompt
     }
 
-    /// Same as [`loadSinglePrompt(name:)`](src/EnvironmentManager.swift) but also
-    /// returns a [`ConfigError`](src/Models.swift) when the file exists but
+    /// Same as [`loadSinglePrompt(name:)`](src/Environment/EnvironmentManager.swift) but also
+    /// returns a [`ConfigError`](src/Chat/Models.swift) when the file exists but
     /// contains unknown variables. A missing file returns `(nil, nil)` — the
     /// caller treats that as a removal (no error). Protected built-ins never
     /// error.
@@ -341,8 +341,8 @@ final class EnvironmentManager: @unchecked Sendable {
         loadAllRolesReportingErrors().loaded
     }
 
-    /// Same as [`loadAllRoles()`](src/EnvironmentManager.swift) but also returns
-    /// a [`ConfigError`](src/Models.swift) per role file that failed to read or
+    /// Same as [`loadAllRoles()`](src/Environment/EnvironmentManager.swift) but also returns
+    /// a [`ConfigError`](src/Chat/Models.swift) per role file that failed to read or
     /// decode. Used by `ChatEngine` to populate the configuration-error registry.
     func loadAllRolesReportingErrors() -> (loaded: [Role], errors: [ConfigError]) {
         let fm = FileManager.default
@@ -381,8 +381,8 @@ final class EnvironmentManager: @unchecked Sendable {
         loadSingleRoleReportingError(name: name).role
     }
 
-    /// Same as [`loadSingleRole(name:)`](src/EnvironmentManager.swift) but also
-    /// returns a [`ConfigError`](src/Models.swift) when the file exists but
+    /// Same as [`loadSingleRole(name:)`](src/Environment/EnvironmentManager.swift) but also
+    /// returns a [`ConfigError`](src/Chat/Models.swift) when the file exists but
     /// fails to decode. A missing file returns `(nil, nil)` — the caller treats
     /// that as a removal (no error). Protected built-ins never error.
     func loadSingleRoleReportingError(name: String) -> (role: Role?, error: ConfigError?) {
@@ -453,8 +453,8 @@ final class EnvironmentManager: @unchecked Sendable {
         loadConnectionsReportingErrors().loaded
     }
 
-    /// Same as [`loadConnections()`](src/EnvironmentManager.swift) but also
-    /// returns a [`ConfigError`](src/Models.swift) per connection file that
+    /// Same as [`loadConnections()`](src/Environment/EnvironmentManager.swift) but also
+    /// returns a [`ConfigError`](src/Chat/Models.swift) per connection file that
     /// failed to read or decode. Used by `ChatEngine` to populate the
     /// configuration-error registry.
     func loadConnectionsReportingErrors() -> (loaded: [Connection], errors: [ConfigError]) {
@@ -543,8 +543,8 @@ final class EnvironmentManager: @unchecked Sendable {
         loadMCPsReportingErrors().loaded
     }
 
-    /// Same as [`loadMCPs()`](src/EnvironmentManager.swift) but also returns a
-    /// [`ConfigError`](src/Models.swift) per MCP config file that failed to
+    /// Same as [`loadMCPs()`](src/Environment/EnvironmentManager.swift) but also returns a
+    /// [`ConfigError`](src/Chat/Models.swift) per MCP config file that failed to
     /// read or decode. Used by `ChatEngine` to populate the configuration-error
     /// registry.
     func loadMCPsReportingErrors() -> (loaded: [MCPServer], errors: [ConfigError]) {
@@ -579,8 +579,8 @@ final class EnvironmentManager: @unchecked Sendable {
         loadSingleMCPReportingError(name: name).server
     }
 
-    /// Same as [`loadSingleMCP(name:)`](src/EnvironmentManager.swift) but also
-    /// returns a [`ConfigError`](src/Models.swift) when the file exists but
+    /// Same as [`loadSingleMCP(name:)`](src/Environment/EnvironmentManager.swift) but also
+    /// returns a [`ConfigError`](src/Chat/Models.swift) when the file exists but
     /// fails to decode. A missing file returns `(nil, nil)` — the caller treats
     /// that as a removal (no error).
     func loadSingleMCPReportingError(name: String) -> (server: MCPServer?, error: ConfigError?) {

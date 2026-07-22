@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
 /// top of the list — selecting it opens the macOS folder picker, and the
 /// chosen directory is added to the config and immediately selected for the
 /// chat, closing the picker. Next to it, "Add SSH path..." asks for an
-/// `ssh::host/path` spec (see [`SSHSpec`](src/SSHManager.swift:13)); remote
+/// `ssh::host/path` spec (see [`SSHSpec`](src/SSH/SSHManager.swift:13)); remote
 /// entries live in the same `working_directories` list.
 ///
 /// When the selected chat's role pre-sets a `working_directory` (and allows

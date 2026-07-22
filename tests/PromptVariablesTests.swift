@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import iCanHazAI
 
-// Unit tests for the prompt variable helper ([`PromptVariables`](src/PromptVariables.swift)):
+// Unit tests for the prompt variable helper ([`PromptVariables`](src/Chat/PromptVariables.swift)):
 // substitution, escaping, unknown-variable detection, and the dynamic values
 // (rendering capabilities, user name, date).
 extension AllAppTests {

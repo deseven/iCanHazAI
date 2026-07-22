@@ -9,11 +9,11 @@ import Foundation
 /// streaming chunk and error shapes. Works with any OpenAI-compatible
 /// endpoint (OpenAI, DeepSeek, Grok, OpenRouter, local servers, etc.) —
 /// provider-specific parameters are supplied via
-/// [`Connection.requestParameters`](src/Models.swift) and merged into the
+/// [`Connection.requestParameters`](src/Chat/Models.swift) and merged into the
 /// request body root.
 ///
 /// Emits incremental `.toolCallDelta` chunks as argument fragments arrive
-/// (see [`StreamChunk`](src/ChatService.swift)).
+/// (see [`StreamChunk`](src/Chat/ChatService.swift)).
 struct OpenAIProvider: LLMProvider {
     let provider: ConnectionProvider = .openai
     /// The base URL includes the API version path segment. Custom endpoints
@@ -78,7 +78,7 @@ struct OpenAIProvider: LLMProvider {
 
     // MARK: - Message mapping
 
-    /// Maps a [`ChatMessage`](src/Models.swift) to the OpenAI message JSON shape.
+    /// Maps a [`ChatMessage`](src/Chat/Models.swift) to the OpenAI message JSON shape.
     private func openAIMessage(_ msg: ChatMessage, chatFilename: String) -> [String: Any] {
         if msg.role == .user, let images = msg.images, !images.isEmpty {
             return openAIImageMessage(msg, images: images, chatFilename: chatFilename)

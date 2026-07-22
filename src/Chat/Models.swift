@@ -170,7 +170,7 @@ struct Chat: Codable, Identifiable, Equatable {
         lastActivity(fallback: .distantPast)
     }
 
-    /// Same as [`lastActivity`](src/Models.swift) but with an explicit fallback
+    /// Same as [`lastActivity`](src/Chat/Models.swift) but with an explicit fallback
     /// for chats with no messages (or messages lacking timestamps). Used by the
     /// cache so an empty chat sorts by its file modification time rather than
     /// `distantPast` (which would pin it to the very bottom of the list).
@@ -379,7 +379,7 @@ enum EngineEvent: Sendable {
 /// A configuration problem surfaced to the user (and the Configurator) for
 /// manual repair. Each entry identifies the failing entity by `kind` and
 /// `entityName`, plus a human-readable `message`. The set is rebuilt by
-/// [`ChatEngine`](src/ChatEngine.swift) whenever the on-disk configuration is
+/// [`ChatEngine`](src/Chat/ChatEngine.swift) whenever the on-disk configuration is
 /// reloaded, so it naturally shrinks as broken entities are fixed or removed.
 ///
 /// `id` is `"<kind>:<entityName>"` — stable across rebuilds so the UI diffs the

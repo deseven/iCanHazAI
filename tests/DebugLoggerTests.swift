@@ -2,7 +2,7 @@ import Testing
 import Foundation
 @testable import iCanHazAI
 
-/// Tests for [`DebugLogger`](src/DebugLogger.swift).
+/// Tests for [`DebugLogger`](src/Utilities/DebugLogger.swift).
 ///
 /// The key invariant under test: `app.log` is written on every `debugLog`
 /// call regardless of the "App Debug" preference; that preference only gates

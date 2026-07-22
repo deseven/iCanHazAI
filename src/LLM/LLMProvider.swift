@@ -41,7 +41,7 @@ protocol LLMProvider: Sendable {
     ) -> [String: Any]
 
     /// Parses a single SSE `data:` payload (already decoded from the wire)
-    /// into zero or more [`StreamChunk`](src/ChatService.swift) values, and
+    /// into zero or more [`StreamChunk`](src/Chat/ChatService.swift) values, and
     /// feeds tool-call deltas into the shared `accumulator`.
     ///
     /// The transport calls this once per SSE event. Content/thinking/finish
@@ -122,7 +122,7 @@ final class ToolCallAccumulator: @unchecked Sendable {
         return inputTokens
     }
 
-    /// Materialize the accumulated tool calls into [`ToolCall`](src/MCPModels.swift)
+    /// Materialize the accumulated tool calls into [`ToolCall`](src/MCP/MCPModels.swift)
     /// objects, ordered by index. Missing ids are synthesised as `call_{index}`.
     func materialize() -> [ToolCall] {
         lock.lock(); defer { lock.unlock() }

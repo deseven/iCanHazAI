@@ -56,7 +56,7 @@ enum PromptVariables {
     // MARK: - Validation
 
     /// Returns the unknown variable names referenced in `text` — unescaped
-    /// `{name}` where `name` is an identifier but not in [`knownVariables`](src/PromptVariables.swift).
+    /// `{name}` where `name` is an identifier but not in [`knownVariables`](src/Chat/PromptVariables.swift).
     /// Escaped `\{…}` and non-identifier braces (e.g. JSON objects) are ignored.
     /// Duplicates are collapsed; the order of first appearance is preserved.
     static func unknownVariables(in text: String) -> [String] {

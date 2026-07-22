@@ -142,7 +142,7 @@ struct ChunkCoalescer {
 
 /// Provides streaming chat completion for both OpenAI-compatible and Anthropic
 /// connections. This is a thin facade over [`LLMTransport`](src/LLM/LLMTransport.swift):
-/// it wraps the transport's raw chunk stream in a [`ChunkCoalescer`](src/ChatService.swift)
+/// it wraps the transport's raw chunk stream in a [`ChunkCoalescer`](src/Chat/ChatService.swift)
 /// and adds request lifecycle logging. All request building, SSE parsing,
 /// cancellation, and error handling live in the transport + provider
 /// strategies.

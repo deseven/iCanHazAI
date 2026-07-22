@@ -9,14 +9,14 @@ import TOML
 /// Unlike the in-house MCP servers (Utils/Filesystem/Code/Shell), these tools
 /// are not a subprocess — they run directly inside the app so they can validate
 /// config text via the same loading methods the app uses
-/// ([`JSONC`](src/JSONC.swift) for connections, [`TOMLDecoder`](src/ConfigManager.swift)
+/// ([`JSONC`](src/Utilities/JSONC.swift) for connections, [`TOMLDecoder`](src/Config/ConfigManager.swift)
 /// for MCP/role/app configs) before anything is written to disk. A write that
 /// fails validation is rejected outright; a write that passes is saved to the
 /// data directory and picked up by the standard FSEvents reload routines, so
 /// nothing is "applied" directly here.
 ///
-/// The tools are injected by [`ChatEngine`](src/ChatEngine.swift) when the chat's
-/// role is [`configuratorRoleName`](src/ConfiguratorTools.swift), and dispatched
+/// The tools are injected by [`ChatEngine`](src/Chat/ChatEngine.swift) when the chat's
+/// role is [`configuratorRoleName`](src/Config/ConfiguratorTools.swift), and dispatched
 /// in-process from `executeToolCall` (bypassing `MCPManager` entirely).
 enum ConfiguratorTools {
 
@@ -282,7 +282,7 @@ enum ConfiguratorTools {
 
     // MARK: - Write helpers
 
-    /// Each `write_` tool validates content via [`ConfigValidation`](src/ConfigValidation.swift)
+    /// Each `write_` tool validates content via [`ConfigValidation`](src/Config/ConfigValidation.swift)
     /// (the same layer the standard loaders use) before saving, so a dry-run
     /// failure produces the same helpful message a real load would log.
 
@@ -365,7 +365,7 @@ enum ConfiguratorTools {
 
     /// A unique, throwaway server name used for one-shot MCP checks so the
     /// transient connection never collides with a real configured server in
-    /// [`MCPManager`](src/MCPManager.swift)'s connection pool (and is always
+    /// [`MCPManager`](src/MCP/MCPManager.swift)'s connection pool (and is always
     /// torn down afterwards, never lingering as a "connected" server).
     private static func checkServerName() -> String {
         "__configurator_check_\(UUID().uuidString)"
@@ -387,7 +387,7 @@ enum ConfiguratorTools {
 
     /// Spawns a stdio MCP server via `command`, performs the MCP handshake,
     /// lists its tools, and always terminates the subprocess afterwards. Goes
-    /// through [`MCPManager.testConnection`](src/MCPManager.swift) — the same
+    /// through [`MCPManager.testConnection`](src/MCP/MCPManager.swift) — the same
     /// path the MCP wizard's Test step uses — so a crashing or misconfigured
     /// server is reported with its stderr reason instead of hanging.
     private static func mcpStdioCheck(command: String) async throws -> String {
@@ -411,7 +411,7 @@ enum ConfiguratorTools {
 
     /// Connects to a streamable HTTP MCP server at `endpoint` (with an optional
     /// bearer `token`), lists its tools, then disconnects. Also routes through
-    /// [`MCPManager.testConnection`](src/MCPManager.swift).
+    /// [`MCPManager.testConnection`](src/MCP/MCPManager.swift).
     private static func mcpHttpCheck(endpoint: String, token: String?) async throws -> String {
         guard !endpoint.isEmpty else {
             throw ConfiguratorToolError("endpoint must not be empty.")
@@ -437,7 +437,7 @@ enum ConfiguratorTools {
     }
 
     /// Loads the connection `type/name` from disk and sends a one-shot "say hi"
-    /// prompt via [`ChatService.complete`](src/ChatService.swift) — the same
+    /// prompt via [`ChatService.complete`](src/Chat/ChatService.swift) — the same
     /// non-streaming path the connection wizard's "say hi" test uses —
     /// returning the model's text answer. Provider/request errors are parsed by
     /// [`LLMError`](src/LLM/LLMError.swift) and surfaced verbatim, so the user

@@ -2,7 +2,7 @@ import Testing
 import Foundation
 @testable import iCanHazAI
 
-/// Tests for [`DiffBuilder`](src/DiffBuilder.swift), which builds unified diffs
+/// Tests for [`DiffBuilder`](src/Tools/DiffBuilder.swift), which builds unified diffs
 /// for `write_file` and `apply_patch` tool calls.
 ///
 /// Nested under `AllAppTests` so its `.serialized` trait keeps these sequential

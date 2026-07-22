@@ -98,7 +98,7 @@ struct AnthropicProvider: LLMProvider {
 
     // MARK: - Message mapping
 
-    /// Maps a [`ChatMessage`](src/Models.swift) to the Anthropic message JSON shape.
+    /// Maps a [`ChatMessage`](src/Chat/Models.swift) to the Anthropic message JSON shape.
     private func anthropicMessage(_ msg: ChatMessage, chatFilename: String) -> [String: Any] {
         let role = (msg.role == .user || msg.role == .tool) ? "user" : "assistant"
 

@@ -142,12 +142,12 @@ struct WindowConfig: Codable, Equatable {
 /// correct state. Validation of connection/role references happens on load and
 /// can be re-triggered by callers (e.g. after FSEvents).
 ///
-/// Startup ordering: [`bootstrapSynchronously()`](src/ConfigManager.swift) must be
+/// Startup ordering: [`bootstrapSynchronously()`](src/Config/ConfigManager.swift) must be
 /// called once at the very beginning of `applicationWillFinishLaunching`, before
 /// any `Task` is spawned. It reads and decodes `config.toml` on the calling
 /// thread and applies the debug-logging flag immediately, so that:
 ///  - early `debugLog` calls are captured, and
-///  - the actor's [`load()`](src/ConfigManager.swift) consumes the already-decoded
+///  - the actor's [`load()`](src/Config/ConfigManager.swift) consumes the already-decoded
 ///    config without re-reading the file, eliminating the launch-time race where
 ///    a mid-write read produced an empty config that was later persisted as
 ///    defaults (wiping user configuration).
@@ -247,7 +247,7 @@ actor ConfigManager {
 
     // MARK: - Load / Save
 
-    /// Loads the config. If [`bootstrapSynchronously()`](src/ConfigManager.swift)
+    /// Loads the config. If [`bootstrapSynchronously()`](src/Config/ConfigManager.swift)
     /// has already run (the normal launch path), the config it decoded on the
     /// calling thread is consumed directly — the file is **not** re-read, which
     /// eliminates the launch-time race where a mid-atomic-write read produced

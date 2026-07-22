@@ -5,7 +5,7 @@ import Foundation
 /// Tests for the role-assignment decision logic: when a chat's role is missing
 /// (deleted or never set) the role picker should be presented so the user can
 /// assign a new one. The pure helper
-/// [`AppViewModel.chatNeedsRoleAssignment(_:availableRoles:)`](src/AppViewModel.swift)
+/// [`AppViewModel.chatNeedsRoleAssignment(_:availableRoles:)`](src/App/AppViewModel.swift)
 /// is the decision function; these tests lock down its behavior without driving
 /// the full UI.
 extension AllAppTests {

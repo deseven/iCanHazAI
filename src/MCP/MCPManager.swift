@@ -54,7 +54,7 @@ struct MCPTool: Sendable, Equatable {
 /// loop. Lives alongside `ChatEngine`.
 ///
 /// Built-in tool groups (Utils/Filesystem/Code/Shell) are no longer MCP
-/// servers — they run in-process via [`BuiltinTools`](src/BuiltinTools.swift)
+/// servers — they run in-process via [`BuiltinTools`](src/Tools/BuiltinTools.swift)
 /// and are dispatched directly from `ChatEngine.executeToolCall`, bypassing
 /// this manager entirely.
 ///
@@ -114,8 +114,21 @@ actor MCPManager {
     /// the MCP handshake during configuration/wizard connects. If the process
     /// exits within this window (e.g. "command not found"), we fail fast with
     /// the stderr reason instead of hanging on the handshake. See
-    /// [`connectAndListTools`](src/MCPManager.swift).
+    /// [`connectAndListTools`](src/MCP/MCPManager.swift).
     private let startupGrace: TimeInterval = 1.0
+    /// Hard timeout (seconds) for the MCP `initialize` handshake. A server
+    /// that never answers `initialize` (e.g. stuck waiting for interactive
+    /// authorization) would otherwise hang `client.connect` forever, leaving
+    /// the configuration overlay "pending" indefinitely. When the timeout
+    /// fires, the client is force-disconnected (which resumes the pending
+    /// request with an error) and a stdio subprocess is killed.
+    private var connectTimeout: TimeInterval = 10
+
+    /// Test hook: overrides the handshake timeout (the default 10s is too
+    /// slow for tests). Not used by app code.
+    func setConnectTimeout(_ timeout: TimeInterval) {
+        connectTimeout = timeout
+    }
     /// Optional sink for human-readable error messages (wired to ChatEngine).
     private var errorHandler: ((String) -> Void)?
     /// Optional sink for streaming tool-output progress. Called with the
@@ -339,7 +352,7 @@ actor MCPManager {
     /// chat-request time: it does **not** apply the startup grace period or
     /// race against process death, to avoid adding latency to every chat
     /// request. Configuration-time and wizard connects use
-    /// [`connectAndListTools`](src/MCPManager.swift) instead, which performs
+    /// [`connectAndListTools`](src/MCP/MCPManager.swift) instead, which performs
     /// full liveness checking and captures stderr.
     func connect(_ server: MCPServer) async {
         if let existing = connections[server.name], existing.server == server { return }
@@ -411,13 +424,51 @@ actor MCPManager {
         }
         let initResult: Initialize.Result
         do {
-            initResult = try await client.connect(transport: transport)
+            initResult = try await performHandshake(client: client, transport: transport, serverName: server.name, process: process)
         } catch {
             process?.terminate()
             if let process { await awaitProcessExit(process) }
             throw error
         }
         return Connection(server: server, client: client, process: process, initResult: initResult)
+    }
+
+    /// Performs the MCP `initialize` handshake under a hard timeout
+    /// (`connectTimeout`). A misbehaving server can accept the transport but
+    /// never answer `initialize` (e.g. blocked on interactive authorization),
+    /// and the SDK's pending request would then wait forever. A watchdog task
+    /// fires after the timeout and force-disconnects the client — the SDK's
+    /// disconnect path resumes all pending requests with an error, unblocking
+    /// `client.connect` — and terminates the stdio subprocess (if any).
+    /// Throws `MCPManagerError.initializationTimeout` when the watchdog fired.
+    ///
+    /// The handshake itself stays on the caller's task (a task-group race
+    /// deadlocks the SDK Client actor's internal scheduling); only the
+    /// watchdog runs on a separate task, mirroring how process death is
+    /// handled in [`connectAndListTools`](src/MCP/MCPManager.swift).
+    private func performHandshake(client: Client, transport: any Transport, serverName: String, process: Process?) async throws -> Initialize.Result {
+        let timeout = connectTimeout
+        let timeoutBox = HandshakeTimeoutBox()
+        let watchdog = Task {
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            // Returns false if the handshake already completed — nothing to do.
+            guard timeoutBox.fireUnlessDone() else { return }
+            debugLog("MCP", "⚠️ initialize handshake timed out after \(Int(timeout))s — server=\"\(serverName)\", disconnecting")
+            await client.disconnect()
+            process?.terminate()
+        }
+        defer {
+            timeoutBox.markDone()
+            watchdog.cancel()
+        }
+        do {
+            return try await client.connect(transport: transport)
+        } catch {
+            if timeoutBox.hasFired() {
+                throw MCPManagerError.initializationTimeout(serverName, timeout)
+            }
+            throw error
+        }
     }
 
     /// Spawns the stdio subprocess (or builds the http transport), performs the
@@ -436,7 +487,11 @@ actor MCPManager {
     ///    within that window (e.g. "command not found"), we fail fast with the
     ///    stderr text as the reason;
     /// 3. otherwise run the handshake + listTools raced against process death,
-    ///    so a crash during initialization or the tool query is also caught.
+    ///    so a crash during initialization or the tool query is also caught;
+    /// 4. bound the handshake itself with `connectTimeout` — a server that
+    ///    accepts the transport but never answers `initialize` (e.g. stuck on
+    ///    interactive authorization) is force-disconnected, killed (stdio),
+    ///    and reported as timed out instead of hanging the loader forever.
     ///
     /// On success the connection is stored in `connections` and the tool list
     /// is returned. On failure the process is killed and a descriptive error
@@ -527,9 +582,14 @@ actor MCPManager {
                 }
                 let initResult: Initialize.Result
                 do {
-                    initResult = try await client.connect(transport: transport)
+                    initResult = try await performHandshake(client: client, transport: transport, serverName: server.name, process: proc)
                 } catch {
                     proc.terminationHandler = nil
+                    // A handshake timeout is reported as such, not as the
+                    // SIGTERM exit the watchdog's kill may have recorded.
+                    if case MCPManagerError.initializationTimeout = error {
+                        throw error
+                    }
                     if box.hasTerminated() {
                         let err = box.makeError(serverName: server.name, stderrPipe: stderrPipe)
                         debugLog("MCP", "⚠️ stdio server \"\(server.name)\" died during handshake — \(err.localizedDescription)")
@@ -545,7 +605,7 @@ actor MCPManager {
                 connections[server.name] = Connection(server: server, client: client, process: proc, initResult: initResult)
                 return try await queryTools(for: server.name)
             } else {
-                let initResult = try await client.connect(transport: transport)
+                let initResult = try await performHandshake(client: client, transport: transport, serverName: server.name, process: nil)
                 debugLog("MCP", "connected — server=\"\(server.name)\", serverName=\"\(initResult.serverInfo.name)\", serverVersion=\"\(initResult.serverInfo.version)\", protocolVersion=\"\(initResult.protocolVersion)\", capabilities=\(capabilitySummary(initResult.capabilities))")
                 connections[server.name] = Connection(server: server, client: client, process: nil, initResult: initResult)
                 return try await queryTools(for: server.name)
@@ -658,7 +718,7 @@ actor MCPManager {
     /// disconnecting the transient connection afterwards (via
     /// `disconnect(name:)`).
     ///
-    /// Uses [`connectAndListTools`](src/MCPManager.swift) so a misconfigured or
+    /// Uses [`connectAndListTools`](src/MCP/MCPManager.swift) so a misconfigured or
     /// crashing stdio server is reported with its stderr reason (exit code +
     /// error text) instead of hanging the wizard's Test step forever.
     func testConnection(_ server: MCPServer) async throws -> (tools: [MCPTool], serverName: String?) {
@@ -854,6 +914,10 @@ enum MCPManagerError: Error, LocalizedError {
     /// Carries the server name, exit status, and captured stderr so a crashing
     /// server is reported with its actual failure reason.
     case stdioExitedEarly(String, Int, String)
+    /// The server accepted the transport but never answered the MCP
+    /// `initialize` request within the allotted timeout. Carries the server
+    /// name and the timeout (seconds) that fired.
+    case initializationTimeout(String, TimeInterval)
 
     var errorDescription: String? {
         switch self {
@@ -869,7 +933,35 @@ enum MCPManagerError: Error, LocalizedError {
                 return "MCP stdio server \"\(name)\" exited before initializing (exit code \(status))."
             }
             return "MCP stdio server \"\(name)\" exited before initializing (exit code \(status)): \(stderrTrimmed)"
+        case .initializationTimeout(let name, let timeout):
+            return "MCP server \"\(name)\" did not respond to initialization within \(Int(timeout))s and was marked unavailable."
         }
+    }
+}
+
+/// A lock-protected flag pair coordinating the handshake watchdog with the
+/// in-flight `client.connect`. `fireUnlessDone()` returns false if the
+/// handshake already completed (watchdog loses the race — no disconnect),
+/// otherwise records the timeout and returns true.
+private final class HandshakeTimeoutBox: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "iCanHazAI.mcp.handshakeTimeoutBox")
+    private var _fired = false
+    private var _done = false
+
+    func fireUnlessDone() -> Bool {
+        queue.sync {
+            if _done { return false }
+            _fired = true
+            return true
+        }
+    }
+
+    func markDone() {
+        queue.sync { _done = true }
+    }
+
+    func hasFired() -> Bool {
+        queue.sync { _fired }
     }
 }
 

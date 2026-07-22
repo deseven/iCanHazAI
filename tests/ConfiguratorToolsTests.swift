@@ -3,7 +3,7 @@ import Testing
 import TOML
 @testable import iCanHazAI
 
-// Tests for the in-process configurator tools ([`ConfiguratorTools`](src/ConfiguratorTools.swift)).
+// Tests for the in-process configurator tools ([`ConfiguratorTools`](src/Config/ConfiguratorTools.swift)).
 // Each test points the tools at a throwaway `TempEnv` so nothing touches `~/iCanHazAI`.
 extension AllAppTests {
     @Suite("Configurator tools")

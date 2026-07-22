@@ -13,7 +13,7 @@ import LoginShell
 /// correctly. When `isolated` is true, absolute paths are treated as relative
 /// to the root (chroot-like) and path escapes are rejected.
 ///
-/// A root of the form `ssh::host/path` (see [`SSHSpec`](src/SSHManager.swift:13))
+/// A root of the form `ssh::host/path` (see [`SSHSpec`](src/SSH/SSHManager.swift:13))
 /// switches the chat's workdir-capable tools to remote execution over SSH. In
 /// that case `root` holds the remote absolute path (nil = remote home) and all
 /// path handling is string-based POSIX normalization — the remote filesystem

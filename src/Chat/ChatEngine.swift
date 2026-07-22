@@ -27,7 +27,7 @@ actor ChatEngine {
     /// Custom MCP servers loaded from disk (`~/iCanHazAI/mcp/*.toml`), kept in
     /// sync via FSEvents. Built-in tool groups (Utils/Filesystem/Code/Shell)
     /// are no longer MCP servers — they run in-process via
-    /// [`BuiltinTools`](src/BuiltinTools.swift).
+    /// [`BuiltinTools`](src/Tools/BuiltinTools.swift).
     private var customMcps: [MCPServer] = []
     /// The full server list shown to the UI: custom servers sorted by name.
     /// Built-in tool groups are not represented here (they're configured per
@@ -932,7 +932,7 @@ actor ChatEngine {
     /// layer is responsible for any display delay.
     ///
     /// Also derives runtime MCP failures for custom servers: a `.failed` entry
-    /// records a [`ConfigError`](src/Models.swift) (kind `.mcpFailure`); a
+    /// records a [`ConfigError`](src/Chat/Models.swift) (kind `.mcpFailure`); a
     /// `.success` entry clears it. Built-in servers are app internals (not
     /// user-configurable) and are ignored. A single-server reconfigure pass
     /// carries only that server, so other servers' failures are left intact.
@@ -1802,8 +1802,8 @@ actor ChatEngine {
     }
 
     /// Executes a single tool call. Built-in group tools run in-process via
-    /// [`BuiltinTools`](src/BuiltinTools.swift); custom MCP server tools run via
-    /// [`MCPManager`](src/MCPManager.swift). Configurator tools run in-process
+    /// [`BuiltinTools`](src/Tools/BuiltinTools.swift); custom MCP server tools run via
+    /// [`MCPManager`](src/MCP/MCPManager.swift). Configurator tools run in-process
     /// too. Returns the tool result.
     ///
     /// `tools` is the exact set of tool definitions advertised to the model for

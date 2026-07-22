@@ -4,7 +4,7 @@ import Foundation
 
 /// In-process tests for the built-in tool groups (Utils, Filesystem, Code,
 /// Shell), ported from the former subprocess-based MCP integration tests.
-/// These run entirely in-process via [`BuiltinTools`](src/BuiltinTools.swift)
+/// These run entirely in-process via [`BuiltinTools`](src/Tools/BuiltinTools.swift)
 /// — no subprocess spawning, no MCP stdio transport.
 ///
 /// Nested under `AllAppTests` so its `.serialized` trait keeps these sequential
