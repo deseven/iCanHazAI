@@ -37,7 +37,11 @@ struct ChatSidebar: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     let sections = ChatSidebar.dateSections(for: store.chatSummaries)
-                    ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
+                    // Keyed by the section's stable identity (its title), NOT
+                    // by offset: inserting a "Today" section shifts every
+                    // offset, which re-purposes existing section views with
+                    // new data and leaves stale selection highlights behind.
+                    ForEach(sections) { section in
                         PickerSectionHeader(title: section.title)
                         ForEach(Array(section.items.enumerated()), id: \.element.id) { index, item in
                             let role = item.roleName.flatMap { name in

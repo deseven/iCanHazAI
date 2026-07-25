@@ -69,7 +69,10 @@ enum DiffBuilder {
 
     /// Renders planned patch operations as unified-diff sections joined with a
     /// blank line separator. Returns `nil` when there are no visible changes.
-    private static func diffForOps(_ ops: [PlannedPatchOp]) -> String? {
+    /// Internal (not private) so the SSH preflight in
+    /// [`BuiltinToolsSSH`](src/Tools/BuiltinToolsSSH.swift:17) can render the
+    /// ops it planned against the remote snapshot.
+    static func diffForOps(_ ops: [PlannedPatchOp]) -> String? {
         var sections: [String] = []
         for op in ops {
             switch op {

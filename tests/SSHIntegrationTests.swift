@@ -248,6 +248,83 @@ extension AllAppTests {
             await Self.destroy(wd, remote)
         }
 
+        @Test("write_file diff preview reflects the remote before-state")
+        func writeFileDiffPreview() async throws {
+            let (wd, remote) = Self.makeContext()
+            let ssh = try #require(wd.ssh)
+            _ = await Self.call("write_file", Self.fs, ["path": "f.txt", "content": "alpha\nbeta\n"], workdir: wd)
+
+            let args = #"{"path":"f.txt","content":"alpha\ngamma\n"}"#
+            let diff = try await BuiltinToolsSSH.diffForWriteFile(arguments: args, workdir: wd, ssh: ssh)
+            let d = try #require(diff)
+            #expect(d.contains("--- f.txt"))
+            #expect(d.contains("+++ f.txt"))
+            #expect(d.contains("-beta"))
+            #expect(d.contains("+gamma"))
+
+            // A new file diffs as pure additions against an empty before-state.
+            let newDiff = try await BuiltinToolsSSH.diffForWriteFile(
+                arguments: #"{"path":"new.txt","content":"fresh\n"}"#, workdir: wd, ssh: ssh)
+            #expect(newDiff?.contains("+fresh") == true)
+
+            // Identical content → empty diff (nothing to show).
+            let sameDiff = try await BuiltinToolsSSH.diffForWriteFile(
+                arguments: #"{"path":"f.txt","content":"alpha\nbeta\n"}"#, workdir: wd, ssh: ssh)
+            #expect(sameDiff == "")
+
+            // Invalid arguments → nil (the engine relays the fail-fast error).
+            let bad = try await BuiltinToolsSSH.diffForWriteFile(
+                arguments: #"{"path":"only-path"}"#, workdir: wd, ssh: ssh)
+            #expect(bad == nil)
+
+            await Self.destroy(wd, remote)
+        }
+
+        @Test("apply_patch preflight previews the diff and dry-runs failures")
+        func applyPatchPreflight() async throws {
+            let (wd, remote) = Self.makeContext()
+            let ssh = try #require(wd.ssh)
+            _ = await Self.call("write_file", Self.fs, ["path": "orig.txt", "content": "alpha\nbeta\n"], workdir: wd)
+
+            let patch = """
+            *** Begin Patch
+            *** Update File: orig.txt
+            @@
+            -beta
+            +gamma
+            *** Add File: added.txt
+            +fresh
+            *** End Patch
+            """
+            let arguments = String(data: try JSONSerialization.data(withJSONObject: ["patch": patch]), encoding: .utf8)!
+            switch try await BuiltinToolsSSH.preflightApplyPatch(arguments: arguments, workdir: wd, ssh: ssh) {
+            case .ok(let diff):
+                let d = try #require(diff)
+                #expect(d.contains("-beta"))
+                #expect(d.contains("+gamma"))
+                #expect(d.contains("+fresh"))
+            case .error(let message):
+                Issue.record("expected a diff preview, got error: \(message)")
+            }
+
+            // The preflight is a dry-run: nothing was written.
+            let (missing, missingErr) = await Self.call("read_file", Self.fs, ["path": "added.txt"], workdir: wd)
+            #expect(missingErr)
+            #expect(missing.contains("not found"))
+
+            // A patch that would fail yields the tool's exact error.
+            let ghost = "*** Begin Patch\n*** Update File: ghost.txt\n@@\n-x\n+y\n*** End Patch\n"
+            let ghostArgs = String(data: try JSONSerialization.data(withJSONObject: ["patch": ghost]), encoding: .utf8)!
+            switch try await BuiltinToolsSSH.preflightApplyPatch(arguments: ghostArgs, workdir: wd, ssh: ssh) {
+            case .ok:
+                Issue.record("expected a dry-run failure for a missing file")
+            case .error(let message):
+                #expect(message.contains("ghost.txt does not exist"))
+            }
+
+            await Self.destroy(wd, remote)
+        }
+
         @Test("shell runs commands remotely with cwd and exit codes")
         func shellBasics() async {
             let (wd, remote) = Self.makeContext()

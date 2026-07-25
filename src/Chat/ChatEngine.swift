@@ -1866,20 +1866,31 @@ actor ChatEngine {
 
         // For write_file/apply_patch, build a unified diff now so the renderer
         // can show it during the approval prompt (and after execution). The
-        // diff is computed against the file's current on-disk content, so it
-        // must be built before the tool runs. Cleared on denial since the
-        // changes were never applied.
+        // diff is computed against the file's current content (read locally,
+        // or fetched over SSH for remote workdirs), so it must be built before
+        // the tool runs. Cleared on denial since the changes were never applied.
         //
         // If a write_file call is missing arguments, there's nothing for the
         // user to approve — fail fast. apply_patch goes through a full dry-run
-        // (parse + plan against on-disk state, no writes): when it fails, the
+        // (parse + plan against current state, no writes): when it fails, the
         // tool call would fail identically, so we skip the approval prompt and
         // relay the exact error to the model.
-        // Pre-approval diff previews read the local filesystem only; SSH
-        // workdirs skip them (the tools themselves still validate remotely).
+        // For SSH workdirs a transport failure only skips the preview — the
+        // tool itself runs and reports the error.
         if sourceName == BuiltinTools.filesystemGroup, toolName == "write_file" {
             let wd = Workdir(root: workdir, isolated: isolation, chatID: chatID)
-            if wd.ssh == nil {
+            if let ssh = wd.ssh {
+                do {
+                    if let d = try await BuiltinToolsSSH.diffForWriteFile(arguments: call.arguments, workdir: wd, ssh: ssh) {
+                        setToolCallDiff(callID: call.id, filename: filename, diff: d)
+                    } else {
+                        debugLog("Tool", "write_file arguments invalid (no diff) — callID=\(call.id), chat=\(filename)")
+                        return ToolResult(callID: call.id, content: "Invalid arguments: expected 'path' and 'content' strings.", isError: true)
+                    }
+                } catch {
+                    debugLog("Tool", "write_file SSH diff preview failed (\(error.localizedDescription)) — proceeding without diff, callID=\(call.id), chat=\(filename)")
+                }
+            } else {
                 if let d = DiffBuilder.diffForWriteFile(arguments: call.arguments, workdir: wd) {
                     setToolCallDiff(callID: call.id, filename: filename, diff: d)
                 } else {
@@ -1889,7 +1900,19 @@ actor ChatEngine {
             }
         } else if sourceName == BuiltinTools.codeGroup, toolName == "apply_patch" {
             let wd = Workdir(root: workdir, isolated: isolation, chatID: chatID)
-            if wd.ssh == nil {
+            if let ssh = wd.ssh {
+                do {
+                    switch try await BuiltinToolsSSH.preflightApplyPatch(arguments: call.arguments, workdir: wd, ssh: ssh) {
+                    case .ok(let d):
+                        if let d { setToolCallDiff(callID: call.id, filename: filename, diff: d) }
+                    case .error(let message):
+                        debugLog("Tool", "apply_patch remote dry-run failed — callID=\(call.id), chat=\(filename)")
+                        return ToolResult(callID: call.id, content: message, isError: true)
+                    }
+                } catch {
+                    debugLog("Tool", "apply_patch SSH dry-run failed (\(error.localizedDescription)) — proceeding without diff, callID=\(call.id), chat=\(filename)")
+                }
+            } else {
                 switch DiffBuilder.preflightApplyPatch(arguments: call.arguments, workdir: wd) {
                 case .ok(let d):
                     if let d { setToolCallDiff(callID: call.id, filename: filename, diff: d) }

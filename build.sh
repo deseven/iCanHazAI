@@ -140,6 +140,20 @@ do_build_swift() {
 
 do_run_app_tests() { swift test --filter AllAppTests; }
 
+do_typecheck_web() {
+    cd "$loc/chatrenderer"
+    npm install --no-audit --no-fund
+    npm run typecheck
+    cd "$loc"
+}
+
+do_run_web_tests() {
+    cd "$loc/chatrenderer"
+    npm install --no-audit --no-fund
+    npm test
+    cd "$loc"
+}
+
 do_clean_app_cache() {
     # Drop the SwiftData chat-metadata cache. The app self-heals an
     # incompatible cache on launch (ChatStore recreates it from disk), so this
@@ -255,6 +269,8 @@ do_init_log
 do_clean_dist
 
 if [ "$mode" = "test" ]; then
+    add "Typechecking chat renderer (web)..." "chat renderer typecheck failed"    do_typecheck_web
+    add "Running chat renderer tests..."  "chat renderer tests failed"            do_run_web_tests
     add "Running app tests..."        "app tests failed"                          do_run_app_tests
     run_pipeline
     echo ""

@@ -8,13 +8,15 @@
 // markdown only re-renders when a newline arrives (a block completes), and the
 // partial line updates cheaply as inline.
 import { useMemo, useState, useRef, useEffect, useLayoutEffect, useCallback } from "preact/hooks";
+import type { RefObject } from "preact";
 import { memo } from "preact/compat";
 import { createPortal } from "preact/compat";
 import type { ChatMessage, MessageImage } from "../types";
-import { renderMarkdown, renderInline, renderMermaidIn, restoreCachedMermaid, endsWithUnclosedMermaid, renderDiff } from "../markdown";
+import { renderMarkdown, renderInline, renderMermaidIn, restoreCachedMermaid, endsWithUnclosedMermaid, renderDiff, highlightCode } from "../markdown";
 import { sendToHost } from "../bridge";
 import { debugLog } from "../debug";
 import { parseToolArgs, isEmptyArgs } from "../toolArgs";
+import type { ToolArgEntry } from "../toolArgs";
 import { Copy, SquarePen, Trash2, Brain, User, Bot, Settings, AlertTriangle, RotateCcw, ChevronRight, ChevronDown, Wrench, Terminal } from "lucide-preact";
 import type { ToolCallData, ToolResultData } from "../types";
 
@@ -65,14 +67,8 @@ function AvatarIcon({ role }: { role: string }) {
   }
 }
 
-/** Render tool-call arguments as a human-readable key/value list.
- *  Falls back to a plain <pre> with the raw string when the arguments aren't
- *  a valid JSON object (e.g. malformed JSON, a JSON array, or a scalar). */
-function ToolArgsView({ args }: { args: string }) {
-  const entries = useMemo(() => parseToolArgs(args), [args]);
-  if (entries === null) {
-    return <pre class="tool-call-args">{args}</pre>;
-  }
+/** Render parsed tool-call arguments as a human-readable key/value list. */
+function ToolArgEntries({ entries }: { entries: ToolArgEntry[] }) {
   return (
     <dl class="tool-args">
       {entries.map((e) => (
@@ -84,6 +80,73 @@ function ToolArgsView({ args }: { args: string }) {
         </div>
       ))}
     </dl>
+  );
+}
+
+/** Render tool-call arguments as a human-readable key/value list.
+ *  Falls back to a plain <pre> with the raw string when the arguments aren't
+ *  a valid JSON object (e.g. malformed JSON, a JSON array, or a scalar). */
+function ToolArgsView({ args }: { args: string }) {
+  const entries = useMemo(() => parseToolArgs(args), [args]);
+  if (entries === null) {
+    return <pre class="tool-call-args">{args}</pre>;
+  }
+  return <ToolArgEntries entries={entries} />;
+}
+
+/** Renderer for the internal `shell` tool: the `command` argument gets its
+ *  own bash-highlighted block (like the diff view). Any remaining arguments
+ *  (cwd, timeout) are shown as a muted suffix in the block's title, keeping
+ *  the focus on the command itself. Falls back to the generic arguments view
+ *  when the arguments don't parse to an object with a `command` key. */
+function ShellToolCall({ args }: { args: string }) {
+  const parsed = useMemo(() => {
+    const entries = parseToolArgs(args);
+    if (!entries) return null;
+    const command = entries.find((e) => e.key === "command");
+    if (!command) return null;
+    return {
+      command: command.value,
+      rest: entries.filter((e) => e.key !== "command"),
+    };
+  }, [args]);
+
+  const commandHtml = useMemo(() => {
+    if (!parsed) return null;
+    const highlighted = highlightCode(parsed.command, "bash");
+    return highlighted === null
+      ? null
+      : `<pre class="hljs tool-command"><code>${highlighted}</code></pre>`;
+  }, [parsed]);
+
+  if (!parsed) {
+    if (isEmptyArgs(args)) return null;
+    return (
+      <div class="tool-call">
+        <div class="tool-call-label">Arguments</div>
+        <ToolArgsView args={args} />
+      </div>
+    );
+  }
+  return (
+    <div class="tool-call">
+      <div class="tool-call-label">
+        Command
+        {parsed.rest.length > 0 && (
+          <span class="tool-command-extra">
+            {parsed.rest.map((e) => `${e.key}: ${e.value}`).join(" · ")}
+          </span>
+        )}
+      </div>
+      {commandHtml ? (
+        <div
+          class="tool-command-container"
+          dangerouslySetInnerHTML={{ __html: commandHtml }}
+        />
+      ) : (
+        <pre class="tool-call-args">{parsed.command}</pre>
+      )}
+    </div>
   );
 }
 
@@ -112,6 +175,75 @@ function shortToolName(name: string): string {
   return name;
 }
 
+/** Wires IntersectionObservers for a collapsible block so a bottom "collapse"
+ *  link can be shown when the expanded block's top scrolls out of view while
+ *  its bottom is still on screen (i.e. the block is taller than the viewport).
+ *  Attach `rootRef` to the block element and `toggleRef` to its header. */
+function useBottomCollapse(open: boolean) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const [toggleVisible, setToggleVisible] = useState(true);
+  const [blockVisible, setBlockVisible] = useState(true);
+
+  useEffect(() => {
+    const block = rootRef.current;
+    const toggle = toggleRef.current;
+    if (!block || !toggle) return;
+    const scroller = block.closest(".chat-scroller") as Element | null;
+    const opts = { root: scroller || null, threshold: 0 };
+
+    const toggleObs = new IntersectionObserver((entries) => {
+      for (const e of entries) setToggleVisible(e.isIntersecting);
+    }, opts);
+    toggleObs.observe(toggle);
+
+    const blockObs = new IntersectionObserver((entries) => {
+      for (const e of entries) setBlockVisible(e.isIntersecting);
+    }, opts);
+    blockObs.observe(block);
+
+    return () => {
+      toggleObs.disconnect();
+      blockObs.disconnect();
+    };
+  }, []);
+
+  return {
+    rootRef,
+    toggleRef,
+    showCollapse: open && !toggleVisible && blockVisible,
+  };
+}
+
+/** A small "collapse" link shown at the bottom right of a tall expanded block.
+ *  After collapsing, scrolls back to the block's top — collapsing shrinks the
+ *  content above the current scroll position, which would otherwise yank the
+ *  viewport. */
+function CollapseLink({
+  blockRef,
+  onCollapse,
+}: {
+  blockRef: RefObject<HTMLDivElement>;
+  onCollapse: () => void;
+}) {
+  return (
+    <div class="collapse-bottom">
+      <button
+        type="button"
+        class="collapse-bottom-btn"
+        onClick={() => {
+          onCollapse();
+          requestAnimationFrame(() => {
+            blockRef.current?.scrollIntoView({ block: "start" });
+          });
+        }}
+      >
+        collapse
+      </button>
+    </div>
+  );
+}
+
 /** A collapsible block showing a tool call and (optionally) its result. */
 function ToolBlock({
   call,
@@ -129,6 +261,11 @@ function ToolBlock({
   const running = (!result && isStreaming) || (result?.isStreaming ?? false);
   const pending = call.pendingApproval === true;
   const [open, setOpen] = useState(defaultOpen);
+  const {
+    rootRef: blockRef,
+    toggleRef,
+    showCollapse,
+  } = useBottomCollapse(open);
   // Force the block open whenever approval is requested so the user can see
   // the arguments and the Allow/Deny buttons.
   useEffect(() => {
@@ -159,8 +296,8 @@ function ToolBlock({
   };
 
   return (
-    <div class={`tool-block${pending ? " tool-block-pending" : ""}`}>
-      <button class="tool-toggle" onClick={() => setOpen((v) => !v)}>
+    <div class={`tool-block${pending ? " tool-block-pending" : ""}`} ref={blockRef}>
+      <button class="tool-toggle" ref={toggleRef} onClick={() => setOpen((v) => !v)}>
         <Wrench size={14} />
         <span class="tool-name">{shortToolName(call.name)}</span>
         {pending && <span class="tool-badge tool-badge-pending">approval</span>}
@@ -187,6 +324,8 @@ function ToolBlock({
               <div class="tool-call-label">Diff</div>
               <ToolDiffView diff={call.diff} />
             </div>
+          ) : call.name === "shell" ? (
+            <ShellToolCall args={call.arguments} />
           ) : !isEmptyArgs(call.arguments) ? (
             <div class="tool-call">
               <div class="tool-call-label">Arguments</div>
@@ -228,6 +367,9 @@ function ToolBlock({
                 </button>
               </div>
             </div>
+          )}
+          {showCollapse && (
+            <CollapseLink blockRef={blockRef} onCollapse={() => setOpen(false)} />
           )}
         </div>
       )}
@@ -314,6 +456,11 @@ export const MessageItem = memo(function MessageItem({
 }: Props) {
   const [hovering, setHovering] = useState(false);
   const [thinkingOpen, setThinkingOpen] = useState(defaultThinkingOpen);
+  const {
+    rootRef: thinkingBlockRef,
+    toggleRef: thinkingToggleRef,
+    showCollapse: showThinkingCollapse,
+  } = useBottomCollapse(thinkingOpen);
   const [topVisible, setTopVisible] = useState(true);
   const [msgVisible, setMsgVisible] = useState(true);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -437,7 +584,15 @@ export const MessageItem = memo(function MessageItem({
             {roleLabel(message.role, roleName)}
           </span>
           {hovering && <span class="msg-detail">{hoverDetail}</span>}
-          <span class="msg-actions" style={{ opacity: hovering ? 1 : 0 }}>
+          <span
+            class="msg-actions"
+            style={{
+              opacity: hovering ? 1 : 0,
+              // Hidden, not just transparent: invisible buttons must not be
+              // clickable or keyboard-focusable.
+              visibility: hovering ? "visible" : "hidden",
+            }}
+          >
             <button
               class="msg-action-btn"
               title="Copy"
@@ -469,9 +624,10 @@ export const MessageItem = memo(function MessageItem({
         )}
 
         {hasThinking && (
-          <div class="thinking-block">
+          <div class="thinking-block" ref={thinkingBlockRef}>
             <button
               class="thinking-toggle"
+              ref={thinkingToggleRef}
               onClick={() => setThinkingOpen((v) => !v)}
             >
               <Brain size={14} />
@@ -483,6 +639,12 @@ export const MessageItem = memo(function MessageItem({
             </button>
             {thinkingOpen && (
               <div class="thinking-content">{message.thinking}</div>
+            )}
+            {showThinkingCollapse && (
+              <CollapseLink
+                blockRef={thinkingBlockRef}
+                onCollapse={() => setThinkingOpen(false)}
+              />
             )}
           </div>
         )}

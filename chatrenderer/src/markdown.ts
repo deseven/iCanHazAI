@@ -288,6 +288,20 @@ export function renderInline(src: string): string {
 }
 
 /**
+ * Highlight a code snippet with highlight.js, returning the highlighted HTML
+ * (inner content of a <code> element). Returns null when the language isn't
+ * registered or highlighting fails — callers should fall back to plain text.
+ */
+export function highlightCode(src: string, lang: string): string | null {
+  if (!hljs.getLanguage(lang)) return null;
+  try {
+    return hljs.highlight(src, { language: lang, ignoreIllegals: true }).value;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Highlight a unified-diff string for display in a tool-call block. Uses
  * highlight.js's `diff` language, which marks added/removed lines with
  * `hljs-addition`/`hljs-deletion` classes (colored via styles.css). Returns

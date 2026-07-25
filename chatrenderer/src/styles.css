@@ -416,13 +416,18 @@ body {
 
 .msg-bottom-actions .msg-actions {
   opacity: 0;
-  transition: opacity 0.12s ease;
+  /* Hidden, not just transparent: invisible buttons must not be clickable
+     or keyboard-focusable. The visibility transition delays the flip until
+     the fade-out finishes. */
+  visibility: hidden;
+  transition: opacity 0.12s ease, visibility 0.12s ease;
 }
 
 /* Only reveal the bottom buttons when the header is scrolled out of view
    AND the message is being hovered. */
 .msg:hover .msg-bottom-actions.is-visible .msg-actions {
   opacity: 1;
+  visibility: visible;
 }
 
 .msg-action-btn {
@@ -1079,15 +1084,18 @@ body {
   padding-left: 0;
 }
 
-/* Diff view for write_file/apply_patch tool calls. The host sends a pre-built
-   unified diff; highlight.js's `diff` language marks added/removed lines with
+/* Diff view for write_file/apply_patch tool calls and highlighted command
+   view for the shell tool. The host sends a pre-built unified diff;
+   highlight.js's `diff` language marks added/removed lines with
    .hljs-addition/.hljs-deletion (colored above in the hljs section). */
-.tool-diff-container {
+.tool-diff-container,
+.tool-command-container {
   margin: 0;
   overflow-x: auto;
 }
 
-.tool-diff {
+.tool-diff,
+.tool-command {
   margin: 0;
   font-family: var(--font-mono);
   font-size: 12px;
@@ -1095,6 +1103,15 @@ body {
   word-break: break-word;
   color: var(--text);
   padding: 6px 8px;
+}
+
+/* Extra shell-tool arguments (cwd, timeout) shown as a muted suffix in the
+   Command block's label. */
+.tool-command-extra {
+  margin-left: 6px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-family: var(--font-mono);
 }
 
 .tool-result-error .tool-call-args,
@@ -1105,6 +1122,30 @@ body {
 
 .tool-result-only {
   padding: 6px 8px;
+}
+
+/* "collapse" link shown at the bottom right of an expanded collapsible block
+   (tool call, thinking) whose toggle has scrolled out of view — i.e. the
+   block is taller than the viewport. */
+.collapse-bottom {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.collapse-bottom-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.collapse-bottom-btn:hover {
+  color: var(--text-secondary);
 }
 
 /* ── Tool approval ─────────────────────────────────────────────────── */
