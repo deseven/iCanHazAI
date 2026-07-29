@@ -36,47 +36,20 @@ struct ChatSidebar: View {
 
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    let sections = ChatSidebar.dateSections(for: store.chatSummaries)
-                    // Keyed by the section's stable identity (its title), NOT
-                    // by offset: inserting a "Today" section shifts every
-                    // offset, which re-purposes existing section views with
-                    // new data and leaves stale selection highlights behind.
-                    ForEach(sections) { section in
-                        PickerSectionHeader(title: section.title)
-                        ForEach(Array(section.items.enumerated()), id: \.element.id) { index, item in
-                            let role = item.roleName.flatMap { name in
-                                store.roles.first(where: { $0.name == name })
-                            }
-                            ChatRow(
-                                item: item,
-                                roleIcon: role?.icon ?? Role.defaultIcon,
-                                roleAccent: role?.accentColor ?? .accentColor,
-                                isSelected: item.id == store.selectedChatID,
-                                isUnread: item.hasUnreadActivity && item.id != store.selectedChatID,
-                                isStreaming: item.isStreaming,
-                                isBlinking: store.blinkingChatIDs.contains(item.id)
-                            )
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                store.selectChat(item.id)
-                            }
-                            .contextMenu {
-                                Button("Rename") {
-                                    renamingFilename = item.id
-                                    renameText = store.chatItems.first(where: { $0.id == item.id })?.chat?.title ?? store.chatItems.first(where: { $0.id == item.id })?.cachedName ?? ""
-                                }
-                                Button("Archive") {
-                                    store.setChatArchived(item.id, archived: true)
-                                }
-                                Button("Delete", role: .destructive) {
-                                    deletingFilename = item.id
-                                }
-                                Divider()
-                                Button("Reveal in Finder") {
-                                    revealInFinder(filename: item.id)
-                                }
-                            }
-                            if index != section.items.indices.last {
+                    // A single flat ForEach, NOT nested ForEach(sections) {
+                    // ForEach(items) }: with nesting, a chat moving between
+                    // sections (e.g. "Today" -> "Yesterday" at day rollover)
+                    // jumps between two different ForEach containers, and
+                    // LazyVStack reuses the cached row view with its stale
+                    // selection highlight. Flat entries with stable ids turn
+                    // the move into a plain reorder, which diffs correctly.
+                    ForEach(ChatSidebar.sidebarEntries(for: store.chatSummaries)) { entry in
+                        switch entry {
+                        case .header(let title):
+                            PickerSectionHeader(title: title)
+                        case .row(let item, let showsDivider):
+                            chatRow(for: item)
+                            if showsDivider {
                                 Divider()
                             }
                         }
@@ -112,6 +85,42 @@ struct ChatSidebar: View {
                     deletingFilename = nil
                 }
             )
+        }
+    }
+
+    @ViewBuilder
+    private func chatRow(for item: ChatSummary) -> some View {
+        let role = item.roleName.flatMap { name in
+            store.roles.first(where: { $0.name == name })
+        }
+        ChatRow(
+            item: item,
+            roleIcon: role?.icon ?? Role.defaultIcon,
+            roleAccent: role?.accentColor ?? .accentColor,
+            isSelected: item.id == store.selectedChatID,
+            isUnread: item.hasUnreadActivity && item.id != store.selectedChatID,
+            isStreaming: item.isStreaming,
+            isBlinking: store.blinkingChatIDs.contains(item.id)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            store.selectChat(item.id)
+        }
+        .contextMenu {
+            Button("Rename") {
+                renamingFilename = item.id
+                renameText = store.chatItems.first(where: { $0.id == item.id })?.chat?.title ?? store.chatItems.first(where: { $0.id == item.id })?.cachedName ?? ""
+            }
+            Button("Archive") {
+                store.setChatArchived(item.id, archived: true)
+            }
+            Button("Delete", role: .destructive) {
+                deletingFilename = item.id
+            }
+            Divider()
+            Button("Reveal in Finder") {
+                revealInFinder(filename: item.id)
+            }
         }
     }
 
@@ -179,6 +188,33 @@ struct ChatSidebar: View {
             buckets[i].items.sort { $0.sortKey > $1.sortKey }
         }
         return buckets.map { ChatSection(title: $0.title, items: $0.items) }
+    }
+
+    /// One element of the sidebar's flattened list: either a section header
+    /// or a chat row. `showsDivider` marks rows that are not the last in
+    /// their section, so a separator follows them.
+    enum SidebarEntry: Identifiable {
+        case header(String)
+        case row(ChatSummary, showsDivider: Bool)
+
+        var id: String {
+            switch self {
+            case .header(let title): return "section:\(title)"
+            case .row(let item, _): return item.id
+            }
+        }
+    }
+
+    /// Flattens the day-based sections into a single list of headers and
+    /// rows for the sidebar's single-level `ForEach` (see the comment in
+    /// `body` for why nesting is avoided). `nonisolated` so it can be
+    /// unit-tested without the main actor.
+    nonisolated static func sidebarEntries(for summaries: [ChatSummary]) -> [SidebarEntry] {
+        dateSections(for: summaries).flatMap { section -> [SidebarEntry] in
+            [.header(section.title)] + section.items.enumerated().map { index, item in
+                .row(item, showsDivider: index != section.items.indices.last)
+            }
+        }
     }
 }
 

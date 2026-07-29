@@ -114,5 +114,33 @@ extension AllAppTests {
             #expect(!expected.isEmpty)
             #expect(PromptVariables.currentUserName() == expected)
         }
+
+        @Test("currentDirectory is empty without a workdir-capable group")
+        func currentDirectoryNoGroup() {
+            #expect(PromptVariables.currentDirectory(workdirCapable: false, isolated: false, directory: nil) == "")
+            #expect(PromptVariables.currentDirectory(workdirCapable: false, isolated: true, directory: "/tmp") == "")
+        }
+
+        @Test("currentDirectory is / when isolated")
+        func currentDirectoryIsolated() {
+            #expect(PromptVariables.currentDirectory(workdirCapable: true, isolated: true, directory: nil) == "Current directory: /")
+            #expect(PromptVariables.currentDirectory(workdirCapable: true, isolated: true, directory: "/some/path") == "Current directory: /")
+        }
+
+        @Test("currentDirectory is ~ when no directory is set")
+        func currentDirectoryUnset() {
+            #expect(PromptVariables.currentDirectory(workdirCapable: true, isolated: false, directory: nil) == "Current directory: ~")
+            #expect(PromptVariables.currentDirectory(workdirCapable: true, isolated: false, directory: "") == "Current directory: ~")
+        }
+
+        @Test("currentDirectory is the path when set")
+        func currentDirectorySet() {
+            #expect(PromptVariables.currentDirectory(workdirCapable: true, isolated: false, directory: "/some/path") == "Current directory: /some/path")
+        }
+
+        @Test("current_directory is a known variable")
+        func currentDirectoryKnown() {
+            #expect(PromptVariables.unknownVariables(in: "dir: {current_directory}").isEmpty)
+        }
     }
 }

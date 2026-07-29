@@ -1372,19 +1372,25 @@ actor ChatEngine {
     }
 
     /// Builds the system message for a chat by loading the prompt's raw content
-    /// and substituting variables (`{output_rendering}`, `{user}`, `{date}`) at
-    /// request time. Returns nil when the role has no prompt or the referenced
-    /// prompt can't be found. Substitution happens here — never at load time —
-    /// so each request gets fresh values (e.g. the current date) and the raw
-    /// prompt text stays available for editing.
+    /// and substituting variables (`{output_rendering}`, `{user}`, `{date}`,
+    /// `{current_directory}`) at request time. Returns nil when the role has no
+    /// prompt or the referenced prompt can't be found. Substitution happens here
+    /// — never at load time — so each request gets fresh values (e.g. the
+    /// current date) and the raw prompt text stays available for editing.
     private func systemMessage(for chat: Chat) async -> ChatMessage? {
         guard let promptContent = systemPromptContent(for: chat) else { return nil }
         let mermaid = await ConfigManager.shared.getMermaidEnabled()
         let katex = await ConfigManager.shared.getKatexEnabled()
+        let role = self.role(for: chat)
         let values: [String: String] = [
             "output_rendering": PromptVariables.renderingCapabilities(mermaid: mermaid, katex: katex),
             "user": PromptVariables.currentUserName(),
             "date": PromptVariables.currentDate(),
+            "current_directory": PromptVariables.currentDirectory(
+                workdirCapable: role?.hasWorkdirCapableMCP ?? false,
+                isolated: role?.hasDirectoryIsolation ?? false,
+                directory: effectiveWorkingDirectory(for: chat)
+            ),
         ]
         return ChatMessage(role: .system, content: PromptVariables.substitute(text: promptContent, values: values))
     }

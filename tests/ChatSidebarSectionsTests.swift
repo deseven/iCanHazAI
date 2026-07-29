@@ -107,6 +107,57 @@ struct ChatSidebarSectionsTests {
         #expect(sections[0].items.count == 2)
     }
 
+    @Test("sidebar entries flatten sections into headers and rows with stable ids")
+    func sidebarEntriesFlattening() {
+        let cal = Calendar.current
+        let now = Date()
+        let yesterday = cal.date(byAdding: .day, value: -1, to: cal.startOfDay(for: now))!
+        let entries = ChatSidebar.sidebarEntries(for: [
+            summary("today.json", sortKey: now),
+            summary("yesterday.json", sortKey: yesterday),
+        ])
+        #expect(entries.map(\.id) == ["section:Today", "today.json", "section:Yesterday", "yesterday.json"])
+    }
+
+    @Test("sidebar entries mark every row except the last in a section with a divider")
+    func sidebarEntriesDividers() {
+        let cal = Calendar.current
+        let morning = cal.date(bySettingHour: 8, minute: 0, second: 0, of: Date())!
+        let afternoon = cal.date(bySettingHour: 14, minute: 0, second: 0, of: Date())!
+        let entries = ChatSidebar.sidebarEntries(for: [
+            summary("morning.json", sortKey: morning),
+            summary("afternoon.json", sortKey: afternoon),
+        ])
+        let dividers = entries.compactMap { entry -> (String, Bool)? in
+            guard case .row(let item, let showsDivider) = entry else { return nil }
+            return (item.filename, showsDivider)
+        }
+        #expect(dividers.count == 2)
+        #expect(dividers[0].0 == "afternoon.json" && dividers[0].1 == true)
+        #expect(dividers[1].0 == "morning.json" && dividers[1].1 == false)
+    }
+
+    @Test("sidebar entries keep row ids stable when a chat moves to another day section")
+    func sidebarEntriesStableIDsAcrossDayRollover() {
+        // Simulates the stuck-selection scenario: a chat rendered under
+        // "Today" keeps its identity when it later falls under "Yesterday",
+        // so SwiftUI treats it as the same view (a reorder, not a recreate).
+        let cal = Calendar.current
+        let now = Date()
+        let yesterday = cal.date(byAdding: .day, value: -1, to: cal.startOfDay(for: now))!
+        let before = ChatSidebar.sidebarEntries(for: [
+            summary("other-today.json", sortKey: now),
+            summary("moved.json", sortKey: now),
+        ])
+        let after = ChatSidebar.sidebarEntries(for: [
+            summary("other-today.json", sortKey: now),
+            summary("moved.json", sortKey: yesterday),
+        ])
+        #expect(before.map(\.id).contains("moved.json"))
+        #expect(after.map(\.id).contains("moved.json"))
+        #expect(after.map(\.id).count == Set(after.map(\.id)).count)
+    }
+
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")

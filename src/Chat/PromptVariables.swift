@@ -21,7 +21,7 @@ import Foundation
 enum PromptVariables {
 
     /// The set of variables a prompt may reference.
-    static let knownVariables: Set<String> = ["output_rendering", "user", "date"]
+    static let knownVariables: Set<String> = ["output_rendering", "user", "date", "current_directory"]
 
     // MARK: - Parsing primitives
 
@@ -171,5 +171,22 @@ enum PromptVariables {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "EEE MMM d yyyy"
         return formatter.string(from: Date())
+    }
+
+    /// The `{current_directory}` value: the chat's effective working directory
+    /// as the model should see it.
+    ///
+    /// - Empty string when the role selects no workdir-capable built-in group
+    ///   (Filesystem, Code, or Shell) — nothing consumes a directory, so the
+    ///   variable says nothing.
+    /// - `Current directory: /` when directory isolation is enabled — the
+    ///   working directory is the root of the model's world.
+    /// - `Current directory: ~` when no directory is set.
+    /// - `Current directory: /some/path` otherwise.
+    static func currentDirectory(workdirCapable: Bool, isolated: Bool, directory: String?) -> String {
+        guard workdirCapable else { return "" }
+        if isolated { return "Current directory: /" }
+        guard let directory, !directory.isEmpty else { return "Current directory: ~" }
+        return "Current directory: \(directory)"
     }
 }

@@ -118,6 +118,7 @@ Prompts support `{variable}` placeholders substituted at request time (the raw t
 - `{output_rendering}` — the chat renderer's capabilities (Markdown, code blocks, Mermaid/KaTeX depending on the user's feature toggles). Include this so the model knows what it can use.
 - `{user}` — the current system user name (the last path component of the home directory, e.g. `alice`).
 - `{date}` — the current date as `Thu Jun 16 2026`.
+- `{current_directory}` — the chat's effective working directory as `Current directory: /some/path`. Substitutes to an empty string when the role selects no workdir-capable built-in group (Filesystem, Code, or Shell); to `Current directory: /` when directory isolation is enabled; and to `Current directory: ~` when no directory is set.
 
 Only `{identifier}`-shaped references are variables — braces around non-identifier content (e.g. JSON objects like `{"a": 1}`) pass through untouched, so code blocks need no escaping. To emit a literal `{name}` that would otherwise look like a variable, escape it as `\{name}`. Unknown variables (an unescaped `{name}` that isn't one of the known ones) are a validation error: the prompt is disabled and surfaced in the configuration-errors sheet, and `write_prompt` rejects it before writing.
 
