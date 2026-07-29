@@ -130,6 +130,36 @@ body {
   background: var(--selection);
 }
 
+/* ── Scrollbars ───────────────────────────────────────────────────────
+   Styling scrollbars opts them out of the transient overlay style: they
+   become permanent, in-layout bars that reserve space inside the element
+   instead of floating over its bottom/right edge — where an overlay bar
+   on a horizontally scrollable code block visually collides with the
+   text that follows the block. The transparent border + background-clip
+   keeps them visually thin, close to the native overlay look. */
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-secondary) 40%, transparent);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-secondary) 65%, transparent);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 #app {
   height: 100vh;
   height: 100dvh;
@@ -679,8 +709,11 @@ body {
   border-radius: 4px;
 }
 
+/* The bottom margin is larger than other blocks': a horizontally scrollable
+   pre grows ~10px taller from its in-layout scrollbar, which would otherwise
+   visually eat the gap to the text that follows. */
 .markdown pre {
-  margin: 0 0 10px;
+  margin: 0 0 18px;
   background: var(--code-bg);
   border-radius: 8px;
   padding: 12px 14px;
