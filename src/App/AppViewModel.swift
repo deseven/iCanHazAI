@@ -101,6 +101,9 @@ final class AppViewModel: ObservableObject {
     /// Active dock-bounce request id (if any), cancelled when the window
     /// becomes active or all approvals are resolved.
     private var attentionRequestID: Int? = nil
+    /// Runtime-only per-chat input drafts (unsent text + pending images),
+    /// written by `ChatView` on chat switch and restored on return.
+    var inputDrafts = InputDraftStore()
     /// Observer token for `didBecomeActive` (to cancel the dock bounce).
     private var didBecomeActiveObserver: NSObjectProtocol?
 
@@ -901,6 +904,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func deleteChat(_ filename: String) {
+        inputDrafts.remove(for: filename)
         Task { await engine.deleteChat(filename: filename) }
     }
 

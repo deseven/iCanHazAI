@@ -124,13 +124,16 @@ struct ChatView: View {
             }
         }
         .onAppear {
+            restoreDraft(for: store.selectedChatID)
             isInputFocused = true
             focusToken &+= 1
         }
-        .onChange(of: store.selectedChatID) { _, _ in
-            inputText = ""
-            pendingImages = []
-            editorHeight = ChatView.lineHeight
+        .onDisappear {
+            saveDraft(for: store.selectedChatID)
+        }
+        .onChange(of: store.selectedChatID) { oldID, newID in
+            saveDraft(for: oldID)
+            restoreDraft(for: newID)
             isInputFocused = true
             focusToken &+= 1
         }
@@ -395,6 +398,25 @@ struct ChatView: View {
             }
             return "Working directory"
         }
+    }
+
+    // MARK: - Input drafts
+
+    /// Saves the current input (text + pending images) as the runtime-only
+    /// draft for the given chat, so it survives switching to another chat.
+    private func saveDraft(for chatID: String?) {
+        guard let chatID else { return }
+        store.inputDrafts.set(ChatInputDraft(text: inputText, images: pendingImages), for: chatID)
+    }
+
+    /// Restores the saved draft for the given chat, or clears the input when
+    /// no draft exists. The editor height is reset to one line; it re-grows
+    /// from the restored text via the editor's `onHeightChange` callback.
+    private func restoreDraft(for chatID: String?) {
+        let draft = chatID.flatMap { store.inputDrafts.draft(for: $0) }
+        inputText = draft?.text ?? ""
+        pendingImages = draft?.images ?? []
+        editorHeight = ChatView.lineHeight
     }
 
     /// Routes the button press to either stop (while streaming) or send.
