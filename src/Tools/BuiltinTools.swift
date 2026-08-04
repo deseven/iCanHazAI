@@ -208,11 +208,11 @@ enum BuiltinTools {
             description: "List files and directories at a path. Returns one entry per line, directories suffixed with '/'.",
             schema: #"{"type":"object","properties":{"path":{"type":"string","description":"Directory path to list. \#(Workdir.pathDescription)"},"recursive":{"type":"boolean","description":"If true, list recursively to a fixed depth of 1 (direct children plus one level into subdirectories) with a cap of 1000 entries. Default false."}},"required":["path"]}"#),
         BuiltinToolDef(name: "read_file",
-            description: "Read a file. Text files support offset/limit line ranges and are returned with line numbers. From binary files only images are supported.",
+            description: "Read a file. Text files support offset/limit line ranges and are returned with line numbers in the format 'N | content' (right-aligned line number, a pipe separator, then the raw line). The 'N | ' prefix is NOT part of the file — never include it when quoting file content, e.g. in apply_patch context lines. From binary files only images are supported.",
             schema: #"{"type":"object","properties":{"path":{"type":"string","description":"File path to read. \#(Workdir.pathDescription)"},"offset":{"type":"integer","description":"1-based starting line number for text files. Defaults to 1."},"limit":{"type":"integer","description":"Maximum number of lines to read for text files. Defaults to 2000."}},"required":["path"]}"#),
         BuiltinToolDef(name: "write_file",
-            description: "Write text content to a file (creates or overwrites). Parent directories are created as needed.",
-            schema: #"{"type":"object","properties":{"path":{"type":"string","description":"File path to write. \#(Workdir.pathDescription)"},"content":{"type":"string","description":"The text content to write."}},"required":["path","content"]}"#),
+            description: "Write text content to a file (creates or overwrites). Parent directories are created as needed. ALWAYS provide the COMPLETE intended content of the file — partial updates or placeholders like '// rest unchanged' are forbidden. Do NOT include line numbers in the content. For targeted edits to existing files, prefer apply_patch.",
+            schema: #"{"type":"object","properties":{"path":{"type":"string","description":"File path to write. \#(Workdir.pathDescription)"},"content":{"type":"string","description":"The complete text content to write, without line numbers or truncation."}},"required":["path","content"]}"#),
         BuiltinToolDef(name: "find_file",
             description: "Find files by name (glob) within a directory tree. Matches filenames against the pattern. Caps results at 200 entries.",
             schema: #"{"type":"object","properties":{"path":{"type":"string","description":"\#(Workdir.searchRootDescription)"},"pattern":{"type":"string","description":"Glob pattern for the filename, e.g. '*.swift' or 'config*'. Supports * and ? wildcards."}},"required":["pattern"]}"#),
@@ -236,9 +236,55 @@ enum BuiltinTools {
             schema: #"{"type":"object","properties":{},"required":[]}"#),
     ]
 
+    /// Full apply_patch format documentation, embedded in the tool description
+    /// so every role with the code group gets it regardless of its prompt.
+    private static let applyPatchDescription = """
+    Apply patches to files using the Codex apply_patch format — a stripped-down, file-oriented diff. One call can create, delete, and update multiple files.
+
+    Patch envelope:
+    *** Begin Patch
+    [ one or more file sections ]
+    *** End Patch
+
+    Each file section starts with one of three headers:
+    - *** Add File: <path> — create a new file. Every following line is a + line (the initial contents).
+    - *** Delete File: <path> — remove an existing file. Nothing follows.
+    - *** Update File: <path> — patch an existing file in place. May be immediately followed by *** Move to: <new path> to rename.
+
+    Update File sections contain one or more hunks, each introduced by @@ optionally followed by an anchor: a single line copied verbatim from the file (e.g. a class or function signature) that the hunk body is searched for after. The FIRST hunk of a file may omit @@; every later hunk must start with @@ (a bare @@ with nothing after it is fine). Only ONE @@ line per hunk.
+
+    CRITICAL: within a hunk, EVERY line must start with exactly one prefix character:
+    - ' ' (a single space) for context lines (unchanged) — a file line indented with 4 spaces therefore has 5 leading spaces in the patch
+    - '-' for lines to remove
+    - '+' for lines to add
+    Never paste lines copied from read_file output without adding the prefix, and never include the 'N | ' line-number prefix that read_file displays — it is not part of the file.
+
+    Context guidelines:
+    - Show 3 lines of context above and below each change.
+    - If 3 lines of context cannot uniquely identify the location, use @@ with a class/function anchor.
+    - The @@ anchor is not part of the hunk body — never repeat the anchor line as a context line.
+    - Hunks must appear in file order and must not overlap; each hunk is searched for after the previous one. Merge adjacent changes into a single hunk.
+    - To append to a file, use a hunk containing only + lines (no context, no removals) — it is inserted at end of file.
+    - Context lines must match the file exactly — read the file before patching and copy context verbatim.
+
+    Example:
+    *** Begin Patch
+    *** Add File: hello.txt
+    +Hello world
+    *** Update File: src/app.py
+    *** Move to: src/main.py
+    @@ def greet():
+     print("starting")
+    -print("Hi")
+    +print("Hello, world!")
+     print("done")
+    *** Delete File: obsolete.txt
+    *** End Patch
+    """
+
     private static let codeToolDefs: [BuiltinToolDef] = [
         BuiltinToolDef(name: "apply_patch",
-            description: "Apply a patch to one or more files using the Codex apply_patch format. Supports Add File, Delete File, and Update File operations with context-anchored matching in a single call.",
+            description: applyPatchDescription,
             schema: #"{"type":"object","properties":{"patch":{"type":"string","description":"The patch text in apply_patch format. Begins with '*** Begin Patch' and ends with '*** End Patch'."}},"required":["patch"]}"#),
         BuiltinToolDef(name: "git",
             description: "Run a git command with the provided arguments. Arguments are passed directly to git.",
@@ -682,11 +728,16 @@ enum BuiltinTools {
         let endIdx = min(startIdx + effectiveLimit, cleaned.count)
         let slice = cleaned[startIdx..<endIdx]
 
+        // 'N | content' gutter: right-aligned number + visible pipe separator.
+        // The pipe (not a tab) makes the boundary between gutter and code
+        // indentation unambiguous for models copying context into patches.
+        let gutterWidth = String(cleaned.count).count
         var out: [String] = []
         out.reserveCapacity(slice.count)
         for (i, line) in slice.enumerated() {
             let lineNo = startIdx + i + 1
-            out.append(String(format: "%6d\t%@", lineNo, line as NSString))
+            let num = String(lineNo)
+            out.append(String(repeating: " ", count: gutterWidth - num.count) + num + " | " + line)
         }
         if endIdx - startIdx == hardLimit && cleaned.count > endIdx {
             out.append("... (truncated at \(hardLimit) lines)")

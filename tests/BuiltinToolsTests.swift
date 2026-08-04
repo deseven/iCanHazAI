@@ -184,6 +184,20 @@ extension AllAppTests {
             #expect(!r.contains("d"))
         }
 
+        @Test("read_file prefixes lines with a right-aligned 'N | ' gutter")
+        func readLineNumberGutter() async throws {
+            let tmp = try TestDir()
+            let content = (1...12).map { "line\($0)" }.joined(separator: "\n") + "\n"
+            try tmp.write("nums.txt", content: content)
+            let (r, err) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": tmp.sub("nums.txt")])
+            #expect(!err)
+            // Gutter pads to the file's line-count width and uses a visible
+            // pipe separator (not a tab) so content indentation stays intact.
+            #expect(r.hasPrefix(" 1 | line1\n"), "expected padded gutter: \(r)")
+            #expect(r.contains("\n12 | line12"), "expected padded gutter: \(r)")
+            #expect(!r.contains("\t"), "gutter must not use tabs: \(r)")
+        }
+
         @Test("ls lists a directory")
         func lsLists() async throws {
             let tmp = try TestDir()
@@ -544,6 +558,24 @@ extension AllAppTests {
             #expect(text.contains("Invalid apply_patch format"), "unexpected message: \(text)")
             #expect(text.contains("Line 6"), "expected a line number: \(text)")
             #expect(text.contains("@@"), "expected a hint about the @@ marker: \(text)")
+        }
+
+        @Test("apply_patch unprefixed hunk line explains the prefix rule")
+        func patchUnprefixedLineHint() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("err2.txt")
+            try tmp.write("err2.txt", content: "a\nb\n")
+            let patch = """
+            *** Begin Patch
+            *** Update File: \(path)
+            a
+            +b2
+            *** End Patch
+            """
+            let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
+            #expect(err)
+            #expect(text.contains("leading space"), "expected the leading-space hint: \(text)")
+            #expect(text.contains("N | "), "expected the read_file prefix hint: \(text)")
         }
 
         @Test("apply_patch multi-op: update+move, add, delete in one call")

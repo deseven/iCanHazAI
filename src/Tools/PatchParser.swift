@@ -259,7 +259,7 @@ enum PatchParser {
                     if line.hasPrefix(EMPTY_CONTEXT) {
                         throw PatchParseError(message: "Unexpected stacked @@ marker: '\(line)'. Each hunk starts with a single @@ line — combine nested context into one anchor (e.g. '@@ class UserService def greet():')", lineNumber: lineNumber + 1)
                     }
-                    throw PatchParseError(message: "Unexpected line found in update hunk: '\(line)'. Every line should start with ' ' (context), '+' (added), or '-' (removed)", lineNumber: lineNumber + 1)
+                    throw PatchParseError(message: "Unexpected line found in update hunk: '\(line)'. Every line should start with ' ' (context), '+' (added), or '-' (removed) — a context line copied from the file still needs a leading space added (so 4-space-indented code gets 5 leading spaces), and the 'N | ' line-number prefix shown by read_file must be dropped", lineNumber: lineNumber + 1)
                 }
                 return (chunk, parsed + (idx - start))
             }
