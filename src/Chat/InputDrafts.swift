@@ -31,4 +31,14 @@ struct InputDraftStore {
     mutating func remove(for filename: String) {
         drafts.removeValue(forKey: filename)
     }
+
+    /// Drops drafts belonging to temporary chats that no longer exist.
+    /// Temporary chats are destroyed without a user-facing deletion step, so
+    /// their drafts would otherwise linger forever (their UUID filenames are
+    /// never reused).
+    mutating func removeStaleTemporaryDrafts(validFilenames: Set<String>) {
+        drafts = drafts.filter { key, _ in
+            !EnvironmentManager.isTemporaryChatFilename(key) || validFilenames.contains(key)
+        }
+    }
 }

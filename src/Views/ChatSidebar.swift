@@ -13,6 +13,12 @@ struct ChatSidebar: View {
     /// Filename pending a delete confirmation (drives the confirmation dialog).
     @State private var deletingFilename: String?
 
+    /// Whether the option key is currently held — swaps the new-chat button
+    /// to its "temporary chat" variant (dashed circle).
+    @State private var optionHeld = false
+    /// Local monitor tracking option-key presses for the button icon swap.
+    @State private var modifierMonitor: Any?
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -20,17 +26,35 @@ struct ChatSidebar: View {
                     .font(.headline)
                     .padding(.leading, 12)
                 Spacer()
-                Button(action: { store.createNewChat() }) {
-                    Image(systemName: "plus")
+                Button(action: {
+                    if NSEvent.modifierFlags.contains(.option) {
+                        store.createNewTemporaryChat()
+                    } else {
+                        store.createNewChat()
+                    }
+                }) {
+                    Image(systemName: optionHeld ? "plus.circle.dashed" : "plus.circle")
                         .frame(width: 24, height: 24)
                 }
                 .buttonStyle(.borderless)
                 .padding(.trailing, 4)
                 .frame(width: 44, height: 36)
                 .contentShape(Rectangle())
-                .help("New chat")
+                .help("New chat (hold ⌥ for a temporary chat)")
             }
             .frame(height: 36)
+            .onAppear {
+                modifierMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+                    optionHeld = event.modifierFlags.contains(.option)
+                    return event
+                }
+            }
+            .onDisappear {
+                if let monitor = modifierMonitor {
+                    NSEvent.removeMonitor(monitor)
+                    modifierMonitor = nil
+                }
+            }
 
             Divider()
 

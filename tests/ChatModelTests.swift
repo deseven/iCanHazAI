@@ -495,6 +495,30 @@ struct ChatModelTests {
         #expect(decoded.requiredArgs == ["path"])
     }
 
+    @Test("ToolCall defaults internalTool to false and decodes legacy JSON without it")
+    func toolCallDecodesLegacyWithoutInternalTool() throws {
+        let json = #"{"id":"call_1","name":"read_config","arguments":"{}"}"#.data(using: .utf8)!
+        let call = try JSONDecoder().decode(ToolCall.self, from: json)
+        #expect(call.internalTool == false)
+    }
+
+    @Test("ToolCall round-trips internalTool through JSON")
+    func toolCallRoundTripsInternalTool() throws {
+        let original = ToolCall(id: "call_1", name: "read_config", arguments: "{}", internalTool: true)
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(ToolCall.self, from: data)
+        #expect(decoded == original)
+        #expect(decoded.internalTool == true)
+    }
+
+    @Test("ToolCall omits internalTool from JSON when false")
+    func toolCallOmitsInternalToolWhenFalse() throws {
+        let original = ToolCall(id: "call_1", name: "calc", arguments: "{}")
+        let data = try JSONEncoder().encode(original)
+        let json = String(data: data, encoding: .utf8)!
+        #expect(!json.contains("internalTool"))
+    }
+
     @Test("ToolDefinition.requiredArgs parses the schema's required list")
     func toolDefinitionRequiredArgs() {
         let def = ToolDefinition(

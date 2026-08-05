@@ -310,6 +310,86 @@ test("apply_patch: single operation", () => {
   });
 });
 
+// ── summarizeToolResult: configurator tools ─────────────────────────────
+
+test("list_roles: counts the bullet entries", () => {
+  const s = summarizeToolResult(
+    "list_roles",
+    { content: "- Assistant\n- Developer", isError: false },
+    false,
+    false,
+  );
+  assert.deepEqual(s, { kind: "done", label: "done", description: "Listed 2 items." });
+});
+
+test("list_connections: empty listing", () => {
+  const s = summarizeToolResult(
+    "list_connections",
+    { content: "(none)", isError: false },
+    false,
+    false,
+  );
+  assert.deepEqual(s, { kind: "done", label: "done", description: "Listed 0 items." });
+});
+
+test("check_mcp_stdio: counts the discovered tools", () => {
+  const s = summarizeToolResult(
+    "check_mcp_stdio",
+    { content: "- search — web search\n- fetch", isError: false },
+    false,
+    false,
+  );
+  assert.deepEqual(s, { kind: "done", label: "done", description: "Found 2 tools." });
+});
+
+test("check_mcp_http: server reported no tools", () => {
+  const s = summarizeToolResult(
+    "check_mcp_http",
+    { content: "(no tools reported)", isError: false },
+    false,
+    false,
+  );
+  assert.deepEqual(s, { kind: "done", label: "done", description: "Found 0 tools." });
+});
+
+test("read_role: counts content lines, ignoring a trailing newline", () => {
+  const s = summarizeToolResult(
+    "read_role",
+    { content: "[role]\nname = \"Dev\"\n", isError: false },
+    false,
+    false,
+  );
+  assert.deepEqual(s, { kind: "done", label: "done", description: "Read 2 lines." });
+});
+
+test("read_log: empty-log notice is shown verbatim", () => {
+  const s = summarizeToolResult(
+    "read_log",
+    { content: "(application log is empty)", isError: false },
+    false,
+    false,
+  );
+  assert.deepEqual(s, {
+    kind: "done",
+    label: "done",
+    description: "(application log is empty)",
+  });
+});
+
+test("write_role: confirmation sentence via the default first line", () => {
+  const s = summarizeToolResult(
+    "write_role",
+    { content: "Role \"Dev\" saved. It will be applied automatically in a second.", isError: false },
+    false,
+    false,
+  );
+  assert.deepEqual(s, {
+    kind: "done",
+    label: "done",
+    description: "Role \"Dev\" saved. It will be applied automatically in a second.",
+  });
+});
+
 test("denied with a reason strips the boilerplate prefix", () => {
   const s = summarizeToolResult(
     "some_tool",

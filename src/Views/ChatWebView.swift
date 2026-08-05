@@ -1079,14 +1079,19 @@ struct ChatMessageData: Codable, Equatable {
         /// order the collapsed header's argument summary (required first) for
         /// tools it has no built-in knowledge of.
         let requiredArgs: [String]?
+        /// True for in-process internal (Configurator) tools. Guards the
+        /// renderer's per-tool syntax-highlighting hints against same-named
+        /// external MCP tools.
+        let internalTool: Bool
 
-        init(id: String, name: String, arguments: String, pendingApproval: Bool = false, diff: String? = nil, requiredArgs: [String]? = nil) {
+        init(id: String, name: String, arguments: String, pendingApproval: Bool = false, diff: String? = nil, requiredArgs: [String]? = nil, internalTool: Bool = false) {
             self.id = id
             self.name = name
             self.arguments = arguments
             self.pendingApproval = pendingApproval
             self.diff = diff
             self.requiredArgs = requiredArgs
+            self.internalTool = internalTool
         }
     }
 
@@ -1127,7 +1132,7 @@ extension ChatMessage {
             )
         }
         let toolCalls = toolCalls?.map {
-            ChatMessageData.ToolCallData(id: $0.id, name: $0.name, arguments: $0.arguments, pendingApproval: $0.pendingApproval, diff: $0.diff, requiredArgs: $0.requiredArgs)
+            ChatMessageData.ToolCallData(id: $0.id, name: $0.name, arguments: $0.arguments, pendingApproval: $0.pendingApproval, diff: $0.diff, requiredArgs: $0.requiredArgs, internalTool: $0.internalTool)
         }
         let toolResults = toolResults?.map {
             ChatMessageData.ToolResultData(callID: $0.callID, content: $0.content, isError: $0.isError, isStreaming: $0.isStreaming, isDenied: $0.isDenied, isCancelled: $0.isCancelled)

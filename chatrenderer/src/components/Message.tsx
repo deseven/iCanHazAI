@@ -17,6 +17,7 @@ import { sendToHost } from "../bridge";
 import { debugLog } from "../debug";
 import { parseToolArgs, isEmptyArgs } from "../toolArgs";
 import type { ToolArgEntry } from "../toolArgs";
+import { toolArgLang, toolResultLang } from "../toolHighlight";
 import { summarizeToolCall, summarizeToolResult } from "../toolSummary";
 import { Copy, SquarePen, Trash2, Brain, User, Bot, Settings, AlertTriangle, RotateCcw, ChevronRight, ChevronDown, Wrench, Terminal } from "lucide-preact";
 import type { ToolCallData, ToolResultData } from "../types";
@@ -68,18 +69,42 @@ function AvatarIcon({ role }: { role: string }) {
   }
 }
 
-/** Render parsed tool-call arguments as a human-readable key/value list. */
-function ToolArgEntries({ entries }: { entries: ToolArgEntry[] }) {
+/** Render parsed tool-call arguments as a human-readable key/value list.
+ *  When `tool` is given, values whose (tool, key) pair has a language hint in
+ *  toolHighlight (e.g. TOML for the Configurator's write_config `content`)
+ *  are syntax-highlighted instead of shown as plain text. */
+function ToolArgEntries({ entries, tool }: { entries: ToolArgEntry[]; tool?: string }) {
+  const highlighted = useMemo(() => {
+    if (!tool) return null;
+    const map = new Map<string, string>();
+    for (const e of entries) {
+      const lang = toolArgLang(tool, e.key);
+      if (!lang) continue;
+      const html = highlightCode(e.value, lang);
+      if (html !== null) map.set(e.key, html);
+    }
+    return map;
+  }, [entries, tool]);
   return (
     <dl class="tool-args">
-      {entries.map((e) => (
-        <div class="tool-arg" key={e.key}>
-          <dt class="tool-arg-key">{e.key}</dt>
-          <dd class={`tool-arg-value${e.multiline ? " tool-arg-value-multiline" : ""}`}>
-            {e.value}
-          </dd>
-        </div>
-      ))}
+      {entries.map((e) => {
+        const html = highlighted?.get(e.key);
+        return (
+          <div class="tool-arg" key={e.key}>
+            <dt class="tool-arg-key">{e.key}</dt>
+            {html !== undefined ? (
+              <dd
+                class={`hljs tool-arg-value${e.multiline ? " tool-arg-value-multiline" : ""}`}
+                dangerouslySetInnerHTML={{ __html: html }}
+              />
+            ) : (
+              <dd class={`tool-arg-value${e.multiline ? " tool-arg-value-multiline" : ""}`}>
+                {e.value}
+              </dd>
+            )}
+          </div>
+        );
+      })}
     </dl>
   );
 }
@@ -87,23 +112,38 @@ function ToolArgEntries({ entries }: { entries: ToolArgEntry[] }) {
 /** Render tool-call arguments as a human-readable key/value list.
  *  Falls back to a plain <pre> with the raw string when the arguments aren't
  *  a valid JSON object (e.g. malformed JSON, a JSON array, or a scalar). */
-function ToolArgsView({ args }: { args: string }) {
+function ToolArgsView({ args, tool }: { args: string; tool?: string }) {
   const entries = useMemo(() => parseToolArgs(args), [args]);
   if (entries === null) {
     return <pre class="tool-call-args">{args}</pre>;
   }
-  return <ToolArgEntries entries={entries} />;
+  return <ToolArgEntries entries={entries} tool={tool} />;
 }
 
-/** Render a tool result's content. A result that is a JSON object gets the
- *  same key/value treatment as call arguments; anything else stays a raw
- *  <pre>. The leading-"{" precondition avoids running JSON.parse over
- *  plainly-textual output. */
-function ToolResultContent({ content }: { content: string }) {
+/** Render a tool result's content. When `lang` is set (a toolHighlight hint
+ *  for this tool's result, e.g. JSONC for read_connection) the whole content
+ *  is syntax-highlighted as one block. Otherwise a result that is a JSON
+ *  object gets the same key/value treatment as call arguments; anything else
+ *  stays a raw <pre>. The leading-"{" precondition avoids running JSON.parse
+ *  over plainly-textual output. */
+function ToolResultContent({ content, lang }: { content: string; lang?: string | null }) {
+  const highlighted = useMemo(
+    () => (lang ? highlightCode(content, lang) : null),
+    [content, lang],
+  );
   const entries = useMemo(() => {
+    if (lang) return null;
     if (!content.trimStart().startsWith("{")) return null;
     return parseToolArgs(content);
-  }, [content]);
+  }, [content, lang]);
+  if (highlighted !== null) {
+    return (
+      <pre
+        class="hljs tool-call-args"
+        dangerouslySetInnerHTML={{ __html: highlighted }}
+      />
+    );
+  }
   if (entries === null) {
     return <pre class="tool-call-args">{content}</pre>;
   }
@@ -319,12 +359,24 @@ function ToolBlock({
   );
   const status = summarizeToolResult(call.name, result, running, pending);
 
+  // Per-tool syntax-highlighting hints (toolHighlight.ts) apply only to
+  // host-stamped internal tools, so an external MCP tool that happens to
+  // share a bare name (e.g. "read_config") doesn't get false highlighting.
+  const toolName = shortToolName(call.name);
+  const highlightTool = call.internalTool === true ? toolName : undefined;
+  // Error/denied/cancelled results are plain messages, never tool output —
+  // leave them unhighlighted.
+  const resultLang =
+    highlightTool && result && !result.isError && !result.isDenied && !result.isCancelled
+      ? toolResultLang(highlightTool)
+      : null;
+
   return (
     <div class={`tool-block${pending ? " tool-block-pending" : ""}`} ref={blockRef}>
       <button class="tool-toggle" ref={toggleRef} onClick={() => setOpen((v) => !v)}>
         <span class="tool-line">
           <Wrench size={14} class="tool-icon" />
-          <span class="tool-name">{shortToolName(call.name)}</span>
+          <span class="tool-name">{toolName}</span>
           {open
             ? // Expanded: the arguments and result are visible below, so the
               // header carries just the name and the status badge.
@@ -377,7 +429,7 @@ function ToolBlock({
           ) : !isEmptyArgs(call.arguments) ? (
             <div class="tool-call">
               <div class="tool-call-label">Arguments</div>
-              <ToolArgsView args={call.arguments} />
+              <ToolArgsView args={call.arguments} tool={highlightTool} />
             </div>
           ) : null}
           {result && (
@@ -385,7 +437,7 @@ function ToolBlock({
               <div class="tool-call-label">
                 {result.isStreaming ? "Result (streaming…)" : "Result"}
               </div>
-              <ToolResultContent content={result.content} />
+              <ToolResultContent content={result.content} lang={resultLang} />
             </div>
           )}
           {pending && (

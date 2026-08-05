@@ -298,6 +298,10 @@ struct iCanHazAIApp: App {
                     AppViewModel.shared?.createNewChat()
                 }
                 .keyboardShortcut("t", modifiers: .command)
+                Button("New Temporary Chat…") {
+                    AppViewModel.shared?.createNewTemporaryChat()
+                }
+                .keyboardShortcut("t", modifiers: [.option, .command])
             }
         }
     }

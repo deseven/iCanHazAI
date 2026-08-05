@@ -17,6 +17,9 @@ final class AppViewModel: ObservableObject {
     enum RolePickerMode: Equatable {
         /// Creating a brand-new chat: picking a role creates the chat.
         case newChat
+        /// Creating a temporary chat: never saved to disk, never listed, and
+        /// destroyed as soon as another chat is selected or created.
+        case newTemporaryChat
         /// Assigning a role to an existing chat whose role is missing. Carries
         /// the filename of the chat to update.
         case assignToExisting(filename: String)
@@ -343,10 +346,14 @@ final class AppViewModel: ObservableObject {
             chatItems = records
             // Archived chats are hidden from the sidebar list but kept in
             // `chatItems` so they remain selectable (e.g. via deep links) and
-            // their in-memory state is preserved.
+            // their in-memory state is preserved. Temporary chats are hidden
+            // too — they're destroyed the moment another chat is selected.
             chatSummaries = records
-                .filter { !$0.isArchived }
+                .filter { !$0.isArchived && !$0.isTemporary }
                 .map(ChatSummary.init)
+            // Drafts of destroyed temporary chats are dead weight (their
+            // filenames are never reused) — drop them.
+            inputDrafts.removeStaleTemporaryDrafts(validFilenames: Set(records.map(\.id)))
             // During startup, report the chat-cache sync (total vs already
             // cached vs re-decoded) to the loader's chats row.
             if LoaderController.shared.mode == .startup,
@@ -372,7 +379,7 @@ final class AppViewModel: ObservableObject {
                 // `selectedFilename` stays in sync with `selectedChatID` —
                 // otherwise the engine can't tell this chat is being viewed
                 // and would release it.
-                selectedChatID = records.first(where: { !$0.isArchived })?.id
+                selectedChatID = records.first(where: { !$0.isArchived && !$0.isTemporary })?.id
                 if let first = selectedChatID {
                     Task {
                         await engine.selectChat(filename: first)
@@ -781,6 +788,28 @@ final class AppViewModel: ObservableObject {
         Task { await engine.deleteMessage(filename: filename, messageID: messageID) }
     }
 
+    /// Begins creating a temporary chat by presenting the role picker
+    /// ("New Temporary Chat"). The chat is created once the user picks a role.
+    /// A temporary chat is never saved to disk, never listed in the sidebar,
+    /// and is destroyed irreversibly when another chat is selected or created.
+    func createNewTemporaryChat() {
+        if let current = selectedChatID {
+            previousChatID = current
+        }
+        if roles.isEmpty {
+            // No roles available — create a temporary chat with no role.
+            Task {
+                let filename = await engine.createNewChat(role: "", temporary: true)
+                selectedChatID = filename
+                await engine.selectChat(filename: filename)
+                await engine.markViewed(filename: filename)
+            }
+            return
+        }
+        rolePickerMode = .newTemporaryChat
+        showRolePicker = true
+    }
+
     /// Begins creating a new chat by presenting the role picker. The actual
     /// chat is created once the user picks a role.
     func createNewChat() {
@@ -818,6 +847,21 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    /// Creates a temporary chat with the chosen role (called from the role
+    /// picker in "New Temporary Chat" mode). Same flow as `createNewChat(role:)`
+    /// but the chat is never persisted and is destroyed on deselection.
+    func createNewTemporaryChat(role roleName: String) {
+        showRolePicker = false
+        let needsWorkdir = roleNeedsWorkdirPick(roleName)
+        Task {
+            let filename = await engine.createNewChat(role: roleName, temporary: true)
+            selectedChatID = filename
+            await engine.selectChat(filename: filename)
+            await engine.markViewed(filename: filename)
+            if needsWorkdir { showWorkdirPicker = true }
+        }
+    }
+
     /// True when a role requires the user to pick a working directory: it has a
     /// workdir-capable bundled MCP, allows overrides, and doesn't pre-set a
     /// directory. Used to auto-present the workdir picker after a role is picked.
@@ -844,6 +888,8 @@ final class AppViewModel: ObservableObject {
             // `createNewChat(role:)` auto-presents the workdir picker when the
             // role requires a user-picked directory.
             createNewChat(role: roleName)
+        case .newTemporaryChat:
+            createNewTemporaryChat(role: roleName)
         case .assignToExisting(let filename):
             // A role was assigned — clear any dismissal record so a future
             // role deletion re-prompts the picker.
@@ -866,7 +912,7 @@ final class AppViewModel: ObservableObject {
         switch rolePickerMode {
         case .assignToExisting(let filename):
             dismissedRoleAssignmentFor.insert(filename)
-        case .newChat:
+        case .newChat, .newTemporaryChat:
             break
         }
         showRolePicker = false

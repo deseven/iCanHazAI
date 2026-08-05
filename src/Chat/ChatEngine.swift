@@ -155,6 +155,9 @@ actor ChatEngine {
         await ConfigManager.shared.load()
         debugLog("Engine", "start — ensuring directories and wiring MCP handlers")
         env.ensureDirectories()
+        // Leftover attachments of temporary chats from a previous run — those
+        // chats are gone for good, so wipe their image storage.
+        env.deleteAllTemporaryImages()
         // Seed bundled default prompts/roles into the user directory (copies
         // only missing files, so user edits are preserved). Done before the
         // FSEvents watcher starts so the copies don't trigger reload bursts.
@@ -1106,10 +1109,17 @@ actor ChatEngine {
     /// user sends the first message. Any other empty chats (no messages) are
     /// pruned first. The connection is seeded from the role (or the app's
     /// default connection when the role has none).
+    ///
+    /// When `temporary` is true, the chat is NEVER persisted: it gets a
+    /// UUID-based `temp-` filename, stays in memory only, is hidden from the
+    /// sidebar, and is destroyed irreversibly as soon as another chat is
+    /// selected or created. Any existing temporary chat is destroyed first —
+    /// at most one temporary chat can exist at a time.
     @discardableResult
-    func createNewChat(role roleName: String) async -> String {
+    func createNewChat(role roleName: String, temporary: Bool = false) async -> String {
         pruneEmptyChats(except: nil)
-        let filename = store.newChatFilename()
+        destroyAllTemporaryChats()
+        let filename = temporary ? env.newTemporaryChatFilename() : store.newChatFilename()
         var chat = Chat()
         chat.role = roleName
 
@@ -1136,11 +1146,33 @@ actor ChatEngine {
         if let roleMCPs = role?.config.mcps, !roleMCPs.isEmpty {
             chat.mcps = roleMCPs.map(\.mcp)
         }
-        // In-memory only — no disk write until the first message is sent.
-        let record = ChatRecord(filename: filename, chat: chat)
+        // In-memory only — no disk write until the first message is sent
+        // (and never at all for temporary chats).
+        let record = ChatRecord(filename: filename, chat: chat, isTemporary: temporary)
         records.insert(record, at: 0)
         emit(.chatsChanged(records))
         return filename
+    }
+
+    /// Irreversibly destroys a temporary chat: cancels any in-flight stream,
+    /// deletes its temporary image folder, and removes the record. No chat
+    /// file cleanup is needed — temporary chats never touch the chats dir.
+    private func destroyTemporaryChat(filename: String) {
+        guard records.first(where: { $0.filename == filename })?.isTemporary == true else { return }
+        streamTasks[filename]?.cancel()
+        streamTasks[filename] = nil
+        env.deleteAllImages(for: filename)
+        records.removeAll(where: { $0.filename == filename })
+        if selectedFilename == filename { selectedFilename = nil }
+        debugLog("Engine", "destroyed temporary chat \(filename)")
+    }
+
+    /// Destroys every temporary chat in memory (at most one can exist by
+    /// construction, but this doesn't rely on that invariant).
+    private func destroyAllTemporaryChats() {
+        for record in records where record.isTemporary {
+            destroyTemporaryChat(filename: record.filename)
+        }
     }
 
     /// Deletes a chat file and removes it from memory, including its image
@@ -1218,11 +1250,18 @@ actor ChatEngine {
         selectedFilename = filename
         pruneEmptyChats(except: filename)
         await ensureChatLoaded(filename: filename)
-        // The chat the user just switched away from is no longer open. If it
-        // isn't doing agentic work, drop its in-memory content now rather than
-        // waiting for a sweep. A still-streaming chat is kept.
         if let previous, previous != filename {
-            releaseChat(filename: previous)
+            if records.first(where: { $0.filename == previous })?.isTemporary == true {
+                // Switching away from a temporary chat destroys it
+                // irreversibly — even mid-stream.
+                destroyTemporaryChat(filename: previous)
+            } else {
+                // The chat the user just switched away from is no longer open.
+                // If it isn't doing agentic work, drop its in-memory content
+                // now rather than waiting for a sweep. A still-streaming chat
+                // is kept.
+                releaseChat(filename: previous)
+            }
         }
         emit(.chatsChanged(records))
     }
@@ -1238,8 +1277,11 @@ actor ChatEngine {
     /// The chat's stored MCP selection is sanitized on load: entries whose
     /// server config no longer exists are silently dropped (and the cleaned
     /// chat is persisted when something was dropped).
+    /// Temporary chats are always kept loaded (they can't be reloaded from
+    /// disk), so this is a no-op for them.
     func ensureChatLoaded(filename: String) async {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        guard !records[idx].isTemporary else { return }
         guard records[idx].chat == nil else { return }
         records[idx].chat = store.loadChat(filename: filename)
         if var chat = records[idx].chat, sanitizeMCPSelection(&chat) {
@@ -1265,7 +1307,14 @@ actor ChatEngine {
     /// (without clobbering streaming/unread flags). Marks a per-path self-write
     /// suppression so the resulting FSEvents don't trigger a redundant reload.
     /// Also updates the cached metadata from the store.
+    /// Temporary chats are never persisted — only the in-memory record
+    /// is updated.
     private func saveChat(_ chat: Chat, filename: String) {
+        if let idx = records.firstIndex(where: { $0.filename == filename }),
+           records[idx].isTemporary {
+            records[idx].chat = chat
+            return
+        }
         markSelfWrite(path: env.chatsURL.appendingPathComponent(filename).path)
         store.saveChat(chat, filename: filename)
         if let idx = records.firstIndex(where: { $0.filename == filename }) {
@@ -1303,6 +1352,9 @@ actor ChatEngine {
     func releaseChat(filename: String) -> Bool {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return false }
         guard records[idx].chat != nil else { return false }
+        // Temporary chats exist only in memory — unloading their content
+        // would lose them entirely. They're destroyed whole instead.
+        if records[idx].isTemporary { return false }
         if filename == selectedFilename { return false }
         if records[idx].isStreaming { return false }
         records[idx].chat = nil
@@ -1653,10 +1705,16 @@ actor ChatEngine {
                 // service returned them only in the final result. Each call is
                 // stamped with its schema's required argument names so the
                 // renderer can order the collapsed header's argument summary
-                // (required first) for tools it has no built-in knowledge of.
+                // (required first) for tools it has no built-in knowledge of,
+                // and with an `internalTool` flag for the in-process
+                // Configurator tools so the renderer's per-tool display hints
+                // (syntax highlighting) can't misfire on a same-named
+                // external MCP tool.
                 let stampedCalls = result.toolCalls.map { call -> ToolCall in
                     var stamped = call
-                    stamped.requiredArgs = toolDefs.first(where: { $0.namespacedName == call.name })?.requiredArgs
+                    let def = toolDefs.first(where: { $0.namespacedName == call.name })
+                    stamped.requiredArgs = def?.requiredArgs
+                    stamped.internalTool = def?.serverName == ConfiguratorTools.serverName
                     return stamped
                 }
                 applyToolCalls(stampedCalls, filename: filename)
@@ -2227,13 +2285,16 @@ actor ChatEngine {
             streamTasks[filename] = nil
             return
         }
-        // Persist the final accumulated state to disk via the store.
+        // Persist the final accumulated state to disk via the store
+        // (temporary chats are never persisted).
         guard let finalChat = records[idx].chat else {
             streamTasks[filename] = nil
             return
         }
-        markSelfWrite(path: env.chatsURL.appendingPathComponent(filename).path)
-        store.saveChat(finalChat, filename: filename)
+        if !records[idx].isTemporary {
+            markSelfWrite(path: env.chatsURL.appendingPathComponent(filename).path)
+            store.saveChat(finalChat, filename: filename)
+        }
         if let info = store.getEntry(filename: filename) {
             records[idx].cachedName = info.name
             records[idx].cachedRole = info.role

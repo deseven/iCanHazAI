@@ -30,6 +30,10 @@ export interface ToolCallData {
    *  (required first) for tools the renderer has no built-in knowledge of.
    *  Absent for calls from before this field existed. */
   requiredArgs?: string[] | null;
+  /** True for in-process internal (Configurator) tools, stamped by the host.
+   *  Guards the per-tool syntax-highlighting hints in toolHighlight.ts so
+   *  they can't misfire on an external MCP tool with the same bare name. */
+  internalTool?: boolean;
 }
 
 /** The result of executing a tool call. */

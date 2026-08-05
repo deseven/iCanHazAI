@@ -161,18 +161,26 @@ struct ToolCall: Codable, Identifiable, Equatable, Sendable {
     /// has no built-in knowledge of. Nil for calls from before this field
     /// existed and while the call is still streaming.
     var requiredArgs: [String]?
+    /// True when the call targets an in-process internal tool (the bundled
+    /// Configurator's toolset), stamped by the engine when the call is
+    /// finalized. Display-only: the renderer uses it as a guard so its
+    /// per-tool syntax-highlighting hints can't misfire on an external MCP
+    /// tool that happens to share a name. Decoded defensively (defaults to
+    /// false) for old chat files.
+    var internalTool: Bool = false
 
     enum CodingKeys: String, CodingKey {
-        case id, name, arguments, pendingApproval, diff, requiredArgs
+        case id, name, arguments, pendingApproval, diff, requiredArgs, internalTool
     }
 
-    init(id: String, name: String, arguments: String, pendingApproval: Bool = false, diff: String? = nil, requiredArgs: [String]? = nil) {
+    init(id: String, name: String, arguments: String, pendingApproval: Bool = false, diff: String? = nil, requiredArgs: [String]? = nil, internalTool: Bool = false) {
         self.id = id
         self.name = name
         self.arguments = arguments
         self.pendingApproval = pendingApproval
         self.diff = diff
         self.requiredArgs = requiredArgs
+        self.internalTool = internalTool
     }
 
     init(from decoder: Decoder) throws {
@@ -183,6 +191,7 @@ struct ToolCall: Codable, Identifiable, Equatable, Sendable {
         pendingApproval = try c.decodeIfPresent(Bool.self, forKey: .pendingApproval) ?? false
         diff = try c.decodeIfPresent(String.self, forKey: .diff)
         requiredArgs = try c.decodeIfPresent([String].self, forKey: .requiredArgs)
+        internalTool = try c.decodeIfPresent(Bool.self, forKey: .internalTool) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -193,6 +202,8 @@ struct ToolCall: Codable, Identifiable, Equatable, Sendable {
         try c.encode(pendingApproval, forKey: .pendingApproval)
         try c.encodeIfPresent(diff, forKey: .diff)
         try c.encodeIfPresent(requiredArgs, forKey: .requiredArgs)
+        // Only persisted when true so regular chat files stay unchanged.
+        if internalTool { try c.encode(internalTool, forKey: .internalTool) }
     }
 }
 

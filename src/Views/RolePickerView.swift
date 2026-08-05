@@ -37,6 +37,7 @@ struct RolePickerView: View {
     private var headerTitle: String {
         switch mode {
         case .newChat: return "New Chat"
+        case .newTemporaryChat: return "New Temporary Chat"
         case .assignToExisting: return "This chat is missing a role"
         }
     }
@@ -45,6 +46,8 @@ struct RolePickerView: View {
         switch mode {
         case .assignToExisting:
             return "Pick a role to make this chat functional. You can't send messages until a role is assigned."
+        case .newTemporaryChat:
+            return "This chat is never saved and is destroyed when you switch away from it."
         case .newChat:
             return nil
         }

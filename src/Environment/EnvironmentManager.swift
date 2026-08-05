@@ -152,11 +152,38 @@ final class EnvironmentManager: @unchecked Sendable {
 
     // MARK: - Chat images
 
+    /// Filename prefix marking a chat as temporary. Temporary chats live only
+    /// in memory (never written to the chats directory), and their images are
+    /// kept under the system temp directory instead of the chats directory.
+    nonisolated static let temporaryChatPrefix = "temp-"
+
+    /// Whether the given chat filename belongs to a temporary chat.
+    nonisolated static func isTemporaryChatFilename(_ filename: String) -> Bool {
+        filename.hasPrefix(temporaryChatPrefix)
+    }
+
+    /// Generates a filename for a temporary chat. UUID-based, so uniqueness
+    /// doesn't depend on wall-clock seconds (unlike `newChatFilename`).
+    /// The file is never actually created — the name is just an identifier.
+    func newTemporaryChatFilename() -> String {
+        "\(Self.temporaryChatPrefix)\(UUID().uuidString).json"
+    }
+
+    /// Root directory for temporary-chat images, under the system temp dir.
+    /// Wiped on every app start (temporary chats don't survive a restart) and
+    /// per chat when the temporary chat is destroyed.
+    private var temporaryImagesRoot: URL {
+        URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("iCanHazAI", isDirectory: true)
+    }
+
     /// Returns the directory holding image files for the given chat filename.
-    /// The directory is created on demand.
+    /// Temporary chats are routed to the system temp directory so no
+    /// attachments ever touch the chats folder. Created on demand.
     func imagesDirectory(for chatFilename: String) -> URL {
         let name = (chatFilename as NSString).deletingPathExtension
-        let dir = chatsURL.appendingPathComponent(name, isDirectory: true)
+        let base = Self.isTemporaryChatFilename(chatFilename) ? temporaryImagesRoot : chatsURL
+        let dir = base.appendingPathComponent(name, isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
@@ -183,11 +210,19 @@ final class EnvironmentManager: @unchecked Sendable {
         try? FileManager.default.removeItem(at: url)
     }
 
-    /// Deletes the entire image folder for a chat (used when a chat is deleted).
+    /// Deletes the entire image folder for a chat (used when a chat is deleted
+    /// or a temporary chat is destroyed).
     func deleteAllImages(for chatFilename: String) {
         let name = (chatFilename as NSString).deletingPathExtension
-        let dir = chatsURL.appendingPathComponent(name, isDirectory: true)
+        let base = Self.isTemporaryChatFilename(chatFilename) ? temporaryImagesRoot : chatsURL
+        let dir = base.appendingPathComponent(name, isDirectory: true)
         try? FileManager.default.removeItem(at: dir)
+    }
+
+    /// Wipes the whole temporary-chat image root. Called once at engine start,
+    /// since temporary chats (and their attachments) never survive a restart.
+    func deleteAllTemporaryImages() {
+        try? FileManager.default.removeItem(at: temporaryImagesRoot)
     }
 
     // MARK: - Chats

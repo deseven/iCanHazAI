@@ -299,6 +299,22 @@ function countResultLines(text: string): number {
   return n;
 }
 
+/** Count of "- " markdown bullet lines (configurator list/check output). */
+function countBulletLines(text: string): number {
+  let n = 0;
+  for (const line of text.split("\n")) {
+    if (line.trimStart().startsWith("- ")) n++;
+  }
+  return n;
+}
+
+/** Line count of a plain-text document; a single trailing newline is ignored. */
+function countTextLines(text: string): number {
+  const lines = text.split("\n");
+  if (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+  return lines.length;
+}
+
 /** One-line description of a successful result, specialized for internal
  *  tools whose output is a structured list we can count or a log whose tail
  *  (the exit-code line) is the informative part. Falls back to the first
@@ -342,6 +358,32 @@ function doneDescription(name: string, content: string): string {
     case "shell":
       // Output ends with the "[exit code: N]" line — that's the useful part.
       return lastLine(content);
+    // Configurator: bullet lists ("- name" per entry, or "(none)").
+    case "list_connections":
+    case "list_mcps":
+    case "list_roles":
+    case "list_prompts": {
+      const n = countBulletLines(content);
+      return `Listed ${n} ${n === 1 ? "item" : "items"}.`;
+    }
+    case "check_mcp_stdio":
+    case "check_mcp_http": {
+      const n = countBulletLines(content);
+      return `Found ${n} ${n === 1 ? "tool" : "tools"}.`;
+    }
+    // Configurator: raw file/log contents.
+    case "read_connection":
+    case "read_mcp":
+    case "read_role":
+    case "read_prompt":
+    case "read_config":
+    case "read_log": {
+      // Parenthesized notices ("(none)", "(application log is empty)") are
+      // already a good one-liner.
+      if (content.trimStart().startsWith("(")) return firstLine(content);
+      const n = countTextLines(content);
+      return `Read ${n} ${n === 1 ? "line" : "lines"}.`;
+    }
     default:
       return firstLine(content);
   }

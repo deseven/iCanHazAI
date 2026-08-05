@@ -22,6 +22,7 @@ import csharp from "highlight.js/lib/languages/csharp";
 import css from "highlight.js/lib/languages/css";
 import diff from "highlight.js/lib/languages/diff";
 import go from "highlight.js/lib/languages/go";
+import ini from "highlight.js/lib/languages/ini";
 import xml from "highlight.js/lib/languages/xml";
 import java from "highlight.js/lib/languages/java";
 import javascript from "highlight.js/lib/languages/javascript";
@@ -59,6 +60,8 @@ const languages: Array<[string, (hljs: any) => any]> = [
   ["patch", diff],
   ["go", go],
   ["golang", go],
+  ["ini", ini],
+  ["toml", ini],
   ["html", xml],
   ["xml", xml],
   ["svg", xml],

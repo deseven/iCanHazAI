@@ -303,8 +303,12 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     /// sort key when the chat is unloaded, so the sidebar order reflects
     /// real chat activity rather than file-touch events.
     var cachedLastActivity: Date
+    /// Whether this is a temporary chat: it exists only in memory (never
+    /// persisted to disk, never listed in the sidebar) and is destroyed
+    /// irreversibly as soon as another chat is selected or created.
+    var isTemporary: Bool
 
-    init(filename: String, chat: Chat? = nil, cachedName: String? = nil, cachedRole: String? = nil, cachedModificationTime: Date = Date(), cachedArchive: Bool = false, cachedLastActivity: Date = .distantPast, isStreaming: Bool = false, hasUnreadActivity: Bool = false, lastError: String? = nil, createdAt: Date = Date()) {
+    init(filename: String, chat: Chat? = nil, cachedName: String? = nil, cachedRole: String? = nil, cachedModificationTime: Date = Date(), cachedArchive: Bool = false, cachedLastActivity: Date = .distantPast, isStreaming: Bool = false, hasUnreadActivity: Bool = false, lastError: String? = nil, createdAt: Date = Date(), isTemporary: Bool = false) {
         self.filename = filename
         self.chat = chat
         self.cachedName = cachedName
@@ -316,6 +320,7 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
         self.hasUnreadActivity = hasUnreadActivity
         self.lastError = lastError
         self.createdAt = createdAt
+        self.isTemporary = isTemporary
     }
 
     /// The role name to display for this chat: the live chat's role when
@@ -357,6 +362,7 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     /// Display title derived from the loaded chat's title / first user
     /// message, or from the cached name when the chat is unloaded.
     var displayTitle: String {
+        let emptyTitle = isTemporary ? "Temporary chat" : "New chat"
         if let chat = chat {
             if let title = chat.title, !title.isEmpty {
                 return title
@@ -364,12 +370,12 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
             if let firstUser = chat.messages.first(where: { $0.role == .user }) {
                 return String(firstUser.content.prefix(40))
             }
-            return "New chat"
+            return emptyTitle
         }
         if let name = cachedName, !name.isEmpty {
             return name
         }
-        return "New chat"
+        return emptyTitle
     }
 }
 
@@ -396,6 +402,8 @@ struct ChatSummary: Identifiable, Equatable, Sendable {
     let sortKey: Date
     /// Whether this chat is archived (hidden from the chat list).
     let isArchived: Bool
+    /// Whether this is a temporary chat (never listed in the sidebar).
+    let isTemporary: Bool
 
     init(record: ChatRecord) {
         self.filename = record.filename
@@ -406,6 +414,7 @@ struct ChatSummary: Identifiable, Equatable, Sendable {
         self.lastError = record.lastError
         self.sortKey = record.sortKey
         self.isArchived = record.isArchived
+        self.isTemporary = record.isTemporary
     }
 }
 
