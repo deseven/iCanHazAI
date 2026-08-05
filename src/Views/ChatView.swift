@@ -16,6 +16,12 @@ struct ChatView: View {
     /// Monotonic counter bumped to force `updateNSView` to re-run and re-claim
     /// focus, even when `isInputFocused` is already `true` (e.g. switching chats).
     @State private var focusToken: Int = 0
+    /// Whether the Option key is currently held. Tracked via a local
+    /// `flagsChanged` monitor so the stop button can swap its icon to the
+    /// "stop after streaming" variant while streaming.
+    @State private var optionHeld: Bool = false
+    /// Local event monitor token for Option-key tracking.
+    @State private var flagsMonitor: Any? = nil
 
     /// Height of a single text line (font + insets). Computed from the actual
     /// font metrics so it exactly matches the text view's natural one-line
@@ -88,19 +94,32 @@ struct ChatView: View {
                 }
                 .padding(.vertical, 6)
 
-                Button(action: handleSendOrStop) {
-                    Image(systemName: store.isStreaming ? "stop.circle.fill" : "arrow.up.circle.fill")
-                        .font(.system(size: 22))
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(sendDisabled ? Color.secondary : Color.accentColor)
+                // While a "stop after streaming" request is pending the button
+                // becomes a spinner: the current iteration is finishing on its
+                // own, so there's nothing to press. A hard stop is still
+                // available via Edit → Stop Streaming.
+                if store.stopAfterIterationPending {
+                    ProgressView()
+                        .controlSize(.small)
                         .frame(width: 30, height: ChatView.lineHeight)
-                        .contentShape(Rectangle())
+                        .help("Finishing the current iteration…")
+                        .padding(.trailing, 4)
+                        .padding(.top, 6)
+                } else {
+                    Button(action: handleSendOrStop) {
+                        Image(systemName: store.isStreaming ? (optionHeld ? "stopwatch" : "stop.circle.fill") : "arrow.up.circle.fill")
+                            .font(.system(size: 22))
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(sendDisabled ? Color.secondary : Color.accentColor)
+                            .frame(width: 30, height: ChatView.lineHeight)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(sendDisabled)
+                    .help(store.isStreaming ? (optionHeld ? "Stop After Streaming" : "Stop (hold ⌥ to stop after streaming)") : "Send")
+                    .padding(.trailing, 4)
+                    .padding(.top, 6)
                 }
-                .buttonStyle(.borderless)
-                .disabled(sendDisabled)
-                .help(store.isStreaming ? "Stop" : "Send")
-                .padding(.trailing, 4)
-                .padding(.top, 6)
             }
             .background(
                 RoundedRectangle(cornerRadius: 10)
@@ -127,9 +146,18 @@ struct ChatView: View {
             restoreDraft(for: store.selectedChatID)
             isInputFocused = true
             focusToken &+= 1
+            optionHeld = NSEvent.modifierFlags.contains(.option)
+            flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+                optionHeld = event.modifierFlags.contains(.option)
+                return event
+            }
         }
         .onDisappear {
             saveDraft(for: store.selectedChatID)
+            if let flagsMonitor {
+                NSEvent.removeMonitor(flagsMonitor)
+                self.flagsMonitor = nil
+            }
         }
         .onChange(of: store.selectedChatID) { oldID, newID in
             saveDraft(for: oldID)
@@ -423,9 +451,16 @@ struct ChatView: View {
     }
 
     /// Routes the button press to either stop (while streaming) or send.
+    /// Holding Option while streaming requests a graceful stop: the current
+    /// iteration (model response + its tool calls) finishes, then the stream
+    /// stops without another model request.
     private func handleSendOrStop() {
         if store.isStreaming {
-            store.stopStreaming()
+            if NSEvent.modifierFlags.contains(.option) {
+                store.stopStreamingAfterIteration()
+            } else {
+                store.stopStreaming()
+            }
             return
         }
         send()

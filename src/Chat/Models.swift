@@ -277,6 +277,10 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     var chat: Chat?
     /// Whether a streaming request is currently in flight for this chat.
     var isStreaming: Bool
+    /// Whether a "stop after current iteration" request is pending: the
+    /// stream finishes the in-flight model response and any tool calls it
+    /// emitted, then stops without sending the results back to the model.
+    var stopAfterIteration: Bool
     /// Whether this chat has new activity (a finished stream or new message)
     /// since the user last viewed it.
     var hasUnreadActivity: Bool
@@ -308,7 +312,7 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     /// irreversibly as soon as another chat is selected or created.
     var isTemporary: Bool
 
-    init(filename: String, chat: Chat? = nil, cachedName: String? = nil, cachedRole: String? = nil, cachedModificationTime: Date = Date(), cachedArchive: Bool = false, cachedLastActivity: Date = .distantPast, isStreaming: Bool = false, hasUnreadActivity: Bool = false, lastError: String? = nil, createdAt: Date = Date(), isTemporary: Bool = false) {
+    init(filename: String, chat: Chat? = nil, cachedName: String? = nil, cachedRole: String? = nil, cachedModificationTime: Date = Date(), cachedArchive: Bool = false, cachedLastActivity: Date = .distantPast, isStreaming: Bool = false, stopAfterIteration: Bool = false, hasUnreadActivity: Bool = false, lastError: String? = nil, createdAt: Date = Date(), isTemporary: Bool = false) {
         self.filename = filename
         self.chat = chat
         self.cachedName = cachedName
@@ -317,6 +321,7 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
         self.cachedArchive = cachedArchive
         self.cachedLastActivity = cachedLastActivity
         self.isStreaming = isStreaming
+        self.stopAfterIteration = stopAfterIteration
         self.hasUnreadActivity = hasUnreadActivity
         self.lastError = lastError
         self.createdAt = createdAt

@@ -540,6 +540,13 @@ final class AppViewModel: ObservableObject {
         selectedChatItem?.isStreaming ?? false
     }
 
+    /// Whether a "stop after current iteration" request is pending for the
+    /// selected chat: the current model response and its tool calls finish,
+    /// then the stream stops without another model request.
+    var stopAfterIterationPending: Bool {
+        selectedChatItem?.stopAfterIteration ?? false
+    }
+
     /// The role assigned to the selected chat, if any (and if it still exists).
     var selectedRole: Role? {
         guard let roleName = selectedChatItem?.chat?.role else { return nil }
@@ -767,6 +774,11 @@ final class AppViewModel: ObservableObject {
     func stopStreaming() {
         guard let filename = selectedChatID else { return }
         Task { await engine.stopStreaming(filename: filename) }
+    }
+
+    func stopStreamingAfterIteration() {
+        guard let filename = selectedChatID else { return }
+        Task { await engine.stopStreamingAfterIteration(filename: filename) }
     }
 
     /// Opens the in-chat search bar (Cmd-F). No-op when no chat is selected.

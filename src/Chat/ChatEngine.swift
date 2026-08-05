@@ -1045,6 +1045,7 @@ actor ChatEngine {
                 cachedArchive: info.archive,
                 cachedLastActivity: info.lastActivity,
                 isStreaming: existing?.isStreaming ?? false,
+                stopAfterIteration: existing?.stopAfterIteration ?? false,
                 hasUnreadActivity: existing?.hasUnreadActivity ?? false,
                 lastError: existing?.lastError,
                 createdAt: existing?.createdAt ?? info.lastActivity
@@ -1075,6 +1076,7 @@ actor ChatEngine {
                 cachedArchive: info.archive,
                 cachedLastActivity: info.lastActivity,
                 isStreaming: existing?.isStreaming ?? false,
+                stopAfterIteration: existing?.stopAfterIteration ?? false,
                 hasUnreadActivity: existing?.hasUnreadActivity ?? false,
                 lastError: existing?.lastError,
                 createdAt: existing?.createdAt ?? info.lastActivity
@@ -1640,6 +1642,7 @@ actor ChatEngine {
         debugLog("Stream", "start — chat=\(filename), connection=\(connection.id)")
         if let idx = records.firstIndex(where: { $0.filename == filename }) {
             records[idx].isStreaming = true
+            records[idx].stopAfterIteration = false
             records[idx].lastError = nil
         }
         emit(.chatsChanged(records))
@@ -1755,6 +1758,15 @@ actor ChatEngine {
                     // Mirror into the working history so the next stream
                     // request includes it.
                     history.append(ChatMessage(role: .tool, content: "", toolResults: [toolResult]))
+                }
+
+                // "Stop after streaming" requested: the current iteration is
+                // complete (all tool calls executed and their results
+                // appended), so stop here without sending the results back to
+                // the model. The next user message will carry them along.
+                if consumeStopAfterIteration(filename: filename) {
+                    finishStream(filename: filename)
+                    return
                 }
 
                 // Create a new assistant message for the model's follow-up
@@ -2285,6 +2297,7 @@ actor ChatEngine {
             streamTasks[filename] = nil
             return
         }
+        records[idx].stopAfterIteration = false
         // Persist the final accumulated state to disk via the store
         // (temporary chats are never persisted).
         guard let finalChat = records[idx].chat else {
@@ -2339,6 +2352,27 @@ actor ChatEngine {
     /// Cancels the in-flight stream for the given chat. Flips the streaming
     /// flag immediately so the UI reflects the stop right away; the stream
     /// task finalizes the message content asynchronously via `finishStream`.
+    /// Requests a graceful stop for the given chat: the in-flight iteration
+    /// (model response + any tool calls it emitted) runs to completion, then
+    /// the loop stops without sending the tool results back to the model.
+    /// No-op when the chat isn't streaming; a regular `stopStreaming` always
+    /// takes precedence and clears this request.
+    func stopStreamingAfterIteration(filename: String) {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }),
+              records[idx].isStreaming, !records[idx].stopAfterIteration else { return }
+        debugLog("Stream", "stop-after-iteration requested — chat=\(filename)")
+        records[idx].stopAfterIteration = true
+        emit(.chatsChanged(records))
+    }
+
+    /// Checks and clears a pending "stop after current iteration" request.
+    private func consumeStopAfterIteration(filename: String) -> Bool {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }),
+              records[idx].stopAfterIteration else { return false }
+        records[idx].stopAfterIteration = false
+        return true
+    }
+
     func stopStreaming(filename: String) {
         debugLog("Stream", "stop requested — chat=\(filename)")
         // If we were awaiting tool-call approval, resume those continuations
@@ -2346,6 +2380,7 @@ actor ChatEngine {
         cancelPendingApprovals(filename: filename)
         streamTasks[filename]?.cancel()
         if let idx = records.firstIndex(where: { $0.filename == filename }) {
+            records[idx].stopAfterIteration = false
             // Finalize the incomplete trailing turn: empty placeholder
             // assistant messages are removed, and tool calls that never got a
             // result receive a synthesized "cancelled" result — a state

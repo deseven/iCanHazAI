@@ -233,6 +233,17 @@ struct iCanHazAIApp: App {
                     AppViewModel.shared?.startSearchInChat()
                 }
                 .keyboardShortcut("f", modifiers: .command)
+                Divider()
+                Button("Stop Streaming") {
+                    AppViewModel.shared?.stopStreaming()
+                }
+                .keyboardShortcut("b", modifiers: .command)
+                .disabled(!viewModel.isStreaming)
+                Button("Stop After Streaming") {
+                    AppViewModel.shared?.stopStreamingAfterIteration()
+                }
+                .keyboardShortcut("b", modifiers: [.option, .command])
+                .disabled(!viewModel.isStreaming || viewModel.stopAfterIterationPending)
             }
             CommandGroup(replacing: .appSettings) {
                 Button("Preferences...") {
