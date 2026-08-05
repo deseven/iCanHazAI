@@ -945,25 +945,43 @@ final class AppViewModel: ObservableObject {
         Task { await engine.setChatMCPs(filename: filename, names: names) }
     }
 
-    /// Adds a working directory to the user-managed list in the app config
-    /// (deduped, preserving order). The directory picker offers these to the
-    /// user when picking a per-chat working directory.
-    func addWorkingDirectory(_ path: String) {
-        // SSH specs (`ssh::host/path`) are kept verbatim — local path
-        // standardization would mangle them.
-        let normalized = SSHSpec.isSSH(path)
+    /// Maximum number of recently used working directories kept in the app
+    /// config; older entries fall off the end automatically.
+    static let workingDirectoryRecentLimit = 30
+
+    /// Normalizes a working directory for storage: SSH specs (`host:/path`)
+    /// are kept verbatim (standardization would mangle them), local paths are
+    /// standardized (resolving `~` and symlinks).
+    static func normalizeWorkingDirectory(_ path: String) -> String {
+        SSHSpec.isSSH(path)
             ? path.trimmingCharacters(in: .whitespaces)
             : (path as NSString).standardizingPath
+    }
+
+    /// Pure MRU-list update behind `recordWorkingDirectory`: moves
+    /// `normalized` to the front (deduped), capping the list at `limit`.
+    static func recentDirectories(inserting normalized: String, into list: [String], limit: Int = workingDirectoryRecentLimit) -> [String] {
+        var result = list.filter { $0 != normalized }
+        result.insert(normalized, at: 0)
+        if result.count > limit { result = Array(result.prefix(limit)) }
+        return result
+    }
+
+    /// Records a working directory as recently used: moves it to the front of
+    /// the MRU list (deduped), capping the list at `workingDirectoryRecentLimit`
+    /// entries. Persisted to the app config; the directory picker offers these
+    /// when picking a per-chat working directory.
+    func recordWorkingDirectory(_ path: String) {
+        let normalized = Self.normalizeWorkingDirectory(path)
         guard !normalized.isEmpty else { return }
-        guard !workingDirectories.contains(normalized) else { return }
-        workingDirectories.append(normalized)
+        workingDirectories = Self.recentDirectories(inserting: normalized, into: workingDirectories)
         let snapshot = workingDirectories
         Task { await config.setWorkingDirectories(snapshot) }
     }
 
-    /// Removes a working directory from the user-managed list in the app config.
+    /// Removes a working directory from the recent list in the app config.
     func removeWorkingDirectory(_ path: String) {
-        let normalized = (path as NSString).standardizingPath
+        let normalized = Self.normalizeWorkingDirectory(path)
         workingDirectories.removeAll { $0 == normalized }
         let snapshot = workingDirectories
         Task { await config.setWorkingDirectories(snapshot) }

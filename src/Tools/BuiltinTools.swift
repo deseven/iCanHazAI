@@ -13,7 +13,7 @@ import LoginShell
 /// correctly. When `isolated` is true, absolute paths are treated as relative
 /// to the root (chroot-like) and path escapes are rejected.
 ///
-/// A root of the form `ssh::host/path` (see [`SSHSpec`](src/SSH/SSHManager.swift:13))
+/// A root in scp form `host:/path` (see [`SSHSpec`](src/SSH/SSHManager.swift:17))
 /// switches the chat's workdir-capable tools to remote execution over SSH. In
 /// that case `root` holds the remote absolute path (nil = remote home) and all
 /// path handling is string-based POSIX normalization — the remote filesystem
@@ -23,8 +23,9 @@ struct Workdir: Sendable {
     let root: String?
     let isolated: Bool
     let ssh: SSHContext?
-    /// Set when the root carried the `ssh::` prefix but failed to parse;
-    /// surfaced as a tool error instead of silently treating it as local.
+    /// Set when the root looked like an SSH spec (a `:` before the first `/`)
+    /// but failed to parse; surfaced as a tool error instead of silently
+    /// treating it as local.
     let sshSpecError: String?
 
     init(root: String?, isolated: Bool, chatID: String? = nil) {

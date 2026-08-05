@@ -2,24 +2,29 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import SwiftUI
-import UniformTypeIdentifiers
 
-/// A modal sheet for picking the per-chat working directory. Lists the
-/// user-managed directories from the app config (`working_directories`), each
-/// with a remove icon. An "Add a directory..." pseudo-entry is pinned to the
-/// top of the list — selecting it opens the macOS folder picker, and the
-/// chosen directory is added to the config and immediately selected for the
-/// chat, closing the picker. Next to it, "Add SSH path..." asks for an
-/// `ssh::host/path` spec (see [`SSHSpec`](src/SSH/SSHManager.swift:13)); remote
-/// entries live in the same `working_directories` list.
+/// A modal sheet for picking the per-chat working directory.
 ///
-/// When the selected chat's role pre-sets a `working_directory` (and allows
-/// overrides), that directory is pinned at the bottom as the default option —
-/// mirroring how the role picker pins built-in roles — and is selected by
-/// default so the user can press ↵ to accept it.
+/// With an empty search the sheet lists recently picked directories (the MRU
+/// list from the app config, capped at 30 — see
+/// [`AppViewModel.recordWorkingDirectory()`](src/App/AppViewModel.swift:975)),
+/// each with a remove button; the role's pre-set working directory (when it
+/// allows overrides) is pinned at the bottom as the default option.
 ///
+/// Typing into the search field browses directories (see
+/// [`WorkdirQuery`](src/Views/WorkdirPickerModel.swift:32) for the query
+/// classification and [`WorkdirItemsBuilder`](src/Views/WorkdirPickerModel.swift:107)
+/// for the result ordering):
+/// - free text filters the recents (case-insensitive substring);
+/// - a local path (`/...` or `~/...`) shows the typed directory itself when
+///   it exists, followed by its subdirectories;
+/// - an scp-style spec (`[user@]host:[/path]`) lazily connects over SSH and
+///   lists remote subdirectories. The connection is reused across keystrokes
+///   and torn down when the picker closes; SSH failures are silent.
+///
+/// Everything picked here is recorded as most-recently-used by the caller.
 /// Layout and keyboard navigation are shared with other pickers via
-/// [`PickerDialog`](src/Views/PickerDialog.swift:14). The selected directory
+/// [`PickerDialog`](src/Views/PickerDialog.swift:37). The selected directory
 /// is saved to the chat data (alongside the role and title), not to the app
 /// config.
 struct WorkdirPickerView: View {
@@ -27,9 +32,8 @@ struct WorkdirPickerView: View {
     let onCancel: () -> Void
     let onPick: (String) -> Void
 
-    @State private var addPicker: Bool = false
-    @State private var sshPrompt: Bool = false
-    @State private var sshInput: String = ""
+    @State private var query: String = ""
+    @StateObject private var sshLister = WorkdirSSHLister()
 
     private var directories: [String] { store.workingDirectories }
 
@@ -50,141 +54,115 @@ struct WorkdirPickerView: View {
         return SSHSpec.isSSH(path) ? path : (path as NSString).standardizingPath
     }
 
-    /// Scrollable entries: the "Add a directory..." and "Add SSH path..."
-    /// pseudo-entries first, then the user-managed directories.
-    private var scrollItems: [WorkdirSelection] {
-        [.add, .addSSH] + directories.map { WorkdirSelection.userList($0) }
+    /// The current query, classified.
+    private var parsedQuery: WorkdirQuery { WorkdirQuery.parse(query) }
+
+    /// Local browsing results for the current query. When the typed path is
+    /// an existing directory: the directory itself plus its subdirectories.
+    /// Otherwise: the parent's subdirectories filtered by the last path
+    /// component as a prefix.
+    private var localResults: (typed: String?, children: [String]) {
+        guard case .local(let dir, let prefix, let full) = parsedQuery else { return (nil, []) }
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: full, isDirectory: &isDir), isDir.boolValue {
+            return ((full as NSString).standardizingPath, WorkdirQuery.localChildren(dir: full, prefix: ""))
+        }
+        return (nil, WorkdirQuery.localChildren(dir: dir, prefix: prefix))
+    }
+
+    /// Scrollable items: assembled from the recents, the typed directory,
+    /// and its subdirectories.
+    private var scrollItems: [WorkdirItem] {
+        switch parsedQuery {
+        case .empty:
+            return WorkdirItemsBuilder.build(query: "", recents: directories, typedDir: nil, children: [])
+        case .plain:
+            return WorkdirItemsBuilder.build(query: query, recents: directories, typedDir: nil, children: [])
+        case .local:
+            let local = localResults
+            return WorkdirItemsBuilder.build(query: query, recents: directories, typedDir: local.typed, children: local.children)
+        case .ssh:
+            return WorkdirItemsBuilder.build(query: query, recents: directories, typedDir: sshLister.typed, children: sshLister.specs)
+        }
     }
 
     /// Pinned entries: the role's default working directory, if any.
-    private var pinnedItems: [WorkdirSelection] {
+    private var pinnedItems: [WorkdirItem] {
         roleDefaultWorkdir.map { [.roleDefault($0)] } ?? []
     }
 
-    /// Combined ordered list for keyboard navigation.
-    private var allEntries: [WorkdirSelection] { scrollItems + pinnedItems }
-
-    private var initialSelection: WorkdirSelection? {
+    private var initialSelection: WorkdirItem? {
         if let roleDefault = roleDefaultWorkdir {
             return .roleDefault(roleDefault)
         }
         if let current = currentWorkdir, directories.contains(current) {
-            return .userList(current)
+            return .recent(current)
         }
-        if let firstDir = directories.first {
-            return .userList(firstDir)
-        }
-        return .add
-    }
-
-    /// The typed SSH path with the `ssh::` prefix guaranteed — the dialog
-    /// accepts both `host/path` and the fully-prefixed form.
-    private var normalizedSSHInput: String {
-        let trimmed = sshInput.trimmingCharacters(in: .whitespaces)
-        return SSHSpec.isSSH(trimmed) ? trimmed : SSHSpec.prefix + trimmed
-    }
-
-    private var sshInputValid: Bool {
-        if case .success = SSHSpec.parse(normalizedSSHInput) { return true }
-        return false
+        return directories.first.map { .recent($0) }
     }
 
     var body: some View {
-        PickerDialog<WorkdirSelection>(
+        PickerDialog<WorkdirItem>(
             title: "Working directory",
-            subtitle: "Pick a directory for this chat. Added directories are saved to the app config and offered in every chat.",
+            subtitle: "Pick a directory for this chat. Recently picked directories are remembered; type a local path or host:/path to browse.",
+            searchText: $query,
+            searchPlaceholder: "Type a path or host:/path",
             items: scrollItems,
             pinnedHeader: pinnedItems.isEmpty ? nil : "Default",
             pinnedItems: pinnedItems,
-            emptyTitle: "No directories",
-            emptySubtitle: nil,
-            visibleRowCount: 6,
-            estimatedRowHeight: 50,
+            emptyTitle: "No recent directories",
+            emptySubtitle: "Type a local path or host:/path above",
             width: 420,
             rowContent: { item, _ in
                 AnyView(WorkdirRowContent(
                     item: item,
                     isCurrent: currentWorkdir == item.path,
-                    onRemove: {
-                        if case .userList(let dir) = item {
-                            store.removeWorkingDirectory(dir)
-                        }
-                    }
+                    onRemove: { store.removeWorkingDirectory(item.path) }
                 ))
             },
-            onSelect: { item in
-                switch item {
-                case .add:
-                    addPicker = true
-                case .addSSH:
-                    sshPrompt = true
-                case .userList(let dir), .roleDefault(let dir):
-                    onPick(dir)
-                }
-            },
+            onSelect: { onPick($0.path) },
             onCancel: onCancel,
             initialSelection: initialSelection
         )
-        .fileImporter(
-            isPresented: $addPicker,
-            allowedContentTypes: [.folder],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                if let url = urls.first {
-                    let path = url.path
-                    store.addWorkingDirectory(path)
-                    onPick(path)
-                }
-            case .failure:
-                break
+        .onChange(of: query) { _, _ in
+            switch parsedQuery {
+            case .ssh(let host, let path):
+                sshLister.list(host: host, path: path)
+            default:
+                sshLister.reset()
             }
         }
-        .alert("Add SSH path", isPresented: $sshPrompt) {
-            TextField("somehost/home/user/project", text: $sshInput)
-            Button("Add") {
-                let spec = normalizedSSHInput
-                sshInput = ""
-                store.addWorkingDirectory(spec)
-                onPick(spec)
-            }
-            .disabled(!sshInputValid)
-            Button("Cancel", role: .cancel) { sshInput = "" }
-        } message: {
-            Text("Enter an SSH working directory as host/absolute/path, e.g. somehost/home/user/project or user@somehost/home/user/project. Just somehost (no path) means the remote home directory.\n\nAll authorization must be pre-configured: running `ssh somehost` in your terminal must work as-is, without prompts.")
+        .onDisappear {
+            sshLister.terminate()
         }
     }
 }
 
-/// Inner content of a working-directory picker row. The "Add a directory..."
-/// pseudo-entry uses a `plus.rectangle.on.folder` symbol and "Add SSH
-/// path..." a `network` symbol; real directories show a folder icon (network
-/// icon for SSH specs), the directory name, and its abbreviated path.
-/// User-managed directories get a remove button. Padding and the selection
-/// highlight are applied by [`PickerDialog`](src/Views/PickerDialog.swift:14).
+/// Inner content of a working-directory picker row. Recent directories get a
+/// remove button; directories show a folder icon (network icon for SSH
+/// specs), the directory name, and its abbreviated path. Padding and the
+/// selection highlight are applied by
+/// [`PickerDialog`](src/Views/PickerDialog.swift:37).
 private struct WorkdirRowContent: View {
-    let item: WorkdirSelection
+    let item: WorkdirItem
     let isCurrent: Bool
     let onRemove: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: iconName)
+            Image(systemName: SSHSpec.isSSH(item.path) ? "network" : "folder")
                 .font(.title3)
-                .foregroundStyle(iconColor)
+                .foregroundStyle(.secondary)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.callout)
                     .lineLimit(1)
-                if let subtitle {
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
             if isCurrent {
                 Image(systemName: "checkmark.circle.fill")
@@ -192,7 +170,7 @@ private struct WorkdirRowContent: View {
                     .foregroundStyle(Color.accentColor)
             }
             Spacer()
-            if case .userList = item {
+            if case .recent = item {
                 Button(action: onRemove) {
                     Image(systemName: "minus.circle.fill")
                         .font(.title3)
@@ -204,73 +182,26 @@ private struct WorkdirRowContent: View {
         }
     }
 
-    private var iconName: String {
-        switch item {
-        case .add: return "plus.rectangle.on.folder"
-        case .addSSH: return "network"
-        case .userList(let dir), .roleDefault(let dir):
-            return SSHSpec.isSSH(dir) ? "network" : "folder"
-        }
-    }
-
-    private var iconColor: Color {
-        switch item {
-        case .add, .addSSH: return Color.accentColor
-        case .userList, .roleDefault: return .secondary
-        }
-    }
-
     private var title: String {
-        switch item {
-        case .add:
-            return "Add a directory..."
-        case .addSSH:
-            return "Add SSH path..."
-        case .userList(let dir), .roleDefault(let dir):
-            if SSHSpec.isSSH(dir),
-               case .success(let spec) = SSHSpec.parse(dir) {
-                return spec.host
+        let dir = item.path
+        if SSHSpec.isSSH(dir),
+           case .success(let spec) = SSHSpec.parse(dir) {
+            if let path = spec.path {
+                return (path as NSString).lastPathComponent
             }
-            return (dir as NSString).lastPathComponent
+            return spec.host
         }
+        return (dir as NSString).lastPathComponent
     }
 
-    private var subtitle: String? {
-        switch item {
-        case .add:
-            // Keep a subtitle so the row matches the height of directory rows
-            // (the list sizes itself to fit a fixed number of rows).
-            return "Choose a folder to add and use"
-        case .addSSH:
-            return "Use a remote directory over SSH"
-        case .userList(let dir), .roleDefault(let dir):
-            if SSHSpec.isSSH(dir) {
-                if case .success(let spec) = SSHSpec.parse(dir), let path = spec.path {
-                    return path
-                }
-                return "Remote home directory"
+    private var subtitle: String {
+        let dir = item.path
+        if SSHSpec.isSSH(dir) {
+            if case .success(let spec) = SSHSpec.parse(dir), spec.path != nil {
+                return dir
             }
-            return (dir as NSString).abbreviatingWithTildeInPath
+            return "Remote home directory"
         }
-    }
-}
-
-/// Distinguishes the "Add a directory..." / "Add SSH path..." pseudo-entries,
-/// a user-managed directory (from `working_directories`), and the role's
-/// pinned default, so keyboard navigation and highlighting stay correct even
-/// when paths overlap.
-private enum WorkdirSelection: Identifiable, Hashable {
-    case add
-    case addSSH
-    case userList(String)
-    case roleDefault(String)
-
-    var id: Self { self }
-
-    var path: String? {
-        switch self {
-        case .add, .addSSH: return nil
-        case .userList(let p), .roleDefault(let p): return p
-        }
+        return (dir as NSString).abbreviatingWithTildeInPath
     }
 }

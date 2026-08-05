@@ -180,17 +180,25 @@ final class MainWindowController {
 
     private func applyMinSize(to window: NSWindow, sidebarVisible: Bool) {
         let minWidth: CGFloat = sidebarVisible ? 1050 : 860
+        let minHeight: CGFloat = 600
         var minSize = window.minSize
         minSize.width = minWidth
-        minSize.height = 500
+        minSize.height = minHeight
         window.minSize = minSize
 
-        if window.frame.width < minWidth {
+        if window.frame.width < minWidth || window.frame.height < minHeight {
             var frame = window.frame
-            let delta = minWidth - frame.width
-            frame.size.width = minWidth
-            // Keep the left edge anchored so the window grows to the right.
-            frame.origin.x -= delta
+            if frame.width < minWidth {
+                let delta = minWidth - frame.width
+                frame.size.width = minWidth
+                // Keep the left edge anchored so the window grows to the right.
+                frame.origin.x -= delta
+            }
+            if frame.height < minHeight {
+                // Grow downwards (AppKit frames are bottom-left based).
+                frame.origin.y -= minHeight - frame.height
+                frame.size.height = minHeight
+            }
             window.setFrame(frame, display: true)
         }
     }

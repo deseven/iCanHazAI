@@ -65,7 +65,7 @@ extension AllAppTests {
         /// first write; remote paths are absolute).
         private static func makeContext() -> (wd: Workdir, remote: String) {
             let remote = "/tmp/ichai-tests-\(UUID().uuidString.prefix(8))"
-            let wd = Workdir(root: "ssh::\(host)\(remote)", isolated: false, chatID: chatID)
+            let wd = Workdir(root: "\(host):\(remote)", isolated: false, chatID: chatID)
             return (wd, remote)
         }
 
@@ -372,7 +372,7 @@ extension AllAppTests {
         @Test("isolated mode maps / onto the remote root and blocks escapes")
         func isolatedMode() async {
             let remote = "/tmp/ichai-tests-\(UUID().uuidString.prefix(8))"
-            let wd = Workdir(root: "ssh::\(Self.host)\(remote)", isolated: true, chatID: Self.chatID)
+            let wd = Workdir(root: "\(Self.host):\(remote)", isolated: true, chatID: Self.chatID)
 
             let (_, wErr) = await Self.call("write_file", Self.fs, ["path": "/a.txt", "content": "iso"], workdir: wd)
             #expect(!wErr)
@@ -390,7 +390,7 @@ extension AllAppTests {
 
         @Test("connection failure surfaces a tool error after 3 attempts")
         func invalidHost() async {
-            let wd = Workdir(root: "ssh::ichai-test-nonexistent.invalid/tmp/x", isolated: false, chatID: UUID().uuidString)
+            let wd = Workdir(root: "ichai-test-nonexistent.invalid:/tmp/x", isolated: false, chatID: UUID().uuidString)
             let (text, isError) = await Self.call("shell", Self.sh, ["command": "echo hi"], workdir: wd)
             #expect(isError)
             #expect(text.contains("SSH connection"))

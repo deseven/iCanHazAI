@@ -16,6 +16,8 @@ let package = Package(
         .package(url: "https://github.com/piersdd/swift-sdk.git", revision: "1ea8365655f2e7dc25d495b1d75b1de9dfe1975c"),
         // Line-level diffing for rendering write_file/apply_patch tool calls.
         .package(url: "https://github.com/tonyarnold/Differ.git", from: "1.4.4"),
+        // Fuzzy search for the role/MCP/directory pickers.
+        .package(url: "https://github.com/krisk/fuse-swift.git", from: "1.4.0"),
         .package(path: "shared/ProcessExit"),
         .package(path: "shared/LoginShell"),
         .package(path: "shared/ImageTools")
@@ -29,7 +31,8 @@ let package = Package(
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "ProcessExit", package: "ProcessExit"),
                 .product(name: "LoginShell", package: "LoginShell"),
-                .product(name: "Differ", package: "Differ")
+                .product(name: "Differ", package: "Differ"),
+                .product(name: "Fuse", package: "fuse-swift")
             ],
             path: "src"
         ),
@@ -41,7 +44,8 @@ let package = Package(
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "ProcessExit", package: "ProcessExit"),
                 .product(name: "FSEventsWrapper", package: "FSEventsWrapper"),
-                .product(name: "Differ", package: "Differ")
+                .product(name: "Differ", package: "Differ"),
+                .product(name: "Fuse", package: "fuse-swift")
             ],
             path: "tests"
         )

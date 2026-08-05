@@ -4,11 +4,12 @@
 import SwiftUI
 
 /// A modal sheet for picking which custom MCP servers are active for the
-/// current chat. Multi-select: clicking a row or pressing space toggles it,
+/// current chat. Multi-select: clicking a row or pressing ⇧↵ toggles it,
 /// ↵ (or the default "Apply" button) commits the selection, Esc (or "Cancel")
 /// discards it. Built on [`PickerDialog`](src/Views/PickerDialog.swift)'s
 /// multi-select mode; the working selection lives here and is only committed
-/// on apply.
+/// on apply. The list is fuzzy-filtered by the search field (space types
+/// into the search, hence ⇧↵ instead of space for toggling).
 struct MCPPickerView: View {
     /// All configured custom MCP servers (already sorted by name).
     let servers: [MCPServer]
@@ -20,25 +21,30 @@ struct MCPPickerView: View {
 
     /// The working selection; only committed on apply.
     @State private var checked: Set<String> = []
+    @State private var query: String = ""
+
+    private var filteredServers: [MCPServer] {
+        FuzzySearch.rank(servers, query: query) { [$0.name] }
+    }
 
     var body: some View {
         PickerDialog<MCPServer>(
             title: "MCP servers",
             subtitle: "Pick which MCP servers are active for this chat.",
-            items: servers,
+            searchText: $query,
+            searchPlaceholder: "Search servers",
+            items: filteredServers,
             pinnedHeader: nil,
             pinnedItems: [],
             emptyTitle: "No MCP servers",
             emptySubtitle: nil,
-            visibleRowCount: 6,
-            estimatedRowHeight: 50,
             width: 420,
             rowContent: { server, _ in
                 AnyView(MCPRowContent(server: server, isChecked: checked.contains(server.name)))
             },
             onSelect: { _ in },
             onCancel: onCancel,
-            initialSelection: servers.first,
+            initialSelection: filteredServers.first,
             multiSelect: PickerDialog<MCPServer>.MultiSelect(
                 onToggle: { server in
                     if checked.contains(server.name) {

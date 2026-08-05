@@ -203,6 +203,9 @@ struct ChatView: View {
             WorkdirPickerView(
                 onCancel: { store.showWorkdirPicker = false },
                 onPick: { path in
+                    // Every pick is recorded as most-recently-used so the
+                    // picker's recent list stays relevant.
+                    store.recordWorkingDirectory(path)
                     store.setWorkingDirectory(path)
                     store.showWorkdirPicker = false
                 }

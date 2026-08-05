@@ -24,8 +24,14 @@ struct RolePickerView: View {
     let onCancel: () -> Void
     let onPick: (String) -> Void
 
-    private var userRoles: [Role] { store.roles.filter { !$0.isBuiltin } }
-    private var builtinRoles: [Role] { store.roles.filter { $0.isBuiltin } }
+    @State private var query: String = ""
+
+    private var userRoles: [Role] {
+        FuzzySearch.rank(store.roles.filter { !$0.isBuiltin }, query: query) { [$0.name, $0.description] }
+    }
+    private var builtinRoles: [Role] {
+        FuzzySearch.rank(store.roles.filter { $0.isBuiltin }, query: query) { [$0.name, $0.description] }
+    }
     private var defaultRoleName: String? { store.preferencesDefaultRole }
 
     private var headerTitle: String {
@@ -55,13 +61,13 @@ struct RolePickerView: View {
         PickerDialog<Role>(
             title: headerTitle,
             subtitle: headerSubtitle,
+            searchText: $query,
+            searchPlaceholder: "Search roles",
             items: userRoles,
             pinnedHeader: builtinRoles.isEmpty ? nil : "Built-in",
             pinnedItems: builtinRoles,
             emptyTitle: "No roles available",
             emptySubtitle: "Add a role TOML to ~/iCanHazAI/roles/",
-            visibleRowCount: 5,
-            estimatedRowHeight: 50,
             width: 380,
             rowContent: { role, _ in
                 AnyView(RolePickerRowContent(role: role, isDefault: role.name == defaultRoleName))

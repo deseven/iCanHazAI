@@ -4,7 +4,8 @@
 import Foundation
 
 /// SSH-backed implementations of the Filesystem, Code, and Shell builtin
-/// tools, used when the chat's working directory is an `ssh::host/path` spec
+/// tools, used when the chat's working directory is an scp-style `host:/path`
+/// spec
 /// (see [`Workdir`](src/Tools/BuiltinTools.swift:11) and
 /// [`SSHManager`](src/SSH/SSHManager.swift:47)).
 ///

@@ -157,7 +157,7 @@ These three fields interact and are validated on role load:
 
 ### SSH working directories
 
-A working directory may be remote, written as `ssh::host/absolute/path` — e.g. `ssh::nas/home/user/project` or `ssh::user@host/var/www`. A bare `ssh::host` (no path) means the remote home directory. The `host` part is anything `ssh` accepts (a `Host` alias from `~/.ssh/config` or `user@host`); all authorization must be pre-configured by the user so `ssh host` works without prompts (BatchMode is used — no interactive auth is possible). SSH specs are valid everywhere a working directory is: the role's `working_directory`, and the per-chat picker ("Add SSH path..." button, stored in `[general].working_directories` like any other entry).
+A working directory may be remote (SSH), written in scp form as `host:/absolute/path` — e.g. `nas:/home/user/project` or `user@host:/var/www`. A bare `host:` (no path) means the remote home directory. The path must be absolute — home-relative forms like `host:dir` are rejected. The `host` part is anything `ssh` accepts (a `Host` alias from `~/.ssh/config` or `user@host`); all authorization must be pre-configured by the user so `ssh host` works without prompts (BatchMode is used — no interactive auth is possible). SSH specs are valid everywhere a working directory is: the role's `working_directory`, and the per-chat picker (stored in `[general].working_directories` like any other entry). In the picker, typing an scp-style spec browses the remote over a temporary SSH connection: results are filtered to subdirectories of the typed path, and the connection is torn down when the picker closes.
 
 ```toml
 description = "Web research role with search and note-taking tools."  # shown in picker when creating a new chat
@@ -198,7 +198,7 @@ Keys are `snake_case`. **Every group and every key is optional** — a missing g
 default_connection = "openai/gpt-4o"       # "type/name" for new chats; nil/omitted = none
 default_role = "Assistant"                 # falls back to "Assistant" if nil/invalid
 utility_connection = "openai/gpt-4o-mini"  # for utility tasks (e.g. auto-naming chats)
-working_directories = []                   # user-managed list offered in the per-chat directory picker
+working_directories = []                   # MRU list of recently picked directories (max 30, most recent first); managed by the app — every directory picked in the per-chat picker is moved to the front
 
 [chat_behaviour]
 expand_thinking = false                    # expand "Thinking" blocks by default in chats

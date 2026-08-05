@@ -13,48 +13,68 @@ extension AllAppTests {
 
     @Suite("SSH workdir: spec parsing")
     struct SSHSpecTests {
-        @Test("bare host means the remote home directory")
+        @Test("bare host with trailing colon means the remote home directory")
         func bareHost() throws {
-            let spec = try SSHSpec.parse("ssh::somehost").get()
+            let spec = try SSHSpec.parse("somehost:").get()
             #expect(spec.host == "somehost")
             #expect(spec.path == nil)
         }
 
         @Test("host with path yields the absolute remote path")
         func hostWithPath() throws {
-            let spec = try SSHSpec.parse("ssh::somehost/some/path").get()
+            let spec = try SSHSpec.parse("somehost:/some/path").get()
             #expect(spec.host == "somehost")
             #expect(spec.path == "/some/path")
         }
 
         @Test("user@host is accepted")
         func userAtHost() throws {
-            let spec = try SSHSpec.parse("ssh::user@somehost/home/user").get()
+            let spec = try SSHSpec.parse("user@somehost:/home/user").get()
             #expect(spec.host == "user@somehost")
             #expect(spec.path == "/home/user")
         }
 
-        @Test("trailing slash means the remote root")
-        func trailingSlash() throws {
-            let spec = try SSHSpec.parse("ssh::somehost/").get()
+        @Test("root path is kept as-is")
+        func rootPath() throws {
+            let spec = try SSHSpec.parse("somehost:/").get()
             #expect(spec.host == "somehost")
             #expect(spec.path == "/")
         }
 
-        @Test("missing prefix is rejected")
-        func missingPrefix() {
+        @Test("missing colon is rejected")
+        func missingColon() {
             #expect(SSHSpec.parse("somehost/path").isFailure)
+            #expect(SSHSpec.parse("somehost").isFailure)
         }
 
         @Test("empty host is rejected")
         func emptyHost() {
-            #expect(SSHSpec.parse("ssh::").isFailure)
-            #expect(SSHSpec.parse("ssh:///abs/path").isFailure)
+            #expect(SSHSpec.parse(":").isFailure)
+            #expect(SSHSpec.parse(":/abs/path").isFailure)
+        }
+
+        @Test("home-relative remote path is rejected")
+        func relativePath() {
+            #expect(SSHSpec.parse("somehost:rel/path").isFailure)
+            #expect(SSHSpec.parse("somehost:~/x").isFailure)
         }
 
         @Test("whitespace in host is rejected")
         func whitespaceHost() {
-            #expect(SSHSpec.parse("ssh::ho st/path").isFailure)
+            #expect(SSHSpec.parse("ho st:/path").isFailure)
+        }
+
+        @Test("detection follows the scp colon-before-slash rule")
+        func detection() {
+            #expect(SSHSpec.isSSH("host:/path"))
+            #expect(SSHSpec.isSSH("host:"))
+            // Malformed, but still SSH — the parse error must surface.
+            #expect(SSHSpec.isSSH(":broken"))
+            #expect(SSHSpec.isSSH("host:rel/path"))
+            #expect(!SSHSpec.isSSH("plain"))
+            #expect(!SSHSpec.isSSH("plain/relative/path"))
+            #expect(!SSHSpec.isSSH("/tmp/local"))
+            #expect(!SSHSpec.isSSH("/tmp/with:colon"))
         }
     }
 
@@ -62,7 +82,7 @@ extension AllAppTests {
     struct SSHWorkdirTests {
         @Test("ssh spec sets context and remote root")
         func contextAndRoot() {
-            let wd = Workdir(root: "ssh::somehost/home/user/project", isolated: false, chatID: "chat-1")
+            let wd = Workdir(root: "somehost:/home/user/project", isolated: false, chatID: "chat-1")
             #expect(wd.ssh == SSHContext(host: "somehost", chatID: "chat-1"))
             #expect(wd.root == "/home/user/project")
             #expect(wd.sshSpecError == nil)
@@ -70,7 +90,7 @@ extension AllAppTests {
 
         @Test("malformed ssh spec surfaces a spec error, not a local path")
         func malformedSpec() async {
-            let wd = Workdir(root: "ssh::", isolated: false)
+            let wd = Workdir(root: "h:rel/path", isolated: false)
             #expect(wd.ssh == nil)
             #expect(wd.sshSpecError != nil)
             let result = await BuiltinTools.call(name: "ls", arguments: #"{"path":"/"}"#, callID: "t", group: BuiltinTools.filesystemGroup, workdir: wd)
@@ -80,7 +100,7 @@ extension AllAppTests {
 
         @Test("isolated resolution treats absolute paths as root-relative")
         func isolatedAbsolute() throws {
-            let wd = Workdir(root: "ssh::h/a/b", isolated: true)
+            let wd = Workdir(root: "h:/a/b", isolated: true)
             #expect(try wd.resolve("/c/d") == "/a/b/c/d")
             #expect(try wd.resolve("c") == "/a/b/c")
             #expect(try wd.resolve("/") == "/a/b")
@@ -88,14 +108,14 @@ extension AllAppTests {
 
         @Test("isolated resolution rejects escapes")
         func isolatedEscape() {
-            let wd = Workdir(root: "ssh::h/a/b", isolated: true)
+            let wd = Workdir(root: "h:/a/b", isolated: true)
             #expect(throws: BuiltinToolError.self) { try wd.resolve("/../x") }
             #expect(throws: Never.self) { try wd.resolve("/../b/ok") }
         }
 
         @Test("isolated resolution against remote root / allows everything")
         func isolatedRemoteRoot() throws {
-            let wd = Workdir(root: "ssh::h/", isolated: true)
+            let wd = Workdir(root: "h:/", isolated: true)
             #expect(try wd.resolve("/etc/passwd") == "/etc/passwd")
             #expect(try wd.resolve("tmp") == "/tmp")
             #expect(try wd.resolve("/") == "/")
@@ -103,7 +123,7 @@ extension AllAppTests {
 
         @Test("non-isolated resolution joins relative paths with the root")
         func nonIsolated() throws {
-            let wd = Workdir(root: "ssh::h/a/b", isolated: false)
+            let wd = Workdir(root: "h:/a/b", isolated: false)
             #expect(try wd.resolve("/abs/path") == "/abs/path")
             #expect(try wd.resolve("rel/file.txt") == "/a/b/rel/file.txt")
             #expect(try wd.resolve("../sibling") == "/a/sibling")
@@ -111,7 +131,7 @@ extension AllAppTests {
 
         @Test("nil root (remote home) keeps relative paths relative")
         func nilRootRelative() throws {
-            let wd = Workdir(root: "ssh::h", isolated: false)
+            let wd = Workdir(root: "h:", isolated: false)
             #expect(wd.root == nil)
             #expect(try wd.resolve("rel/file.txt") == "rel/file.txt")
             #expect(try wd.resolve("/abs") == "/abs")

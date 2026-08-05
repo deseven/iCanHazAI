@@ -7,41 +7,48 @@ import ProcessExit
 
 // MARK: - SSH workdir spec
 
-/// Parses the `ssh::` working-directory scheme. Format: `ssh::host/path` —
+/// Parses scp-style remote working directories: `[user@]host:/absolute/path`.
 /// `host` is anything `ssh` accepts (a Host alias from ~/.ssh/config or
-/// `user@host`), and `path` is an absolute remote path. A bare `ssh::host`
-/// (no path) means the remote home directory.
+/// `user@host`). A trailing colon with no path (`host:`) means the remote
+/// home directory; a non-empty path must be absolute (home-relative forms
+/// like `host:dir` are rejected — the tools need a concrete absolute root).
+///
+/// Detection follows scp's own rule: a string is remote when it contains a
+/// `:` before the first `/`. Absolute local paths never qualify, while a
+/// malformed remote spec (e.g. an empty host) is still classified as SSH so
+/// the parse error surfaces instead of silently going local.
 enum SSHSpec {
-    static let prefix = "ssh::"
-
     struct ParseFailure: Error, CustomStringConvertible {
         let description: String
         init(_ description: String) { self.description = description }
     }
 
-    static func isSSH(_ s: String) -> Bool { s.hasPrefix(prefix) }
+    static func isSSH(_ s: String) -> Bool {
+        guard let colon = s.firstIndex(of: ":") else { return false }
+        if let slash = s.firstIndex(of: "/"), slash < colon { return false }
+        return true
+    }
 
     /// Parses a full workdir string. On failure returns a user-facing reason.
     static func parse(_ spec: String) -> Result<(host: String, path: String?), ParseFailure> {
-        guard spec.hasPrefix(prefix) else {
-            return .failure(ParseFailure("missing \"\(prefix)\" prefix"))
+        guard let colon = spec.firstIndex(of: ":") else {
+            return .failure(ParseFailure("missing \":\" (expected host:/absolute/path)"))
         }
-        let rest = String(spec.dropFirst(prefix.count))
-        let host: String
-        let path: String?
-        if let slash = rest.firstIndex(of: "/") {
-            host = String(rest[rest.startIndex..<slash])
-            let p = String(rest[slash...]) // includes the leading "/"
-            path = p == "/" ? "/" : p
-        } else {
-            host = rest
-            path = nil
-        }
+        let host = String(spec[spec.startIndex..<colon])
+        let rest = String(spec[spec.index(after: colon)...])
         if host.isEmpty {
-            return .failure(ParseFailure("missing host (expected \(prefix)host/absolute/path)"))
+            return .failure(ParseFailure("missing host (expected host:/absolute/path)"))
         }
         if host.contains(where: { $0.isWhitespace || $0 == "'" || $0 == "\0" }) {
             return .failure(ParseFailure("host must not contain whitespace or quotes"))
+        }
+        let path: String?
+        if rest.isEmpty {
+            path = nil
+        } else if rest.hasPrefix("/") {
+            path = rest
+        } else {
+            return .failure(ParseFailure("path must be absolute — use \"\(host):/absolute/path\", or \"\(host):\" for the home directory"))
         }
         if let path, path.contains("\0") {
             return .failure(ParseFailure("path must not contain null bytes"))
@@ -59,8 +66,8 @@ struct SSHContext: Sendable, Hashable {
 
 // MARK: - SSHManager
 
-/// Owns ssh ControlMaster connections for `ssh::` working directories and
-/// runs remote commands over them.
+/// Owns ssh ControlMaster connections for scp-style (`host:/path`) working
+/// directories and runs remote commands over them.
 ///
 /// One master connection per (chat, host), established lazily on the first
 /// tool call that needs it: `ssh -M -S <sock> -fN -o ControlPersist=120 ...`.
@@ -173,7 +180,24 @@ final class SSHManager: @unchecked Sendable {
             return t
         }
         defer { lock.withLock { _ = pending.removeValue(forKey: sock) } }
+        debugLog("SSH", "waiting for master establishment for \(ctx.host)")
         try await task.value
+        debugLog("SSH", "master establishment for \(ctx.host) complete")
+    }
+
+    /// Tears down the control master for `ctx`, if any (`ssh -O exit`), and
+    /// removes the socket file. Used by the workdir picker's ad-hoc browsing
+    /// connections so they don't linger for the ControlPersist window after
+    /// the picker closes. Failures are swallowed — the master would die on
+    /// its own after the persist timeout anyway.
+    func close(_ ctx: SSHContext) async {
+        let sock = socketPath(for: ctx)
+        guard FileManager.default.fileExists(atPath: sock) else { return }
+        _ = try? await runSSH(
+            arguments: ["-O", "exit", "-S", sock, ctx.host],
+            stdin: nil, hardTimeout: 5, idleTimeout: nil
+        )
+        try? FileManager.default.removeItem(atPath: sock)
     }
 
     private func isAlive(socket: String, host: String) async -> Bool {
@@ -264,6 +288,7 @@ final class SSHManager: @unchecked Sendable {
 
         let box = IOBox()
         try process.run()
+        debugLog("SSH", "spawned ssh pid \(process.processIdentifier): \(arguments.joined(separator: " "))")
 
         // Drain stdout/stderr concurrently; chunk arrival doubles as the
         // activity signal for idle timeouts.
@@ -303,19 +328,17 @@ final class SSHManager: @unchecked Sendable {
             try await Task.sleep(nanoseconds: 50_000_000)
         }
         await awaitProcessExit(process)
-        if failure != nil {
-            // Killed mid-session: the pipe far ends can stay open until the
-            // remote side notices (no pty → no SIGHUP; the remote command
-            // may run to completion), so awaiting the drain tasks would block
-            // for the remote command's full duration. Give them a brief
-            // grace to flush what already arrived, then move on — they
-            // finish (and their threads are reclaimed) whenever the session
-            // fully dies.
-            try? await Task.sleep(nanoseconds: 200_000_000)
-        } else {
-            _ = await outTask.value
-            _ = await errTask.value
-        }
+        debugLog("SSH", "ssh pid \(process.processIdentifier) exited (status \(process.terminationStatus), failure \(failure != nil))")
+        // Never await EOF on the pipes: it may never come. A killed ssh
+        // leaves the far ends open until the remote side notices (no pty →
+        // no SIGHUP), and a backgrounded process — the `-fN` control master,
+        // or anything the remote command daemonizes — inherits our
+        // stdout/stderr for its entire lifetime. The drain loops run
+        // continuously while the process is alive, so everything produced
+        // before exit is already in the pipe buffer; give them a brief
+        // grace to flush it, then move on — they finish (and their threads
+        // are reclaimed) whenever the pipes finally close.
+        try? await Task.sleep(nanoseconds: 200_000_000)
 
         return RunResult(
             exitCode: failure != nil ? -1 : process.terminationStatus,
