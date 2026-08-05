@@ -25,6 +25,11 @@ export interface ToolCallData {
    *  language) instead of the raw arguments. Nil for tools that don't produce
    *  diffs. */
   diff?: string | null;
+  /** The tool schema's required argument names, stamped by the host when the
+   *  call is finalized. Used to order the collapsed header's argument summary
+   *  (required first) for tools the renderer has no built-in knowledge of.
+   *  Absent for calls from before this field existed. */
+  requiredArgs?: string[] | null;
 }
 
 /** The result of executing a tool call. */

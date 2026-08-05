@@ -257,13 +257,57 @@ final class SSHManager: @unchecked Sendable {
         private var out = Data()
         private var err = Data()
         private var activity = Date()
+        private var f: Failure?
 
         var lastActivity: Date { l.withLock { activity } }
         var stdout: Data { l.withLock { out } }
         var stderr: Data { l.withLock { err } }
+        var failure: Failure? { l.withLock { f } }
 
         func appendStdout(_ d: Data) { l.withLock { out.append(d); activity = Date() } }
         func appendStderr(_ d: Data) { l.withLock { err.append(d); activity = Date() } }
+        func setFailure(_ x: Failure) { l.withLock { if f == nil { f = x } } }
+    }
+
+    /// One-shot wait for the stdout/stderr drain loops to hit EOF. Resumes
+    /// when both drains finish or when the breaker fires, whichever comes
+    /// first — the drains themselves keep running in the background either
+    /// way and are reclaimed whenever the pipes finally close.
+    private final class DrainWaiter: @unchecked Sendable {
+        private let l = NSLock()
+        private var remaining = 2
+        private var continuation: CheckedContinuation<Void, Never>?
+
+        private func resume() {
+            l.lock()
+            let c = continuation
+            continuation = nil
+            l.unlock()
+            c?.resume()
+        }
+
+        func drainFinished() {
+            l.lock()
+            remaining -= 1
+            let done = remaining == 0
+            l.unlock()
+            if done { resume() }
+        }
+
+        func breakerFired() { resume() }
+
+        func wait() async {
+            await withCheckedContinuation { c in
+                l.lock()
+                if remaining == 0 {
+                    l.unlock()
+                    c.resume()
+                } else {
+                    continuation = c
+                    l.unlock()
+                }
+            }
+        }
     }
 
     private func runSSH(arguments: [String], stdin: Data?, hardTimeout: TimeInterval?, idleTimeout: TimeInterval?) async throws -> RunResult {
@@ -291,16 +335,19 @@ final class SSHManager: @unchecked Sendable {
         debugLog("SSH", "spawned ssh pid \(process.processIdentifier): \(arguments.joined(separator: " "))")
 
         // Drain stdout/stderr concurrently; chunk arrival doubles as the
-        // activity signal for idle timeouts.
-        let outTask = Task.detached {
+        // activity signal for the idle watchdog.
+        let drains = DrainWaiter()
+        Task.detached {
             while let d = try? stdoutPipe.fileHandleForReading.read(upToCount: 65536), !d.isEmpty {
                 box.appendStdout(d)
             }
+            drains.drainFinished()
         }
-        let errTask = Task.detached {
+        Task.detached {
             while let d = try? stderrPipe.fileHandleForReading.read(upToCount: 65536), !d.isEmpty {
                 box.appendStderr(d)
             }
+            drains.drainFinished()
         }
 
         // stdin is written from a side task so a slow/blocked remote reader
@@ -312,34 +359,56 @@ final class SSHManager: @unchecked Sendable {
             }
         }
 
-        var failure: Failure? = nil
-        let start = Date()
-        while process.isRunning {
-            if let hardTimeout, Date().timeIntervalSince(start) >= hardTimeout {
-                failure = .hardTimeout(hardTimeout)
+        // Hard ceiling: kill after N seconds regardless of activity.
+        var hardWatchdog: Task<Void, Never>?
+        if let hardTimeout {
+            hardWatchdog = Task {
+                try? await Task.sleep(nanoseconds: UInt64(hardTimeout * 1_000_000_000))
+                guard !Task.isCancelled, process.isRunning else { return }
+                box.setFailure(.hardTimeout(hardTimeout))
                 process.terminate()
-                break
             }
-            if let idleTimeout, Date().timeIntervalSince(box.lastActivity) >= idleTimeout {
-                failure = .idleTimeout(idleTimeout)
-                process.terminate()
-                break
-            }
-            try await Task.sleep(nanoseconds: 50_000_000)
         }
-        await awaitProcessExit(process)
-        debugLog("SSH", "ssh pid \(process.processIdentifier) exited (status \(process.terminationStatus), failure \(failure != nil))")
-        // Never await EOF on the pipes: it may never come. A killed ssh
-        // leaves the far ends open until the remote side notices (no pty →
-        // no SIGHUP), and a backgrounded process — the `-fN` control master,
-        // or anything the remote command daemonizes — inherits our
-        // stdout/stderr for its entire lifetime. The drain loops run
-        // continuously while the process is alive, so everything produced
-        // before exit is already in the pipe buffer; give them a brief
-        // grace to flush it, then move on — they finish (and their threads
-        // are reclaimed) whenever the pipes finally close.
-        try? await Task.sleep(nanoseconds: 200_000_000)
 
+        // Idle watchdog: sleeps until the current silence deadline, then
+        // either kills or re-arms against the latest activity — it wakes at
+        // most once per idle window, and not at all once cancelled.
+        var idleWatchdog: Task<Void, Never>?
+        if let idleTimeout {
+            idleWatchdog = Task {
+                while !Task.isCancelled {
+                    let remaining = idleTimeout - Date().timeIntervalSince(box.lastActivity)
+                    guard remaining > 0 else {
+                        guard process.isRunning else { return }
+                        box.setFailure(.idleTimeout(idleTimeout))
+                        process.terminate()
+                        return
+                    }
+                    try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000))
+                }
+            }
+        }
+
+        await awaitProcessExit(process)
+        hardWatchdog?.cancel()
+        idleWatchdog?.cancel()
+        debugLog("SSH", "ssh pid \(process.processIdentifier) exited (status \(process.terminationStatus), failure \(box.failure != nil))")
+
+        // EOF on the pipes marks end-of-data and normally arrives with
+        // process death, so awaiting the drains costs nothing in the common
+        // case. It may also never come: a killed ssh leaves the far ends
+        // open until the remote side notices (no pty → no SIGHUP), and a
+        // backgrounded process — the `-fN` control master, or anything the
+        // remote command daemonizes — inherits our stdout/stderr for its
+        // entire lifetime. The breaker bounds the wait for those cases.
+        let breaker = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            drains.breakerFired()
+        }
+        await drains.wait()
+        breaker.cancel()
+
+        let failure = box.failure
         return RunResult(
             exitCode: failure != nil ? -1 : process.terminationStatus,
             stdout: box.stdout,

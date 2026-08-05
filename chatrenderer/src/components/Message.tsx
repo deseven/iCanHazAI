@@ -17,6 +17,7 @@ import { sendToHost } from "../bridge";
 import { debugLog } from "../debug";
 import { parseToolArgs, isEmptyArgs } from "../toolArgs";
 import type { ToolArgEntry } from "../toolArgs";
+import { summarizeToolCall, summarizeToolResult } from "../toolSummary";
 import { Copy, SquarePen, Trash2, Brain, User, Bot, Settings, AlertTriangle, RotateCcw, ChevronRight, ChevronDown, Wrench, Terminal } from "lucide-preact";
 import type { ToolCallData, ToolResultData } from "../types";
 
@@ -90,6 +91,21 @@ function ToolArgsView({ args }: { args: string }) {
   const entries = useMemo(() => parseToolArgs(args), [args]);
   if (entries === null) {
     return <pre class="tool-call-args">{args}</pre>;
+  }
+  return <ToolArgEntries entries={entries} />;
+}
+
+/** Render a tool result's content. A result that is a JSON object gets the
+ *  same key/value treatment as call arguments; anything else stays a raw
+ *  <pre>. The leading-"{" precondition avoids running JSON.parse over
+ *  plainly-textual output. */
+function ToolResultContent({ content }: { content: string }) {
+  const entries = useMemo(() => {
+    if (!content.trimStart().startsWith("{")) return null;
+    return parseToolArgs(content);
+  }, [content]);
+  if (entries === null) {
+    return <pre class="tool-call-args">{content}</pre>;
   }
   return <ToolArgEntries entries={entries} />;
 }
@@ -295,27 +311,59 @@ function ToolBlock({
     sendToHost({ type: "denyToolCall", callId: call.id });
   };
 
+  // Collapsed header summaries: line 1 is the call's key arguments, line 2
+  // the status + one-line description. Both truncate with an ellipsis in CSS.
+  const summary = useMemo(
+    () => summarizeToolCall(call.name, call.arguments, call.requiredArgs),
+    [call.name, call.arguments, call.requiredArgs],
+  );
+  const status = summarizeToolResult(call.name, result, running, pending);
+
   return (
     <div class={`tool-block${pending ? " tool-block-pending" : ""}`} ref={blockRef}>
       <button class="tool-toggle" ref={toggleRef} onClick={() => setOpen((v) => !v)}>
-        <Wrench size={14} />
-        <span class="tool-name">{shortToolName(call.name)}</span>
-        {pending && <span class="tool-badge tool-badge-pending">approval</span>}
-        {running && <span class="tool-spinner" aria-hidden="true" />}
-        {result && !result.isStreaming && result.isDenied && (
-          <span class="tool-badge tool-badge-denied">denied</span>
+        <span class="tool-line">
+          <Wrench size={14} class="tool-icon" />
+          <span class="tool-name">{shortToolName(call.name)}</span>
+          {open
+            ? // Expanded: the arguments and result are visible below, so the
+              // header carries just the name and the status badge.
+              status && (
+                <>
+                  {status.kind === "running" && <span class="tool-spinner" aria-hidden="true" />}
+                  <span class={`tool-badge tool-badge-${status.kind === "done" ? "ok" : status.kind}`}>
+                    {status.label}
+                  </span>
+                </>
+              )
+            : summary.length > 0 && (
+                <span class="tool-summary">
+                  {summary.map((e, i) => (
+                    <span class="tool-summary-entry" key={i}>
+                      {i > 0 && <span class="tool-summary-sep"> · </span>}
+                      {e.key !== null && <span class="tool-summary-key">{e.key}: </span>}
+                      {e.value}
+                    </span>
+                  ))}
+                </span>
+              )}
+          <span class="tool-chevron">
+            {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </span>
+        </span>
+        {!open && status && (
+          <span class="tool-line tool-status-line">
+            {status.kind === "running" && <span class="tool-spinner" aria-hidden="true" />}
+            <span class={`tool-badge tool-badge-${status.kind === "done" ? "ok" : status.kind}`}>
+              {status.label}
+            </span>
+            {status.description && (
+              <span class={`tool-status-desc${status.kind === "error" ? " tool-status-desc-error" : ""}`}>
+                {status.description}
+              </span>
+            )}
+          </span>
         )}
-        {result && !result.isStreaming && !result.isDenied && result.isCancelled && (
-          <span class="tool-badge tool-badge-cancelled">cancelled</span>
-        )}
-        {result && !result.isStreaming && !result.isDenied && !result.isCancelled && result.isError && (
-          <span class="tool-badge tool-badge-error">error</span>
-        )}
-        {result && !result.isStreaming && !result.isDenied && !result.isCancelled && !result.isError && (
-          <span class="tool-badge tool-badge-ok">done</span>
-        )}
-        {result?.isStreaming && <span class="tool-badge tool-badge-running">running</span>}
-        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
       </button>
       {open && (
         <div class="tool-content">
@@ -337,7 +385,7 @@ function ToolBlock({
               <div class="tool-call-label">
                 {result.isStreaming ? "Result (streaming…)" : "Result"}
               </div>
-              <pre class="tool-call-args">{result.content}</pre>
+              <ToolResultContent content={result.content} />
             </div>
           )}
           {pending && (

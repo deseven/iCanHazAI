@@ -947,12 +947,12 @@ final class AppViewModel: ObservableObject {
 
     /// Maximum number of recently used working directories kept in the app
     /// config; older entries fall off the end automatically.
-    static let workingDirectoryRecentLimit = 30
+    nonisolated static let workingDirectoryRecentLimit = 30
 
     /// Normalizes a working directory for storage: SSH specs (`host:/path`)
     /// are kept verbatim (standardization would mangle them), local paths are
     /// standardized (resolving `~` and symlinks).
-    static func normalizeWorkingDirectory(_ path: String) -> String {
+    nonisolated static func normalizeWorkingDirectory(_ path: String) -> String {
         SSHSpec.isSSH(path)
             ? path.trimmingCharacters(in: .whitespaces)
             : (path as NSString).standardizingPath
@@ -960,7 +960,7 @@ final class AppViewModel: ObservableObject {
 
     /// Pure MRU-list update behind `recordWorkingDirectory`: moves
     /// `normalized` to the front (deduped), capping the list at `limit`.
-    static func recentDirectories(inserting normalized: String, into list: [String], limit: Int = workingDirectoryRecentLimit) -> [String] {
+    nonisolated static func recentDirectories(inserting normalized: String, into list: [String], limit: Int = workingDirectoryRecentLimit) -> [String] {
         var result = list.filter { $0 != normalized }
         result.insert(normalized, at: 0)
         if result.count > limit { result = Array(result.prefix(limit)) }

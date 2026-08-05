@@ -979,18 +979,80 @@ body {
   font-family: var(--font-sans);
   cursor: pointer;
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0;
+  /* Full width (not fit-content) so the summary lines can truncate with an
+     ellipsis against the message width instead of overflowing it. */
+  width: 100%;
+  text-align: left;
+}
+
+/* One line of the collapsed tool header. Line 1 is tool name + argument
+   summary; line 2 (`.tool-status-line`) is the status badge + description. */
+.tool-line {
+  display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0;
-  width: fit-content;
+  min-width: 0;
   /* Reserve enough vertical space for the status badges (done/error/denied)
      so the line doesn't grow — and shift surrounding content — when a badge
      appears. */
   min-height: 18px;
 }
 
+.tool-icon {
+  flex: 0 0 auto;
+}
+
 .tool-name {
   font-weight: 500;
+  flex: 0 0 auto;
+}
+
+/* Argument summary on line 1: whatever fits, the rest is cut with an
+   ellipsis. flex: 1 + min-width: 0 is what allows the truncation to happen. */
+.tool-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.tool-summary-key {
+  color: var(--text-secondary);
+}
+
+/* Chevron pinned to the right edge of line 1 (the summary's flex: 1 pushes
+   it there; margin-left: auto covers the no-summary case). */
+.tool-chevron {
+  margin-left: auto;
+  flex: 0 0 auto;
+  display: flex;
+}
+
+/* Status line: indented to align under the tool name (icon width + gap). */
+.tool-status-line {
+  padding-left: 20px;
+}
+
+.tool-status-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.tool-status-desc-error {
+  color: var(--error-text);
 }
 
 .tool-spinner {
@@ -1011,6 +1073,7 @@ body {
   padding: 1px 5px;
   border-radius: 4px;
   line-height: 1.4;
+  flex: 0 0 auto;
 }
 
 .tool-badge-ok {

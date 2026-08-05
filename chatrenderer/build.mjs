@@ -31,23 +31,30 @@ function typecheck() {
   }
 }
 
-// Bundle the test files with esbuild (resolving TS imports) into a single
-// CommonJS file, then run them with Node's built-in test runner. Fails the
+// Bundle every tests/*.test.ts file with esbuild (resolving TS imports) into
+// CommonJS files, then run them with Node's built-in test runner. Fails the
 // build if any test fails. Skipped in watch mode for speed.
 async function runTests() {
-  const testEntry = join(root, "tests", "toolArgs.test.ts");
-  const testOut = join(outDir, "tests", "toolArgs.test.cjs");
+  const { readdir } = await import("node:fs/promises");
+  const entries = (await readdir(join(root, "tests")))
+    .filter((f) => f.endsWith(".test.ts"))
+    .map((f) => join(root, "tests", f));
+  const testsOut = join(outDir, "tests");
   await esbuild.build({
     ...commonOptions,
-    entryPoints: [testEntry],
-    outfile: testOut,
+    entryPoints: entries,
+    outdir: testsOut,
+    outExtension: { ".js": ".test.cjs" },
     format: "cjs",
     minify: false,
     sourcemap: false,
     // Tests import node built-ins; keep them external.
     external: ["node:test", "node:assert", "node:assert/strict"],
   });
-  const res = spawnSync(process.execPath, ["--test", testOut], {
+  const bundles = entries.map((e) =>
+    join(testsOut, e.slice(join(root, "tests").length + 1).replace(/\.ts$/, ".test.cjs")),
+  );
+  const res = spawnSync(process.execPath, ["--test", ...bundles], {
     stdio: "inherit",
     cwd: root,
   });

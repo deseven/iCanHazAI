@@ -1075,13 +1075,18 @@ struct ChatMessageData: Codable, Equatable {
         /// calls. When present, the renderer shows this diff instead of the
         /// raw arguments. Nil for tools that don't produce diffs.
         let diff: String?
+        /// The tool schema's required argument names, used by the renderer to
+        /// order the collapsed header's argument summary (required first) for
+        /// tools it has no built-in knowledge of.
+        let requiredArgs: [String]?
 
-        init(id: String, name: String, arguments: String, pendingApproval: Bool = false, diff: String? = nil) {
+        init(id: String, name: String, arguments: String, pendingApproval: Bool = false, diff: String? = nil, requiredArgs: [String]? = nil) {
             self.id = id
             self.name = name
             self.arguments = arguments
             self.pendingApproval = pendingApproval
             self.diff = diff
+            self.requiredArgs = requiredArgs
         }
     }
 
@@ -1122,7 +1127,7 @@ extension ChatMessage {
             )
         }
         let toolCalls = toolCalls?.map {
-            ChatMessageData.ToolCallData(id: $0.id, name: $0.name, arguments: $0.arguments, pendingApproval: $0.pendingApproval, diff: $0.diff)
+            ChatMessageData.ToolCallData(id: $0.id, name: $0.name, arguments: $0.arguments, pendingApproval: $0.pendingApproval, diff: $0.diff, requiredArgs: $0.requiredArgs)
         }
         let toolResults = toolResults?.map {
             ChatMessageData.ToolResultData(callID: $0.callID, content: $0.content, isError: $0.isError, isStreaming: $0.isStreaming, isDenied: $0.isDenied, isCancelled: $0.isCancelled)

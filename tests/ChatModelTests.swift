@@ -479,6 +479,45 @@ struct ChatModelTests {
         #expect(decoded.pendingApproval == true)
     }
 
+    @Test("ToolCall defaults requiredArgs to nil and decodes legacy JSON without it")
+    func toolCallDecodesLegacyWithoutRequiredArgs() throws {
+        let json = #"{"id":"call_1","name":"calc","arguments":"{}"}"#.data(using: .utf8)!
+        let call = try JSONDecoder().decode(ToolCall.self, from: json)
+        #expect(call.requiredArgs == nil)
+    }
+
+    @Test("ToolCall round-trips requiredArgs through JSON")
+    func toolCallRoundTripsRequiredArgs() throws {
+        let original = ToolCall(id: "call_1", name: "read_file", arguments: "{}", requiredArgs: ["path"])
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(ToolCall.self, from: data)
+        #expect(decoded == original)
+        #expect(decoded.requiredArgs == ["path"])
+    }
+
+    @Test("ToolDefinition.requiredArgs parses the schema's required list")
+    func toolDefinitionRequiredArgs() {
+        let def = ToolDefinition(
+            serverName: "Filesystem", prefix: "", name: "read_file", description: nil,
+            inputSchema: #"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#
+        )
+        #expect(def.requiredArgs == ["path"])
+    }
+
+    @Test("ToolDefinition.requiredArgs is nil when the schema has no required list or is malformed")
+    func toolDefinitionRequiredArgsMissing() {
+        let noRequired = ToolDefinition(
+            serverName: "Utils", prefix: "", name: "datetime", description: nil,
+            inputSchema: #"{"type":"object","properties":{}}"#
+        )
+        #expect(noRequired.requiredArgs == nil)
+        let malformed = ToolDefinition(
+            serverName: "Utils", prefix: "", name: "broken", description: nil,
+            inputSchema: "not json"
+        )
+        #expect(malformed.requiredArgs == nil)
+    }
+
     @Test("ToolResult decodes legacy JSON without isDenied/isStreaming as false")
     func toolResultDecodesLegacyJSON() throws {
         let json = #"{"callID":"call_1","content":"4","isError":false}"#.data(using: .utf8)!

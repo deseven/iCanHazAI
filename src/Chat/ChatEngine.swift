@@ -1650,8 +1650,16 @@ actor ChatEngine {
                 // The model emitted tool calls. They were already accumulated
                 // onto the assistant message during streaming (via
                 // `applyChunk(.toolCall)`); ensure they're set in case the
-                // service returned them only in the final result.
-                applyToolCalls(result.toolCalls, filename: filename)
+                // service returned them only in the final result. Each call is
+                // stamped with its schema's required argument names so the
+                // renderer can order the collapsed header's argument summary
+                // (required first) for tools it has no built-in knowledge of.
+                let stampedCalls = result.toolCalls.map { call -> ToolCall in
+                    var stamped = call
+                    stamped.requiredArgs = toolDefs.first(where: { $0.namespacedName == call.name })?.requiredArgs
+                    return stamped
+                }
+                applyToolCalls(stampedCalls, filename: filename)
                 // Flush immediately so the tool-call block appears in the UI
                 // before we begin (potentially slow) tool execution.
                 flushCoalescedEmit()
@@ -1674,7 +1682,7 @@ actor ChatEngine {
                 // visible inline tool block is unchanged. The provider history
                 // is built directly from these messages by `ChatService` (no
                 // un-folding `flatMap` needed).
-                for call in result.toolCalls {
+                for call in stampedCalls {
                     // `executeToolCall` awaits user approval, which can be
                     // cancelled (stop). Throws `CancellationError` in that case.
                     let toolResult = try await executeToolCall(call, filename: filename, tools: toolDefs)

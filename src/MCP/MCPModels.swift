@@ -155,17 +155,24 @@ struct ToolCall: Codable, Identifiable, Equatable, Sendable {
     /// arguments are invalid. Cleared on denial since the changes were never
     /// applied. Decoded defensively (defaults to nil) for old chat files.
     var diff: String?
+    /// The tool schema's required argument names, stamped by the engine when
+    /// the call is finalized. Display-only: the renderer uses it to order the
+    /// collapsed tool header's argument summary (required first) for tools it
+    /// has no built-in knowledge of. Nil for calls from before this field
+    /// existed and while the call is still streaming.
+    var requiredArgs: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, arguments, pendingApproval, diff
+        case id, name, arguments, pendingApproval, diff, requiredArgs
     }
 
-    init(id: String, name: String, arguments: String, pendingApproval: Bool = false, diff: String? = nil) {
+    init(id: String, name: String, arguments: String, pendingApproval: Bool = false, diff: String? = nil, requiredArgs: [String]? = nil) {
         self.id = id
         self.name = name
         self.arguments = arguments
         self.pendingApproval = pendingApproval
         self.diff = diff
+        self.requiredArgs = requiredArgs
     }
 
     init(from decoder: Decoder) throws {
@@ -175,6 +182,7 @@ struct ToolCall: Codable, Identifiable, Equatable, Sendable {
         arguments = try c.decode(String.self, forKey: .arguments)
         pendingApproval = try c.decodeIfPresent(Bool.self, forKey: .pendingApproval) ?? false
         diff = try c.decodeIfPresent(String.self, forKey: .diff)
+        requiredArgs = try c.decodeIfPresent([String].self, forKey: .requiredArgs)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -184,6 +192,7 @@ struct ToolCall: Codable, Identifiable, Equatable, Sendable {
         try c.encode(arguments, forKey: .arguments)
         try c.encode(pendingApproval, forKey: .pendingApproval)
         try c.encodeIfPresent(diff, forKey: .diff)
+        try c.encodeIfPresent(requiredArgs, forKey: .requiredArgs)
     }
 }
 
@@ -269,5 +278,15 @@ struct ToolDefinition: Sendable, Equatable {
     /// the tool is exposed under its own name with no prefix.
     var namespacedName: String {
         prefix.isEmpty ? name : "\(prefix)_\(name)"
+    }
+
+    /// The schema's required argument names, parsed from `inputSchema`. Nil
+    /// when the schema isn't a JSON object or declares no `required` list —
+    /// callers should treat that as "unknown", not "none".
+    var requiredArgs: [String]? {
+        guard let data = inputSchema.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data),
+              let dict = obj as? [String: Any] else { return nil }
+        return dict["required"] as? [String]
     }
 }
