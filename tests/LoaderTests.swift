@@ -55,5 +55,38 @@ extension AllAppTests {
             ctrl.markApplicationCompleted(.configuration, loaded: 1)
             #expect(fires == 1)
         }
+
+        @Test("startupHiddenHandler fires only after the loader hides")
+        @MainActor
+        func hiddenFiresAfterHide() async throws {
+            let ctrl = LoaderController.shared
+            var ready = 0
+            var hidden = 0
+            ctrl.startupReadyHandler = { ready += 1 }
+            ctrl.startupHiddenHandler = { hidden += 1 }
+
+            ctrl.beginStartup()
+            for r in AppResource.allCases {
+                ctrl.markApplicationCompleted(r, loaded: 1)
+            }
+            if let mcpSection = ctrl.sections.first(where: { $0.id == "mcps" }) {
+                let entries = mcpSection.entries.map {
+                    MCPConfigurationEntry(name: $0.label, status: .success, toolCount: 1, errorMessage: nil)
+                }
+                ctrl.setMCPState(MCPConfigurationState(isConfiguring: false, entries: entries))
+            }
+
+            // Settled → ready fires, but the loader is still in its 1-second
+            // results-display delay, so "hidden" must not have fired yet.
+            #expect(ready == 1)
+            #expect(hidden == 0)
+            #expect(ctrl.visible)
+
+            // Once the display delay elapses the loader hides and the CLI
+            // readiness signal (wired to startupHiddenHandler) may fire.
+            try await Task.sleep(for: .milliseconds(1500))
+            #expect(!ctrl.visible)
+            #expect(hidden == 1)
+        }
     }
 }

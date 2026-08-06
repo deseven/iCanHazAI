@@ -10,10 +10,12 @@ import Foundation
 ///
 /// Lifecycle: the stale socket from a previous run is removed at app start
 /// ([`removeStaleSocketIfNeeded`](src/CLI/CLIServer.swift), after probing so a
-/// live peer's file is never unlinked), the server itself is started once all
-/// initialization has completed (from the loader's `startupReadyHandler`, the
-/// same signal that reveals the main window), and `stop()` on termination
-/// closes everything and unlinks the socket file.
+/// live peer's file is never unlinked), the server itself is started once the
+/// startup loader has finished AND hidden (from the loader's
+/// `startupHiddenHandler`, after the 1-second results-display delay — clients
+/// treat socket connectability as the readiness signal, so it must not appear
+/// while the loader is still up), and `stop()` on termination closes
+/// everything and unlinks the socket file.
 final class CLIServer: @unchecked Sendable {
 
     /// Dispatches a `chat.send` request to the engine. Injectable for tests.

@@ -21,13 +21,17 @@ enum CLIClient {
     /// launch. LaunchServices launches are detected by the
     /// `__CFBundleIdentifier` environment variable matching our own bundle id
     /// (a terminal-run binary inherits the *terminal's* id, or none); the
-    /// legacy `-psn_…` arg and the explicit `--headless` flag also mean GUI.
+    /// legacy `-psn_…` arg and the explicit `--headless`/`--gui` flags also
+    /// mean GUI. `--gui` is a hidden flag for running the bundled binary
+    /// directly from a terminal (blocking, stdio attached) without falling
+    /// into CLI mode.
     static func isCLIInvocation(
         _ args: [String],
         environment: [String: String] = ProcessInfo.processInfo.environment,
         bundleID: String? = Bundle.main.bundleIdentifier
     ) -> Bool {
         if args.contains("--headless") { return false }
+        if args.contains("--gui") { return false }
         if args.contains(where: { $0.hasPrefix("-psn_") }) { return false }
         if let envID = environment["__CFBundleIdentifier"], let bundleID, envID == bundleID {
             return false
@@ -205,7 +209,25 @@ enum CLIClient {
         // True while the frames of an agent iteration's tool calls are the
         // last thing printed — the next model response starts a new block.
         var toolBlockOpen = false
+        // Start lines of tool calls whose results haven't landed yet. The
+        // header is printed together with the result, not at call time, so
+        // a batch of parallel calls doesn't pile all headers above all
+        // results.
+        var pendingToolCalls = PendingToolCalls()
         var exitCode: Int32 = 1
+
+        // Writes any pending start lines that never got a result (stream
+        // moved on without them). Returns false when stdout is gone.
+        func flushPendingToolCalls() -> Bool {
+            guard !pendingToolCalls.isEmpty else { return true }
+            var out = lastCharNewline ? "" : "\n"
+            for header in pendingToolCalls.drain() {
+                out += renderToolFrame(name: header.name, args: header.args, status: nil)
+            }
+            lastCharNewline = true
+            toolBlockOpen = true
+            return writeStdout(out)
+        }
 
         loop: for await event in conn.events {
             switch event {
@@ -232,6 +254,13 @@ enum CLIClient {
                     guard id == requestID else { break }
                 case .delta(let id, let text):
                     guard id == requestID else { break }
+                    // Stray pending headers belong to the previous block —
+                    // flush them before the new text.
+                    guard flushPendingToolCalls() else {
+                        exitCode = 0
+                        terminated = true
+                        break loop
+                    }
                     // A delta after tool frames opens a new agent iteration
                     // — separate the blocks with a blank line.
                     let chunk = toolBlockOpen ? "\n" + text : text
@@ -248,10 +277,23 @@ enum CLIClient {
                 case .tool(let id, let name, let args, let status):
                     guard id == requestID else { break }
                     // Tool lines render like the renderer's collapsed tool
-                    // blocks: a header (name + key arguments) when the call
-                    // starts, a status line when its result lands.
+                    // blocks: a header (name + key arguments) followed by a
+                    // status line. The header is deferred until the result
+                    // lands so each call's output sits directly under it.
+                    guard let status else {
+                        pendingToolCalls.add(name: name, args: args)
+                        break
+                    }
+                    let header: (name: String, args: String?)
+                    if let pending = pendingToolCalls.pop(forResultName: name) {
+                        header = pending
+                    } else {
+                        header = (name, nil)
+                    }
                     if !lastCharNewline { _ = writeStdout("\n") }
-                    guard writeStdout(renderToolFrame(name: name, args: args, status: status)) else {
+                    let lines = renderToolFrame(name: header.name, args: header.args, status: nil)
+                        + renderToolFrame(name: name, args: nil, status: status)
+                    guard writeStdout(lines) else {
                         exitCode = 0
                         terminated = true
                         break loop
@@ -263,6 +305,7 @@ enum CLIClient {
                     warn(text)
                 case .done(let id, let chat, let name):
                     guard id == requestID else { break }
+                    _ = flushPendingToolCalls()
                     if !lastCharNewline { _ = writeStdout("\n") }
                     // The stream ended right after a tool block — close the
                     // iteration with the usual blank line.
@@ -278,6 +321,7 @@ enum CLIClient {
                     break loop
                 case .error(let id, _, let message):
                     guard id == requestID || id == nil else { break }
+                    _ = flushPendingToolCalls()
                     if !lastCharNewline { _ = writeStdout("\n") }
                     stderr("error: \(message)")
                     exitCode = 1
@@ -365,6 +409,34 @@ enum CLIClient {
 
     private static func styled(_ text: String, _ code: String, enabled: Bool) -> String {
         enabled ? "\u{1B}[\(code)m\(text)\u{1B}[0m" : text
+    }
+
+    /// Buffers tool-call start lines until their results arrive. Result
+    /// frames carry only the tool name (no args), so pairing matches on the
+    /// name, falling back to the oldest pending header.
+    struct PendingToolCalls {
+        private(set) var headers: [(name: String, args: String?)] = []
+
+        var isEmpty: Bool { headers.isEmpty }
+
+        mutating func add(name: String, args: String?) {
+            headers.append((name, args))
+        }
+
+        /// Pops the header for a finished call: the first pending one with
+        /// the same name, else the oldest.
+        mutating func pop(forResultName name: String) -> (name: String, args: String?)? {
+            guard let idx = headers.firstIndex(where: { $0.name == name })
+                ?? (headers.isEmpty ? nil : headers.startIndex) else { return nil }
+            return headers.remove(at: idx)
+        }
+
+        /// Returns all pending headers (results that never came) and clears
+        /// the buffer.
+        mutating func drain() -> [(name: String, args: String?)] {
+            defer { headers.removeAll() }
+            return headers
+        }
     }
 
     /// Renders one tool frame as a terminal line. A call start becomes

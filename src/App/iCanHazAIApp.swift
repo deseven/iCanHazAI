@@ -45,12 +45,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // but the main window is not revealed. The dock icon still opens
             // it later via applicationShouldHandleReopen.
             let headless = CommandLine.arguments.contains("--headless")
-            // Create the CLI control socket once the loader has finished
-            // loading everything (i.e. all initialization is complete), and
-            // show the main window unless headless. Also surface any
-            // configuration errors collected during startup.
+            // Show the main window (unless headless) as soon as loading has
+            // finished, and surface any configuration errors collected during
+            // startup.
             LoaderController.shared.startupReadyHandler = {
-                CLIServer.shared.start()
                 if headless {
                     debugLog("App", "headless start — main window not revealed")
                 } else {
@@ -59,6 +57,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if let vm = AppViewModel.shared, !vm.configErrors.isEmpty {
                     vm.showConfigErrors = true
                 }
+            }
+            // Create the CLI control socket only once the loader has actually
+            // hidden (after the 1-second results-display delay). A CLI that
+            // spawned us treats the socket as the readiness signal — starting
+            // it earlier let a script connect and flood the engine with tool
+            // calls while the loader was still on screen.
+            LoaderController.shared.startupHiddenHandler = {
+                CLIServer.shared.start()
             }
         }
         debugLog("App", "applicationWillFinishLaunching — starting engine")

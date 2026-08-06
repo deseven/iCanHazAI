@@ -125,6 +125,12 @@ final class LoaderController: ObservableObject {
     /// startup.
     var startupReadyHandler: (() -> Void)?
 
+    /// Fired exactly once per `.startup` pass, when the loader actually hides
+    /// (the 1-second results-display delay has elapsed). The app wires this to
+    /// start the CLI control socket, so a freshly spawned CLI can't connect —
+    /// and flood the engine with tool calls — while the loader is still up.
+    var startupHiddenHandler: (() -> Void)?
+
     private var hideTask: Task<Void, Never>?
     /// Guards `startupReadyHandler` against firing more than once per startup.
     private var startupReadyFired = false
@@ -370,7 +376,11 @@ final class LoaderController: ObservableObject {
     }
 
     private func hide() {
+        let wasStartup = mode == .startup
         setVisible(false)
         mode = .idle
+        if wasStartup {
+            startupHiddenHandler?()
+        }
     }
 }

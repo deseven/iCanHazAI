@@ -328,9 +328,13 @@ case "$mode" in
         echo -e "  ${dimColor}signing: ad-hoc${noColor}"
         echo -e "  ${dimColor}artifacts: dist/$name.app${noColor}"
         echo -e "  ${dimColor}launching...${noColor}"
-        # Launch via LaunchServices: running the binary directly is detected
-        # as a CLI invocation (see CLIClient.isCLIInvocation).
-        open "$loc/dist/$name.app"
+        # Run the bundled binary directly so the app's stdout/stderr stays
+        # attached to this terminal. `--gui` keeps the direct invocation from
+        # being detected as CLI (see CLIClient.isCLIInvocation); any previous
+        # instance is killed first — a second one would fight over the CLI
+        # control socket.
+        pkill -x "$name" 2>/dev/null || true
+        "$loc/dist/$name.app/Contents/MacOS/$name" --gui
         ;;
     dev-release)
         echo -e "  ${dimColor}mode: development release${noColor}"

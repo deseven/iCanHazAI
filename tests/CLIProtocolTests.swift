@@ -202,6 +202,34 @@ extension AllAppTests {
             #expect(colored.hasSuffix("\u{1B}[0m\n") || colored.contains("Listed 3 items."))
         }
 
+        @Test("pending tool calls pair results with deferred headers")
+        func pendingToolCalls() {
+            var pending = CLIClient.PendingToolCalls()
+            #expect(pending.isEmpty)
+            #expect(pending.pop(forResultName: "ls") == nil)
+
+            pending.add(name: "hash", args: "Hello · algorithm: sha256")
+            pending.add(name: "hash", args: "Hello · algorithm: md5")
+            pending.add(name: "uuid", args: nil)
+            #expect(!pending.isEmpty)
+
+            // A result pairs with the first pending header of the same name.
+            let first = pending.pop(forResultName: "hash")
+            #expect(first?.name == "hash")
+            #expect(first?.args == "Hello · algorithm: sha256")
+
+            // An unknown name falls back to the oldest pending header.
+            let fallback = pending.pop(forResultName: "sleep")
+            #expect(fallback?.name == "hash")
+            #expect(fallback?.args == "Hello · algorithm: md5")
+
+            // Drain returns the rest (results that never came) and clears.
+            let rest = pending.drain()
+            #expect(rest.count == 1)
+            #expect(rest[0].name == "uuid")
+            #expect(pending.isEmpty)
+        }
+
         @Test("chat-created line shows the filename without .json plus the chat name")
         func chatCreatedLineRendering() {
             #expect(CLIClient.renderChatCreatedLine(chat: "2026-07-12 14-30-00.json", name: "How do I foo?")
@@ -260,6 +288,8 @@ extension AllAppTests {
             #expect(!CLIClient.isCLIInvocation(["-psn_0_12345"], environment: [:], bundleID: nil))
             // Explicit headless flag → GUI.
             #expect(!CLIClient.isCLIInvocation(["--headless"], environment: [:], bundleID: nil))
+            // Hidden --gui flag (direct terminal run of the bundled binary) → GUI.
+            #expect(!CLIClient.isCLIInvocation(["--gui"], environment: [:], bundleID: nil))
         }
     }
 
