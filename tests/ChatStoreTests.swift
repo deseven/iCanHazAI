@@ -403,7 +403,7 @@ struct ChatStoreTests {
         // The store self-heals: drops the corrupt cache and reopens empty.
         // (stderr is suppressed only to hide the expected CoreData open-failure
         // log the framework prints for the corrupt store.)
-        let store = try #require(try suppressingStderr { ChatStore(env: env) })
+        let store = try #require(suppressingStderr { ChatStore(env: env) })
         #expect(store.getAllEntries() == [])
 
         // startupSync repopulates from the chat file on disk.

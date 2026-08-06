@@ -255,7 +255,7 @@ extension AllAppTests {
                 hunks: parsed.hunks,
                 workdir: wd,
                 fileExists: { $0 == "/remote/f.txt" },
-                fileContent: { $0 == "/remote/f.txt" ? "old\n" : nil }
+                fileContent: { resolved, _ in resolved == "/remote/f.txt" ? "old\n" : nil }
             )
             guard ops.count == 1, case .updateFile(_, _, _, _, _, _, let newContent) = ops[0] else {
                 Issue.record("expected a single updateFile op")
@@ -279,7 +279,7 @@ extension AllAppTests {
                     hunks: parsed.hunks,
                     workdir: wd,
                     fileExists: { _ in true },
-                    fileContent: { _ in "existing\n" }
+                    fileContent: { _, _ in "existing\n" }
                 )
             }
         }
@@ -298,9 +298,43 @@ extension AllAppTests {
                     hunks: parsed.hunks,
                     workdir: wd,
                     fileExists: { _ in false },
-                    fileContent: { _ in nil }
+                    fileContent: { _, _ in nil }
                 )
             }
+        }
+    }
+
+    @Suite("SSH workdir: display paths")
+    struct SSHDisplayPathTests {
+        @Test("isolated display paths present the root as the virtual /")
+        func isolated() {
+            let wd = Workdir(root: "h:/a/b", isolated: true)
+            #expect(wd.displayPath(forResolved: "/a/b") == "/")
+            #expect(wd.displayPath(forResolved: "/a/b/c") == "/c")
+            #expect(wd.displayPath(forResolved: "/a/b/c/d.txt") == "/c/d.txt")
+        }
+
+        @Test("non-isolated display paths pass through unchanged")
+        func nonIsolated() {
+            let wd = Workdir(root: "h:/a/b", isolated: false)
+            #expect(wd.displayPath(forResolved: "/a/b/c") == "/a/b/c")
+            #expect(wd.displayPath(forResolved: "/elsewhere") == "/elsewhere")
+        }
+
+        @Test("remote root / passes through even when isolated")
+        func remoteRoot() {
+            let wd = Workdir(root: "h:/", isolated: true)
+            #expect(wd.displayPath(forResolved: "/etc/x") == "/etc/x")
+        }
+
+        @Test("local workdirs get jail spellings too")
+        func local() {
+            let wd = Workdir(root: "/tmp", isolated: true)
+            // Local roots are symlink-resolved (/tmp → /private/tmp on macOS),
+            // so derive expectations from the stored root.
+            let root = try! #require(wd.root)
+            #expect(wd.displayPath(forResolved: root) == "/")
+            #expect(wd.displayPath(forResolved: root + "/sub/f.txt") == "/sub/f.txt")
         }
     }
 }

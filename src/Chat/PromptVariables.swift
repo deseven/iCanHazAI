@@ -164,7 +164,7 @@ enum PromptVariables {
     static func plainTextRendering() -> String {
         """
         Your responses are printed in a terminal as plain text — Markdown, HTML, LaTeX math, and diagrams are NOT rendered, only raw characters are shown.
-        Keep formatting minimal: plain paragraphs, simple lists prefixed with "-" or numbers, and indentation for code. Avoid tables, horizontal rules, and other heavy markup.
+        Keep formatting minimal: plain paragraphs, no Markdown.
         """ + "\n"
     }
 

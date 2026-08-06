@@ -552,6 +552,175 @@ extension AllAppTests {
         }
     }
 
+    // MARK: - Directory isolation
+
+    @Suite("Builtin tools: directory isolation")
+    struct BuiltinIsolationTests {
+        private static let fs = BuiltinTools.filesystemGroup
+        private static let code = BuiltinTools.codeGroup
+
+        /// TestDir paths carry this marker; any appearance in isolated tool
+        /// output means the host layout leaked.
+        private static let hostMarker = "ichai-builtin-tests"
+
+        @Test("find_text shows jail-relative paths and never the host root")
+        func findTextJailPaths() async throws {
+            let tmp = try TestDir()
+            try tmp.write("sub/note.txt", content: "before\nhello isolated world\nafter\n")
+            try tmp.write("top.txt", content: "hello from the top\n")
+            let wd = Workdir(root: tmp.path, isolated: true)
+
+            // Default search root (the jail "/").
+            let (text, err) = await Self.call("find_text", Self.fs, ["regex": "hello"], workdir: wd)
+            #expect(!err)
+            #expect(text.contains("/sub/note.txt:2:hello isolated world"))
+            #expect(text.contains("/top.txt:1:hello from the top"))
+            #expect(!text.contains(Self.hostMarker))
+
+            // Explicit subdirectory as the search root: display paths stay
+            // jail-absolute so they can be fed back into read_file as-is.
+            let (sub, subErr) = await Self.call("find_text", Self.fs, ["regex": "hello", "path": "/sub"], workdir: wd)
+            #expect(!subErr)
+            #expect(sub.contains("/sub/note.txt:2:hello isolated world"))
+            #expect(!sub.contains(Self.hostMarker))
+
+            // A single file as the search root.
+            let (file, fileErr) = await Self.call("find_text", Self.fs, ["regex": "hello", "path": "/sub/note.txt"], workdir: wd)
+            #expect(!fileErr)
+            #expect(file.contains("/sub/note.txt:2:hello isolated world"))
+            #expect(!file.contains(Self.hostMarker))
+
+            // Context lines get the same jail spelling.
+            let (ctx, ctxErr) = await Self.call("find_text", Self.fs, ["regex": "hello", "context": 1], workdir: wd)
+            #expect(!ctxErr)
+            #expect(ctx.contains("/sub/note.txt-1-before"))
+            #expect(ctx.contains("/sub/note.txt-3-after"))
+            #expect(!ctx.contains(Self.hostMarker))
+        }
+
+        @Test("find_text rejects search roots outside the jail")
+        func findTextEscapeRejected() async throws {
+            let tmp = try TestDir()
+            let wd = Workdir(root: tmp.path, isolated: true)
+            for path in ["/../..", "../../outside", "/sub/../../.."] {
+                let (text, err) = await Self.call("find_text", Self.fs, ["regex": "x", "path": path], workdir: wd)
+                #expect(err)
+                #expect(text.contains("escapes the workdir"))
+            }
+        }
+
+        @Test("find_text shows real paths when not isolated")
+        func findTextNonIsolated() async throws {
+            let tmp = try TestDir()
+            try tmp.write("sub/note.txt", content: "hello plain world\n")
+            let wd = Workdir(root: tmp.path, isolated: false)
+            let (text, err) = await Self.call("find_text", Self.fs, ["regex": "hello"], workdir: wd)
+            #expect(!err)
+            #expect(text.contains("/sub/note.txt:1:hello plain world"))
+            // The whole point of isolation: without it the real path shows.
+            #expect(text.contains(Self.hostMarker))
+        }
+
+        @Test("find_file output stays relative to the search root when isolated")
+        func findFileIsolated() async throws {
+            let tmp = try TestDir()
+            try tmp.write("sub/note.txt", content: "")
+            try tmp.write("top.txt", content: "")
+            let wd = Workdir(root: tmp.path, isolated: true)
+            let (text, err) = await Self.call("find_file", Self.fs, ["pattern": "*.txt"], workdir: wd)
+            #expect(!err)
+            #expect(text == "sub/note.txt\ntop.txt")
+            #expect(!text.contains(Self.hostMarker))
+        }
+
+        @Test("no filesystem tool output leaks the host root when isolated")
+        func noFilesystemToolLeaksHostRoot() async throws {
+            let tmp = try TestDir()
+            try tmp.write("sub/note.txt", content: "sweep content\n")
+            let wd = Workdir(root: tmp.path, isolated: true)
+            let fs = Self.fs
+
+            var outputs: [(label: String, text: String)] = []
+            func collect(_ label: String, _ result: (text: String, isError: Bool)) {
+                outputs.append((label, result.text))
+            }
+
+            collect("write_file", await Self.call("write_file", fs, ["path": "/a.txt", "content": "x"], workdir: wd))
+            collect("ls flat", await Self.call("ls", fs, ["path": "/"], workdir: wd))
+            collect("ls recursive", await Self.call("ls", fs, ["path": "/", "recursive": true], workdir: wd))
+            collect("read_file", await Self.call("read_file", fs, ["path": "/a.txt"], workdir: wd))
+            collect("read_file missing", await Self.call("read_file", fs, ["path": "/missing.txt"], workdir: wd))
+            collect("find_file", await Self.call("find_file", fs, ["pattern": "*.txt"], workdir: wd))
+            collect("find_text", await Self.call("find_text", fs, ["regex": "sweep"], workdir: wd))
+            collect("mkdir", await Self.call("mkdir", fs, ["path": "/newdir"], workdir: wd))
+            collect("mv", await Self.call("mv", fs, ["src": "/a.txt", "dst": "/newdir/b.txt"], workdir: wd))
+            collect("mv missing", await Self.call("mv", fs, ["src": "/missing.txt", "dst": "/x.txt"], workdir: wd))
+            collect("rm missing", await Self.call("rm", fs, ["path": "/missing.txt"], workdir: wd))
+            collect("rm non-empty dir", await Self.call("rm", fs, ["path": "/newdir"], workdir: wd))
+            collect("stat", await Self.call("stat", fs, ["path": "/newdir/b.txt"], workdir: wd))
+            collect("stat missing", await Self.call("stat", fs, ["path": "/missing.txt"], workdir: wd))
+            collect("pwd", await Self.call("pwd", fs, [:], workdir: wd))
+
+            // Path-form marker: a full-path leak always contains "/" + the
+            // tmp dir name. (Cocoa's mv error names the destination's parent
+            // folder by bare name only — not a layout leak.)
+            for (label, text) in outputs {
+                #expect(!text.contains("/" + Self.hostMarker), "\(label) leaked the host root: \(text)")
+            }
+        }
+
+        @Test("apply_patch output and errors use jail paths when isolated")
+        func applyPatchIsolated() async throws {
+            let tmp = try TestDir()
+            let wd = Workdir(root: tmp.path, isolated: true)
+
+            let add = """
+            *** Begin Patch
+            *** Add File: /p.txt
+            +patched
+            *** End Patch
+            """
+            let (addText, addErr) = await Self.call("apply_patch", Self.code, ["patch": add], workdir: wd)
+            #expect(!addErr)
+            #expect(addText.contains("Added: /p.txt"))
+            #expect(!addText.contains(Self.hostMarker))
+
+            let updateMissing = """
+            *** Begin Patch
+            *** Update File: /missing.txt
+            @@
+            -x
+            +y
+            *** End Patch
+            """
+            let (missText, missErr) = await Self.call("apply_patch", Self.code, ["patch": updateMissing], workdir: wd)
+            #expect(missErr)
+            #expect(missText.contains("/missing.txt does not exist"))
+            #expect(!missText.contains(Self.hostMarker))
+
+            // Non-UTF-8 target: the planner's error must cite the jail path.
+            try Data([0xFF, 0xD8, 0xFF]).write(to: URL(fileURLWithPath: tmp.sub("bin.dat")))
+            let updateBinary = """
+            *** Begin Patch
+            *** Update File: /bin.dat
+            @@
+            -x
+            +y
+            *** End Patch
+            """
+            let (binText, binErr) = await Self.call("apply_patch", Self.code, ["patch": updateBinary], workdir: wd)
+            #expect(binErr)
+            #expect(binText.contains("/bin.dat is not readable as UTF-8"))
+            #expect(!binText.contains(Self.hostMarker))
+        }
+
+        static func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir = .none) async -> (text: String, isError: Bool) {
+            let arguments = (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
+            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir)
+            return (result.content, result.isError)
+        }
+    }
+
     // MARK: - Code
 
     @Suite("Builtin tools: Code")

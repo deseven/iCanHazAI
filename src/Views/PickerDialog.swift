@@ -93,9 +93,6 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
     @State private var sheetWindow: NSWindow?
     /// Parent window height; determines the dialog height.
     @State private var parentWindowHeight: CGFloat = 720
-    /// Observers re-positioning the sheet when the parent window or the
-    /// sheet itself moves or resizes.
-    @State private var windowObservers: [NSObjectProtocol] = []
 
     /// Combined ordered list used for keyboard navigation.
     private var allItems: [Item] { items + pinnedItems }
@@ -233,7 +230,6 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
             isKeyboardSelection = true
             selection = initialSelection
             updateParentHeight()
-            installWindowObservers()
             // Defer so the sheet has finished laying out before taking focus.
             DispatchQueue.main.async { searchFocused = true }
             // Position now (async so the sheet window exists) and again once
@@ -241,12 +237,10 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
             DispatchQueue.main.async { positionSheet() }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { positionSheet() }
         }
-        .onDisappear {
-            for observer in windowObservers {
-                NotificationCenter.default.removeObserver(observer)
-            }
-            windowObservers = []
-        }
+        // Re-positions the sheet when the parent window moves or resizes and
+        // when the sheet itself resizes (see `handleWindowMoveResize`).
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didMoveNotification), perform: handleWindowMoveResize)
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification), perform: handleWindowMoveResize)
     }
 
     @ViewBuilder
@@ -298,20 +292,14 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
     /// anchor is relative to the parent's frame, and the dialog height
     /// depends on the parent's height) and when the sheet itself resizes
     /// (size changes drift the anchored top edge).
-    private func installWindowObservers() {
-        guard windowObservers.isEmpty else { return }
-        let center = NotificationCenter.default
-        windowObservers = [NSWindow.didMoveNotification, NSWindow.didResizeNotification].map { name in
-            center.addObserver(forName: name, object: nil, queue: .main) { note in
-                let sheet = sheetWindow ?? NSApp.keyWindow
-                guard let window = note.object as? NSWindow else { return }
-                if window === sheet {
-                    positionSheet()
-                } else if window === sheet?.sheetParent {
-                    updateParentHeight()
-                    positionSheet()
-                }
-            }
+    private func handleWindowMoveResize(_ note: Notification) {
+        let sheet = sheetWindow ?? NSApp.keyWindow
+        guard let window = note.object as? NSWindow else { return }
+        if window === sheet {
+            positionSheet()
+        } else if window === sheet?.sheetParent {
+            updateParentHeight()
+            positionSheet()
         }
     }
 

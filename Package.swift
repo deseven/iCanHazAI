@@ -19,8 +19,7 @@ let package = Package(
         // Fuzzy search for the role/MCP/directory pickers.
         .package(url: "https://github.com/krisk/fuse-swift.git", from: "1.4.0"),
         .package(path: "shared/ProcessExit"),
-        .package(path: "shared/LoginShell"),
-        .package(path: "shared/ImageTools")
+        .package(path: "shared/LoginShell")
     ],
     targets: [
         .executableTarget(

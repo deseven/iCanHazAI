@@ -54,6 +54,7 @@ enum RoleAccent {
     /// color when the alias is absent/unrecognized. The resolved value is
     /// appearance-dependent and must not be persisted — re-resolve on theme
     /// change.
+    @MainActor
     static func hexColor(for alias: String?) -> String {
         let nsColor = nsColor(for: alias) ?? NSColor.controlAccentColor
         var resolved = nsColor

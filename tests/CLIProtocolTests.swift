@@ -202,6 +202,18 @@ extension AllAppTests {
             #expect(colored.hasSuffix("\u{1B}[0m\n") || colored.contains("Listed 3 items."))
         }
 
+        @Test("chat-created line shows the filename without .json plus the chat name")
+        func chatCreatedLineRendering() {
+            #expect(CLIClient.renderChatCreatedLine(chat: "2026-07-12 14-30-00.json", name: "How do I foo?")
+                == "Chat: 2026-07-12 14-30-00 (How do I foo?)")
+            // A missing name falls back to a placeholder.
+            #expect(CLIClient.renderChatCreatedLine(chat: "2026-07-12 14-30-00.json", name: nil)
+                == "Chat: 2026-07-12 14-30-00 (New chat)")
+            // Already extension-less filenames are used as-is.
+            #expect(CLIClient.renderChatCreatedLine(chat: "chat", name: "n")
+                == "Chat: chat (n)")
+        }
+
         @Test("--temporary and --chat cannot be combined")
         func temporaryConflictsWithChat() {
             #expect(throws: CLIClient.CLIOptions.ParseError.conflictingOptions("--temporary cannot be combined with --chat")) {

@@ -202,6 +202,9 @@ enum CLIClient {
         var requestID: String?
         var terminated = false
         var lastCharNewline = true
+        // True while the frames of an agent iteration's tool calls are the
+        // last thing printed — the next model response starts a new block.
+        var toolBlockOpen = false
         var exitCode: Int32 = 1
 
         loop: for await event in conn.events {
@@ -229,7 +232,11 @@ enum CLIClient {
                     guard id == requestID else { break }
                 case .delta(let id, let text):
                     guard id == requestID else { break }
-                    guard writeStdout(text) else {
+                    // A delta after tool frames opens a new agent iteration
+                    // — separate the blocks with a blank line.
+                    let chunk = toolBlockOpen ? "\n" + text : text
+                    toolBlockOpen = false
+                    guard writeStdout(chunk) else {
                         // The stdout reader went away (e.g. `| head`) —
                         // exit quietly; the app stops the stream when it
                         // notices the disconnect.
@@ -237,7 +244,7 @@ enum CLIClient {
                         terminated = true
                         break loop
                     }
-                    lastCharNewline = text.hasSuffix("\n")
+                    lastCharNewline = chunk.hasSuffix("\n")
                 case .tool(let id, let name, let args, let status):
                     guard id == requestID else { break }
                     // Tool lines render like the renderer's collapsed tool
@@ -250,16 +257,21 @@ enum CLIClient {
                         break loop
                     }
                     lastCharNewline = true
+                    toolBlockOpen = true
                 case .notice(let id, let text):
                     guard id == requestID || id == nil else { break }
                     warn(text)
-                case .done(let id, _, let name):
+                case .done(let id, let chat, let name):
                     guard id == requestID else { break }
                     if !lastCharNewline { _ = writeStdout("\n") }
+                    // The stream ended right after a tool block — close the
+                    // iteration with the usual blank line.
+                    if toolBlockOpen { _ = writeStdout("\n") }
                     // A chat created by this invocation (no --chat, not
-                    // temporary) persists in the app — tell the user its name.
+                    // temporary) persists in the app — tell the user its
+                    // name, separated from the reply by a blank line.
                     if opts.chat == nil, !opts.temporary {
-                        info("Chat: \(name ?? "New chat")")
+                        info("\n" + renderChatCreatedLine(chat: chat, name: name))
                     }
                     exitCode = 0
                     terminated = true
@@ -384,6 +396,14 @@ enum CLIClient {
     /// A warning shown on stderr (yellow when the terminal supports it).
     private static func warn(_ message: String) {
         stderr(styled("warning: \(message)", "33", enabled: stderrColor))
+    }
+
+    /// The "Chat: <file> (<name>)" line printed when the invocation created
+    /// a persistent chat. `chat` is the chat filename, shown without the
+    /// ".json" extension.
+    static func renderChatCreatedLine(chat: String, name: String?) -> String {
+        let file = (chat as NSString).deletingPathExtension
+        return "Chat: \(file) (\(name ?? "New chat"))"
     }
 
     /// Ancillary meta output on stderr (dim when the terminal supports it).

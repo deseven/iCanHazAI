@@ -428,6 +428,144 @@ extension AllAppTests {
             await Self.destroy(wd, remote)
         }
 
+        /// Cleanup for isolated workdirs: an isolated rm would jail the
+        /// absolute temp path, so go through a non-isolated lens.
+        private static func destroyIsolated(_ remote: String) async {
+            let cleanup = Workdir(root: "\(host):/", isolated: false, chatID: chatID)
+            _ = await call("rm", fs, ["path": remote, "recursive": true], workdir: cleanup)
+        }
+
+        @Test("isolated find_text shows jail paths and never the remote root")
+        func isolatedFindText() async {
+            let remote = "/tmp/ichai-tests-\(UUID().uuidString.prefix(8))"
+            let wd = Workdir(root: "\(Self.host):\(remote)", isolated: true, chatID: Self.chatID)
+
+            _ = await Self.call("write_file", Self.fs, ["path": "/sub/note.txt", "content": "before\nhello ssh jail\nafter\n"], workdir: wd)
+            _ = await Self.call("write_file", Self.fs, ["path": "/top.txt", "content": "hello from the top\n"], workdir: wd)
+
+            // Default search root (the jail "/").
+            let (text, err) = await Self.call("find_text", Self.fs, ["regex": "hello"], workdir: wd)
+            #expect(!err)
+            #expect(text.contains("/sub/note.txt:2:hello ssh jail"))
+            #expect(text.contains("/top.txt:1:hello from the top"))
+            #expect(!text.contains(remote))
+
+            // Context lines get the same jail spelling.
+            let (ctx, ctxErr) = await Self.call("find_text", Self.fs, ["regex": "hello", "context": 1], workdir: wd)
+            #expect(!ctxErr)
+            #expect(ctx.contains("/sub/note.txt-1-before"))
+            #expect(ctx.contains("/sub/note.txt-3-after"))
+            #expect(!ctx.contains(remote))
+
+            // A single file as the search root.
+            let (file, fileErr) = await Self.call("find_text", Self.fs, ["regex": "hello", "path": "/sub/note.txt"], workdir: wd)
+            #expect(!fileErr)
+            #expect(file.contains("/sub/note.txt:2:hello ssh jail"))
+            #expect(!file.contains(remote))
+
+            // grep's own errors (missing search root) are scrubbed too.
+            let (missing, missingErr) = await Self.call("find_text", Self.fs, ["regex": "x", "path": "/no-such-dir"], workdir: wd)
+            #expect(missingErr)
+            #expect(missing.contains("/no-such-dir"))
+            #expect(!missing.contains(remote))
+
+            // Lexical escapes are rejected before anything runs remotely.
+            let (escape, escapeErr) = await Self.call("find_text", Self.fs, ["regex": "x", "path": "/../.."], workdir: wd)
+            #expect(escapeErr)
+            #expect(escape.contains("escapes the workdir"))
+
+            await Self.destroyIsolated(remote)
+        }
+
+        @Test("no isolated tool output leaks the remote root path")
+        func isolatedNoRemotePathLeaks() async {
+            let remote = "/tmp/ichai-tests-\(UUID().uuidString.prefix(8))"
+            let wd = Workdir(root: "\(Self.host):\(remote)", isolated: true, chatID: Self.chatID)
+            let fs = Self.fs
+
+            _ = await Self.call("write_file", fs, ["path": "/sub/note.txt", "content": "sweep content\n"], workdir: wd)
+
+            var outputs: [(label: String, text: String)] = []
+            func collect(_ label: String, _ result: (text: String, isError: Bool)) {
+                outputs.append((label, result.text))
+            }
+
+            collect("ls flat", await Self.call("ls", fs, ["path": "/"], workdir: wd))
+            collect("ls recursive", await Self.call("ls", fs, ["path": "/", "recursive": true], workdir: wd))
+            collect("read_file", await Self.call("read_file", fs, ["path": "/sub/note.txt"], workdir: wd))
+            collect("read_file missing", await Self.call("read_file", fs, ["path": "/missing.txt"], workdir: wd))
+            collect("find_file", await Self.call("find_file", fs, ["pattern": "*.txt"], workdir: wd))
+            collect("find_text", await Self.call("find_text", fs, ["regex": "sweep"], workdir: wd))
+            collect("mkdir", await Self.call("mkdir", fs, ["path": "/newdir"], workdir: wd))
+            collect("mv", await Self.call("mv", fs, ["src": "/sub/note.txt", "dst": "/newdir/b.txt"], workdir: wd))
+            collect("mv missing", await Self.call("mv", fs, ["src": "/missing.txt", "dst": "/x.txt"], workdir: wd))
+            collect("rm missing", await Self.call("rm", fs, ["path": "/missing.txt"], workdir: wd))
+            collect("rm non-empty dir", await Self.call("rm", fs, ["path": "/newdir"], workdir: wd))
+            collect("stat", await Self.call("stat", fs, ["path": "/newdir/b.txt"], workdir: wd))
+            collect("stat missing", await Self.call("stat", fs, ["path": "/missing.txt"], workdir: wd))
+            collect("pwd", await Self.call("pwd", fs, [:], workdir: wd))
+
+            for (label, text) in outputs {
+                #expect(!text.contains(remote), "\(label) leaked the remote root: \(text)")
+            }
+
+            // stat's not-found error names the caller's path, not the resolved one.
+            let statMissing = outputs.first { $0.label == "stat missing" }?.text ?? ""
+            #expect(statMissing.contains("not found: /missing.txt"))
+
+            await Self.destroyIsolated(remote)
+        }
+
+        @Test("isolated apply_patch output and errors use jail paths")
+        func isolatedApplyPatch() async {
+            let remote = "/tmp/ichai-tests-\(UUID().uuidString.prefix(8))"
+            let wd = Workdir(root: "\(Self.host):\(remote)", isolated: true, chatID: Self.chatID)
+
+            let add = """
+            *** Begin Patch
+            *** Add File: /p.txt
+            +patched
+            *** End Patch
+            """
+            let (addText, addErr) = await Self.call("apply_patch", Self.code, ["patch": add], workdir: wd)
+            #expect(!addErr)
+            #expect(addText.contains("Added: /p.txt"))
+            #expect(!addText.contains(remote))
+
+            let updateMissing = """
+            *** Begin Patch
+            *** Update File: /missing.txt
+            @@
+            -x
+            +y
+            *** End Patch
+            """
+            let (missText, missErr) = await Self.call("apply_patch", Self.code, ["patch": updateMissing], workdir: wd)
+            #expect(missErr)
+            #expect(missText.contains("/missing.txt does not exist"))
+            #expect(!missText.contains(remote))
+
+            // Non-UTF-8 remote file: the planner's error must cite the jail
+            // path. The shell group can't be isolated (validation forbids
+            // it), so write the bytes through a non-isolated lens.
+            let shellWD = Workdir(root: "\(Self.host):\(remote)", isolated: false, chatID: Self.chatID)
+            _ = await Self.call("shell", Self.sh, ["command": "printf '\\377\\330\\377' > bin.dat"], workdir: shellWD)
+            let updateBinary = """
+            *** Begin Patch
+            *** Update File: /bin.dat
+            @@
+            -x
+            +y
+            *** End Patch
+            """
+            let (binText, binErr) = await Self.call("apply_patch", Self.code, ["patch": updateBinary], workdir: wd)
+            #expect(binErr)
+            #expect(binText.contains("/bin.dat is not readable as UTF-8"))
+            #expect(!binText.contains(remote))
+
+            await Self.destroyIsolated(remote)
+        }
+
         @Test("connection failure surfaces a tool error after 3 attempts")
         func invalidHost() async {
             let wd = Workdir(root: "ichai-test-nonexistent.invalid:/tmp/x", isolated: false, chatID: UUID().uuidString)

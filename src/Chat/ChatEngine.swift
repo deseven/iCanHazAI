@@ -893,7 +893,7 @@ actor ChatEngine {
         let snapshot = mcps
         Task { [weak self] in
             guard let self else { return }
-            await MCPManager.shared.configure(snapshot)
+            _ = await MCPManager.shared.configure(snapshot)
             await self.markConfigureDone()
         }
     }
@@ -933,7 +933,7 @@ actor ChatEngine {
                 return
             }
         }
-        await MCPManager.shared.reconfigure(server)
+        _ = await MCPManager.shared.reconfigure(server)
     }
 
     /// Removes a completed reconfigure task from the pending map.
@@ -2729,7 +2729,7 @@ actor ChatEngine {
         // forward from the removal point and stop at the first non-matching
         // message.
         if !callIDs.isEmpty {
-            var i = msgIdx
+            let i = msgIdx
             while i < chat.messages.count {
                 let m = chat.messages[i]
                 if m.role == .tool,

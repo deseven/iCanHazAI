@@ -114,7 +114,7 @@ enum DebugLogger {
         FileManager.default.createFile(atPath: url.path, contents: nil, attributes: nil)
         guard let handle = try? FileHandle(forWritingTo: url) else { return }
         // Move to end so subsequent writes append.
-        try? handle.seekToEnd()
+        _ = try? handle.seekToEnd()
         fileBox.set(handle)
         urlBox.set(url)
     }

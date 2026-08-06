@@ -724,7 +724,7 @@ private final class FlippedClipView: NSClipView {
 /// - Intercepts paste to detect images before plain-text paste.
 /// - Intercepts Return (without Shift) to trigger send.
 /// - Reports its natural text layout height via `contentHeightChanged`.
-private final class ChatInputTextView: NSTextView {
+final class ChatInputTextView: NSTextView {
     var imagePasteHandler: (() -> Bool)?
     var returnHandler: (() -> Bool)?
     /// Called whenever the text layout height changes (after layout is complete).
@@ -738,8 +738,6 @@ private final class ChatInputTextView: NSTextView {
     /// the enclosing scroll view can clip and scroll it.
     func reportContentHeight() {
         guard let lm = layoutManager, let tc = textContainer else { return }
-        tc.size = NSSize(width: bounds.width - textContainerInset.width * 2,
-                         height: CGFloat.greatestFiniteMagnitude)
         lm.ensureLayout(for: tc)
         let used = lm.usedRect(for: tc)
         // Add top + bottom insets. Round up to the nearest pixel to avoid
@@ -765,6 +763,21 @@ private final class ChatInputTextView: NSTextView {
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
         reportContentHeight()
+    }
+
+    /// Keeps the container width in sync with the view on every resize.
+    /// `reportContentHeight()` only runs on text changes and live (user-drag)
+    /// resizes, so programmatic resizes — e.g. the window frame being restored
+    /// to a larger size at launch — would otherwise leave a stale, narrower
+    /// container; since NSTextView hit-tests within its text container, that
+    /// made the right part of the empty input unclickable.
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        guard let tc = textContainer else { return }
+        let width = max(0, newSize.width - textContainerInset.width * 2)
+        if tc.size.width != width {
+            tc.size = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+        }
     }
 
     // MARK: Paste / key overrides

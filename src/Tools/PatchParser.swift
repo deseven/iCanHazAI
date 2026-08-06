@@ -402,12 +402,12 @@ enum PatchApplier {
         hunks: [PatchHunk],
         workdir: Workdir,
         fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
-        fileContent: (String) throws -> String? = { resolved in
+        fileContent: (String, String) throws -> String? = { resolved, path in
             let fm = FileManager.default
             guard fm.fileExists(atPath: resolved) else { return nil }
             guard let data = fm.contents(atPath: resolved) else { return nil }
             guard let s = String(data: data, encoding: .utf8) else {
-                throw ApplyPatchError(message: "\(resolved) is not readable as UTF-8")
+                throw ApplyPatchError(message: "\(path) is not readable as UTF-8")
             }
             return s
         }
@@ -424,7 +424,7 @@ enum PatchApplier {
         /// e.g. a directory). Throws when the data isn't valid UTF-8.
         func content(_ resolved: String, path: String) throws -> String? {
             if let state = overlay[resolved] { return state }
-            return try fileContent(resolved)
+            return try fileContent(resolved, path)
         }
 
         var ops: [PlannedPatchOp] = []

@@ -288,7 +288,7 @@ enum ConfiguratorTools {
 
     private static func writeConnection(id: String, content: String, env: EnvironmentManager) throws -> String {
         let (provider, name) = try parseConnectionId(id)
-        try ConfigValidation.decodeConnection(Data(content.utf8))
+        _ = try ConfigValidation.decodeConnection(Data(content.utf8))
         let dir = env.connectionsURL.appendingPathComponent(provider.rawValue)
         let url = dir.appendingPathComponent("\(name).jsonc")
         try write(url: url, content: content, env: env)
@@ -296,14 +296,14 @@ enum ConfiguratorTools {
     }
 
     private static func writeMCP(name: String, content: String, env: EnvironmentManager) throws -> String {
-        try ConfigValidation.decodeMCP(Data(content.utf8))
+        _ = try ConfigValidation.decodeMCP(Data(content.utf8))
         let url = env.mcpsURL.appendingPathComponent("\(name).toml")
         try write(url: url, content: content, env: env)
         return "MCP \"\(name)\" saved. It will be applied automatically in a second."
     }
 
     private static func writeRole(name: String, content: String, env: EnvironmentManager) throws -> String {
-        try ConfigValidation.decodeRole(Data(content.utf8))
+        _ = try ConfigValidation.decodeRole(Data(content.utf8))
         let url = env.rolesURL.appendingPathComponent("\(name).toml")
         try write(url: url, content: content, env: env)
         return "Role \"\(name)\" saved. It will be applied automatically in a second."
@@ -326,7 +326,7 @@ enum ConfiguratorTools {
     }
 
     private static func writeConfig(content: String, env: EnvironmentManager) throws -> String {
-        try ConfigValidation.decodeAppConfig(Data(content.utf8))
+        _ = try ConfigValidation.decodeAppConfig(Data(content.utf8))
         let url = env.rootURL.appendingPathComponent("config.toml")
         try write(url: url, content: content, env: env)
         return "App config saved. It will be applied automatically in a second."

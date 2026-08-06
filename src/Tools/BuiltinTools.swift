@@ -84,6 +84,17 @@ struct Workdir: Sendable {
         }
     }
 
+    /// Display spelling for a resolved path. In isolated mode the root is
+    /// presented as the virtual "/" (matching `pwd`), so the real host/remote
+    /// layout never leaks into tool output; otherwise the path passes through.
+    func displayPath(forResolved resolved: String) -> String {
+        guard isolated, let root else { return resolved }
+        if root == "/" { return resolved }
+        if resolved == root { return "/" }
+        if resolved.hasPrefix(root + "/") { return String(resolved.dropFirst(root.count)) }
+        return resolved
+    }
+
     /// Remote path resolution: pure string manipulation, no filesystem access.
     /// A relative path with no root stays relative (resolved by the remote
     /// shell against the login directory, i.e. the remote home).
@@ -154,11 +165,9 @@ typealias ToolOutput = (content: String, isError: Bool)
 
 // MARK: - BuiltinTools
 
-/// In-process tools ported from the four bundled MCP servers (Utils,
-/// Filesystem, Code, Shell). Unlike the former subprocess-based MCPs, these run
-/// directly inside the app — no process lifecycle, no stdio transport, no
-/// per-chat copies. Each chat's tools run with a `Workdir` derived from the
-/// chat's effective working directory and the role's per-group isolation flag.
+/// In-process tools. 
+/// Each chat's tools run with a `Workdir` derived from the chat's
+/// effective working directory and the role's per-group isolation flag.
 enum BuiltinTools {
 
     static let utilsGroup = "Utils"
@@ -182,13 +191,13 @@ enum BuiltinTools {
 
     private static let utilsToolDefs: [BuiltinToolDef] = [
         BuiltinToolDef(name: "calc",
-            description: "Evaluate a mathematical expression using bc syntax (e.g. '2+2*3' or 'sqrt(16)'). Loads the bc math library so sqrt, s, c, l, e are available.",
-            schema: #"{"type":"object","properties":{"expression":{"type":"string","description":"The mathematical expression to evaluate, e.g. '2+2*3' or 'sqrt(16)'. Uses bc syntax."}},"required":["expression"]}"#),
+            description: "Evaluate a mathematical expression using bc syntax. Loads the bc math library so sqrt, s, c, l, e are available.",
+            schema: #"{"type":"object","properties":{"expression":{"type":"string","description":"The mathematical expression to evaluate, e.g. '2+2*3' or 'sqrt(16)'."}},"required":["expression"]}"#),
         BuiltinToolDef(name: "datetime",
             description: "Return the current local date and time as YYYY-MM-DD HH:mm:ss (24-hour, zero-padded).",
             schema: #"{"type":"object","properties":{},"required":[]}"#),
         BuiltinToolDef(name: "uuid",
-            description: "Generate a new random UUID (uppercase, with hyphens).",
+            description: "Generate a new random UUID.",
             schema: #"{"type":"object","properties":{},"required":[]}"#),
         BuiltinToolDef(name: "hash",
             description: "Compute a cryptographic hash of a string. Returns a lowercase hex digest.",
@@ -206,7 +215,7 @@ enum BuiltinTools {
 
     private static let filesystemToolDefs: [BuiltinToolDef] = [
         BuiltinToolDef(name: "ls",
-            description: "List files and directories at a path. Returns one entry per line, directories suffixed with '/'. Hidden entries (names starting with '.') are skipped in both modes unless include_hidden is true.",
+            description: "List files and directories at a path. Returns one entry per line, directories suffixed with '/'.",
             schema: #"{"type":"object","properties":{"path":{"type":"string","description":"Directory path to list. \#(Workdir.pathDescription)"},"recursive":{"type":"boolean","description":"If true, list recursively to a fixed depth of 1 (direct children plus one level into subdirectories) with a cap of 1000 entries. Default false."},"include_hidden":{"type":"boolean","description":"Include hidden files and directories (names starting with '.'). Default false."}},"required":["path"]}"#),
         BuiltinToolDef(name: "read_file",
             description: "Read a file. Text files support offset/limit line ranges and are returned with line numbers in the format 'N | content' (right-aligned line number, a pipe separator, then the raw line). The 'N | ' prefix is NOT part of the file — never include it when quoting file content, e.g. in apply_patch context lines. From binary files only images are supported.",
@@ -215,11 +224,11 @@ enum BuiltinTools {
             description: "Write text content to a file (creates or overwrites). Parent directories are created as needed. ALWAYS provide the COMPLETE intended content of the file — partial updates or placeholders like '// rest unchanged' are forbidden. Do NOT include line numbers in the content. For targeted edits to existing files, prefer apply_patch.",
             schema: #"{"type":"object","properties":{"path":{"type":"string","description":"File path to write. \#(Workdir.pathDescription)"},"content":{"type":"string","description":"The complete text content to write, without line numbers or truncation."}},"required":["path","content"]}"#),
         BuiltinToolDef(name: "find_file",
-            description: "Find files by name (glob) within a directory tree. Results are sorted and capped at 200 entries. Hidden files are skipped unless include_hidden is true.",
+            description: "Find files by name (glob) within a directory tree. Results are sorted and capped at 200 entries.",
             schema: #"{"type":"object","properties":{"path":{"type":"string","description":"\#(Workdir.searchRootDescription)"},"pattern":{"type":"string","description":"Glob pattern, e.g. '*.swift' or '**/test_*.py'. Supports * (any run within a path component), ? (single character), [...] (character class) and ** (any number of directories). Patterns containing '/' match the path relative to the search root, otherwise the bare filename."},"case_insensitive":{"type":"boolean","description":"Match without regard to case. Default false."},"include_hidden":{"type":"boolean","description":"Also search hidden files and directories (names starting with '.'). Default false."}},"required":["pattern"]}"#),
         BuiltinToolDef(name: "find_text",
-            description: "Search file contents with a regular expression across a directory tree. Returns path:line:content for each matching line (context lines use '-' separators, groups are split by '--'), sorted deterministically; lines longer than 300 characters are truncated. Binary files and, unless include_hidden is true, hidden files are skipped. When the working directory is a remote SSH path, POSIX ERE (grep -E) is used instead.",
-            schema: #"{"type":"object","properties":{"path":{"type":"string","description":"\#(Workdir.searchRootDescription)"},"regex":{"type":"string","description":"Regular expression to search for in file contents. Locally the full regex syntax is supported (\\d \\w \\s, quantifiers, alternation, groups, anchors); over SSH it is POSIX ERE (grep -E: alternation, groups, + ? {n,m} quantifiers, but no \\d \\w \\s shorthands — use [[:digit:]] etc.). Invalid patterns are reported as errors."},"file_pattern":{"type":"string","description":"Optional glob to filter files by name, e.g. '*.swift'. Same glob syntax as find_file."},"case_insensitive":{"type":"boolean","description":"Match without regard to case. Default false."},"include_hidden":{"type":"boolean","description":"Also search hidden files and directories (names starting with '.'). Default false."},"max_results":{"type":"integer","description":"Maximum number of matching lines to return (1-1000), applied after sorting so truncation is deterministic. Default 200."},"context":{"type":"integer","description":"Lines of context before and after each match (0-25), grep-style. Default 0."}},"required":["regex"]}"#),
+            description: "Search file contents with a regular expression across a directory tree. Returns path:line:content for each matching line (context lines use '-' separators, groups are split by '--'), sorted deterministically; lines longer than 300 characters are truncated. Binary files are skipped.",
+            schema: #"{"type":"object","properties":{"path":{"type":"string","description":"\#(Workdir.searchRootDescription)"},"regex":{"type":"string","description":"Regular expression to search for in file contents. The full regex syntax is supported (\\d \\w \\s, quantifiers, alternation, groups, anchors); in some environments it is POSIX ERE (grep -E: alternation, groups, + ? {n,m} quantifiers, but no \\d \\w \\s shorthands — use [[:digit:]] etc.). Invalid patterns are reported as errors."},"file_pattern":{"type":"string","description":"Optional glob to filter files by name, e.g. '*.swift'. Same glob syntax as find_file."},"case_insensitive":{"type":"boolean","description":"Match without regard to case. Default false."},"include_hidden":{"type":"boolean","description":"Also search hidden files and directories (names starting with '.'). Default false."},"max_results":{"type":"integer","description":"Maximum number of matching lines to return (1-1000), applied after sorting so truncation is deterministic. Default 200."},"context":{"type":"integer","description":"Lines of context before and after each match (0-25), grep-style. Default 0."}},"required":["regex"]}"#),
         BuiltinToolDef(name: "mkdir",
             description: "Create a directory (recursive). Parent directories are created as needed.",
             schema: #"{"type":"object","properties":{"path":{"type":"string","description":"Directory path to create. \#(Workdir.pathDescription)"}},"required":["path"]}"#),
@@ -290,8 +299,8 @@ enum BuiltinTools {
     ]
 
     private static let shellToolDefs: [BuiltinToolDef] = {
-        let shellDesc = "Execute a command in the user's login shell (\(shellPath) -l). Returns stdout, and stderr on non-zero exit. The command is written to the shell's stdin with a `cd` line prepended, so the working directory is reliably set."
-        let commandDesc = "The shell command to execute. Runs in \(shellPath) as a login shell (-l)."
+        let shellDesc = "Execute a command in the user's login shell (\(shellPath) -l). Returns stdout, and stderr on non-zero exit. Runs in current directory."
+        let commandDesc = "The shell command to execute. Could be a full multiline script as well."
         return [
             BuiltinToolDef(name: "shell",
                 description: shellDesc,
@@ -355,7 +364,13 @@ enum BuiltinTools {
         } catch let err as BuiltinToolError {
             return ToolResult(callID: callID, content: "Error: \(err.description)", isError: true)
         } catch {
-            return ToolResult(callID: callID, content: "Error: \(error.localizedDescription)", isError: true)
+            // Cocoa errors (failed move/remove/write) can embed resolved
+            // paths — scrub the root so isolated mode never leaks it.
+            var msg = error.localizedDescription
+            if workdir.isolated, let root = workdir.root {
+                msg = msg.replacingOccurrences(of: root, with: "")
+            }
+            return ToolResult(callID: callID, content: "Error: \(msg)", isError: true)
         }
     }
 
@@ -928,7 +943,11 @@ enum BuiltinTools {
 
         // Pairs of (filesystem path, display path). The enumerator returns
         // symlink-resolved paths (/var → /private/var on macOS); display paths
-        // keep the spelling the caller asked for.
+        // keep the spelling the caller asked for, or the jail spelling (root
+        // as "/") when isolated so the host layout never leaks. The jail
+        // spelling is composed from the search root's jail path + rel rather
+        // than prefix-matching url.path: resolvingSymlinksInPath (used for
+        // the workdir root) doesn't canonicalize /var, so spellings differ.
         var files: [(path: String, display: String)] = []
         if isDir.boolValue {
             let options: FileManager.DirectoryEnumerationOptions = includeHidden ? [] : [.skipsHiddenFiles]
@@ -936,15 +955,22 @@ enum BuiltinTools {
                 throw BuiltinToolError("invalid argument 'path': failed to enumerate: \(searchRoot)")
             }
             let root = canonicalPath(resolved)
+            let jailBase = workdir.isolated ? workdir.displayPath(forResolved: resolved) : nil
             while let url = enumerator.nextObject() as? URL {
                 guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
                 let rel = relativize(url.path, root: root)
                 if let fileGlob, !fileGlob.matches(filename: url.lastPathComponent, relativePath: rel) { continue }
-                files.append((url.path, (resolved as NSString).appendingPathComponent(rel)))
+                let display: String
+                if let jailBase {
+                    display = jailBase == "/" ? "/" + rel : jailBase + "/" + rel
+                } else {
+                    display = (resolved as NSString).appendingPathComponent(rel)
+                }
+                files.append((url.path, display))
             }
             files.sort { $0.display < $1.display }
         } else {
-            files = [(resolved, resolved)]
+            files = [(resolved, workdir.displayPath(forResolved: resolved))]
         }
 
         var out: [String] = []
