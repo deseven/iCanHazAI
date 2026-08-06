@@ -449,9 +449,20 @@ struct ChatSummary: Identifiable, Equatable, Sendable {
 enum OneShotEvent: Sendable {
     /// A content chunk appended to the current assistant message.
     case delta(String)
+    /// A tool call began execution. `summary` is the collapsed one-line
+    /// argument summary (see `ToolCall.summary`).
+    case toolCall(name: String, summary: String)
+    /// A tool call produced its final result. `summary` is the persisted
+    /// one-line status summary (see `ToolResult.summary`).
+    case toolResult(name: String, summary: ToolSummary.Status)
+    /// A warning worth surfacing to the CLI user (e.g. an ignored --workdir,
+    /// a tool call skipped for lack of --allow-all). Not part of the chat.
+    case notice(String)
     /// The stream settled (success, error, or cancellation). `error` carries
     /// the failure text when the stream failed; nil on success/cancel.
-    case finished(error: String?)
+    /// `chatName` is the chat's current display name (best effort — the
+    /// generated title may not have landed yet).
+    case finished(error: String?, chatName: String?)
 }
 
 /// The outcome of asking the engine to perform a one-shot request.

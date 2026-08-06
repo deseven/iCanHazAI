@@ -18,7 +18,7 @@ import { debugLog } from "../debug";
 import { parseToolArgs, isEmptyArgs } from "../toolArgs";
 import type { ToolArgEntry } from "../toolArgs";
 import { toolArgLang, toolResultLang } from "../toolHighlight";
-import { summarizeToolCall, summarizeToolResult } from "../toolSummary";
+import { transientToolStatus } from "../toolSummary";
 import { Copy, SquarePen, Trash2, Brain, User, Bot, Settings, AlertTriangle, RotateCcw, ChevronRight, ChevronDown, Wrench, Terminal } from "lucide-preact";
 import type { ToolCallData, ToolResultData } from "../types";
 
@@ -352,12 +352,12 @@ function ToolBlock({
   };
 
   // Collapsed header summaries: line 1 is the call's key arguments, line 2
-  // the status + one-line description. Both truncate with an ellipsis in CSS.
-  const summary = useMemo(
-    () => summarizeToolCall(call.name, call.arguments, call.requiredArgs),
-    [call.name, call.arguments, call.requiredArgs],
-  );
-  const status = summarizeToolResult(call.name, result, running, pending);
+  // the status + one-line description. Both are computed by the host and
+  // persisted in the chat data; only transient states (pending approval,
+  // still running) are derived locally — they can never be persisted. Both
+  // lines truncate with an ellipsis in CSS.
+  const summary = call.summary ?? "";
+  const status = result?.summary ?? transientToolStatus(result, running, pending);
 
   // Per-tool syntax-highlighting hints (toolHighlight.ts) apply only to
   // host-stamped internal tools, so an external MCP tool that happens to
@@ -388,17 +388,7 @@ function ToolBlock({
                   </span>
                 </>
               )
-            : summary.length > 0 && (
-                <span class="tool-summary">
-                  {summary.map((e, i) => (
-                    <span class="tool-summary-entry" key={i}>
-                      {i > 0 && <span class="tool-summary-sep"> · </span>}
-                      {e.key !== null && <span class="tool-summary-key">{e.key}: </span>}
-                      {e.value}
-                    </span>
-                  ))}
-                </span>
-              )}
+            : summary && <span class="tool-summary">{summary}</span>}
           <span class="tool-chevron">
             {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </span>

@@ -1083,8 +1083,12 @@ struct ChatMessageData: Codable, Equatable {
         /// renderer's per-tool syntax-highlighting hints against same-named
         /// external MCP tools.
         let internalTool: Bool
+        /// The collapsed one-line argument summary, pre-computed by the
+        /// engine. Nil for calls from before the field existed — the renderer
+        /// computes it locally then.
+        let summary: String?
 
-        init(id: String, name: String, arguments: String, pendingApproval: Bool = false, diff: String? = nil, requiredArgs: [String]? = nil, internalTool: Bool = false) {
+        init(id: String, name: String, arguments: String, pendingApproval: Bool = false, diff: String? = nil, requiredArgs: [String]? = nil, internalTool: Bool = false, summary: String? = nil) {
             self.id = id
             self.name = name
             self.arguments = arguments
@@ -1092,6 +1096,7 @@ struct ChatMessageData: Codable, Equatable {
             self.diff = diff
             self.requiredArgs = requiredArgs
             self.internalTool = internalTool
+            self.summary = summary
         }
     }
 
@@ -1108,14 +1113,19 @@ struct ChatMessageData: Codable, Equatable {
         /// True when the result was synthesized on stop for a call that never
         /// executed. The renderer shows a "cancelled" badge instead of "error".
         let isCancelled: Bool
+        /// The one-line status summary, pre-computed by the engine. Nil for
+        /// results from before the field existed — the renderer computes it
+        /// locally then.
+        let summary: ToolSummary.Status?
 
-        init(callID: String, content: String, isError: Bool, isStreaming: Bool, isDenied: Bool = false, isCancelled: Bool = false) {
+        init(callID: String, content: String, isError: Bool, isStreaming: Bool, isDenied: Bool = false, isCancelled: Bool = false, summary: ToolSummary.Status? = nil) {
             self.callID = callID
             self.content = content
             self.isError = isError
             self.isStreaming = isStreaming
             self.isDenied = isDenied
             self.isCancelled = isCancelled
+            self.summary = summary
         }
     }
 }
@@ -1132,10 +1142,10 @@ extension ChatMessage {
             )
         }
         let toolCalls = toolCalls?.map {
-            ChatMessageData.ToolCallData(id: $0.id, name: $0.name, arguments: $0.arguments, pendingApproval: $0.pendingApproval, diff: $0.diff, requiredArgs: $0.requiredArgs, internalTool: $0.internalTool)
+            ChatMessageData.ToolCallData(id: $0.id, name: $0.name, arguments: $0.arguments, pendingApproval: $0.pendingApproval, diff: $0.diff, requiredArgs: $0.requiredArgs, internalTool: $0.internalTool, summary: $0.summary)
         }
         let toolResults = toolResults?.map {
-            ChatMessageData.ToolResultData(callID: $0.callID, content: $0.content, isError: $0.isError, isStreaming: $0.isStreaming, isDenied: $0.isDenied, isCancelled: $0.isCancelled)
+            ChatMessageData.ToolResultData(callID: $0.callID, content: $0.content, isError: $0.isError, isStreaming: $0.isStreaming, isDenied: $0.isDenied, isCancelled: $0.isCancelled, summary: $0.summary)
         }
         return ChatMessageData(
             id: id.uuidString,

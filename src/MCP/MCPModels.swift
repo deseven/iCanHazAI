@@ -168,12 +168,17 @@ struct ToolCall: Codable, Identifiable, Equatable, Sendable {
     /// tool that happens to share a name. Decoded defensively (defaults to
     /// false) for old chat files.
     var internalTool: Bool = false
+    /// The collapsed one-line argument summary ("src/main.swift · offset: 10"),
+    /// computed by the engine via [`ToolSummary`](src/Tools/ToolSummary.swift)
+    /// when the call is finalized. Persisted so every surface (chat renderer,
+    /// CLI) shows the same text. Nil for calls from before this field existed.
+    var summary: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, name, arguments, pendingApproval, diff, requiredArgs, internalTool
+        case id, name, arguments, pendingApproval, diff, requiredArgs, internalTool, summary
     }
 
-    init(id: String, name: String, arguments: String, pendingApproval: Bool = false, diff: String? = nil, requiredArgs: [String]? = nil, internalTool: Bool = false) {
+    init(id: String, name: String, arguments: String, pendingApproval: Bool = false, diff: String? = nil, requiredArgs: [String]? = nil, internalTool: Bool = false, summary: String? = nil) {
         self.id = id
         self.name = name
         self.arguments = arguments
@@ -181,6 +186,7 @@ struct ToolCall: Codable, Identifiable, Equatable, Sendable {
         self.diff = diff
         self.requiredArgs = requiredArgs
         self.internalTool = internalTool
+        self.summary = summary
     }
 
     init(from decoder: Decoder) throws {
@@ -192,6 +198,7 @@ struct ToolCall: Codable, Identifiable, Equatable, Sendable {
         diff = try c.decodeIfPresent(String.self, forKey: .diff)
         requiredArgs = try c.decodeIfPresent([String].self, forKey: .requiredArgs)
         internalTool = try c.decodeIfPresent(Bool.self, forKey: .internalTool) ?? false
+        summary = try c.decodeIfPresent(String.self, forKey: .summary)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -204,6 +211,7 @@ struct ToolCall: Codable, Identifiable, Equatable, Sendable {
         try c.encodeIfPresent(requiredArgs, forKey: .requiredArgs)
         // Only persisted when true so regular chat files stay unchanged.
         if internalTool { try c.encode(internalTool, forKey: .internalTool) }
+        try c.encodeIfPresent(summary, forKey: .summary)
     }
 }
 
@@ -227,18 +235,26 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
     /// error, but the renderer shows a "cancelled" badge instead of "error".
     /// Decoded defensively (defaults to false) for old chat files.
     var isCancelled: Bool = false
+    /// The one-line status summary (the `tool_call_result_summary`), computed
+    /// by the engine via [`ToolSummary`](src/Tools/ToolSummary.swift) when the
+    /// final result lands. Persisted so every surface (chat renderer, CLI)
+    /// shows the same status text. Nil for results from before this field
+    /// existed and for transient streaming placeholders.
+    var summary: ToolSummary.Status?
 
     enum CodingKeys: String, CodingKey {
         case callID, content, isError, isStreaming, isDenied, isCancelled
+        case summary = "tool_call_result_summary"
     }
 
-    init(callID: String, content: String, isError: Bool, isStreaming: Bool = false, isDenied: Bool = false, isCancelled: Bool = false) {
+    init(callID: String, content: String, isError: Bool, isStreaming: Bool = false, isDenied: Bool = false, isCancelled: Bool = false, summary: ToolSummary.Status? = nil) {
         self.callID = callID
         self.content = content
         self.isError = isError
         self.isStreaming = isStreaming
         self.isDenied = isDenied
         self.isCancelled = isCancelled
+        self.summary = summary
     }
 
     init(from decoder: Decoder) throws {
@@ -251,6 +267,7 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
         isStreaming = (try? c.decode(Bool.self, forKey: .isStreaming)) ?? false
         isDenied = (try? c.decode(Bool.self, forKey: .isDenied)) ?? false
         isCancelled = (try? c.decode(Bool.self, forKey: .isCancelled)) ?? false
+        summary = try? c.decode(ToolSummary.Status.self, forKey: .summary)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -261,6 +278,7 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
         try c.encode(isStreaming, forKey: .isStreaming)
         try c.encode(isDenied, forKey: .isDenied)
         try c.encode(isCancelled, forKey: .isCancelled)
+        try c.encodeIfPresent(summary, forKey: .summary)
     }
 }
 

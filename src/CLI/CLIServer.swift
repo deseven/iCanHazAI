@@ -19,25 +19,41 @@ final class CLIServer: @unchecked Sendable {
     /// Dispatches a `chat.send` request to the engine. Injectable for tests.
     typealias OneShotHandler = @Sendable (CLIRequest) async -> OneShotStart
 
-    static let shared = CLIServer(socketPath: EnvironmentManager.shared.socketURL.path) { request in
-        await ChatEngine.shared.performOneShot(
-            message: request.params.message,
-            role: request.params.role,
-            connection: request.params.connection,
-            chatFilename: request.params.chat
-        )
-    }
+    /// Destroys temporary chats whose owning client disconnected. Injectable
+    /// for tests; nil means temporary chats outlive their client.
+    typealias TemporaryChatCleanup = @Sendable ([String]) async -> Void
+
+    static let shared = CLIServer(
+        socketPath: EnvironmentManager.shared.socketURL.path,
+        oneShotHandler: { request in
+            await ChatEngine.shared.performOneShot(
+                message: request.params.message,
+                role: request.params.role,
+                connection: request.params.connection,
+                chatName: request.params.chat,
+                temporary: request.params.temporary,
+                workdir: request.params.workdir,
+                workdirExplicit: request.params.workdirExplicit,
+                allowAll: request.params.allowAll
+            )
+        },
+        temporaryChatCleanup: { filenames in
+            await ChatEngine.shared.destroyTemporaryChats(filenames: filenames)
+        }
+    )
 
     let socketPath: String
     private let oneShotHandler: OneShotHandler
+    private let temporaryChatCleanup: TemporaryChatCleanup?
 
     private let lock = NSLock()
     private var listenerFD: Int32 = -1
     private var clients: [ObjectIdentifier: ClientContext] = [:]
 
-    init(socketPath: String, oneShotHandler: @escaping OneShotHandler) {
+    init(socketPath: String, oneShotHandler: @escaping OneShotHandler, temporaryChatCleanup: TemporaryChatCleanup? = nil) {
         self.socketPath = socketPath
         self.oneShotHandler = oneShotHandler
+        self.temporaryChatCleanup = temporaryChatCleanup
     }
 
     // MARK: - Stale socket cleanup
@@ -113,13 +129,19 @@ final class CLIServer: @unchecked Sendable {
 
     // MARK: - Per-client handling
 
-    /// Per-connection state: the framed transport, its session id, and the
-    /// in-flight request tasks (cancelled when the connection drops).
+    /// Per-connection state: the framed transport, its session id, the
+    /// in-flight request tasks (cancelled when the connection drops), and
+    /// the temporary chats this client created (destroyed on disconnect).
     private final class ClientContext: @unchecked Sendable {
         let connection: CLIConnection
         var sessionID: String?
         private let lock = NSLock()
         private var tasks: [String: Task<Void, Never>] = [:]
+        private var temporaryChats: Set<String> = []
+        /// Set when the connection is gone and the chats were drained — a
+        /// late `addTemporaryChat` then fails so the caller destroys the
+        /// chat itself instead of registering it where nobody will look.
+        private var closed = false
 
         init(connection: CLIConnection) {
             self.connection = connection
@@ -144,6 +166,25 @@ final class CLIServer: @unchecked Sendable {
             lock.unlock()
             for task in all { task.cancel() }
         }
+
+        /// Returns false when the connection was already closed and drained:
+        /// the chat is NOT registered and the caller must dispose of it.
+        func addTemporaryChat(_ filename: String) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !closed else { return false }
+            temporaryChats.insert(filename)
+            return true
+        }
+
+        func drainTemporaryChats() -> [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            closed = true
+            let all = Array(temporaryChats)
+            temporaryChats.removeAll()
+            return all
+        }
     }
 
     private func handleClient(fd: Int32) {
@@ -159,6 +200,11 @@ final class CLIServer: @unchecked Sendable {
                 self.handleEvent(event, ctx: ctx)
             }
             ctx.cancelRequests()
+            let orphanTempChats = ctx.drainTemporaryChats()
+            if !orphanTempChats.isEmpty, let cleanup = self.temporaryChatCleanup {
+                debugLog("CLI", "destroying \(orphanTempChats.count) temporary chat(s) of a disconnected client")
+                await cleanup(orphanTempChats)
+            }
             ctx.connection.close()
             self.removeClient(ctx)
             debugLog("CLI", "client disconnected (pid \(conn.peerPID.map(String.init) ?? "?"))")
@@ -191,7 +237,7 @@ final class CLIServer: @unchecked Sendable {
                 send(.pong(appVersion: Self.appVersion, pid: getpid()), to: ctx)
             case .request(let request):
                 handleRequest(request, ctx: ctx)
-            case .welcome, .pong, .started, .delta, .done, .error:
+            case .welcome, .pong, .started, .delta, .tool, .notice, .done, .error:
                 send(.error(id: nil, code: "unexpected_frame", message: "server-side frame received from a client"), to: ctx)
             }
         }
@@ -215,6 +261,15 @@ final class CLIServer: @unchecked Sendable {
             case .failed(let message):
                 try? ctx.connection.send(.error(id: requestID, code: "request_failed", message: message))
             case .started(let filename, let events):
+                if request.params.temporary, !ctx.addTemporaryChat(filename) {
+                    // The client disconnected while the chat was being
+                    // created; the disconnect handler already drained this
+                    // context, so destroy the chat here — otherwise it would
+                    // leak (invisible, streaming to nobody).
+                    debugLog("CLI", "client gone before temporary chat \(filename) was registered — destroying it")
+                    await self.temporaryChatCleanup?([filename])
+                    return
+                }
                 do {
                     try ctx.connection.send(.started(id: requestID, chat: filename))
                     for await event in events {
@@ -222,11 +277,17 @@ final class CLIServer: @unchecked Sendable {
                         switch event {
                         case .delta(let text):
                             try ctx.connection.send(.delta(id: requestID, text: text))
-                        case .finished(let error):
+                        case .toolCall(let name, let summary):
+                            try ctx.connection.send(.tool(id: requestID, name: name, args: summary, status: nil))
+                        case .toolResult(let name, let summary):
+                            try ctx.connection.send(.tool(id: requestID, name: name, args: nil, status: CLIToolStatus(kind: summary.kind.rawValue, label: summary.label, description: summary.description)))
+                        case .notice(let text):
+                            try ctx.connection.send(.notice(id: requestID, text: text))
+                        case .finished(let error, let chatName):
                             if let error {
                                 try ctx.connection.send(.error(id: requestID, code: "stream_error", message: error))
                             } else {
-                                try ctx.connection.send(.done(id: requestID, chat: filename))
+                                try ctx.connection.send(.done(id: requestID, chat: filename, name: chatName))
                             }
                         }
                     }

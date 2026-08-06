@@ -75,6 +75,17 @@ actor ChatEngine {
     /// chat itself keeps streaming — CLI chats are regular chats.
     private var oneShotSinks: [String: [UUID: AsyncStream<OneShotEvent>.Continuation]] = [:]
 
+    /// Filenames of chats driven by a CLI one-shot request (created or
+    /// continued via the CLI). CLI chats are non-interactive: tool calls that
+    /// need confirmation are auto-approved (--allow-all) or skipped with a
+    /// notice instead of showing an approval prompt, and the chat never gets
+    /// the unread marker — its output was already shown in the terminal.
+    private var cliDriven: Set<String> = []
+
+    /// CLI-driven chats whose client passed --allow-all: every tool call is
+    /// auto-approved without confirmation.
+    private var cliAllowAll: Set<String> = []
+
     /// Tool-call approvals awaiting a user decision, keyed by call id. The
     /// continuation is registered from `approveToolCall` (running on this
     /// actor) and resumed by `resolveToolCallApproval` / `cancelPendingApprovals`.
@@ -1164,6 +1175,14 @@ actor ChatEngine {
         return filename
     }
 
+    /// Destroys the given temporary chats, if they exist. Used by the CLI
+    /// server to clean up temporary chats whose client disconnected.
+    func destroyTemporaryChats(filenames: [String]) {
+        for filename in filenames {
+            destroyTemporaryChat(filename: filename)
+        }
+    }
+
     /// Irreversibly destroys a temporary chat: cancels any in-flight stream,
     /// deletes its temporary image folder, and removes the record. No chat
     /// file cleanup is needed — temporary chats never touch the chats dir.
@@ -1174,6 +1193,8 @@ actor ChatEngine {
         env.deleteAllImages(for: filename)
         records.removeAll(where: { $0.filename == filename })
         if selectedFilename == filename { selectedFilename = nil }
+        cliDriven.remove(filename)
+        cliAllowAll.remove(filename)
         debugLog("Engine", "destroyed temporary chat \(filename)")
     }
 
@@ -1191,6 +1212,8 @@ actor ChatEngine {
     func deleteChat(filename: String) {
         streamTasks[filename]?.cancel()
         streamTasks[filename] = nil
+        cliDriven.remove(filename)
+        cliAllowAll.remove(filename)
         // Suppress the FSEvent for the file we're about to remove.
         markSelfWrite(path: env.chatsURL.appendingPathComponent(filename).path)
         store.deleteChat(filename: filename)
@@ -1600,20 +1623,36 @@ actor ChatEngine {
 
     // MARK: - CLI one-shot requests
 
+    /// Resolves a user-supplied chat name to an actual chat filename,
+    /// accepting the name with or without the ".json" extension.
+    static func resolveChatFilename(_ name: String, among filenames: some Sequence<String>) -> String? {
+        let names = Set(filenames)
+        if names.contains(name) { return name }
+        if !name.hasSuffix(".json"), names.contains(name + ".json") { return name + ".json" }
+        return nil
+    }
+
     /// Performs a CLI one-shot request: creates a new plain-rendering chat
-    /// (or reuses an existing one when `chatFilename` is given) and starts
-    /// streaming `message`. Returns the chat filename plus an event stream
-    /// carrying uncoalesced content deltas and a terminal `finished`.
+    /// (or reuses an existing one when `chatName` is given, with or without
+    /// the ".json" extension) and starts streaming `message`. Returns the
+    /// chat filename plus an event stream carrying uncoalesced content deltas
+    /// and a terminal `finished`.
     ///
-    /// Cancelling the returned stream detaches the CLI without stopping the
-    /// chat — CLI chats are regular chats, visible and continuable in the GUI.
-    func performOneShot(message: String, role requestedRole: String?, connection requestedConnection: String?, chatFilename: String?) async -> OneShotStart {
+    /// When `temporary` is true the chat is created as a temporary one
+    /// (in-memory only); the CLI server destroys it when the client
+    /// disconnects. Cancelling the returned stream of a regular chat detaches
+    /// the CLI without stopping the chat — regular CLI chats stay visible and
+    /// continuable in the GUI.
+    func performOneShot(message: String, role requestedRole: String?, connection requestedConnection: String?, chatName: String?, temporary: Bool = false, workdir: String? = nil, workdirExplicit: Bool = false, allowAll: Bool = false) async -> OneShotStart {
         let filename: String
-        if let chatFilename {
-            guard records.contains(where: { $0.filename == chatFilename }) else {
-                return .failed("chat \"\(chatFilename)\" not found")
+        if let chatName {
+            guard !temporary else {
+                return .failed("a temporary chat cannot continue an existing chat")
             }
-            filename = chatFilename
+            guard let resolved = Self.resolveChatFilename(chatName, among: records.map(\.filename)) else {
+                return .failed("chat \"\(chatName)\" not found")
+            }
+            filename = resolved
         } else {
             if let requestedRole, !roles.contains(where: { $0.name == requestedRole }) {
                 return .failed("role \"\(requestedRole)\" not found")
@@ -1623,11 +1662,14 @@ actor ChatEngine {
             }
             let defaultRole = await ConfigManager.shared.getDefaultRole()
             let roleName = requestedRole ?? defaultRole ?? "Assistant"
-            filename = await createNewChat(role: roleName, outputRendering: .plain)
+            filename = await createNewChat(role: roleName, temporary: temporary, outputRendering: .plain)
             if let requestedConnection, let idx = records.firstIndex(where: { $0.filename == filename }) {
                 records[idx].chat?.connection = requestedConnection
             }
         }
+
+        cliDriven.insert(filename)
+        if allowAll { cliAllowAll.insert(filename) }
 
         // Register the sink before sending so no early chunk can be missed.
         let sinkID = UUID()
@@ -1636,6 +1678,24 @@ actor ChatEngine {
             Task { [weak self] in await self?.removeOneShotSink(filename: filename, id: sinkID) }
         }
         oneShotSinks[filename, default: [:]][sinkID] = continuation
+
+        // Apply the CLI's working directory (the client process's cwd, or the
+        // explicit --workdir value) — but only for roles that actually consume
+        // one. An explicitly-passed workdir for a role without workdir-capable
+        // tools triggers a warning.
+        if let workdir, !workdir.isEmpty {
+            await ensureChatLoaded(filename: filename)
+            if let idx = records.firstIndex(where: { $0.filename == filename }),
+               var chat = records[idx].chat {
+                if role(for: chat)?.hasWorkdirCapableMCP == true {
+                    chat.workingDirectory = workdir
+                    records[idx].chat = chat
+                    // Persisted by finishStream once the stream settles.
+                } else if workdirExplicit {
+                    notifyOneShot(filename: filename, .notice("--workdir has no effect: role \"\(chat.role ?? "?")\" does not use a working directory"))
+                }
+            }
+        }
 
         guard await sendMessage(filename: filename, text: message) else {
             oneShotSinks[filename]?[sinkID] = nil
@@ -1649,6 +1709,13 @@ actor ChatEngine {
         return .started(filename: filename, events: stream)
     }
 
+    /// Yields an event to every CLI one-shot sink of the chat. No-op for
+    /// GUI-driven chats (no sinks registered).
+    private func notifyOneShot(filename: String, _ event: OneShotEvent) {
+        guard let sinks = oneShotSinks[filename] else { return }
+        for sink in sinks.values { sink.yield(event) }
+    }
+
     private func removeOneShotSink(filename: String, id: UUID) {
         oneShotSinks[filename]?[id] = nil
         if oneShotSinks[filename]?.isEmpty == true { oneShotSinks[filename] = nil }
@@ -1659,9 +1726,9 @@ actor ChatEngine {
     /// error, cancellation, deleted-mid-stream).
     private func completeOneShotSinks(filename: String) {
         guard let sinks = oneShotSinks.removeValue(forKey: filename), !sinks.isEmpty else { return }
-        let error = records.first(where: { $0.filename == filename })?.lastError
+        let record = records.first(where: { $0.filename == filename })
         for sink in sinks.values {
-            sink.yield(.finished(error: error))
+            sink.yield(.finished(error: record?.lastError, chatName: record?.displayTitle))
             sink.finish()
         }
     }
@@ -1799,6 +1866,9 @@ actor ChatEngine {
                     let def = toolDefs.first(where: { $0.namespacedName == call.name })
                     stamped.requiredArgs = def?.requiredArgs
                     stamped.internalTool = def?.serverName == ConfiguratorTools.serverName
+                    // The collapsed one-line argument summary, shared by the
+                    // chat renderer and the CLI.
+                    stamped.summary = ToolSummary.callLine(name: call.name, arguments: call.arguments, requiredArgs: stamped.requiredArgs)
                     return stamped
                 }
                 applyToolCalls(stampedCalls, filename: filename)
@@ -1979,6 +2049,11 @@ actor ChatEngine {
             chat.messages[lastIdx].toolCalls = calls
         }
         records[idx].chat = chat
+        // Let the CLI render the collapsed tool-call header as each call starts.
+        for call in calls {
+            let summary = call.summary ?? ToolSummary.callLine(name: call.name, arguments: call.arguments, requiredArgs: call.requiredArgs)
+            notifyOneShot(filename: filename, .toolCall(name: call.name, summary: summary))
+        }
         scheduleCoalescedEmit()
     }
 
@@ -2092,6 +2167,26 @@ actor ChatEngine {
         if autoAllowed {
             debugLog("Tool", "auto-allowed \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
             approval = .allow
+        } else if cliDriven.contains(filename) {
+            // CLI-driven chats are non-interactive — there's nobody to answer
+            // an approval prompt. With --allow-all the call is auto-approved;
+            // otherwise it's skipped: the CLI user gets a warning and the
+            // model gets a cancellation result explaining what happened.
+            if cliAllowAll.contains(filename) {
+                debugLog("Tool", "auto-approved via --allow-all \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
+                approval = .allow
+            } else {
+                debugLog("Tool", "skipping unconfirmed CLI tool call \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
+                notifyOneShot(filename: filename, .notice("tool call \"\(call.name)\" requires confirmation — skipped (re-run with --allow-all to auto-approve tool calls)"))
+                // The changes were never applied — drop any diff preview.
+                setToolCallDiff(callID: call.id, filename: filename, diff: nil)
+                return ToolResult(
+                    callID: call.id,
+                    content: "The tool call was not executed: it requires user confirmation, but the request is running in non-interactive CLI mode. Tell the user to re-run the command with --allow-all (-y) to auto-approve tool calls.",
+                    isError: true,
+                    isCancelled: true
+                )
+            }
         } else {
             // The approval hook. Suspends until the user allows or denies the
             // call (or cancels via stop, which throws `CancellationError`). The
@@ -2241,6 +2336,16 @@ actor ChatEngine {
         }) else {
             debugLog("Tool", "ignoring result for unknown/trimmed call — callID=\(result.callID), chat=\(filename)")
             return
+        }
+        // Stamp the persisted one-line status summary (shared by the chat
+        // renderer and the CLI) and forward it to the CLI sinks.
+        var result = result
+        let callName = chat.messages.lazy.compactMap(\.toolCalls).joined().first(where: { $0.id == result.callID })?.name ?? ""
+        if result.summary == nil {
+            result.summary = ToolSummary.resultStatus(name: callName, result: result)
+        }
+        if let summary = result.summary {
+            notifyOneShot(filename: filename, .toolResult(name: callName, summary: summary))
         }
         // If a streaming placeholder `tool`-role message exists for this
         // callID, replace it in place with the final result.
@@ -2407,7 +2512,7 @@ actor ChatEngine {
         // finished chat is the selected one the user has already seen the
         // answer, so marking it unread would only surface a stale circle once
         // they switch away.
-        if records[idx].filename != selectedFilename {
+        if records[idx].filename != selectedFilename, !cliDriven.contains(records[idx].filename) {
             records[idx].hasUnreadActivity = true
         }
         // Agentic work is done; if the user isn't viewing this chat, its

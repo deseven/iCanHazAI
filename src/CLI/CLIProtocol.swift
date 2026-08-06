@@ -41,8 +41,26 @@ enum CLIFrame: Sendable, Equatable {
     case pong(appVersion: String, pid: Int32)
     case started(id: String, chat: String)
     case delta(id: String, text: String)
-    case done(id: String, chat: String)
+    /// A tool call began execution (`args` set, `status` nil) or produced its
+    /// final result (`status` set). `args` is the collapsed one-line argument
+    /// summary (see `ToolCall.summary`).
+    case tool(id: String, name: String, args: String?, status: CLIToolStatus?)
+    /// An out-of-band warning for the CLI user (not part of the chat
+    /// content), printed to stderr by the client.
+    case notice(id: String?, text: String)
+    case done(id: String, chat: String, name: String?)
     case error(id: String?, code: String, message: String)
+}
+
+/// The final status of a tool call, carried by the `tool` frame. Mirrors
+/// `ToolSummary.Status` in a flat, wire-friendly shape.
+struct CLIToolStatus: Sendable, Equatable {
+    /// "done" | "error" | "denied" | "cancelled".
+    var kind: String
+    /// Badge text ("done", "error", ...). Currently identical to `kind`.
+    var label: String
+    /// One-line description (may be empty).
+    var description: String
 }
 
 /// A method call from the client. `method` is namespaced (`"chat.send"`) so
@@ -65,8 +83,21 @@ struct CLIRequestParams: Sendable, Equatable {
     var role: String?
     /// Connection override ("provider/name"). Nil → role/app default.
     var connection: String?
-    /// Filename of an existing chat to continue. Nil → create a new chat.
+    /// Filename of an existing chat to continue, with or without the ".json"
+    /// extension. Nil → create a new chat.
     var chat: String?
+    /// Create the new chat as a temporary one: in-memory only, destroyed when
+    /// the client disconnects. Mutually exclusive with `chat`.
+    var temporary = false
+    /// Working directory for the chat (the CLI process's cwd unless -w was
+    /// given). Only applied when the chat's role selects a workdir-capable
+    /// built-in group (Filesystem/Code/Shell).
+    var workdir: String?
+    /// True when the workdir came from an explicit -w/--workdir flag rather
+    /// than the implicit cwd default — drives the "role ignores it" warning.
+    var workdirExplicit = false
+    /// Auto-approve every tool call that would otherwise need confirmation.
+    var allowAll = false
 }
 
 enum CLIProtocolError: Error, Equatable {
@@ -83,7 +114,7 @@ enum CLIProtocol {
 
     private enum Key: String {
         case v, type, id, method, params, chat, text, code, message, client
-        case session
+        case session, name, summary, status, kind, label, description
         case appVersion = "app_version"
         case protocolVersion = "protocol_version"
         case pid
@@ -91,6 +122,7 @@ enum CLIProtocol {
 
     private enum FrameType: String {
         case hello, welcome, ping, pong, request, started, delta, done, error
+        case tool, notice
     }
 
     static func encode(_ frame: CLIFrame) throws -> Data {
@@ -116,6 +148,10 @@ enum CLIProtocol {
             if let role = req.params.role { params["role"] = role }
             if let connection = req.params.connection { params["connection"] = connection }
             if let chat = req.params.chat { params["chat"] = chat }
+            if req.params.temporary { params["temporary"] = true }
+            if let workdir = req.params.workdir { params["workdir"] = workdir }
+            if req.params.workdirExplicit { params["workdir_explicit"] = true }
+            if req.params.allowAll { params["allow_all"] = true }
             obj[Key.params.rawValue] = params
         case .pong(let appVersion, let pid):
             obj[Key.type.rawValue] = FrameType.pong.rawValue
@@ -129,10 +165,27 @@ enum CLIProtocol {
             obj[Key.type.rawValue] = FrameType.delta.rawValue
             obj[Key.id.rawValue] = id
             obj[Key.text.rawValue] = text
-        case .done(let id, let chat):
+        case .tool(let id, let name, let args, let status):
+            obj[Key.type.rawValue] = FrameType.tool.rawValue
+            obj[Key.id.rawValue] = id
+            obj[Key.name.rawValue] = name
+            if let args { obj[Key.summary.rawValue] = args }
+            if let status {
+                obj[Key.status.rawValue] = [
+                    Key.kind.rawValue: status.kind,
+                    Key.label.rawValue: status.label,
+                    Key.description.rawValue: status.description,
+                ]
+            }
+        case .notice(let id, let text):
+            obj[Key.type.rawValue] = FrameType.notice.rawValue
+            if let id { obj[Key.id.rawValue] = id }
+            obj[Key.text.rawValue] = text
+        case .done(let id, let chat, let name):
             obj[Key.type.rawValue] = FrameType.done.rawValue
             obj[Key.id.rawValue] = id
             obj[Key.chat.rawValue] = chat
+            if let name { obj[Key.name.rawValue] = name }
         case .error(let id, let code, let message):
             obj[Key.type.rawValue] = FrameType.error.rawValue
             if let id { obj[Key.id.rawValue] = id }
@@ -182,7 +235,11 @@ enum CLIProtocol {
                 message: message,
                 role: paramsObj["role"] as? String,
                 connection: paramsObj["connection"] as? String,
-                chat: paramsObj["chat"] as? String
+                chat: paramsObj["chat"] as? String,
+                temporary: paramsObj["temporary"] as? Bool ?? false,
+                workdir: paramsObj["workdir"] as? String,
+                workdirExplicit: paramsObj["workdir_explicit"] as? Bool ?? false,
+                allowAll: paramsObj["allow_all"] as? Bool ?? false
             )
             return .request(CLIRequest(id: id, method: method, params: params))
         case FrameType.pong.rawValue:
@@ -203,12 +260,30 @@ enum CLIProtocol {
                 throw CLIProtocolError.malformedFrame("delta frame missing id/text")
             }
             return .delta(id: id, text: text)
+        case FrameType.tool.rawValue:
+            guard let id = obj[Key.id.rawValue] as? String,
+                  let name = obj[Key.name.rawValue] as? String else {
+                throw CLIProtocolError.malformedFrame("tool frame missing id/name")
+            }
+            var status: CLIToolStatus?
+            if let s = obj[Key.status.rawValue] as? [String: Any],
+               let kind = s[Key.kind.rawValue] as? String,
+               let label = s[Key.label.rawValue] as? String,
+               let description = s[Key.description.rawValue] as? String {
+                status = CLIToolStatus(kind: kind, label: label, description: description)
+            }
+            return .tool(id: id, name: name, args: obj[Key.summary.rawValue] as? String, status: status)
+        case FrameType.notice.rawValue:
+            guard let text = obj[Key.text.rawValue] as? String else {
+                throw CLIProtocolError.malformedFrame("notice frame missing text")
+            }
+            return .notice(id: obj[Key.id.rawValue] as? String, text: text)
         case FrameType.done.rawValue:
             guard let id = obj[Key.id.rawValue] as? String,
                   let chat = obj[Key.chat.rawValue] as? String else {
                 throw CLIProtocolError.malformedFrame("done frame missing id/chat")
             }
-            return .done(id: id, chat: chat)
+            return .done(id: id, chat: chat, name: obj[Key.name.rawValue] as? String)
         case FrameType.error.rawValue:
             guard let code = obj[Key.code.rawValue] as? String,
                   let message = obj[Key.message.rawValue] as? String else {

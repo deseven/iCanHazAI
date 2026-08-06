@@ -9,7 +9,7 @@ import Foundation
 /// the control socket, performs the hello/welcome handshake, sends a
 /// `chat.send` request, and streams the reply to stdout.
 ///
-/// When the app isn't running, the CLI spawns it headlessly (`--headless`:
+/// When the app isn't running, the CLI launches it headlessly (`--headless`:
 /// normal startup, but the main window is not revealed) and waits for the
 /// control socket to appear — connect attempts double as the liveness probe,
 /// so no separate socket-file watching is needed.
@@ -42,16 +42,21 @@ enum CLIClient {
         var role: String?
         var connection: String?
         var chat: String?
+        var workdir: String?
+        var temporary = false
+        var allowAll = false
         var help = false
 
         enum ParseError: Error, Equatable, CustomStringConvertible {
             case unknownFlag(String)
             case missingFlagValue(String)
+            case conflictingOptions(String)
 
             var description: String {
                 switch self {
                 case .unknownFlag(let flag): return "unknown option: \(flag)"
                 case .missingFlagValue(let flag): return "option \(flag) requires a value"
+                case .conflictingOptions(let message): return message
                 }
             }
         }
@@ -61,21 +66,40 @@ enum CLIClient {
             var i = 0
             while i < args.count {
                 let arg = args[i]
-                switch arg {
+                // Long options accept both "--name value" and "--name=value"
+                // (quoting is handled by the shell before we see the args).
+                var name = arg
+                var inlineValue: String?
+                if arg.hasPrefix("--"), let eq = arg.firstIndex(of: "=") {
+                    name = String(arg[..<eq])
+                    inlineValue = String(arg[arg.index(after: eq)...])
+                }
+                switch name {
                 case "-h", "--help":
                     opts.help = true
-                case "--role", "--connection", "--chat":
-                    guard i + 1 < args.count else { throw ParseError.missingFlagValue(arg) }
-                    let value = args[i + 1]
-                    i += 1
-                    switch arg {
-                    case "--role": opts.role = value
-                    case "--connection": opts.connection = value
-                    default: opts.chat = value
+                case "-t", "--temporary":
+                    opts.temporary = true
+                case "-y", "--allow-all":
+                    opts.allowAll = true
+                case "-f", "--chat", "-r", "--role", "-c", "--connection", "-w", "--workdir":
+                    let value: String
+                    if let inlineValue {
+                        guard !inlineValue.isEmpty else { throw ParseError.missingFlagValue(name) }
+                        value = inlineValue
+                    } else {
+                        guard i + 1 < args.count else { throw ParseError.missingFlagValue(arg) }
+                        i += 1
+                        value = args[i]
+                    }
+                    switch name {
+                    case "-f", "--chat": opts.chat = value
+                    case "-r", "--role": opts.role = value
+                    case "-w", "--workdir": opts.workdir = value
+                    default: opts.connection = value
                     }
                 case "--":
                     opts.words.append(contentsOf: args[(i + 1)...])
-                    return opts
+                    return try finish(opts)
                 default:
                     if arg.hasPrefix("-") && arg != "-" {
                         throw ParseError.unknownFlag(arg)
@@ -84,11 +108,29 @@ enum CLIClient {
                 }
                 i += 1
             }
+            return try finish(opts)
+        }
+
+        private static func finish(_ opts: CLIOptions) throws -> CLIOptions {
+            if opts.temporary, opts.chat != nil {
+                throw ParseError.conflictingOptions("--temporary cannot be combined with --chat")
+            }
             return opts
         }
     }
 
     // MARK: - Run
+
+    /// Resolves the working directory sent with the request: the explicit
+    /// -w/--workdir value when given (with `~` expanded, unless it's an SSH
+    /// spec like `host:/path`), otherwise the CLI process's own cwd.
+    static func resolveWorkdir(_ opts: CLIOptions) -> (workdir: String, explicit: Bool) {
+        if let w = opts.workdir {
+            if SSHSpec.isSSH(w) { return (w, true) }
+            return ((w as NSString).expandingTildeInPath, true)
+        }
+        return (FileManager.default.currentDirectoryPath, false)
+    }
 
     /// Executes the CLI flow and returns the process exit code:
     /// 0 = reply printed, 1 = runtime error, 2 = usage error.
@@ -172,11 +214,12 @@ enum CLIClient {
                     greeted.set(true)
                     let reqID = UUID().uuidString
                     requestID = reqID
+                    let wd = resolveWorkdir(opts)
                     do {
                         try conn.send(.request(CLIRequest(
                             id: reqID,
                             method: CLIRequest.methodChatSend,
-                            params: CLIRequestParams(message: message, role: opts.role, connection: opts.connection, chat: opts.chat)
+                            params: CLIRequestParams(message: message, role: opts.role, connection: opts.connection, chat: opts.chat, temporary: opts.temporary, workdir: wd.workdir, workdirExplicit: wd.explicit, allowAll: opts.allowAll)
                         )))
                     } catch {
                         stderr("failed to send the request — \(error.localizedDescription)")
@@ -194,9 +237,29 @@ enum CLIClient {
                         break loop
                     }
                     lastCharNewline = text.hasSuffix("\n")
-                case .done(let id, _):
+                case .tool(let id, let name, let args, let status):
+                    guard id == requestID else { break }
+                    // Tool lines render like the renderer's collapsed tool
+                    // blocks: a header (name + key arguments) when the call
+                    // starts, a status line when its result lands.
+                    if !lastCharNewline { _ = writeStdout("\n") }
+                    guard writeStdout(renderToolFrame(name: name, args: args, status: status)) else {
+                        exitCode = 0
+                        terminated = true
+                        break loop
+                    }
+                    lastCharNewline = true
+                case .notice(let id, let text):
+                    guard id == requestID || id == nil else { break }
+                    warn(text)
+                case .done(let id, _, let name):
                     guard id == requestID else { break }
                     if !lastCharNewline { _ = writeStdout("\n") }
+                    // A chat created by this invocation (no --chat, not
+                    // temporary) persists in the app — tell the user its name.
+                    if opts.chat == nil, !opts.temporary {
+                        info("Chat: \(name ?? "New chat")")
+                    }
                     exitCode = 0
                     terminated = true
                     break loop
@@ -232,19 +295,26 @@ enum CLIClient {
         return !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
     }
 
-    /// Launches the same binary with `--headless`, fully detached: stdio is
-    /// redirected to /dev/null so the app's log output can't pollute the CLI's
-    /// terminal, and the child outlives this process.
+    /// Launches the app bundle with `--headless` via LaunchServices. `open`
+    /// detaches the app completely — its own session, no shared stdio — so it
+    /// outlives this process and no terminal signal (Ctrl-C, terminal close)
+    /// can reach it through us; the socket is the only tie between them.
     private static func spawnHeadlessApp() {
-        let executable = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
         let process = Process()
-        process.executableURL = executable
-        process.arguments = ["--headless"]
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-g", Bundle.main.bundleURL.path, "--args", "--headless"]
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
+        let errPipe = Pipe()
+        process.standardError = errPipe
         do {
             try process.run()
+            process.waitUntilExit()
+            if process.terminationStatus != 0 {
+                let output = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                stderr("failed to start iCanHazAI — \(output ?? "open exited with \(process.terminationStatus)")")
+            }
         } catch {
             stderr("failed to start iCanHazAI — \(error.localizedDescription)")
         }
@@ -266,6 +336,60 @@ enum CLIClient {
         FileHandle.standardError.write(Data((message + "\n").utf8))
     }
 
+    // MARK: - Terminal styling
+
+    /// Whether ANSI styling is used on a stream: it's a terminal, TERM is not
+    /// "dumb", and NO_COLOR is unset.
+    private static func colorsEnabled(_ handle: FileHandle) -> Bool {
+        let env = ProcessInfo.processInfo.environment
+        return isatty(handle.fileDescriptor) != 0
+            && env["TERM"] != "dumb"
+            && env["NO_COLOR"] == nil
+    }
+
+    private static let stdoutColor = colorsEnabled(.standardOutput)
+    private static let stderrColor = colorsEnabled(.standardError)
+
+    private static func styled(_ text: String, _ code: String, enabled: Bool) -> String {
+        enabled ? "\u{1B}[\(code)m\(text)\u{1B}[0m" : text
+    }
+
+    /// Renders one tool frame as a terminal line. A call start becomes
+    /// `⚙ name args-summary`; a finished call becomes `  ✓ done — description`
+    /// with the symbol colored by status (green done, red error, yellow
+    /// denied/cancelled). Mirrors the chat renderer's collapsed tool blocks.
+    static func renderToolFrame(name: String, args: String?, status: CLIToolStatus?, color: Bool = stdoutColor) -> String {
+        if let status {
+            let (symbol, code): (String, String)
+            switch status.kind {
+            case "done": (symbol, code) = ("✓", "32")
+            case "error": (symbol, code) = ("✗", "31")
+            default: (symbol, code) = ("⚠", "33") // denied / cancelled
+            }
+            var line = "  " + styled(symbol, code, enabled: color)
+                + styled(" \(status.label)", "2", enabled: color)
+            if !status.description.isEmpty {
+                line += styled(" — ", "2", enabled: color) + status.description
+            }
+            return line + "\n"
+        }
+        var line = styled("⚙ \(name)", "1;36", enabled: color)
+        if let args, !args.isEmpty {
+            line += styled(" \(args)", "2", enabled: color)
+        }
+        return line + "\n"
+    }
+
+    /// A warning shown on stderr (yellow when the terminal supports it).
+    private static func warn(_ message: String) {
+        stderr(styled("warning: \(message)", "33", enabled: stderrColor))
+    }
+
+    /// Ancillary meta output on stderr (dim when the terminal supports it).
+    private static func info(_ message: String) {
+        stderr(styled(message, "2", enabled: stderrColor))
+    }
+
     private static func printUsage(toStderr: Bool) {
         let usage = """
         Usage: iCanHazAI [options] <message…>
@@ -273,17 +397,25 @@ enum CLIClient {
 
         Sends a message and streams the reply to stdout. Creates a new chat
         (default role and connection) unless --chat is given. Chats created
-        here are regular chats, visible and continuable in the GUI.
+        here are regular chats, visible and continuable in the GUI — unless
+        --temporary is used, in which case the chat only exists while the
+        CLI is running.
 
         Options:
-          --chat <filename>   Continue an existing chat instead of creating a new one
-          --role <name>       Role for the new chat (default: the app's default role)
-          --connection <id>   Connection for the new chat, "provider/name"
-          --                  Treat the remaining arguments as the message
-          -h, --help          Show this help
+          -f, --chat <name>       Continue an existing chat instead of creating a new one
+          -r, --role <name>       Role for the new chat (default: the app's default role)
+          -c, --connection <id>   Connection for the new chat, "provider/name"
+          -w, --workdir <path>    Working directory for workdir-capable roles
+                                  (default: the current directory)
+          -y, --allow-all         Auto-approve all tool calls (without it, calls
+                                  that need confirmation are skipped)
+          -t, --temporary         Use a temporary chat instead of a permanent one
+          --                      Treat the remaining arguments as the message
+          -h, --help              Show this help
 
-        The app must be running; it is started automatically (without showing
-        the main window) when it isn't. Control socket: ~/iCanHazAI/app.sock
+        Long options also accept the --name=value form. The app must be
+        running; it is started automatically (without showing the main
+        window) when it isn't. Control socket: ~/iCanHazAI/app.sock
         """
         if toStderr {
             stderr(usage)

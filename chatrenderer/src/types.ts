@@ -1,6 +1,8 @@
 // Shared types between the Swift host and the web renderer.
 // These mirror the Swift `ChatMessage` / `MessageRole` models.
 
+import type { ToolStatusSummary } from "./toolSummary";
+
 export type MessageRole = "system" | "user" | "assistant" | "tool";
 
 /** An image attached to a message, loaded via the custom `ichai://` scheme. */
@@ -34,6 +36,10 @@ export interface ToolCallData {
    *  Guards the per-tool syntax-highlighting hints in toolHighlight.ts so
    *  they can't misfire on an external MCP tool with the same bare name. */
   internalTool?: boolean;
+  /** The collapsed one-line argument summary, pre-computed by the host and
+   *  persisted in the chat data. Absent for calls from before the field
+   *  existed — the renderer computes it locally then. */
+  summary?: string | null;
 }
 
 /** The result of executing a tool call. */
@@ -49,6 +55,11 @@ export interface ToolResultData {
   /** True when the result was synthesized on stop for a call that never
    *  executed. Shown as a "cancelled" badge instead of "error". */
   isCancelled?: boolean;
+  /** The one-line status summary, pre-computed by the host and persisted in
+   *  the chat data. Absent for results from before the field existed (and for
+   *  transient streaming placeholders) — the renderer computes it locally
+   *  then. */
+  summary?: ToolStatusSummary | null;
 }
 
 export interface ChatMessage {

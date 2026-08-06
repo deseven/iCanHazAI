@@ -155,6 +155,8 @@ These three fields interact and are validated on role load:
 - `working_directory` not set, override allowed → "No directory" shown; user must pick one. When `directory_isolation` is also active, the placeholder is red and sending is blocked until a directory is picked.
 - `working_directory` not set, override not allowed → directory picker hidden.
 
+**CLI behavior**: for roles with a workdir-capable group, a chat driven via the command line gets the CLI process's working directory (or the explicit `--workdir` value) as its per-chat directory — so command-line runs operate on the directory the user invoked them from. The usual override rules still apply: a role-pinned `working_directory` without override wins over the CLI value.
+
 ### SSH working directories
 
 A working directory may be remote (SSH), written in scp form as `host:/absolute/path` — e.g. `nas:/home/user/project` or `user@host:/var/www`. A bare `host:` (no path) means the remote home directory. The path must be absolute — home-relative forms like `host:dir` are rejected. The `host` part is anything `ssh` accepts (a `Host` alias from `~/.ssh/config` or `user@host`); all authorization must be pre-configured by the user so `ssh host` works without prompts (BatchMode is used — no interactive auth is possible). SSH specs are valid everywhere a working directory is: the role's `working_directory`, and the per-chat picker (stored in `[general].working_directories` like any other entry). In the picker, typing an scp-style spec browses the remote over a temporary SSH connection: results are filtered to subdirectories of the typed path, and the connection is torn down when the picker closes.
