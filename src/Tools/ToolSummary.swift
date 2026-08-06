@@ -261,9 +261,9 @@ private extension ToolSummary {
         // Built-in: Filesystem
         "read_file": KnownToolSpec(primary: ["path"], secondary: ["offset", "limit"]),
         "write_file": KnownToolSpec(primary: ["path"]),
-        "ls": KnownToolSpec(primary: ["path"], secondary: ["recursive"]),
-        "find_file": KnownToolSpec(primary: ["pattern"], secondary: ["path"]),
-        "find_text": KnownToolSpec(primary: ["regex"], secondary: ["path", "file_pattern"]),
+        "ls": KnownToolSpec(primary: ["path"], secondary: ["recursive", "include_hidden"]),
+        "find_file": KnownToolSpec(primary: ["pattern"], secondary: ["path", "case_insensitive", "include_hidden"]),
+        "find_text": KnownToolSpec(primary: ["regex"], secondary: ["path", "file_pattern", "case_insensitive", "context"]),
         "mkdir": KnownToolSpec(primary: ["path"]),
         "rm": KnownToolSpec(primary: ["path"], secondary: ["recursive"]),
         "stat": KnownToolSpec(primary: ["path"]),
@@ -337,9 +337,6 @@ private extension ToolSummary {
         case "mv":
             guard let src = obj["src"].flatMap(scalar), let dst = obj["dst"].flatMap(scalar) else { return nil }
             return [Entry(key: nil, value: "\(src) → \(dst)")]
-        case "git":
-            guard let args = obj["args"] as? [Any] else { return nil }
-            return [Entry(key: nil, value: args.map { scalar($0) ?? compactJSON($0) }.joined(separator: " "))]
         case "apply_patch":
             guard let patch = obj["patch"] as? String else { return nil }
             let paths = extractPatchPaths(patch)
@@ -349,7 +346,7 @@ private extension ToolSummary {
         }
     }
 
-    static let customKnownTools: Set<String> = ["mv", "git", "apply_patch"]
+    static let customKnownTools: Set<String> = ["mv", "apply_patch"]
 
     /// Summary for an internal tool, or nil when the tool isn't known.
     static func knownToolSummary(name: String, obj: [String: Any]) -> [Entry]? {
@@ -487,7 +484,7 @@ private extension ToolSummary {
             if updated > 0 { parts.append("\(updated) updated") }
             if deleted > 0 { parts.append("\(deleted) deleted") }
             return "Patched \(total) \(total == 1 ? "file" : "files") (\(parts.joined(separator: ", ")))."
-        case "git", "shell":
+        case "shell":
             // Output ends with the "[exit code: N]" line — that's the useful part.
             return lastLine(content)
         // Configurator: bullet lists ("- name" per entry, or "(none)").

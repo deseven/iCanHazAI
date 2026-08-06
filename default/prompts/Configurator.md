@@ -258,7 +258,7 @@ The app ships with four built-in tool groups, always available (no config file n
 
 - **Utils** (`[utils]`) — small utilities: `calc`, `datetime`, `uuid`, `hash`, `base64_encode`, `base64_decode`, `sleep`.
 - **Filesystem** (`[filesystem]`) — file operations: `ls`, `read_file`, `write_file`, `find_file`, `find_text`, `mkdir`, `mv`, `rm`, `stat`, `pwd`.
-- **Code** (`[code]`) — code-aware tools: `apply_patch`, `git`.
+- **Code** (`[code]`) — code-aware tools: `apply_patch`.
 - **Shell** (`[shell]`) — shell execution: `shell`, `applescript`.
 
 These run in-process (no subprocess), so there's no `check_mcp_bundled` tool — the tool list above is authoritative. To build a `tools` allowlist for a role, pick from the names listed above.

@@ -206,8 +206,8 @@ enum BuiltinTools {
 
     private static let filesystemToolDefs: [BuiltinToolDef] = [
         BuiltinToolDef(name: "ls",
-            description: "List files and directories at a path. Returns one entry per line, directories suffixed with '/'.",
-            schema: #"{"type":"object","properties":{"path":{"type":"string","description":"Directory path to list. \#(Workdir.pathDescription)"},"recursive":{"type":"boolean","description":"If true, list recursively to a fixed depth of 1 (direct children plus one level into subdirectories) with a cap of 1000 entries. Default false."}},"required":["path"]}"#),
+            description: "List files and directories at a path. Returns one entry per line, directories suffixed with '/'. Hidden entries (names starting with '.') are skipped in both modes unless include_hidden is true.",
+            schema: #"{"type":"object","properties":{"path":{"type":"string","description":"Directory path to list. \#(Workdir.pathDescription)"},"recursive":{"type":"boolean","description":"If true, list recursively to a fixed depth of 1 (direct children plus one level into subdirectories) with a cap of 1000 entries. Default false."},"include_hidden":{"type":"boolean","description":"Include hidden files and directories (names starting with '.'). Default false."}},"required":["path"]}"#),
         BuiltinToolDef(name: "read_file",
             description: "Read a file. Text files support offset/limit line ranges and are returned with line numbers in the format 'N | content' (right-aligned line number, a pipe separator, then the raw line). The 'N | ' prefix is NOT part of the file — never include it when quoting file content, e.g. in apply_patch context lines. From binary files only images are supported.",
             schema: #"{"type":"object","properties":{"path":{"type":"string","description":"File path to read. \#(Workdir.pathDescription)"},"offset":{"type":"integer","description":"1-based starting line number for text files. Defaults to 1."},"limit":{"type":"integer","description":"Maximum number of lines to read for text files. Defaults to 2000."}},"required":["path"]}"#),
@@ -215,11 +215,11 @@ enum BuiltinTools {
             description: "Write text content to a file (creates or overwrites). Parent directories are created as needed. ALWAYS provide the COMPLETE intended content of the file — partial updates or placeholders like '// rest unchanged' are forbidden. Do NOT include line numbers in the content. For targeted edits to existing files, prefer apply_patch.",
             schema: #"{"type":"object","properties":{"path":{"type":"string","description":"File path to write. \#(Workdir.pathDescription)"},"content":{"type":"string","description":"The complete text content to write, without line numbers or truncation."}},"required":["path","content"]}"#),
         BuiltinToolDef(name: "find_file",
-            description: "Find files by name (glob) within a directory tree. Matches filenames against the pattern. Caps results at 200 entries.",
-            schema: #"{"type":"object","properties":{"path":{"type":"string","description":"\#(Workdir.searchRootDescription)"},"pattern":{"type":"string","description":"Glob pattern for the filename, e.g. '*.swift' or 'config*'. Supports * and ? wildcards."}},"required":["pattern"]}"#),
+            description: "Find files by name (glob) within a directory tree. Results are sorted and capped at 200 entries. Hidden files are skipped unless include_hidden is true.",
+            schema: #"{"type":"object","properties":{"path":{"type":"string","description":"\#(Workdir.searchRootDescription)"},"pattern":{"type":"string","description":"Glob pattern, e.g. '*.swift' or '**/test_*.py'. Supports * (any run within a path component), ? (single character), [...] (character class) and ** (any number of directories). Patterns containing '/' match the path relative to the search root, otherwise the bare filename."},"case_insensitive":{"type":"boolean","description":"Match without regard to case. Default false."},"include_hidden":{"type":"boolean","description":"Also search hidden files and directories (names starting with '.'). Default false."}},"required":["pattern"]}"#),
         BuiltinToolDef(name: "find_text",
-            description: "Search file contents by regex across a directory tree using grep -R. Returns file:line:match lines.",
-            schema: #"{"type":"object","properties":{"path":{"type":"string","description":"\#(Workdir.searchRootDescription)"},"regex":{"type":"string","description":"Regular expression to search for in file contents."},"file_pattern":{"type":"string","description":"Optional glob to filter files by name, e.g. '*.swift'."}},"required":["regex"]}"#),
+            description: "Search file contents with a regular expression across a directory tree. Returns path:line:content for each matching line (context lines use '-' separators, groups are split by '--'), sorted deterministically; lines longer than 300 characters are truncated. Binary files and, unless include_hidden is true, hidden files are skipped. When the working directory is a remote SSH path, POSIX ERE (grep -E) is used instead.",
+            schema: #"{"type":"object","properties":{"path":{"type":"string","description":"\#(Workdir.searchRootDescription)"},"regex":{"type":"string","description":"Regular expression to search for in file contents. Locally the full regex syntax is supported (\\d \\w \\s, quantifiers, alternation, groups, anchors); over SSH it is POSIX ERE (grep -E: alternation, groups, + ? {n,m} quantifiers, but no \\d \\w \\s shorthands — use [[:digit:]] etc.). Invalid patterns are reported as errors."},"file_pattern":{"type":"string","description":"Optional glob to filter files by name, e.g. '*.swift'. Same glob syntax as find_file."},"case_insensitive":{"type":"boolean","description":"Match without regard to case. Default false."},"include_hidden":{"type":"boolean","description":"Also search hidden files and directories (names starting with '.'). Default false."},"max_results":{"type":"integer","description":"Maximum number of matching lines to return (1-1000), applied after sorting so truncation is deterministic. Default 200."},"context":{"type":"integer","description":"Lines of context before and after each match (0-25), grep-style. Default 0."}},"required":["regex"]}"#),
         BuiltinToolDef(name: "mkdir",
             description: "Create a directory (recursive). Parent directories are created as needed.",
             schema: #"{"type":"object","properties":{"path":{"type":"string","description":"Directory path to create. \#(Workdir.pathDescription)"}},"required":["path"]}"#),
@@ -287,9 +287,6 @@ enum BuiltinTools {
         BuiltinToolDef(name: "apply_patch",
             description: applyPatchDescription,
             schema: #"{"type":"object","properties":{"patch":{"type":"string","description":"The patch text in apply_patch format. Begins with '*** Begin Patch' and ends with '*** End Patch'."}},"required":["patch"]}"#),
-        BuiltinToolDef(name: "git",
-            description: "Run a git command with the provided arguments. Arguments are passed directly to git.",
-            schema: #"{"type":"object","properties":{"args":{"type":"array","items":{"type":"string"},"description":"Arguments to pass to git, e.g. [\"status\", \"--short\"] or [\"add\", \"src/App.swift\"]."}},"required":["args"]}"#),
     ]
 
     private static let shellToolDefs: [BuiltinToolDef] = {
@@ -401,7 +398,6 @@ enum BuiltinTools {
         case (filesystemGroup, "pwd"): return pwd(workdir)
         // Code
         case (codeGroup, "apply_patch"): return try applyPatch(args, workdir: workdir)
-        case (codeGroup, "git"): return try await git(args, workdir: workdir)
         // Shell
         case (shellGroup, "shell"): return try await shell(args, workdir: workdir)
         case (shellGroup, "applescript"): return try await applescript(args)
@@ -527,6 +523,17 @@ enum BuiltinTools {
         return String(data: sample, encoding: .utf8) != nil
     }
 
+    /// Fully symlink-resolved spelling of an existing path (realpath(3)).
+    /// Directory enumerators return paths in this spelling (/var →
+    /// /private/var on macOS), so relativization roots must match it.
+    static func canonicalPath(_ path: String) -> String {
+        path.withCString { cstr in
+            guard let resolved = realpath(cstr, nil) else { return path }
+            defer { free(resolved) }
+            return String(cString: resolved)
+        }
+    }
+
     static func relativize(_ absPath: String, root: String) -> String {
         var p = absPath
         if p == root { return "" }
@@ -536,19 +543,85 @@ enum BuiltinTools {
         return p
     }
 
-    private static func globToRegex(_ glob: String) throws -> NSRegularExpression {
-        var escaped = ""
-        for ch in glob {
-            switch ch {
-            case "*": escaped += ".*"
-            case "?": escaped += "."
-            case ".", "(", ")", "[", "]", "{", "}", "+", "^", "$", "\\", "|":
-                escaped += "\\\(ch)"
-            default: escaped.append(ch)
-            }
+    /// Glob matcher for `find_file` and `find_text`'s `file_pattern`. Supports
+    /// `*` (any run within one path component), `?` (single character),
+    /// `[...]` (character class, `!` or `^` negates) and `**` (any number of
+    /// path components). Patterns containing `/` match against the path
+    /// relative to the search root, otherwise against the bare filename.
+    struct GlobMatcher {
+        private let regex: NSRegularExpression
+        let isPathPattern: Bool
+
+        init(pattern: String, caseInsensitive: Bool = false) throws {
+            isPathPattern = pattern.contains("/")
+            regex = try NSRegularExpression(pattern: Self.toRegex(pattern),
+                                            options: caseInsensitive ? [.caseInsensitive] : [])
         }
-        escaped = "^\(escaped)$"
-        return try NSRegularExpression(pattern: escaped, options: [])
+
+        func matches(filename: String, relativePath: String) -> Bool {
+            let subject = isPathPattern ? relativePath : filename
+            return regex.firstMatch(in: subject, range: NSRange(subject.startIndex..., in: subject)) != nil
+        }
+
+        static func toRegex(_ glob: String) -> String {
+            let chars = Array(glob)
+            var out = "^"
+            var i = 0
+            while i < chars.count {
+                switch chars[i] {
+                case "*":
+                    if i + 1 < chars.count, chars[i + 1] == "*" {
+                        // `**/` crosses (and may skip) path components.
+                        if i + 2 < chars.count, chars[i + 2] == "/" {
+                            out += "(?:.*/)?"
+                            i += 3
+                        } else {
+                            out += ".*"
+                            i += 2
+                        }
+                    } else {
+                        out += "[^/]*"
+                        i += 1
+                    }
+                case "?":
+                    out += "[^/]"
+                    i += 1
+                case "[":
+                    var j = i + 1
+                    var cls = "["
+                    if j < chars.count, chars[j] == "!" || chars[j] == "^" {
+                        cls += "^"
+                        j += 1
+                    }
+                    // A ']' right after the opener is a literal member.
+                    if j < chars.count, chars[j] == "]" {
+                        cls += "\\]"
+                        j += 1
+                    }
+                    var closed = false
+                    while j < chars.count {
+                        if chars[j] == "]" { closed = true; j += 1; break }
+                        cls += chars[j] == "\\" ? "\\\\" : String(chars[j])
+                        j += 1
+                    }
+                    if closed {
+                        out += cls + "]"
+                        i = j
+                    } else {
+                        // Unterminated '[' is a literal.
+                        out += "\\["
+                        i += 1
+                    }
+                case let c where "\\.^$+{}()|]".contains(c):
+                    out += "\\\(c)"
+                    i += 1
+                default:
+                    out.append(chars[i])
+                    i += 1
+                }
+            }
+            return out + "$"
+        }
     }
 
     // MARK: - Utils tools
@@ -627,6 +700,7 @@ enum BuiltinTools {
     private static func ls(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
         let path = try requireString(args, "path")
         let recursive = optionalBool(args, "recursive") ?? false
+        let includeHidden = optionalBool(args, "include_hidden") ?? false
         let resolved = try workdir.resolve(path)
 
         let fm = FileManager.default
@@ -644,12 +718,17 @@ enum BuiltinTools {
         let maxDepth = 1
         let maxEntries = 1000
 
+        // `.skipsHiddenFiles` covers both dotfiles and the macOS UF_HIDDEN
+        // flag, keeping hidden handling consistent across modes and tools.
+        let enumOptions: FileManager.DirectoryEnumerationOptions = includeHidden ? [] : [.skipsHiddenFiles]
         var lines: [String] = []
         if recursive {
-            guard let enumerator = fm.enumerator(at: URL(fileURLWithPath: resolved), includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else {
+            guard let enumerator = fm.enumerator(at: URL(fileURLWithPath: resolved), includingPropertiesForKeys: [.isDirectoryKey], options: enumOptions) else {
                 throw BuiltinToolError("invalid argument 'path': failed to enumerate: \(path)")
             }
-            let root = resolved
+            // The enumerator returns symlink-resolved paths (/var →
+            // /private/var on macOS), so relativize against the canonical root.
+            let root = canonicalPath(resolved)
             while let item = enumerator.nextObject() {
                 guard let url = item as? URL else { continue }
                 let level = enumerator.level
@@ -661,19 +740,18 @@ enum BuiltinTools {
                 if isD.boolValue && level >= maxDepth + 1 {
                     enumerator.skipDescendants()
                 }
-                if lines.count >= maxEntries { break }
             }
+            lines.sort()
         } else {
-            let entries = (try? fm.contentsOfDirectory(atPath: resolved)) ?? []
-            for e in entries.sorted() {
-                let full = (resolved as NSString).appendingPathComponent(e)
-                var isD: ObjCBool = false
-                fm.fileExists(atPath: full, isDirectory: &isD)
-                lines.append(isD.boolValue ? "\(e)/" : e)
-                if lines.count >= maxEntries { break }
+            let urls = (try? fm.contentsOfDirectory(at: URL(fileURLWithPath: resolved), includingPropertiesForKeys: [.isDirectoryKey], options: enumOptions)) ?? []
+            for url in urls {
+                let name = url.lastPathComponent
+                let isD = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+                lines.append(isD ? "\(name)/" : name)
             }
+            lines.sort()
         }
-        return (lines.joined(separator: "\n"), false)
+        return (lines.prefix(maxEntries).joined(separator: "\n"), false)
     }
 
     private static func readFile(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
@@ -777,6 +855,8 @@ enum BuiltinTools {
     private static func findFile(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
         let pattern = try requireString(args, "pattern")
         let searchRoot = optionalString(args, "path") ?? workdir.defaultRoot
+        let caseInsensitive = optionalBool(args, "case_insensitive") ?? false
+        let includeHidden = optionalBool(args, "include_hidden") ?? false
         let resolved = try workdir.resolve(searchRoot)
 
         let fm = FileManager.default
@@ -785,45 +865,145 @@ enum BuiltinTools {
             throw BuiltinToolError("invalid argument 'path': not a directory: \(searchRoot)")
         }
 
-        let regex = try globToRegex(pattern)
-        let root = resolved
-        var matches: [String] = []
-        guard let enumerator = fm.enumerator(at: URL(fileURLWithPath: resolved), includingPropertiesForKeys: [], options: [.skipsHiddenFiles]) else {
+        let glob = try GlobMatcher(pattern: pattern, caseInsensitive: caseInsensitive)
+        let options: FileManager.DirectoryEnumerationOptions = includeHidden ? [] : [.skipsHiddenFiles]
+        guard let enumerator = fm.enumerator(at: URL(fileURLWithPath: resolved), includingPropertiesForKeys: [], options: options) else {
             throw BuiltinToolError("invalid argument 'path': failed to enumerate: \(searchRoot)")
         }
-        let allURLs = enumerator.allObjects.compactMap { $0 as? URL }
-        for url in allURLs {
-            let name = url.lastPathComponent
-            if regex.firstMatch(in: name, range: NSRange(location: 0, length: name.utf16.count)) != nil {
-                matches.append(relativize(url.path, root: root))
-                if matches.count >= 200 { break }
+        // Matches are collected fully, then sorted, so the 200-cap truncation
+        // is deterministic instead of raw walk order. The enumerator returns
+        // symlink-resolved paths (/var → /private/var on macOS), so relativize
+        // against the canonical root.
+        let root = canonicalPath(resolved)
+        var matches: [String] = []
+        for case let url as URL in enumerator {
+            let rel = relativize(url.path, root: root)
+            if glob.matches(filename: url.lastPathComponent, relativePath: rel) {
+                matches.append(rel)
             }
         }
-        var out = matches.joined(separator: "\n")
-        if matches.count >= 200 { out += "\n... (truncated at 200 results)" }
+        matches.sort()
+        var out = matches.prefix(200).joined(separator: "\n")
+        if matches.count > 200 { out += "\n... (truncated at 200 results)" }
         return (out, false)
     }
 
+    /// Matching lines are cut at this length (with an ellipsis) so a single
+    /// minified or generated line can't flood the context window.
+    static let findTextMaxLineLength = 300
+    /// Output safety net on top of max_results (context lines can add up).
+    static let findTextMaxOutputBytes = 64 * 1024
+
+    static func truncateMatchLine(_ line: String) -> String {
+        if line.count <= findTextMaxLineLength { return line }
+        return String(line.prefix(findTextMaxLineLength)) + "…"
+    }
+
     private static func findText(_ args: [String: Any], workdir: Workdir) async throws -> ToolOutput {
-        let regex = try requireString(args, "regex")
+        let pattern = try requireString(args, "regex")
         let searchRoot = optionalString(args, "path") ?? workdir.defaultRoot
-        let filePattern = optionalString(args, "file_pattern")
+        let caseInsensitive = optionalBool(args, "case_insensitive") ?? false
+        let includeHidden = optionalBool(args, "include_hidden") ?? false
+        let maxResults = min(max(optionalInt(args, "max_results") ?? 200, 1), 1000)
+        let context = min(max(optionalInt(args, "context") ?? 0, 0), 25)
         let resolved = try workdir.resolve(searchRoot)
 
-        var arguments = ["-RIn"]
-        if let filePattern {
-            arguments.append("--include=\(filePattern)")
+        // Native matching via the stdlib regex engine (full syntax, and
+        // compile errors surface instead of silently returning nothing) —
+        // previously this shelled out to BSD grep, whose default BRE dialect
+        // treats most metacharacters as literals.
+        let regex: Regex<AnyRegexOutput>
+        do {
+            regex = try Regex(pattern, as: AnyRegexOutput.self).ignoresCase(caseInsensitive)
+        } catch {
+            throw BuiltinToolError("invalid argument 'regex': \(error)")
         }
-        arguments.append(contentsOf: [regex, resolved])
+        let fileGlob = try optionalString(args, "file_pattern").map { try GlobMatcher(pattern: $0) }
 
-        let result = try await runProcess(launchPath: "/usr/bin/grep", arguments: arguments)
-        let output = result.stdout
-        let cap = 64 * 1024
-        if output.utf8.count > cap {
-            let truncated = String(decoding: output.utf8.prefix(cap), as: UTF8.self)
-            return (truncated + "\n... (truncated)", false)
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: resolved, isDirectory: &isDir) else {
+            throw BuiltinToolError("invalid argument 'path': not found: \(searchRoot)")
         }
-        return (output, false)
+
+        // Pairs of (filesystem path, display path). The enumerator returns
+        // symlink-resolved paths (/var → /private/var on macOS); display paths
+        // keep the spelling the caller asked for.
+        var files: [(path: String, display: String)] = []
+        if isDir.boolValue {
+            let options: FileManager.DirectoryEnumerationOptions = includeHidden ? [] : [.skipsHiddenFiles]
+            guard let enumerator = fm.enumerator(at: URL(fileURLWithPath: resolved), includingPropertiesForKeys: [.isRegularFileKey], options: options) else {
+                throw BuiltinToolError("invalid argument 'path': failed to enumerate: \(searchRoot)")
+            }
+            let root = canonicalPath(resolved)
+            while let url = enumerator.nextObject() as? URL {
+                guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
+                let rel = relativize(url.path, root: root)
+                if let fileGlob, !fileGlob.matches(filename: url.lastPathComponent, relativePath: rel) { continue }
+                files.append((url.path, (resolved as NSString).appendingPathComponent(rel)))
+            }
+            files.sort { $0.display < $1.display }
+        } else {
+            files = [(resolved, resolved)]
+        }
+
+        var out: [String] = []
+        var matchCount = 0
+        var outBytes = 0
+        var hitResultCap = false
+        var hitByteCap = false
+
+        fileLoop: for (file, display) in files {
+            guard let data = fm.contents(atPath: file), isText(data),
+                  let text = String(data: data, encoding: .utf8) else { continue }
+            var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            // An empty final element is the artifact of a trailing newline.
+            if lines.last?.isEmpty == true { lines.removeLast() }
+            guard !lines.isEmpty else { continue }
+
+            var matching: Set<Int> = []
+            for (i, line) in lines.enumerated() where line.firstMatch(of: regex) != nil {
+                matching.insert(i)
+            }
+            guard !matching.isEmpty else { continue }
+
+            // Merge matches into grep-style groups when context is requested:
+            // matches whose context windows touch share one group.
+            var groups: [(range: ClosedRange<Int>, matches: Int)] = []
+            for idx in matching.sorted() {
+                let lo = max(0, idx - context)
+                let hi = min(lines.count - 1, idx + context)
+                if let last = groups.last, lo <= last.range.upperBound + 1 {
+                    groups[groups.count - 1] = (last.range.lowerBound...hi, last.matches + 1)
+                } else {
+                    groups.append((lo...hi, 1))
+                }
+            }
+
+            for group in groups {
+                if context > 0, !out.isEmpty {
+                    out.append("--")
+                    outBytes += 3
+                }
+                for i in group.range {
+                    let isMatch = matching.contains(i)
+                    if isMatch {
+                        if matchCount >= maxResults { hitResultCap = true; break fileLoop }
+                        matchCount += 1
+                    }
+                    if outBytes >= Self.findTextMaxOutputBytes { hitByteCap = true; break fileLoop }
+                    let sep = isMatch ? ":" : "-"
+                    let line = "\(display)\(sep)\(i + 1)\(sep)\(truncateMatchLine(lines[i]))"
+                    out.append(line)
+                    outBytes += line.utf8.count + 1
+                }
+            }
+        }
+
+        var result = out.joined(separator: "\n")
+        if hitResultCap { result += "\n... (truncated at \(maxResults) results)" }
+        else if hitByteCap { result += "\n... (truncated, output size limit)" }
+        return (result, false)
     }
 
     private static func mkdir(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
@@ -984,28 +1164,6 @@ enum BuiltinTools {
         }
 
         return (summary.joined(separator: "\n"), false)
-    }
-
-    private static func git(_ args: [String: Any], workdir: Workdir) async throws -> ToolOutput {
-        let gitArgs = try requireStringArray(args, "args")
-        if gitArgs.isEmpty {
-            throw BuiltinToolError("invalid argument 'args': must not be empty")
-        }
-        if gitArgs.contains(where: { $0.contains("\0") }) {
-            throw BuiltinToolError("invalid argument 'args': must not contain null bytes")
-        }
-
-        let result = try await runProcess(
-            launchPath: "/usr/bin/git",
-            arguments: gitArgs,
-            cwd: workdir.defaultCwd
-        )
-
-        if result.exitCode == 0 {
-            return (result.stdout, false)
-        } else {
-            return ("\(result.stdout)\(result.stderr)\n[exit code: \(result.exitCode)]", false)
-        }
     }
 
     // MARK: - Shell tools

@@ -37,12 +37,10 @@ extension AllAppTests {
                     == [ToolSummary.Entry(key: nil, value: "cd /tmp⏎ls -la")])
         }
 
-        @Test("mv renders src → dst; git joins args; apply_patch lists affected paths")
+        @Test("mv renders src → dst; apply_patch lists affected paths")
         func customKnown() {
             #expect(ToolSummary.callEntries(name: "mv", arguments: json(["src": "a.txt", "dst": "b.txt"]))
                     == [ToolSummary.Entry(key: nil, value: "a.txt → b.txt")])
-            #expect(ToolSummary.callEntries(name: "git", arguments: json(["args": ["status", "--short"]]))
-                    == [ToolSummary.Entry(key: nil, value: "status --short")])
 
             let patch = """
                 *** Begin Patch
@@ -165,10 +163,9 @@ extension AllAppTests {
             #expect(ToolSummary.resultStatus(name: "find_text", result: ToolResult(callID: "c", content: "src/a.swift:10:match one", isError: false))?.description == "Found 1 item.")
         }
 
-        @Test("shell/git surface the exit-code line")
+        @Test("shell surfaces the exit-code line")
         func exitCode() {
             #expect(ToolSummary.resultStatus(name: "shell", result: ToolResult(callID: "c", content: "total 8\n-rw-r--r--  a.txt\n[exit code: 0]", isError: false))?.description == "[exit code: 0]")
-            #expect(ToolSummary.resultStatus(name: "git", result: ToolResult(callID: "c", content: "error: pathspec 'x' did not match\n[exit code: 1]", isError: false))?.description == "[exit code: 1]")
         }
 
         @Test("apply_patch summarizes the per-file operation lines")

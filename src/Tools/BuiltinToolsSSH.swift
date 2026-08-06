@@ -93,7 +93,6 @@ enum BuiltinToolsSSH {
     static func code(name: String, args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
         switch name {
         case "apply_patch": return try await applyPatch(args, workdir: workdir, ssh: ssh)
-        case "git": return try await git(args, workdir: workdir, ssh: ssh)
         default:
             throw BuiltinToolError("Unknown tool \"\(name)\" in group \"Code\".")
         }
@@ -104,24 +103,28 @@ enum BuiltinToolsSSH {
     private static func ls(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
         let path = try BuiltinTools.requireString(args, "path")
         let recursive = BuiltinTools.optionalBool(args, "recursive") ?? false
+        let includeHidden = BuiltinTools.optionalBool(args, "include_hidden") ?? false
         let resolved = try workdir.resolve(path)
 
         let script: String
         if recursive {
             // Mirrors the local semantics: direct children plus one level
-            // into subdirectories, hidden entries skipped, paths relative to
-            // the listed root, directories suffixed with '/'.
+            // into subdirectories, hidden entries (dotfiles — POSIX remotes
+            // have no UF_HIDDEN) skipped unless requested, paths relative to
+            // the listed root, directories suffixed with '/', sorted so the
+            // 1000-entry cap is deterministic.
+            let prune = includeHidden ? "" : "\\( -name '.*' ! -name . -prune \\) -o "
             script = """
             if [ ! -e \(q(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
             if [ ! -d \(q(resolved)) ]; then printf 'not a directory: %s\\n' \(q(path)) >&2; exit 1; fi
             command -v find >/dev/null 2>&1 || { echo 'find: command not found on the remote host' >&2; exit 127; }
-            cd \(q(resolved)) && find . -mindepth 1 -maxdepth 2 \\( -name '.*' ! -name . -prune \\) -o -print | while IFS= read -r p; do if [ -d "$p" ]; then printf '%s/\\n' "${p#./}"; else printf '%s\\n' "${p#./}"; fi; done
+            cd \(q(resolved)) && find . -mindepth 1 -maxdepth 2 \(prune)-print | while IFS= read -r p; do if [ -d "$p" ]; then printf '%s/\\n' "${p#./}"; else printf '%s\\n' "${p#./}"; fi; done | sort
             """
         } else {
             script = """
             if [ ! -e \(q(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
             if [ ! -d \(q(resolved)) ]; then printf 'not a directory: %s\\n' \(q(path)) >&2; exit 1; fi
-            ls -1Ap \(q(resolved))
+            ls -1\(includeHidden ? "A" : "")p \(q(resolved))
             """
         }
         let r = try await run(ssh, script: script)
@@ -162,11 +165,30 @@ enum BuiltinToolsSSH {
     private static func findFile(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
         let pattern = try BuiltinTools.requireString(args, "pattern")
         let searchRoot = BuiltinTools.optionalString(args, "path") ?? workdir.root ?? "."
+        let caseInsensitive = BuiltinTools.optionalBool(args, "case_insensitive") ?? false
+        let includeHidden = BuiltinTools.optionalBool(args, "include_hidden") ?? false
         let resolved = try workdir.resolve(searchRoot)
+
+        // find's fnmatch natively supports *, ? and [...]; with -path its
+        // wildcards also cross '/', which approximates '**' (zero-or-more
+        // components is handled by additionally matching with '**/' removed).
+        let predicate: String
+        if pattern.contains("/") {
+            var variants = ["./" + pattern]
+            if pattern.contains("**/") {
+                variants.append("./" + pattern.replacingOccurrences(of: "**/", with: ""))
+            }
+            let flag = caseInsensitive ? "-ipath" : "-path"
+            predicate = "\\( " + variants.map { "\(flag) \(q($0))" }.joined(separator: " -o ") + " \\)"
+        } else {
+            let flag = caseInsensitive ? "-iname" : "-name"
+            predicate = "\(flag) \(q(pattern))"
+        }
+        let prune = includeHidden ? "" : "\\( -name '.*' ! -name . -prune \\) -o "
 
         let script = """
         if [ ! -d \(q(resolved)) ]; then printf 'not a directory: %s\\n' \(q(searchRoot)) >&2; exit 1; fi
-        cd \(q(resolved)) && find . \\( -name '.*' ! -name . -prune \\) -o -name \(q(pattern)) -print
+        cd \(q(resolved)) && find . \(prune)\(predicate) -print | sort
         """
         let r = try await run(ssh, script: script)
         try requireSuccess(r)
@@ -179,30 +201,113 @@ enum BuiltinToolsSSH {
         return (out, false)
     }
 
+    /// First `[:-]digits[:-]` run decides whether a grep -n output line is a
+    /// match (`path:12:...`) or context (`path-12-...`). Only used for the
+    /// max_results count; content passes through untouched either way.
+    private static func grepOutputLineIsMatch(_ line: String) -> Bool {
+        guard let m = grepLineSeparatorRegex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+              let range = Range(m.range, in: line) else { return true }
+        return line[range].hasPrefix(":")
+    }
+    private static let grepLineSeparatorRegex = try! NSRegularExpression(pattern: #"[:-][0-9]+[:-]"#)
+
     private static func findText(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
         let regex = try BuiltinTools.requireString(args, "regex")
         let searchRoot = BuiltinTools.optionalString(args, "path") ?? workdir.root ?? "."
-        let filePattern = BuiltinTools.optionalString(args, "file_pattern")
+        let caseInsensitive = BuiltinTools.optionalBool(args, "case_insensitive") ?? false
+        let includeHidden = BuiltinTools.optionalBool(args, "include_hidden") ?? false
+        let maxResults = min(max(BuiltinTools.optionalInt(args, "max_results") ?? 200, 1), 1000)
+        let context = min(max(BuiltinTools.optionalInt(args, "context") ?? 0, 0), 25)
         let resolved = try workdir.resolve(searchRoot)
 
-        var script = "grep -RIn"
-        if let filePattern { script += " --include=\(q(filePattern))" }
-        script += " \(q(regex)) \(q(resolved))"
+        // ERE (`grep -E`) gives the remote side real alternation, groups and
+        // quantifiers; \d-style classes don't exist in POSIX ERE, which the
+        // tool description calls out. The output-capping pipe would mask
+        // grep's own exit code, so it's echoed to stderr as a marker and
+        // parsed back here (141 = SIGPIPE from `head`, i.e. capped output).
+        var grepArgs = "-REIn"
+        if caseInsensitive { grepArgs += "i" }
+        if context > 0 { grepArgs += " -C \(context)" }
+        var script = "grep \(grepArgs)"
+        if let filePattern = BuiltinTools.optionalString(args, "file_pattern") {
+            script += " --include=\(q(filePattern))"
+        }
+        if !includeHidden {
+            script += " --exclude='.*' --exclude-dir='.*'"
+        }
+        script += " -- \(q(regex)) \(q(resolved))"
+        script = "{ \(script); printf 'ICHAI-GREP-EXIT %s\\n' \"$?\" >&2; } | head -c 1048576"
 
         let r = try await run(ssh, script: script)
-        if r.failure != nil || r.exitCode >= 2 {
-            // grep: 0 = matches, 1 = none. Anything else (bad regex, missing
-            // directory, grep not installed → 127, ssh failure → 255) is a
-            // real error and surfaces its stderr to the model.
-            try requireSuccess(r)
+        if r.failure != nil { try requireSuccess(r) }
+
+        var grepExit = 0
+        var errLines: [String] = []
+        for line in r.stderrString.split(separator: "\n", omittingEmptySubsequences: true) {
+            if line.hasPrefix("ICHAI-GREP-EXIT ") {
+                grepExit = Int(line.dropFirst("ICHAI-GREP-EXIT ".count)) ?? 0
+            } else {
+                errLines.append(String(line))
+            }
         }
-        let output = r.stdoutString
-        let cap = 64 * 1024
-        if output.utf8.count > cap {
-            let truncated = String(decoding: output.utf8.prefix(cap), as: UTF8.self)
-            return (truncated + "\n... (truncated)", false)
+        if grepExit >= 2 && grepExit != 141 {
+            let msg = errLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            throw BuiltinToolError(msg.isEmpty ? "grep failed (exit code \(grepExit))" : msg)
         }
-        return (output, false)
+
+        // grep -R emits raw traversal order, which would make the max_results
+        // cut arbitrary. Sort first: with context, blocks (separated by `--`)
+        // are the sort unit and stay intact; without, each line is a block.
+        var blocks: [(key: String, lines: [String], matches: Int)] = []
+        var cur: [String] = []
+        var curMatches = 0
+        var curKey: String?
+        for rawLine in r.stdoutString.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine)
+            // Every grep -n output line carries a path:line: prefix, so a
+            // truly empty line is just the trailing-newline artifact.
+            if line.isEmpty { continue }
+            if context == 0 {
+                blocks.append((line, [line], 1))
+                continue
+            }
+            if line == "--" {
+                if !cur.isEmpty { blocks.append((curKey ?? cur[0], cur, curMatches)) }
+                cur = []; curMatches = 0; curKey = nil
+                continue
+            }
+            if grepOutputLineIsMatch(line) {
+                curMatches += 1
+                if curKey == nil { curKey = line }
+            }
+            cur.append(line)
+        }
+        if !cur.isEmpty { blocks.append((curKey ?? cur[0], cur, curMatches)) }
+        blocks.sort { $0.key < $1.key }
+
+        var out: [String] = []
+        var matchCount = 0
+        var outBytes = 0
+        var hitResultCap = false
+        var hitByteCap = grepExit == 141
+        for block in blocks {
+            if matchCount >= maxResults { hitResultCap = true; break }
+            if outBytes >= BuiltinTools.findTextMaxOutputBytes { hitByteCap = true; break }
+            if context > 0, !out.isEmpty {
+                out.append("--")
+                outBytes += 3
+            }
+            for line in block.lines {
+                let trimmed = BuiltinTools.truncateMatchLine(line)
+                out.append(trimmed)
+                outBytes += trimmed.utf8.count + 1
+            }
+            matchCount += block.matches
+        }
+        var result = out.joined(separator: "\n")
+        if hitResultCap { result += "\n... (truncated at \(maxResults) results)" }
+        else if hitByteCap { result += "\n... (truncated, output size limit)" }
+        return (result, false)
     }
 
     private static func mkdir(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
@@ -475,28 +580,6 @@ enum BuiltinToolsSSH {
         } catch let e as BuiltinToolError {
             return .error(message: "Error: \(e.description)")
         }
-    }
-
-    private static func git(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
-        let gitArgs = try BuiltinTools.requireStringArray(args, "args")
-        if gitArgs.isEmpty {
-            throw BuiltinToolError("invalid argument 'args': must not be empty")
-        }
-        if gitArgs.contains(where: { $0.contains("\0") }) {
-            throw BuiltinToolError("invalid argument 'args': must not contain null bytes")
-        }
-
-        var script = workdir.root.map { "cd \(q($0)) && " } ?? ""
-        script += "git"
-        for a in gitArgs { script += " \(q(a))" }
-
-        let r = try await run(ssh, script: script, hardTimeout: 120)
-        try requireSuccess(SSHManager.RunResult(exitCode: r.exitCode == 255 ? r.exitCode : 0, stdout: r.stdout, stderr: r.stderr, failure: r.failure))
-
-        if r.exitCode == 0 {
-            return (r.stdoutString, false)
-        }
-        return ("\(r.stdoutString)\(r.stderrString)\n[exit code: \(r.exitCode)]", false)
     }
 
     // MARK: - Shell tool

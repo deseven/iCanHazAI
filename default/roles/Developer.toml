@@ -1,4 +1,4 @@
-description = "Unrestricted coding agent equipped with all essential tools for code generation, testing, and version control."
+description = "Unrestricted coding agent equipped with all essential tools for code generation and testing."
 prompt = "Developer"
 icon = "hammer"
 accent = "blue"
@@ -10,7 +10,7 @@ working_directory_override_allowed = true
 auto_allow_all = true
 
 [filesystem]
-auto_allow = ["ls", "read_file", "stat", "pwd"]
+auto_allow = ["ls", "read_file", "stat", "find_file", "find_text", "pwd"]
 
 [code]
 

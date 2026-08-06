@@ -123,8 +123,8 @@ extension AllAppTests {
             #expect(!flatErr)
             #expect(flat.contains("top.txt"))
             #expect(flat.contains("a/"))
-            // Flat listing includes dotfiles (local parity).
-            #expect(flat.contains(".hidden"))
+            // Hidden entries are skipped by default in both modes (local parity).
+            #expect(!flat.contains(".hidden"))
 
             let (rec, recErr) = await Self.call("ls", Self.fs, ["path": ".", "recursive": true], workdir: wd)
             #expect(!recErr)
@@ -134,6 +134,12 @@ extension AllAppTests {
             // (local parity), so the depth-3 file and hidden entries are out.
             #expect(!rec.contains("c.txt"))
             #expect(!rec.contains(".hidden"))
+
+            // include_hidden opts back in, in both modes.
+            let (flatH, _) = await Self.call("ls", Self.fs, ["path": ".", "include_hidden": true], workdir: wd)
+            #expect(flatH.contains(".hidden"))
+            let (recH, _) = await Self.call("ls", Self.fs, ["path": ".", "recursive": true, "include_hidden": true], workdir: wd)
+            #expect(recH.contains(".hidden"))
 
             let (missing, missingErr) = await Self.call("ls", Self.fs, ["path": "no-such-dir"], workdir: wd)
             #expect(missingErr)
@@ -211,6 +217,50 @@ extension AllAppTests {
             let (grep, grepErr) = await Self.call("find_text", Self.fs, ["regex": "needle"], workdir: wd)
             #expect(!grepErr)
             #expect(grep.contains("f1.swift:1:let needle = 1"))
+
+            await Self.destroy(wd, remote)
+        }
+
+        @Test("find_text pins ERE and sorts before max_results")
+        func findTextEREAndDeterministicCap() async {
+            let (wd, remote) = Self.makeContext()
+            _ = await Self.call("write_file", Self.fs, ["path": "d/weed.txt", "content": "weed\n"], workdir: wd)
+            _ = await Self.call("write_file", Self.fs, ["path": "d/wed.txt", "content": "wed\n"], workdir: wd)
+            _ = await Self.call("write_file", Self.fs, ["path": "d/ctx.txt", "content": "a\nmatch\nb\n"], workdir: wd)
+
+            // ERE-only constructs: {n} intervals, alternation, +, groups.
+            let (interval, intervalErr) = await Self.call("find_text", Self.fs, ["path": "d", "regex": "we{2}d"], workdir: wd)
+            #expect(!intervalErr)
+            #expect(interval.contains("weed.txt"))
+            #expect(!interval.contains("wed.txt"))
+            let (alt, altErr) = await Self.call("find_text", Self.fs, ["path": "d", "regex": "w(e|a)+d"], workdir: wd)
+            #expect(!altErr)
+            #expect(alt.contains("weed.txt"))
+            #expect(alt.contains("wed.txt"))
+
+            // Invalid ERE surfaces grep's own error message.
+            let (bad, badErr) = await Self.call("find_text", Self.fs, ["path": "d", "regex": "[unclosed"], workdir: wd)
+            #expect(badErr)
+            #expect(!bad.isEmpty)
+
+            // Context groups survive intact.
+            let (ctx, ctxErr) = await Self.call("find_text", Self.fs, ["path": "d", "regex": "match", "context": 1], workdir: wd)
+            #expect(!ctxErr)
+            #expect(ctx.contains("-1-a"))
+            #expect(ctx.contains(":2:match"))
+            #expect(ctx.contains("-3-b"))
+
+            // max_results drops the lexicographically last matches, not
+            // arbitrary traversal-order ones.
+            for i in 1...5 {
+                _ = await Self.call("write_file", Self.fs, ["path": "many/many_\(i).txt", "content": "needle\n"], workdir: wd)
+            }
+            let (capped, cappedErr) = await Self.call("find_text", Self.fs, ["path": "many", "regex": "needle", "max_results": 2], workdir: wd)
+            #expect(!cappedErr)
+            #expect(capped.contains("many_1.txt"))
+            #expect(capped.contains("many_2.txt"))
+            #expect(!capped.contains("many_3.txt"))
+            #expect(capped.contains("truncated at 2 results"))
 
             await Self.destroy(wd, remote)
         }
@@ -356,16 +406,6 @@ extension AllAppTests {
             _ = await Self.call("mkdir", Self.fs, ["path": "."], workdir: wd)
             let (text, _) = await Self.call("shell", Self.sh, ["command": "sleep 10", "timeout": 1], workdir: wd)
             #expect(text.contains("timed out after 1s"))
-            await Self.destroy(wd, remote)
-        }
-
-        @Test("git runs remotely")
-        func gitVersion() async {
-            let (wd, remote) = Self.makeContext()
-            _ = await Self.call("mkdir", Self.fs, ["path": "."], workdir: wd)
-            let (text, isError) = await Self.call("git", Self.code, ["args": ["--version"]], workdir: wd)
-            #expect(!isError)
-            #expect(text.contains("git version"))
             await Self.destroy(wd, remote)
         }
 

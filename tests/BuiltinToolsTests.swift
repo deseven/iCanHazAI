@@ -324,6 +324,190 @@ extension AllAppTests {
             #expect(!text.contains("b.txt"))
         }
 
+        @Test("find_text supports full regex syntax")
+        func findTextRealRegex() async throws {
+            let tmp = try TestDir()
+            try tmp.write("s/a.txt", content: "error code 42\nwarning\nerror code 7\n")
+            // \d class and alternation would be literal/broken under BRE grep.
+            let (text, err) = await Self.call("find_text", BuiltinTools.filesystemGroup, ["path": tmp.sub("s"), "regex": #"error code \d+"#])
+            #expect(!err)
+            #expect(text.contains(":1:"))
+            #expect(text.contains(":3:"))
+            #expect(!text.contains(":2:"))
+            let (alt, altErr) = await Self.call("find_text", BuiltinTools.filesystemGroup, ["path": tmp.sub("s"), "regex": #"^(warning|error) .*[0-9]{1,2}$"#])
+            #expect(!altErr)
+            #expect(alt.contains("error code 42"))
+            #expect(!alt.contains("warning"))
+        }
+
+        @Test("find_text errors on an invalid regex instead of returning nothing")
+        func findTextInvalidRegex() async throws {
+            let tmp = try TestDir()
+            try tmp.write("s/a.txt", content: "x\n")
+            let (text, err) = await Self.call("find_text", BuiltinTools.filesystemGroup, ["path": tmp.sub("s"), "regex": "(unclosed"])
+            #expect(err)
+            #expect(text.contains("regex"))
+        }
+
+        @Test("find_text case_insensitive matches regardless of case")
+        func findTextCaseInsensitive() async throws {
+            let tmp = try TestDir()
+            try tmp.write("s/a.txt", content: "Hello World\n")
+            let (sensitive, _) = await Self.call("find_text", BuiltinTools.filesystemGroup, ["path": tmp.sub("s"), "regex": "hello"])
+            #expect(!sensitive.contains("Hello"))
+            let (insensitive, err) = await Self.call("find_text", BuiltinTools.filesystemGroup, ["path": tmp.sub("s"), "regex": "hello", "case_insensitive": true])
+            #expect(!err)
+            #expect(insensitive.contains("Hello World"))
+        }
+
+        @Test("find_text caps results with a truncation notice")
+        func findTextMaxResults() async throws {
+            let tmp = try TestDir()
+            let content = (1...10).map { "hit \($0)" }.joined(separator: "\n") + "\n"
+            try tmp.write("s/a.txt", content: content)
+            let (text, err) = await Self.call("find_text", BuiltinTools.filesystemGroup, ["path": tmp.sub("s"), "regex": "hit", "max_results": 3])
+            #expect(!err)
+            let hits = text.split(separator: "\n").filter { $0.contains("hit") }
+            #expect(hits.count == 3)
+            #expect(text.contains("truncated at 3 results"))
+        }
+
+        @Test("find_text truncates very long lines")
+        func findTextLineTruncation() async throws {
+            let tmp = try TestDir()
+            let longLine = "start " + String(repeating: "x", count: 500)
+            try tmp.write("s/a.txt", content: longLine + "\n")
+            let (text, err) = await Self.call("find_text", BuiltinTools.filesystemGroup, ["path": tmp.sub("s"), "regex": "start"])
+            #expect(!err)
+            #expect(text.contains("…"))
+            #expect(!text.contains(String(repeating: "x", count: 301)))
+        }
+
+        @Test("find_text context lines use grep-style separators")
+        func findTextContext() async throws {
+            let tmp = try TestDir()
+            try tmp.write("s/a.txt", content: "a\nb\nmatch\nc\nd\n")
+            let (text, err) = await Self.call("find_text", BuiltinTools.filesystemGroup, ["path": tmp.sub("s"), "regex": "match", "context": 1])
+            #expect(!err)
+            #expect(text.contains(":3:match"))
+            #expect(text.contains("-2-b"))
+            #expect(text.contains("-4-c"))
+            #expect(!text.contains("-1-a"))
+            #expect(!text.contains("-5-d"))
+        }
+
+        @Test("find_text skips hidden and binary files by default")
+        func findTextHiddenAndBinary() async throws {
+            let tmp = try TestDir()
+            try tmp.write("s/.hidden.txt", content: "needle\n")
+            try tmp.write("s/bin.dat", content: "needle\0binary")
+            let (text, err) = await Self.call("find_text", BuiltinTools.filesystemGroup, ["path": tmp.sub("s"), "regex": "needle"])
+            #expect(!err)
+            #expect(text.isEmpty)
+            let (withHidden, hiddenErr) = await Self.call("find_text", BuiltinTools.filesystemGroup, ["path": tmp.sub("s"), "regex": "needle", "include_hidden": true])
+            #expect(!hiddenErr)
+            #expect(withHidden.contains(".hidden.txt"))
+            // Binary files are never searched, even with include_hidden.
+            #expect(!withHidden.contains("bin.dat"))
+        }
+
+        @Test("find_text file_pattern filters by glob")
+        func findTextFilePattern() async throws {
+            let tmp = try TestDir()
+            try tmp.write("s/a.swift", content: "needle\n")
+            try tmp.write("s/a.txt", content: "needle\n")
+            let (text, err) = await Self.call("find_text", BuiltinTools.filesystemGroup, ["path": tmp.sub("s"), "regex": "needle", "file_pattern": "*.swift"])
+            #expect(!err)
+            #expect(text.contains("a.swift"))
+            #expect(!text.contains("a.txt"))
+        }
+
+        @Test("find_file supports ? wildcards and character classes")
+        func findFileGlobSyntax() async throws {
+            let tmp = try TestDir()
+            try tmp.write("f/test_1.py", content: "")
+            try tmp.write("f/test_12.py", content: "")
+            try tmp.write("f/main.py", content: "")
+            let (q, qErr) = await Self.call("find_file", BuiltinTools.filesystemGroup, ["path": tmp.sub("f"), "pattern": "test_?.py"])
+            #expect(!qErr)
+            #expect(q.contains("test_1.py"))
+            #expect(!q.contains("test_12.py"))
+            #expect(!q.contains("main.py"))
+            let (cls, clsErr) = await Self.call("find_file", BuiltinTools.filesystemGroup, ["path": tmp.sub("f"), "pattern": "test_[0-9].py"])
+            #expect(!clsErr)
+            #expect(cls.contains("test_1.py"))
+            #expect(!cls.contains("main.py"))
+        }
+
+        @Test("find_file supports ** and path-aware patterns")
+        func findFilePathGlobs() async throws {
+            let tmp = try TestDir()
+            try tmp.write("f/src/deep/test_a.py", content: "")
+            try tmp.write("f/src/top.py", content: "")
+            try tmp.write("f/test_root.py", content: "")
+            // ** matches any number of directories, including zero.
+            let (star, starErr) = await Self.call("find_file", BuiltinTools.filesystemGroup, ["path": tmp.sub("f"), "pattern": "**/test_*.py"])
+            #expect(!starErr)
+            #expect(star.contains("src/deep/test_a.py"))
+            #expect(star.contains("test_root.py"))
+            #expect(!star.contains("top.py"))
+            // A path pattern with a plain * stays within one component.
+            let (rel, relErr) = await Self.call("find_file", BuiltinTools.filesystemGroup, ["path": tmp.sub("f"), "pattern": "src/*.py"])
+            #expect(!relErr)
+            #expect(rel.contains("src/top.py"))
+            #expect(!rel.contains("deep"))
+        }
+
+        @Test("find_file case_insensitive and include_hidden")
+        func findFileCaseAndHidden() async throws {
+            let tmp = try TestDir()
+            try tmp.write("f/Main.PY", content: "")
+            try tmp.write("f/.hidden/secret.py", content: "")
+            let (sensitive, _) = await Self.call("find_file", BuiltinTools.filesystemGroup, ["path": tmp.sub("f"), "pattern": "*.py"])
+            #expect(!sensitive.contains("Main.PY"))
+            #expect(!sensitive.contains("secret.py"))
+            let (insensitive, err) = await Self.call("find_file", BuiltinTools.filesystemGroup, ["path": tmp.sub("f"), "pattern": "*.py", "case_insensitive": true])
+            #expect(!err)
+            #expect(insensitive.contains("Main.PY"))
+            let (withHidden, hiddenErr) = await Self.call("find_file", BuiltinTools.filesystemGroup, ["path": tmp.sub("f"), "pattern": "*.py", "include_hidden": true])
+            #expect(!hiddenErr)
+            #expect(withHidden.contains(".hidden/secret.py"))
+        }
+
+        @Test("find_file results are sorted")
+        func findFileSorted() async throws {
+            let tmp = try TestDir()
+            try tmp.write("f/b.txt", content: "")
+            try tmp.write("f/a.txt", content: "")
+            try tmp.write("f/c.txt", content: "")
+            let (text, err) = await Self.call("find_file", BuiltinTools.filesystemGroup, ["path": tmp.sub("f"), "pattern": "*.txt"])
+            #expect(!err)
+            #expect(text == "a.txt\nb.txt\nc.txt")
+        }
+
+        @Test("ls hidden handling is consistent across modes")
+        func lsHiddenConsistency() async throws {
+            let tmp = try TestDir()
+            try tmp.write(".env", content: "")
+            try tmp.write("plain.txt", content: "")
+            try tmp.write(".config/settings.ini", content: "")
+            // Both modes hide dotfiles by default.
+            let (flat, flatErr) = await Self.call("ls", BuiltinTools.filesystemGroup, ["path": tmp.path])
+            #expect(!flatErr)
+            #expect(flat == "plain.txt")
+            let (rec, recErr) = await Self.call("ls", BuiltinTools.filesystemGroup, ["path": tmp.path, "recursive": true])
+            #expect(!recErr)
+            #expect(rec == "plain.txt")
+            // Both modes show them with include_hidden.
+            let (flatH, _) = await Self.call("ls", BuiltinTools.filesystemGroup, ["path": tmp.path, "include_hidden": true])
+            #expect(flatH.contains(".env"))
+            #expect(flatH.contains(".config/"))
+            #expect(!flatH.contains("settings.ini"))
+            let (recH, _) = await Self.call("ls", BuiltinTools.filesystemGroup, ["path": tmp.path, "recursive": true, "include_hidden": true])
+            #expect(recH.contains(".env"))
+            #expect(recH.contains(".config/settings.ini"))
+        }
+
         // Workdir isolation tests
         @Test("pwd returns / when isolated")
         func pwdIsolated() async throws {
@@ -426,27 +610,6 @@ extension AllAppTests {
             let content = try String(contentsOfFile: path, encoding: .utf8)
             #expect(content.contains("line TWO"))
             #expect(!content.contains("line two\n"))
-        }
-
-        @Test("git runs a command")
-        func gitStatus() async throws {
-            let (text, err) = await Self.call("git", BuiltinTools.codeGroup, ["args": ["--version"]])
-            #expect(!err)
-            #expect(text.contains("git version"))
-        }
-
-        @Test("git errors on missing args")
-        func gitMissing() async throws {
-            let (text, err) = await Self.call("git", BuiltinTools.codeGroup, [:])
-            #expect(err)
-            #expect(text.contains("args"))
-        }
-
-        @Test("git errors on empty args")
-        func gitEmpty() async throws {
-            let (text, err) = await Self.call("git", BuiltinTools.codeGroup, ["args": []])
-            #expect(err)
-            #expect(text.contains("empty"))
         }
 
         @Test("apply_patch uses relative paths against workdir")
@@ -817,7 +980,6 @@ extension AllAppTests {
             #expect(defs.contains { $0.name == "pwd" && $0.serverName == "Filesystem" })
             // Code
             #expect(defs.contains { $0.name == "apply_patch" && $0.serverName == "Code" })
-            #expect(defs.contains { $0.name == "git" && $0.serverName == "Code" })
             // Shell
             #expect(defs.contains { $0.name == "shell" && $0.serverName == "Shell" })
             #expect(defs.contains { $0.name == "applescript" && $0.serverName == "Shell" })

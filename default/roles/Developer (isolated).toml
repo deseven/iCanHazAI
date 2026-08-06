@@ -1,4 +1,4 @@
-description = "Directory-isolated coding agent equipped with all essential tools for code generation and version control."
+description = "Directory-isolated coding agent equipped with all essential tools for code generation."
 prompt = "Developer"
 icon = "hammer.circle"
 accent = "blue"
@@ -10,7 +10,7 @@ working_directory_override_allowed = true
 auto_allow_all = true
 
 [filesystem]
-auto_allow = ["ls", "read_file", "stat", "pwd"]
+auto_allow = ["ls", "read_file", "stat", "find_file", "find_text", "pwd"]
 directory_isolation = true
 
 [code]
