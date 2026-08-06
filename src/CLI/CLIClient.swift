@@ -230,8 +230,9 @@ enum CLIClient {
                 case .delta(let id, let text):
                     guard id == requestID else { break }
                     guard writeStdout(text) else {
-                        // The stdout reader went away (e.g. `| head`). The
-                        // chat keeps streaming in the app; exit quietly.
+                        // The stdout reader went away (e.g. `| head`) —
+                        // exit quietly; the app stops the stream when it
+                        // notices the disconnect.
                         exitCode = 0
                         terminated = true
                         break loop

@@ -292,8 +292,9 @@ final class CLIServer: @unchecked Sendable {
                         }
                     }
                 } catch {
-                    // Client went away mid-stream; the chat keeps streaming
-                    // in the app — only the forwarding stops here.
+                    // Client went away mid-stream; only the forwarding stops
+                    // here — the engine stops the stream itself once the last
+                    // one-shot sink of the chat terminates.
                 }
             }
         }

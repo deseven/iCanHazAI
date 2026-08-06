@@ -71,8 +71,9 @@ actor ChatEngine {
     /// CLI one-shot event sinks keyed by chat filename (then by sink id).
     /// Tapped directly from `applyChunk` (uncoalesced — the CLI sees tokens as
     /// they arrive) and completed from `finishStream`. A sink that outlives
-    /// its CLI connection is removed via the stream's `onTermination`; the
-    /// chat itself keeps streaming — CLI chats are regular chats.
+    /// its CLI connection is removed via the stream's `onTermination`. When
+    /// the last sink of a chat goes away mid-stream the CLI that drove it is
+    /// gone, so the stream is stopped (see `removeOneShotSink`).
     private var oneShotSinks: [String: [UUID: AsyncStream<OneShotEvent>.Continuation]] = [:]
 
     /// Filenames of chats driven by a CLI one-shot request (created or
@@ -1640,9 +1641,9 @@ actor ChatEngine {
     ///
     /// When `temporary` is true the chat is created as a temporary one
     /// (in-memory only); the CLI server destroys it when the client
-    /// disconnects. Cancelling the returned stream of a regular chat detaches
-    /// the CLI without stopping the chat — regular CLI chats stay visible and
-    /// continuable in the GUI.
+    /// disconnects. For regular chats the chat itself stays visible and
+    /// continuable in the GUI, but a client disconnecting mid-stream stops
+    /// the stream — nobody is consuming it anymore.
     func performOneShot(message: String, role requestedRole: String?, connection requestedConnection: String?, chatName: String?, temporary: Bool = false, workdir: String? = nil, workdirExplicit: Bool = false, allowAll: Bool = false) async -> OneShotStart {
         let filename: String
         if let chatName {
@@ -1719,6 +1720,15 @@ actor ChatEngine {
     private func removeOneShotSink(filename: String, id: UUID) {
         oneShotSinks[filename]?[id] = nil
         if oneShotSinks[filename]?.isEmpty == true { oneShotSinks[filename] = nil }
+        // The last sink went away while the chat is still streaming: the CLI
+        // client that initiated the stream is gone (disconnected/killed), so
+        // stop the stream instead of generating for nobody. On normal stream
+        // completion `finishStream` clears `isStreaming` before the sinks are
+        // finished, so this stays a no-op there.
+        if oneShotSinks[filename] == nil, isStreaming(filename: filename) {
+            debugLog("Stream", "last CLI sink gone mid-stream — stopping chat=\(filename)")
+            stopStreaming(filename: filename)
+        }
     }
 
     /// Completes and removes every one-shot sink for the chat. Called from
