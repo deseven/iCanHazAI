@@ -15,6 +15,7 @@ import MarkdownIt from "markdown-it-ts";
 import type { Token } from "markdown-it-ts";
 import hljs from "highlight.js/lib/core";
 import { debugLog, setupDebugOverlay } from "./debug";
+import { installTablePipeEscape } from "./tablePipeEscape";
 import bash from "highlight.js/lib/languages/bash";
 import c from "highlight.js/lib/languages/c";
 import cpp from "highlight.js/lib/languages/cpp";
@@ -153,6 +154,10 @@ const md = new MarkdownIt({
     return '<pre class="hljs"><code>' + md.utils.escapeHtml(str) + "</code></pre>";
   },
 });
+
+// Models emit raw `|` inside code spans in table cells, which GFM treats as a
+// cell delimiter; preprocess the source to add the required `\|` escapes.
+installTablePipeEscape(md);
 
 // LaTeX math support via KaTeX. Handles $...$ (inline) and $$...$$ (block).
 // Only loaded when the katex feature flag is enabled. The bundle is loaded via

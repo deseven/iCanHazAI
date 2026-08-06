@@ -639,8 +639,8 @@ private struct ChatInputEditor: NSViewRepresentable {
         // SwiftUI's @FocusState doesn't reliably drive focus into an
         // NSViewRepresentable (setting it to true gets reverted because the
         // WKWebView holds first-responder status), so we drive makeFirstResponder
-        // ourselves and keep retrying across updateNSView passes until the
-        // window is ready and the claim succeeds.
+        // ourselves and keep retrying until the window is ready and the claim
+        // succeeds.
         let tokenChanged = context.coordinator.lastFocusToken != focusToken
         if tokenChanged {
             context.coordinator.lastFocusToken = focusToken
@@ -654,16 +654,8 @@ private struct ChatInputEditor: NSViewRepresentable {
         if isTV, !tokenChanged {
             context.coordinator.wantsFocus = false
         }
-        if context.coordinator.wantsFocus, tv.window != nil, !isTV {
-            let coord = context.coordinator
-            DispatchQueue.main.async { [weak tv, weak coord] in
-                guard let tv, let coord else { return }
-                let nowTV = tv.window?.firstResponder === tv
-                if !nowTV, let window = tv.window {
-                    window.makeFirstResponder(tv)
-                    if tv.window?.firstResponder === tv { coord.wantsFocus = false }
-                }
-            }
+        if context.coordinator.wantsFocus, !isTV {
+            context.coordinator.claimFocus(on: tv)
         }
         context.coordinator.parent = self
     }
@@ -681,6 +673,34 @@ private struct ChatInputEditor: NSViewRepresentable {
         /// view hasn't become first responder yet). Cleared once we win focus.
         var wantsFocus: Bool = false
         init(parent: ChatInputEditor) { self.parent = parent }
+
+        /// Attempts to make the text view first responder, retrying on a timer
+        /// until the claim sticks. Unlike the chat-switch path — where further
+        /// updateNSView passes are guaranteed — at app start the main window is
+        /// created hidden and shown later, so the view may have no usable window
+        /// (or a not-yet-key one) on the only updateNSView pass that runs, and
+        /// without timed retries the pending request would never complete.
+        @MainActor func claimFocus(on tv: ChatInputTextView, attemptsLeft: Int = 20) {
+            DispatchQueue.main.async { [weak self, weak tv] in
+                guard let self, let tv, self.wantsFocus else { return }
+                if tv.window?.firstResponder === tv {
+                    self.wantsFocus = false
+                    return
+                }
+                if let window = tv.window {
+                    window.makeFirstResponder(tv)
+                }
+                if tv.window?.firstResponder === tv {
+                    self.wantsFocus = false
+                    return
+                }
+                guard attemptsLeft > 0 else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self, weak tv] in
+                    guard let self, let tv else { return }
+                    self.claimFocus(on: tv, attemptsLeft: attemptsLeft - 1)
+                }
+            }
+        }
 
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? ChatInputTextView else { return }
