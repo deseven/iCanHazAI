@@ -21,6 +21,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // launch-time race where a mid-atomic-write read produced an empty
         // config that was later persisted as defaults (wiping user config).
         ConfigManager.bootstrapSynchronously()
+        // Remove a stale control socket left behind by a crashed/killed
+        // previous run. Probed first: a live socket (another running
+        // instance) is never unlinked.
+        CLIServer.removeStaleSocketIfNeeded(at: EnvironmentManager.shared.socketURL.path)
         // Present the startup loader window immediately. At this point we've
         // read the main config and can enumerate what needs loading, so the
         // loader is seeded synchronously (Application column + MCPs column)
@@ -36,11 +40,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // be created the instant loading completes.
         MainActor.assumeIsolated {
             LoaderWindowController.shared.present()
-            // Create and show the main window once the loader has finished
-            // loading everything and its 1-second results display has begun.
-            // Also surface any configuration errors collected during startup.
+            // In headless mode (spawned by the CLI when no app instance was
+            // running) startup proceeds normally — loader window included —
+            // but the main window is not revealed. The dock icon still opens
+            // it later via applicationShouldHandleReopen.
+            let headless = CommandLine.arguments.contains("--headless")
+            // Create the CLI control socket once the loader has finished
+            // loading everything (i.e. all initialization is complete), and
+            // show the main window unless headless. Also surface any
+            // configuration errors collected during startup.
             LoaderController.shared.startupReadyHandler = {
-                MainWindowController.shared.reveal()
+                CLIServer.shared.start()
+                if headless {
+                    debugLog("App", "headless start — main window not revealed")
+                } else {
+                    MainWindowController.shared.reveal()
+                }
                 if let vm = AppViewModel.shared, !vm.configErrors.isEmpty {
                     vm.showConfigErrors = true
                 }
@@ -70,7 +85,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        debugLog("App", "applicationWillTerminate — disconnecting MCP servers")
+        debugLog("App", "applicationWillTerminate — closing control socket and disconnecting MCP servers")
+        // Synchronous: closes the listener and unlinks the socket file so no
+        // stale socket survives a normal quit.
+        CLIServer.shared.stop()
         Task { await MCPManager.shared.disconnectAll() }
         DebugLogger.stopFileLogging()
     }
@@ -204,18 +222,11 @@ final class MainWindowController {
     }
 }
 
-@main
+/// The entry point is [`AppEntry`](src/App/Main.swift), which branches
+/// between CLI mode and this SwiftUI app.
 struct iCanHazAIApp: App {
     @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
     @StateObject private var viewModel = AppViewModel()
-
-    init() {
-        // Ignore SIGPIPE so writing to a closed stdout (e.g. when launched
-        // through a pipe) doesn't terminate the app.
-        // Without this, the first debugLog print after the reader exits raises
-        // SIGPIPE and crashes the app on startup.
-        signal(SIGPIPE, SIG_IGN)
-    }
 
     // The `Settings` scene carries `.commands` without auto-creating a window
     // at launch. The main window is created on demand by MainWindowController

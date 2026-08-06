@@ -159,6 +159,15 @@ enum PromptVariables {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    /// The `{output_rendering}` value for chats created via the CLI: responses
+    /// are printed to a terminal as plain text, so rich markup is discouraged.
+    static func plainTextRendering() -> String {
+        """
+        Your responses are printed in a terminal as plain text — Markdown, HTML, LaTeX math, and diagrams are NOT rendered, only raw characters are shown.
+        Keep formatting minimal: plain paragraphs, simple lists prefixed with "-" or numbers, and indentation for code. Avoid tables, horizontal rules, and other heavy markup.
+        """ + "\n"
+    }
+
     /// The `{user}` value: the current system user name (the last path
     /// component of the home directory, e.g. `/Users/alice` → `alice`).
     static func currentUserName() -> String {

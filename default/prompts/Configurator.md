@@ -115,7 +115,7 @@ Plain Markdown; the whole content is the system prompt. No special fields. `writ
 
 Prompts support `{variable}` placeholders substituted at request time (the raw text is stored unsubstituted, so each request gets fresh values). Known variables:
 
-- `{output_rendering}` — the chat renderer's capabilities (Markdown, code blocks, Mermaid/KaTeX depending on the user's feature toggles). Include this so the model knows what it can use.
+- `{output_rendering}` — the rendering capabilities of the surface the chat lives on. For GUI-created chats: the chat renderer's features (Markdown, code blocks, Mermaid/KaTeX depending on the user's feature toggles). For CLI-created chats: a plain-text-only notice (terminal output, no markup). This is sticky per chat — whichever surface created the chat decides. Include this so the model knows what it can use.
 - `{user}` — the current system user name (the last path component of the home directory, e.g. `alice`).
 - `{date}` — the current date as `Thu Jun 16 2026`.
 - `{current_directory}` — the chat's effective working directory as `Current directory: /some/path`. Substitutes to an empty string when the role selects no workdir-capable built-in group (Filesystem, Code, or Shell); to `Current directory: /` when directory isolation is enabled; and to `Current directory: ~` when no directory is set.

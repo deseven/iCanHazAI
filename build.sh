@@ -328,7 +328,9 @@ case "$mode" in
         echo -e "  ${dimColor}signing: ad-hoc${noColor}"
         echo -e "  ${dimColor}artifacts: dist/$name.app${noColor}"
         echo -e "  ${dimColor}launching...${noColor}"
-        "$loc/dist/$name.app/Contents/MacOS/$name"
+        # Launch via LaunchServices: running the binary directly is detected
+        # as a CLI invocation (see CLIClient.isCLIInvocation).
+        open "$loc/dist/$name.app"
         ;;
     dev-release)
         echo -e "  ${dimColor}mode: development release${noColor}"

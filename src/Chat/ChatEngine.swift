@@ -68,6 +68,13 @@ actor ChatEngine {
     /// In-flight streaming tasks keyed by chat filename, used for cancellation.
     private var streamTasks: [String: Task<Void, Never>] = [:]
 
+    /// CLI one-shot event sinks keyed by chat filename (then by sink id).
+    /// Tapped directly from `applyChunk` (uncoalesced — the CLI sees tokens as
+    /// they arrive) and completed from `finishStream`. A sink that outlives
+    /// its CLI connection is removed via the stream's `onTermination`; the
+    /// chat itself keeps streaming — CLI chats are regular chats.
+    private var oneShotSinks: [String: [UUID: AsyncStream<OneShotEvent>.Continuation]] = [:]
+
     /// Tool-call approvals awaiting a user decision, keyed by call id. The
     /// continuation is registered from `approveToolCall` (running on this
     /// actor) and resumed by `resolveToolCallApproval` / `cancelPendingApprovals`.
@@ -1118,12 +1125,13 @@ actor ChatEngine {
     /// selected or created. Any existing temporary chat is destroyed first —
     /// at most one temporary chat can exist at a time.
     @discardableResult
-    func createNewChat(role roleName: String, temporary: Bool = false) async -> String {
+    func createNewChat(role roleName: String, temporary: Bool = false, outputRendering: ChatOutputRendering? = nil) async -> String {
         pruneEmptyChats(except: nil)
         destroyAllTemporaryChats()
         let filename = temporary ? env.newTemporaryChatFilename() : store.newChatFilename()
         var chat = Chat()
         chat.role = roleName
+        chat.outputRendering = outputRendering
 
         let role = self.roles.first(where: { $0.name == roleName })
         // Seed the connection from the role, falling back to the app default.
@@ -1436,8 +1444,13 @@ actor ChatEngine {
         let mermaid = await ConfigManager.shared.getMermaidEnabled()
         let katex = await ConfigManager.shared.getKatexEnabled()
         let role = self.role(for: chat)
+        // The rendering target is sticky per chat: whichever surface created
+        // the chat (GUI vs CLI) decides what capabilities are advertised.
+        let outputRendering = chat.outputRendering == .plain
+            ? PromptVariables.plainTextRendering()
+            : PromptVariables.renderingCapabilities(mermaid: mermaid, katex: katex)
         let values: [String: String] = [
-            "output_rendering": PromptVariables.renderingCapabilities(mermaid: mermaid, katex: katex),
+            "output_rendering": outputRendering,
             "user": PromptVariables.currentUserName(),
             "date": PromptVariables.currentDate(),
             "current_directory": PromptVariables.currentDirectory(
@@ -1583,6 +1596,74 @@ actor ChatEngine {
         maybeGenerateChatName(filename: filename)
 
         return true
+    }
+
+    // MARK: - CLI one-shot requests
+
+    /// Performs a CLI one-shot request: creates a new plain-rendering chat
+    /// (or reuses an existing one when `chatFilename` is given) and starts
+    /// streaming `message`. Returns the chat filename plus an event stream
+    /// carrying uncoalesced content deltas and a terminal `finished`.
+    ///
+    /// Cancelling the returned stream detaches the CLI without stopping the
+    /// chat — CLI chats are regular chats, visible and continuable in the GUI.
+    func performOneShot(message: String, role requestedRole: String?, connection requestedConnection: String?, chatFilename: String?) async -> OneShotStart {
+        let filename: String
+        if let chatFilename {
+            guard records.contains(where: { $0.filename == chatFilename }) else {
+                return .failed("chat \"\(chatFilename)\" not found")
+            }
+            filename = chatFilename
+        } else {
+            if let requestedRole, !roles.contains(where: { $0.name == requestedRole }) {
+                return .failed("role \"\(requestedRole)\" not found")
+            }
+            if let requestedConnection, !connections.contains(where: { $0.id == requestedConnection }) {
+                return .failed("connection \"\(requestedConnection)\" not found")
+            }
+            let defaultRole = await ConfigManager.shared.getDefaultRole()
+            let roleName = requestedRole ?? defaultRole ?? "Assistant"
+            filename = await createNewChat(role: roleName, outputRendering: .plain)
+            if let requestedConnection, let idx = records.firstIndex(where: { $0.filename == filename }) {
+                records[idx].chat?.connection = requestedConnection
+            }
+        }
+
+        // Register the sink before sending so no early chunk can be missed.
+        let sinkID = UUID()
+        let (stream, continuation) = AsyncStream<OneShotEvent>.makeStream()
+        continuation.onTermination = { @Sendable [weak self] _ in
+            Task { [weak self] in await self?.removeOneShotSink(filename: filename, id: sinkID) }
+        }
+        oneShotSinks[filename, default: [:]][sinkID] = continuation
+
+        guard await sendMessage(filename: filename, text: message) else {
+            oneShotSinks[filename]?[sinkID] = nil
+            if records.contains(where: { $0.filename == filename }) {
+                return .failed("no usable connection — set a default connection in Preferences")
+            }
+            // A concurrent one-shot's createNewChat pruned this empty chat
+            // while we were suspended fetching config — a microscopic race.
+            return .failed("the chat disappeared before the message could be sent")
+        }
+        return .started(filename: filename, events: stream)
+    }
+
+    private func removeOneShotSink(filename: String, id: UUID) {
+        oneShotSinks[filename]?[id] = nil
+        if oneShotSinks[filename]?.isEmpty == true { oneShotSinks[filename] = nil }
+    }
+
+    /// Completes and removes every one-shot sink for the chat. Called from
+    /// `finishStream`'s `defer` so it runs on every exit path (success,
+    /// error, cancellation, deleted-mid-stream).
+    private func completeOneShotSinks(filename: String) {
+        guard let sinks = oneShotSinks.removeValue(forKey: filename), !sinks.isEmpty else { return }
+        let error = records.first(where: { $0.filename == filename })?.lastError
+        for sink in sinks.values {
+            sink.yield(.finished(error: error))
+            sink.finish()
+        }
     }
 
     /// Retries (regenerates) the last assistant turn for the given chat.
@@ -2249,6 +2330,9 @@ actor ChatEngine {
             chat.messages[lastIdx].thinking = existing + text
         case .content(let text):
             chat.messages[lastIdx].content += text
+            if let sinks = oneShotSinks[filename] {
+                for sink in sinks.values { sink.yield(.delta(text)) }
+            }
         case .error(let text):
             chat.messages[lastIdx].error = text
         case .toolCallDelta(let index, let id, let name, let argsDelta):
@@ -2293,6 +2377,7 @@ actor ChatEngine {
     /// state and clearing bookkeeping.
     private func finishStream(filename: String) {
         debugLog("Stream", "end — chat=\(filename)")
+        defer { completeOneShotSinks(filename: filename) }
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else {
             streamTasks[filename] = nil
             return

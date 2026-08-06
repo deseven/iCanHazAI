@@ -19,6 +19,8 @@ final class EnvironmentManager: @unchecked Sendable {
     let openaiConnectionsURL: URL
     let anthropicConnectionsURL: URL
     let mcpsURL: URL
+    /// The APP↔CLI control socket (`~/iCanHazAI/app.sock`).
+    let socketURL: URL
 
     /// Internal initializer taking an explicit root URL, so tests can point
     /// the environment at a throwaway temp directory instead of `~/iCanHazAI`.
@@ -32,6 +34,7 @@ final class EnvironmentManager: @unchecked Sendable {
         openaiConnectionsURL = connectionsURL.appendingPathComponent("openai", isDirectory: true)
         anthropicConnectionsURL = connectionsURL.appendingPathComponent("anthropic", isDirectory: true)
         mcpsURL = rootURL.appendingPathComponent("MCPs", isDirectory: true)
+        socketURL = rootURL.appendingPathComponent("app.sock")
     }
 
     private convenience init() {

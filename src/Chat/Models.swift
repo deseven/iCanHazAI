@@ -158,6 +158,16 @@ extension Array where Element == ChatMessage {
 
 // MARK: - Chat
 
+/// How a chat's responses will be rendered, persisted per chat. The chat
+/// inherits the capabilities of the surface that created it: a chat created
+/// in the GUI advertises the full renderer; a chat created via the CLI
+/// advertises plain-text-only output. Drives the `{output_rendering}` prompt
+/// variable at request-build time.
+enum ChatOutputRendering: String, Codable, Sendable {
+    case rich
+    case plain
+}
+
 struct Chat: Codable, Identifiable, Equatable {
     var id: UUID
     var messages: [ChatMessage]
@@ -191,7 +201,12 @@ struct Chat: Codable, Identifiable, Equatable {
     /// to auto-approve for this chat only, via the "Allow for this chat"
     /// button. Appends to the role's auto-allow rules. Completely optional.
     var autoAllow: [String]?
-    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, prompt: String? = nil, workingDirectory: String? = nil, mcps: [String]? = nil, title: String? = nil, archive: Bool? = nil, autoAllow: [String]? = nil) {
+    /// The rendering target this chat was created from. Nil (and `.rich`)
+    /// means the full chat-renderer capabilities; `.plain` means terminal
+    /// plain text (CLI-created chats). Completely optional — older chat files
+    /// without this key decode as rich.
+    var outputRendering: ChatOutputRendering?
+    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, prompt: String? = nil, workingDirectory: String? = nil, mcps: [String]? = nil, title: String? = nil, archive: Bool? = nil, autoAllow: [String]? = nil, outputRendering: ChatOutputRendering? = nil) {
         self.id = id
         self.messages = messages
         self.connection = connection
@@ -202,11 +217,13 @@ struct Chat: Codable, Identifiable, Equatable {
         self.title = title
         self.archive = archive
         self.autoAllow = autoAllow
+        self.outputRendering = outputRendering
     }
 
     enum CodingKeys: String, CodingKey {
         case id, messages, connection, role, prompt, workingDirectory, mcps, title, archive
         case autoAllow = "auto_allow"
+        case outputRendering = "output_rendering"
     }
 
     /// Tolerant decode: all scalar fields are optional at the JSON level (a
@@ -226,6 +243,7 @@ struct Chat: Codable, Identifiable, Equatable {
         title = try? c.decode(String.self, forKey: .title)
         archive = try? c.decode(Bool.self, forKey: .archive)
         autoAllow = try? c.decode([String].self, forKey: .autoAllow)
+        outputRendering = try? c.decode(ChatOutputRendering.self, forKey: .outputRendering)
         let wrappers = (try? c.decode([SafeMessage].self, forKey: .messages)) ?? []
         let recovered = wrappers.compactMap(\.message)
         let dropped = wrappers.count - recovered.count
@@ -421,6 +439,29 @@ struct ChatSummary: Identifiable, Equatable, Sendable {
         self.isArchived = record.isArchived
         self.isTemporary = record.isTemporary
     }
+}
+
+// MARK: - One-shot (CLI) requests
+
+/// A stream event for a CLI one-shot request, tapped directly from the
+/// engine's chunk pipeline (unlike `chatsChanged`, these are not coalesced —
+/// the CLI sees tokens as they arrive).
+enum OneShotEvent: Sendable {
+    /// A content chunk appended to the current assistant message.
+    case delta(String)
+    /// The stream settled (success, error, or cancellation). `error` carries
+    /// the failure text when the stream failed; nil on success/cancel.
+    case finished(error: String?)
+}
+
+/// The outcome of asking the engine to perform a one-shot request.
+enum OneShotStart: Sendable {
+    /// The chat was created (or reused) and streaming has begun. `filename`
+    /// identifies the chat so the CLI user can find it in the GUI.
+    case started(filename: String, events: AsyncStream<OneShotEvent>)
+    /// The request was rejected before anything was sent (bad role/connection/
+    /// chat selector, or no usable connection configured).
+    case failed(String)
 }
 
 // MARK: - EngineEvent
