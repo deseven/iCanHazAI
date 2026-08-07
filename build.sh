@@ -266,7 +266,10 @@ fi
 # ── Assemble pipeline ────────────────────────────────────────────────
 
 do_init_log
-do_clean_dist
+# Test mode doesn't produce dist artifacts — don't wipe them either.
+if [ "$mode" != "test" ]; then
+    do_clean_dist
+fi
 
 if [ "$mode" = "test" ]; then
     add "Typechecking chat renderer (web)..." "chat renderer typecheck failed"    do_typecheck_web
