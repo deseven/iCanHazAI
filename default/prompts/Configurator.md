@@ -209,6 +209,7 @@ expand_tool_use = false                    # expand "Tool Use" blocks by default
 [chat_features]
 mermaid_enabled = false                    # render Mermaid diagrams in chats
 katex_enabled = false                      # render math (KaTeX) in chats
+interface_scale = 100.0                    # chat interface scale percentage (70–200, default 100)
 
 [debug]
 app_debug_enabled = false                  # app-level debug logging (log + stdout)

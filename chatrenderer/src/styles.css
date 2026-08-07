@@ -422,17 +422,24 @@ body {
 }
 
 .msg-role {
+  flex: 0 0 auto;
   font-size: 12px;
   font-weight: 600;
   color: var(--text-secondary);
 }
 
 .msg-detail {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 11px;
   color: var(--text-tertiary);
 }
 
 .msg-actions {
+  flex: 0 0 auto;
   margin-left: auto;
   display: flex;
   gap: 2px;

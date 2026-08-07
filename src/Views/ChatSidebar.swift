@@ -84,10 +84,13 @@ struct ChatSidebar: View {
                 }
             }
 
+            Divider()
+
             // Filter field: fuzzy-matches chat titles and exactly matches
             // (case-insensitive substring) filenames; contents are never
             // touched, so filtering stays instant. ↑/↓ move the highlight,
-            // ↵ opens the highlighted chat, Esc clears the filter.
+            // ↵ opens the highlighted chat, Esc clears the filter. Sits below
+            // the divider so it reads as part of the list, not the header.
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .font(.callout)
@@ -113,8 +116,6 @@ struct ChatSidebar: View {
             .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-
-            Divider()
 
             ScrollViewReader { proxy in
                 ScrollView {

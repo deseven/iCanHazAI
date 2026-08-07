@@ -233,6 +233,29 @@ private struct ChatFeaturesTab: View {
                     .toggleStyle(.switch)
             }
 
+            PrefRow(
+                title: "Interface Scale",
+                description: "Adjust the size of the chat interface. 100% is the default."
+            ) {
+                HStack(spacing: 10) {
+                    Text("70%")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Slider(
+                        value: store.bindingInterfaceScale,
+                        in: ChatFeaturesConfig.interfaceScaleRange,
+                        step: 1
+                    )
+                    Text("200%")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("\(Int(store.preferencesInterfaceScale.rounded()))%")
+                        .font(.body.monospacedDigit())
+                        .frame(width: 44, alignment: .trailing)
+                }
+                .frame(width: 360)
+            }
+
             Spacer()
         }
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -128,6 +128,7 @@ final class AppViewModel: ObservableObject {
     @Published var preferencesUtilityConnection: String? = nil
     @Published var preferencesMermaidEnabled: Bool = false
     @Published var preferencesKatexEnabled: Bool = false
+    @Published var preferencesInterfaceScale: Double = ChatFeaturesConfig.defaultInterfaceScale
     @Published var preferencesAppDebugEnabled: Bool = false
     @Published var preferencesChatRendererDebugEnabled: Bool = false
     @Published var preferencesExpandThinking: Bool = false
@@ -212,6 +213,7 @@ final class AppViewModel: ObservableObject {
             let iw = await config.getChatInfoSidebarWidth()
             let me = await config.getMermaidEnabled()
             let ke = await config.getKatexEnabled()
+            let scale = await config.getInterfaceScale()
             let ad = await config.getAppDebugEnabled()
             let cd = await config.getChatRendererDebugEnabled()
             let et = await config.getExpandThinking()
@@ -222,6 +224,7 @@ final class AppViewModel: ObservableObject {
             workingDirectories = wd
             preferencesMermaidEnabled = me
             preferencesKatexEnabled = ke
+            preferencesInterfaceScale = scale
             preferencesAppDebugEnabled = ad
             preferencesChatRendererDebugEnabled = cd
             preferencesExpandThinking = et
@@ -303,6 +306,17 @@ final class AppViewModel: ObservableObject {
             set: { newValue in
                 self.preferencesKatexEnabled = newValue
                 Task { await self.config.setKatexEnabled(newValue) }
+            }
+        )
+    }
+
+    var bindingInterfaceScale: Binding<Double> {
+        Binding(
+            get: { self.preferencesInterfaceScale },
+            set: { newValue in
+                let normalized = ChatFeaturesConfig.normalizedInterfaceScale(newValue)
+                self.preferencesInterfaceScale = normalized
+                Task { await self.config.setInterfaceScale(normalized) }
             }
         )
     }

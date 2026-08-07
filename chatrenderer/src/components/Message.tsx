@@ -630,7 +630,7 @@ export const MessageItem = memo(function MessageItem({
           >
             {roleLabel(message.role, roleName)}
           </span>
-          {hovering && <span class="msg-detail">{hoverDetail}</span>}
+          {hovering && <span class="msg-detail" title={hoverDetail}>{hoverDetail}</span>}
           <span
             class="msg-actions"
             style={{

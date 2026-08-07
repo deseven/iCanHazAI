@@ -102,6 +102,9 @@ struct ChatWebView: View {
                 .onChange(of: store.preferencesExpandToolUse) { _, _ in
                     model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
                 }
+                .onChange(of: store.preferencesInterfaceScale) { _, scale in
+                    model.setInterfaceScale(scale)
+                }
 
             // Opaque cover + spinner while the renderer loads a freshly
             // selected chat. Native (not the renderer's own spinner) so it
@@ -165,6 +168,7 @@ final class ChatWebViewModel: ObservableObject {
     /// loads the (large) Mermaid/KaTeX bundles when enabled.
     private var mermaidEnabled: Bool = false
     private var katexEnabled: Bool = false
+    private var interfaceScale: Double = ChatFeaturesConfig.defaultInterfaceScale
     private var debugEnabled: Bool = false
     private var expandThinkingEnabled: Bool = false
     private var expandToolUseEnabled: Bool = false
@@ -232,6 +236,7 @@ final class ChatWebViewModel: ObservableObject {
 
         let wv = WKWebView(frame: hostView.bounds, configuration: cfg)
         wv.navigationDelegate = navigationDelegate
+        wv.pageZoom = CGFloat(interfaceScale / 100)
         wv.underPageBackgroundColor = .clear
         wv.setValue(false, forKey: "drawsBackground")
         wv.allowsBackForwardNavigationGestures = false
@@ -499,6 +504,8 @@ final class ChatWebViewModel: ObservableObject {
         store.chatWebViewModel = self
         mermaidEnabled = store.preferencesMermaidEnabled
         katexEnabled = store.preferencesKatexEnabled
+        interfaceScale = store.preferencesInterfaceScale
+        webView?.pageZoom = CGFloat(interfaceScale / 100)
         debugEnabled = store.preferencesChatRendererDebugEnabled
         expandThinkingEnabled = store.preferencesExpandThinking
         expandToolUseEnabled = store.preferencesExpandToolUse
@@ -516,6 +523,13 @@ final class ChatWebViewModel: ObservableObject {
             store?.chatWebViewModel = nil
         }
         store = nil
+    }
+
+    /// Applies the chat interface scale immediately. Unlike the feature flags
+    /// this does not need a page reload — WebKit updates the zoom in place.
+    func setInterfaceScale(_ scale: Double) {
+        interfaceScale = ChatFeaturesConfig.normalizedInterfaceScale(scale)
+        webView?.pageZoom = CGFloat(interfaceScale / 100)
     }
 
     /// Reloads the web page with updated feature flags. Called when the

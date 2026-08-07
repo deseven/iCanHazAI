@@ -14,6 +14,19 @@ enum SidebarSizing {
     static let defaultChatInfoWidth: CGFloat = 260
 }
 
+/// Pure width distribution for the three-pane split. Window resizes may
+/// proportionally scale the sidebars, but every layout pass clamps them to
+/// their supported ranges and assigns whatever remains to the detail pane.
+enum MainSplitLayout {
+    static func paneWidths(totalWidth: CGFloat, dividerThickness: CGFloat, listWidth: CGFloat, infoWidth: CGFloat?) -> (list: CGFloat, detail: CGFloat, info: CGFloat?) {
+        let list = min(max(listWidth, SidebarSizing.chatListRange.lowerBound), SidebarSizing.chatListRange.upperBound)
+        let info = infoWidth.map { min(max($0, SidebarSizing.chatInfoRange.lowerBound), SidebarSizing.chatInfoRange.upperBound) }
+        let infoReserve = info.map { $0 + dividerThickness } ?? 0
+        let detail = max(totalWidth - list - dividerThickness - infoReserve, 0)
+        return (list, detail, info)
+    }
+}
+
 /// The three-pane window layout (chat list | chat | chat info) backed by a
 /// real `NSSplitView` hosting the SwiftUI panes.
 ///
@@ -170,6 +183,7 @@ struct MainSplitView: NSViewRepresentable {
 /// earlier restore attempt raced the zero-frame pre-display layout.
 private final class RoomySplitView: NSSplitView {
     override var dividerThickness: CGFloat { 2 }
+    override var dividerColor: NSColor { .separatorColor }
 
     /// Exact sidebar widths for the first layout; `info` is nil when the
     /// chat info pane starts hidden.
@@ -178,48 +192,39 @@ private final class RoomySplitView: NSSplitView {
 
     override func resizeSubviews(withOldSize oldSize: NSSize) {
         let panes = arrangedSubviews
-
-        // First real sizing pass: exact frames from the stored widths.
-        if !didApplyInitialLayout {
-            guard bounds.width > 1, panes.count >= 2, let widths = initialWidths?() else {
-                super.resizeSubviews(withOldSize: oldSize)
-                return
-            }
-            didApplyInitialLayout = true
-            let infoWidth: CGFloat? = (widths.info != nil && panes.count > 2) ? widths.info : nil
-            layoutPanes(listWidth: widths.list, infoWidth: infoWidth)
-            return
-        }
-
-        // Later resizes (window frame changes): pin both sidebars and let the
-        // detail absorb the entire delta — the default implementation scales
-        // ALL panes proportionally, inflating the sidebars past their ranges
-        // every time the window grows. Divider drags don't pass through here
-        // (bounds don't change), so user-resized widths are untouched.
-        let delta = bounds.width - oldSize.width
-        guard abs(delta) > 0.5, oldSize.width > 1, panes.count >= 2 else {
+        guard bounds.width > 1, panes.count >= 2 else {
             super.resizeSubviews(withOldSize: oldSize)
             return
         }
-        var frames = panes.map(\.frame)
-        frames[1].size.width = max(frames[1].width + delta, 0)
-        if panes.count > 2 {
-            frames[2].origin.x += delta
+
+        // Scale the sidebars with the window, then clamp the result. Calling
+        // super lets NSSplitView do the scaling without the clamp, which is
+        // what pushed sidebars outside their ranges during live resizes.
+        let scale = oldSize.width > 1 ? bounds.width / oldSize.width : 1
+        var listWidth = panes[0].frame.width * scale
+        var infoWidth: CGFloat? = panes.count > 2 ? panes[2].frame.width * scale : nil
+        if !didApplyInitialLayout {
+            if let widths = initialWidths?() {
+                listWidth = widths.list
+                infoWidth = panes.count > 2 ? widths.info : nil
+            }
+            didApplyInitialLayout = true
         }
-        for (index, pane) in panes.enumerated() {
-            pane.frame = NSRect(x: frames[index].minX, y: 0, width: frames[index].width, height: bounds.height)
-        }
+        layoutPanes(MainSplitLayout.paneWidths(
+            totalWidth: bounds.width,
+            dividerThickness: dividerThickness,
+            listWidth: listWidth,
+            infoWidth: infoWidth
+        ))
     }
 
-    private func layoutPanes(listWidth: CGFloat, infoWidth: CGFloat?) {
+    private func layoutPanes(_ widths: (list: CGFloat, detail: CGFloat, info: CGFloat?)) {
         let panes = arrangedSubviews
         let height = bounds.height
-        panes[0].frame = NSRect(x: 0, y: 0, width: listWidth, height: height)
-        let detailX = listWidth + dividerThickness
-        let info = infoWidth ?? 0
-        let detailWidth = max(bounds.width - detailX - (info > 0 ? info + dividerThickness : 0), 0)
-        panes[1].frame = NSRect(x: detailX, y: 0, width: detailWidth, height: height)
-        if info > 0, panes.count > 2 {
+        panes[0].frame = NSRect(x: 0, y: 0, width: widths.list, height: height)
+        let detailX = widths.list + dividerThickness
+        panes[1].frame = NSRect(x: detailX, y: 0, width: widths.detail, height: height)
+        if let info = widths.info, panes.count > 2 {
             panes[2].frame = NSRect(x: bounds.width - info, y: 0, width: info, height: height)
         }
     }

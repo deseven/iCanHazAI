@@ -194,31 +194,25 @@ final class MainWindowController {
         tracker.attach(to: window)
     }
 
-    /// The minimum window size — also the default size on first launch.
+    /// The minimum content size — also the default content size on first launch.
     static let minWindowSize = NSSize(width: 1024, height: 600)
 
-    /// Applies the minimum window size. If the current frame is below the
-    /// minimum, the window grows to meet it. Called at creation and when the
-    /// info sidebar toggles.
+    /// Applies the minimum window size. `contentMinSize` is the actual user
+    /// constraint; the frame-level `minSize` includes the title bar and is
+    /// derived from it. If a restored frame is below the minimum, the window
+    /// grows to meet it.
     func applyMinSize() {
         guard let window else { return }
-        window.minSize = Self.minWindowSize
-        let minWidth = Self.minWindowSize.width
-        let minHeight = Self.minWindowSize.height
+        window.contentMinSize = Self.minWindowSize
+        let minimumFrameSize = window.frameRect(
+            forContentRect: NSRect(origin: .zero, size: Self.minWindowSize)
+        ).size
+        window.minSize = minimumFrameSize
 
-        if window.frame.width < minWidth || window.frame.height < minHeight {
+        if window.frame.width < minimumFrameSize.width || window.frame.height < minimumFrameSize.height {
             var frame = window.frame
-            if frame.width < minWidth {
-                let delta = minWidth - frame.width
-                frame.size.width = minWidth
-                // Keep the left edge anchored so the window grows to the right.
-                frame.origin.x -= delta
-            }
-            if frame.height < minHeight {
-                // Grow downwards (AppKit frames are bottom-left based).
-                frame.origin.y -= minHeight - frame.height
-                frame.size.height = minHeight
-            }
+            frame.size.width = max(frame.width, minimumFrameSize.width)
+            frame.size.height = max(frame.height, minimumFrameSize.height)
             window.setFrame(frame, display: true)
         }
     }
@@ -363,6 +357,18 @@ private final class WindowFrameTracker: NSObject, NSWindowDelegate {
             selector: #selector(frameDidChange),
             name: NSWindow.didMoveNotification,
             object: window
+        )
+    }
+
+    /// SwiftUI hosting can overwrite the window's min-size properties during
+    /// layout, so enforce the floor in the resize delegate as well.
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        let minimumFrameSize = sender.frameRect(
+            forContentRect: NSRect(origin: .zero, size: MainWindowController.minWindowSize)
+        ).size
+        return NSSize(
+            width: max(frameSize.width, minimumFrameSize.width),
+            height: max(frameSize.height, minimumFrameSize.height)
         )
     }
 

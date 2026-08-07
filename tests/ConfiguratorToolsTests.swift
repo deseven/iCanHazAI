@@ -219,6 +219,34 @@ extension AllAppTests {
             #expect(decoded.general.workingDirectories == ["/a", "/b"])
         }
 
+        @Test("AppConfig interface_scale round-trips through TOML")
+        func roundTripsInterfaceScale() throws {
+            var cfg = AppConfig()
+            cfg.chatFeatures.interfaceScale = 125
+            let encoder = TOMLEncoder()
+            encoder.outputFormatting = .sortedKeys
+            encoder.keyEncodingStrategy = .convertToSnakeCase
+            let encoded = try encoder.encode(cfg)
+            let text = try #require(String(data: encoded, encoding: .utf8))
+            #expect(text.contains("interface_scale"))
+            let decoded = try TOMLDecoder().decode(AppConfig.self, from: encoded)
+            #expect(decoded.chatFeatures.interfaceScale == 125)
+        }
+
+        @Test("Interface scale defaults to 100 and clamps to the supported range")
+        func normalizesInterfaceScale() throws {
+            let toml = """
+            [chat_features]
+            interface_scale = 125.5
+            """
+            let decoded = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
+            #expect(decoded.chatFeatures.interfaceScale == 125.5)
+            #expect(ChatFeaturesConfig.normalizedInterfaceScale(nil) == 100)
+            #expect(ChatFeaturesConfig.normalizedInterfaceScale(69) == 70)
+            #expect(ChatFeaturesConfig.normalizedInterfaceScale(201) == 200)
+            #expect(ChatFeaturesConfig.normalizedInterfaceScale(120) == 120)
+        }
+
         // MARK: - Missing-key tolerance
 
         @Test("AppConfig decodes an empty TOML file with all defaults")
@@ -232,6 +260,7 @@ extension AllAppTests {
             #expect(config.chatBehaviour.expandToolUse == nil)
             #expect(config.chatFeatures.mermaidEnabled == nil)
             #expect(config.chatFeatures.katexEnabled == nil)
+            #expect(config.chatFeatures.interfaceScale == nil)
             #expect(config.debug.appDebugEnabled == nil)
             #expect(config.debug.chatRendererDebugEnabled == nil)
             #expect(config.window == nil)

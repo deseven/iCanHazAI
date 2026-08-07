@@ -93,10 +93,20 @@ struct ChatFeaturesConfig: Codable, Equatable {
     /// Whether KaTeX math rendering is enabled in the chat view.
     /// Nil/missing → false.
     var katexEnabled: Bool?
+    /// Chat renderer interface scale, as a percentage. Nil/missing → 100.
+    var interfaceScale: Double?
+
+    static let interfaceScaleRange: ClosedRange<Double> = 70...200
+    static let defaultInterfaceScale: Double = 100
+
+    static func normalizedInterfaceScale(_ scale: Double?) -> Double {
+        min(max(scale ?? defaultInterfaceScale, interfaceScaleRange.lowerBound), interfaceScaleRange.upperBound)
+    }
 
     enum CodingKeys: String, CodingKey {
         case mermaidEnabled = "mermaid_enabled"
         case katexEnabled = "katex_enabled"
+        case interfaceScale = "interface_scale"
     }
 }
 
@@ -450,6 +460,10 @@ actor ConfigManager {
         config.chatFeatures.katexEnabled ?? false
     }
 
+    func getInterfaceScale() -> Double {
+        ChatFeaturesConfig.normalizedInterfaceScale(config.chatFeatures.interfaceScale)
+    }
+
     func getExpandThinking() -> Bool {
         config.chatBehaviour.expandThinking ?? false
     }
@@ -500,6 +514,11 @@ actor ConfigManager {
 
     func setKatexEnabled(_ enabled: Bool) {
         config.chatFeatures.katexEnabled = enabled
+        persist()
+    }
+
+    func setInterfaceScale(_ scale: Double) {
+        config.chatFeatures.interfaceScale = ChatFeaturesConfig.normalizedInterfaceScale(scale)
         persist()
     }
 
