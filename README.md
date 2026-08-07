@@ -1,11 +1,9 @@
-# iCanHazAI
-
 <p align="center">
   <img src="res/main.png" width="160" alt="iCanHazAI">
 </p>
 
 <p align="center">
-  An app for AI chat with agentic capabilities, for macOS 15 or higher.
+  AI chat with agentic capabilities, for macOS 15 or higher.
 </p>
 
 
@@ -37,7 +35,7 @@ To address the elephant in the room: there are many AI chat apps and agentic har
 
 ## Quick Start
 
-1. Grab the latest release from [GitHub Releases](https://github.com/deseven/icanhazai/releases/latest).
+1. Grab the latest release from [GitHub Releases](https://github.com/deseven/icanhazai/releases/latest). If you want bleeding-edge features and the most recent changes, a [development build](https://d7.wtf/s/ichai-dev.zip) is also available — obviously, it could be unstable.
 2. Move the app to `/Applications`.
 3. If you plan to use the CLI, add `alias ichai='/Applications/iCanHazAI.app/Contents/MacOS/iCanHazAI'` to your favourite shell.
 4. Run the app and create your first connection — the wizard will guide you. Then check Preferences to tune things how you like, or just ask the Configurator role.
