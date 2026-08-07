@@ -658,6 +658,10 @@ struct ChatModelTests {
         #expect(cancelled[0].callID == "call_1")
         #expect(cancelled[0].isError == true)
         #expect(cancelled[0].content == [ChatMessage].cancelledToolResultContent)
+        // The persisted status summary is stamped too — synthesized results
+        // bypass the engine's stamping path, and without it no surface can
+        // show the "cancelled" badge.
+        #expect(cancelled[0].summary == ToolSummary.Status(kind: .cancelled, label: "cancelled", description: ""))
     }
 
     @Test("stop mid-execution keeps real results and cancels only the missing ones")

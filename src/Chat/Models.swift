@@ -147,9 +147,12 @@ extension Array where Element == ChatMessage {
             calls[i].pendingApproval = false
             if !answered.contains(calls[i].id) {
                 calls[i].diff = nil
-                append(ChatMessage(role: .tool, content: "", toolResults: [
-                    ToolResult(callID: calls[i].id, content: Self.cancelledToolResultContent, isError: true, isCancelled: true)
-                ]))
+                var result = ToolResult(callID: calls[i].id, content: Self.cancelledToolResultContent, isError: true, isCancelled: true)
+                // Synthesized results bypass the engine's stamping path, so
+                // stamp the persisted status summary here — otherwise no
+                // surface can show the "cancelled" badge.
+                result.summary = ToolSummary.resultStatus(name: calls[i].name, result: result)
+                append(ChatMessage(role: .tool, content: "", toolResults: [result]))
             }
         }
         self[aIdx].toolCalls = calls

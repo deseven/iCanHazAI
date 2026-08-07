@@ -56,3 +56,14 @@ export function transientToolStatus(
   }
   return null;
 }
+
+/** Local status for a final result with no persisted summary (results from
+ *  before the summary field existed). Only cancelled is derived — its content
+ *  is a fixed boilerplate sentence, so the badge alone says it all; deriving
+ *  the other final states would mean re-implementing the host's logic. */
+export function localToolStatus(result: ToolResultLike | undefined): ToolStatusSummary | null {
+  if (result?.isCancelled && !result.isStreaming) {
+    return { kind: "cancelled", label: "cancelled", description: "" };
+  }
+  return null;
+}

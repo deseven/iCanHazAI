@@ -19,7 +19,7 @@ import { debugLog } from "../debug";
 import { parseToolArgs, isEmptyArgs } from "../toolArgs";
 import type { ToolArgEntry } from "../toolArgs";
 import { toolArgLang, toolResultLang } from "../toolHighlight";
-import { transientToolStatus } from "../toolSummary";
+import { transientToolStatus, localToolStatus } from "../toolSummary";
 import { Copy, SquarePen, Trash2, Brain, User, Bot, Settings, AlertTriangle, RotateCcw, ChevronRight, ChevronDown, Wrench, Terminal } from "lucide-preact";
 import type { ToolCallData, ToolResultData } from "../types";
 
@@ -345,7 +345,7 @@ function ToolBlock({
   // still running) are derived locally — they can never be persisted. Both
   // lines truncate with an ellipsis in CSS.
   const summary = call.summary ?? "";
-  const status = result?.summary ?? transientToolStatus(result, running, pending);
+  const status = result?.summary ?? transientToolStatus(result, running, pending) ?? localToolStatus(result);
 
   // Per-tool syntax-highlighting hints (toolHighlight.ts) apply only to
   // host-stamped internal tools, so an external MCP tool that happens to

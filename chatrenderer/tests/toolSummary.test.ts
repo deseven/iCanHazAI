@@ -2,7 +2,7 @@
 // output (see build.mjs `test` step). Uses Node's built-in test runner.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { transientToolStatus } from "../src/toolSummary";
+import { transientToolStatus, localToolStatus } from "../src/toolSummary";
 
 // Final states (done/error/denied/cancelled) are computed by the host and
 // persisted in the chat data — only the transient states are derived here.
@@ -44,6 +44,23 @@ test("a final result has no transient status (the persisted summary is used)", (
   assert.equal(transientToolStatus({ content: "boom", isError: true }, false, false), null);
   assert.equal(
     transientToolStatus({ content: "denied", isError: true, isDenied: true }, false, false),
+    null,
+  );
+});
+
+test("localToolStatus derives cancelled for results without a persisted summary", () => {
+  assert.deepEqual(
+    localToolStatus({ content: "Tool call was cancelled…", isError: true, isCancelled: true }),
+    { kind: "cancelled", label: "cancelled", description: "" },
+  );
+});
+
+test("localToolStatus stays out of every other state", () => {
+  assert.equal(localToolStatus(undefined), null);
+  assert.equal(localToolStatus({ content: "done output", isError: false }), null);
+  assert.equal(localToolStatus({ content: "boom", isError: true }), null);
+  assert.equal(
+    localToolStatus({ content: "partial", isError: false, isStreaming: true, isCancelled: true }),
     null,
   );
 });
