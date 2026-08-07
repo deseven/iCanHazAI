@@ -1906,22 +1906,35 @@ actor ChatEngine {
                     }
                 }
 
-                // Execute each tool call and append its result as its own
+                // Tool calls run in two phases: first every approval is
+                // gathered (prompts are answered back to back, without tool
+                // executions in between), then the approved calls execute in
+                // order. This trades a bit of coherence — approval requests
+                // are detached from their executions, and diff previews are
+                // computed against the pre-execution state — for not
+                // re-prompting the user after each (potentially slow) call.
+                var preparedCalls: [PreparedToolCall] = []
+                preparedCalls.reserveCapacity(stampedCalls.count)
+                for call in stampedCalls {
+                    // `prepareToolCall` awaits user approval, which can be
+                    // cancelled (stop). Throws `CancellationError` in that case.
+                    preparedCalls.append(try await prepareToolCall(call, filename: filename, tools: toolDefs))
+                }
+
+                // Execute each prepared call and append its result as its own
                 // `tool`-role `ChatMessage` tagged with `callID` — the natural
                 // provider shape. The renderer folds these back onto the
                 // preceding assistant `toolCalls` as a view projection, so the
                 // visible inline tool block is unchanged. The provider history
                 // is built directly from these messages by `ChatService` (no
                 // un-folding `flatMap` needed).
-                for call in stampedCalls {
-                    // `executeToolCall` awaits user approval, which can be
-                    // cancelled (stop). Throws `CancellationError` in that case.
-                    let toolResult = try await executeToolCall(call, filename: filename, tools: toolDefs)
+                for prepared in preparedCalls {
+                    let toolResult = try await executePreparedToolCall(prepared, filename: filename)
                     // A stop requested during execution must unwind here:
                     // MCP/built-in tool calls may swallow task cancellation
                     // and return a result instead of throwing. Without this
-                    // check the loop would keep appending results (and start
-                    // new approvals) for a stream that's already stopped.
+                    // check the loop would keep appending results for a
+                    // stream that's already stopped.
                     try Task.checkCancellation()
                     // Append the result as a `tool`-role message and persist.
                     appendToolResult(toolResult, filename: filename)
@@ -2076,18 +2089,17 @@ actor ChatEngine {
         scheduleCoalescedEmit()
     }
 
-    /// Executes a single tool call. Built-in group tools run in-process via
-    /// [`BuiltinTools`](src/Tools/BuiltinTools.swift); custom MCP server tools run via
-    /// [`MCPManager`](src/MCP/MCPManager.swift). Configurator tools run in-process
-    /// too. Returns the tool result.
-    ///
-    /// `tools` is the exact set of tool definitions advertised to the model for
-    /// this turn; the call name is matched directly against their
-    /// `namespacedName` to recover the owning source + raw tool name.
-    ///
-    /// Tools flagged as auto-allowed by the chat's role (`auto_allow` /
-    /// `auto_allow_all`) skip the approval prompt and execute immediately.
-    private func executeToolCall(_ call: ToolCall, filename: String, tools: [ToolDefinition]) async throws -> ToolResult {
+    /// Phase 1 of tool-call handling: resolves everything short of running the
+    /// tool — matches the call against the advertised tools, computes
+    /// auto-approval, builds diff previews / runs preflight checks, and (when
+    /// needed) awaits the user's approval decision. The loop runs this for
+    /// every call of the turn before any execution, so multiple approval
+    /// prompts are answered back to back instead of being spread across
+    /// (potentially slow) tool executions. Tools flagged as auto-allowed by
+    /// the chat's role (`auto_allow` / `auto_allow_all`) skip the approval
+    /// prompt. Throws `CancellationError` when a pending approval is cancelled
+    /// by a stop.
+    private func prepareToolCall(_ call: ToolCall, filename: String, tools: [ToolDefinition]) async throws -> PreparedToolCall {
         // Don't start new work (or a new approval prompt) once the stream was
         // stopped — the task is cancelled but MCP/built-in calls don't throw.
         try Task.checkCancellation()
@@ -2096,7 +2108,7 @@ actor ChatEngine {
         // prefix parsing, which mis-splits prefixless tools.
         guard let match = tools.first(where: { $0.namespacedName == call.name }) else {
             debugLog("Tool", "no advertised tool matches name \"\(call.name)\" — chat=\(filename)")
-            return ToolResult(callID: call.id, content: "No tool found for name \"\(call.name)\".", isError: true)
+            return PreparedToolCall(call: call, immediateResult: ToolResult(callID: call.id, content: "No tool found for name \"\(call.name)\".", isError: true))
         }
         let sourceName = match.serverName
         let toolName = match.name
@@ -2105,8 +2117,7 @@ actor ChatEngine {
         // subprocess) and are always auto-approved: their writes are validated
         // before touching disk, so there's nothing destructive to confirm.
         if sourceName == ConfiguratorTools.serverName {
-            debugLog("Tool", "executing configurator tool \(toolName) — callID=\(call.id), chat=\(filename)")
-            return await ConfiguratorTools.call(name: toolName, arguments: call.arguments, callID: call.id)
+            return PreparedToolCall(call: call, sourceName: sourceName, toolName: toolName)
         }
 
         // Auto-allow: if the role marks this tool (or all tools from this
@@ -2145,7 +2156,7 @@ actor ChatEngine {
                         setToolCallDiff(callID: call.id, filename: filename, diff: d)
                     } else {
                         debugLog("Tool", "write_file arguments invalid (no diff) — callID=\(call.id), chat=\(filename)")
-                        return ToolResult(callID: call.id, content: "Invalid arguments: expected 'path' and 'content' strings.", isError: true)
+                        return PreparedToolCall(call: call, immediateResult: ToolResult(callID: call.id, content: "Invalid arguments: expected 'path' and 'content' strings.", isError: true))
                     }
                 } catch {
                     debugLog("Tool", "write_file SSH diff preview failed (\(error.localizedDescription)) — proceeding without diff, callID=\(call.id), chat=\(filename)")
@@ -2155,7 +2166,7 @@ actor ChatEngine {
                     setToolCallDiff(callID: call.id, filename: filename, diff: d)
                 } else {
                     debugLog("Tool", "write_file arguments invalid (no diff) — callID=\(call.id), chat=\(filename)")
-                    return ToolResult(callID: call.id, content: "Invalid arguments: expected 'path' and 'content' strings.", isError: true)
+                    return PreparedToolCall(call: call, immediateResult: ToolResult(callID: call.id, content: "Invalid arguments: expected 'path' and 'content' strings.", isError: true))
                 }
             }
         } else if sourceName == BuiltinTools.codeGroup, toolName == "apply_patch" {
@@ -2167,7 +2178,7 @@ actor ChatEngine {
                         if let d { setToolCallDiff(callID: call.id, filename: filename, diff: d) }
                     case .error(let message):
                         debugLog("Tool", "apply_patch remote dry-run failed — callID=\(call.id), chat=\(filename)")
-                        return ToolResult(callID: call.id, content: message, isError: true)
+                        return PreparedToolCall(call: call, immediateResult: ToolResult(callID: call.id, content: message, isError: true))
                     }
                 } catch {
                     debugLog("Tool", "apply_patch SSH dry-run failed (\(error.localizedDescription)) — proceeding without diff, callID=\(call.id), chat=\(filename)")
@@ -2178,7 +2189,7 @@ actor ChatEngine {
                     if let d { setToolCallDiff(callID: call.id, filename: filename, diff: d) }
                 case .error(let message):
                     debugLog("Tool", "apply_patch dry-run failed — callID=\(call.id), chat=\(filename)")
-                    return ToolResult(callID: call.id, content: message, isError: true)
+                    return PreparedToolCall(call: call, immediateResult: ToolResult(callID: call.id, content: message, isError: true))
                 }
             }
         }
@@ -2204,12 +2215,12 @@ actor ChatEngine {
                 notifyOneShot(filename: filename, .notice("tool call \"\(call.name)\" requires confirmation — skipped (re-run with --allow-all to auto-approve tool calls)"))
                 // The changes were never applied — drop any diff preview.
                 setToolCallDiff(callID: call.id, filename: filename, diff: nil)
-                return ToolResult(
+                return PreparedToolCall(call: call, immediateResult: ToolResult(
                     callID: call.id,
                     content: "The tool call was not executed: it requires user confirmation, but the request is running in non-interactive CLI mode. Tell the user to re-run the command with --allow-all (-y) to auto-approve tool calls.",
                     isError: true,
                     isCancelled: true
-                )
+                ))
             }
         } else {
             // The approval hook. Suspends until the user allows or denies the
@@ -2219,13 +2230,33 @@ actor ChatEngine {
             approval = try await approveToolCall(chatFilename: filename, call: call)
         }
 
-        switch approval {
+        return PreparedToolCall(call: call, sourceName: sourceName, toolName: toolName, workdir: workdir, isolation: isolation, chatID: chatID, approval: approval)
+    }
+
+    /// Phase 2 of tool-call handling: executes a call prepared by
+    /// [`prepareToolCall`](#) and returns its result. Calls with an
+    /// `immediateResult` (preflight failures, non-interactive CLI skips)
+    /// report it as-is; denied calls produce the denial result. Built-in
+    /// groups and configurator tools run in-process; custom MCP server tools
+    /// run via [`MCPManager`](src/MCP/MCPManager.swift).
+    private func executePreparedToolCall(_ prepared: PreparedToolCall, filename: String) async throws -> ToolResult {
+        // Don't start new work once the stream was stopped — the task is
+        // cancelled but MCP/built-in calls don't throw.
+        try Task.checkCancellation()
+        if let immediate = prepared.immediateResult { return immediate }
+        let call = prepared.call
+        let sourceName = prepared.sourceName
+        let toolName = prepared.toolName
+
+        switch prepared.approval {
         case .allow:
             debugLog("Tool", "executing \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
             let result: ToolResult
-            if BuiltinTools.allGroups.contains(sourceName) {
+            if sourceName == ConfiguratorTools.serverName {
+                result = await ConfiguratorTools.call(name: toolName, arguments: call.arguments, callID: call.id)
+            } else if BuiltinTools.allGroups.contains(sourceName) {
                 // Built-in group: run in-process with the chat's workdir.
-                let wd = Workdir(root: workdir, isolated: isolation, chatID: chatID)
+                let wd = Workdir(root: prepared.workdir, isolated: prepared.isolation, chatID: prepared.chatID)
                 result = await BuiltinTools.call(name: toolName, arguments: call.arguments, callID: call.id, group: sourceName, workdir: wd)
             } else {
                 // Custom MCP server: use the shared connection pool.
@@ -2973,6 +3004,22 @@ struct ChatToolEntry: Equatable, Sendable {
 struct ChatToolSnapshot: Equatable, Sendable {
     var builtin: [ChatToolEntry]
     var external: [ChatToolEntry]
+}
+
+/// A tool call that went through the approval phase
+/// (`ChatEngine.prepareToolCall`) and is ready for execution
+/// (`ChatEngine.executePreparedToolCall`). `immediateResult`, when set,
+/// short-circuits execution: it's the result to report as-is (unmatched tool
+/// name, argument/preflight failures, non-interactive CLI skips).
+struct PreparedToolCall: Sendable {
+    let call: ToolCall
+    var immediateResult: ToolResult? = nil
+    var sourceName: String = ""
+    var toolName: String = ""
+    var workdir: String? = nil
+    var isolation: Bool = false
+    var chatID: String = ""
+    var approval: ToolApproval = .allow
 }
 
 /// A tool-call approval awaiting a user decision, stored in

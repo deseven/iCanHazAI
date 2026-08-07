@@ -468,6 +468,10 @@ final class AppViewModel: ObservableObject {
             // it (otherwise the renderer shows the Allow/Deny buttons).
             if filename != selectedChatID {
                 blinkingChatIDs.insert(filename)
+            } else {
+                // Bring the pending tool block (with its Allow/Deny buttons,
+                // always at the bottom) into view.
+                chatWebViewModel?.scrollToBottom()
             }
             requestAttentionIfNeeded()
         case .toolApprovalResolved(let filename, _):
