@@ -14,6 +14,7 @@ import { createPortal } from "preact/compat";
 import type { ChatMessage, MessageImage } from "../types";
 import { renderMarkdown, renderInline, renderMermaidIn, restoreCachedMermaid, endsWithUnclosedMermaid, renderDiff, highlightCode } from "../markdown";
 import { sendToHost } from "../bridge";
+import { observeVisibility } from "../visibility";
 import { debugLog } from "../debug";
 import { parseToolArgs, isEmptyArgs } from "../toolArgs";
 import type { ToolArgEntry } from "../toolArgs";
@@ -231,39 +232,26 @@ function shortToolName(name: string): string {
   return name;
 }
 
-/** Wires IntersectionObservers for a collapsible block so a bottom "collapse"
- *  link can be shown when the expanded block's top scrolls out of view while
- *  its bottom is still on screen (i.e. the block is taller than the viewport).
- *  Attach `rootRef` to the block element and `toggleRef` to its header. */
-function useBottomCollapse(open: boolean) {
-  const rootRef = useRef<HTMLDivElement>(null);
-  const toggleRef = useRef<HTMLButtonElement>(null);
-  const [toggleVisible, setToggleVisible] = useState(true);
-  const [blockVisible, setBlockVisible] = useState(true);
-
+/** Tracks whether an element is visible in the chat viewport. All elements
+ *  share a single IntersectionObserver (see visibility.ts). */
+function useVisibility<T extends HTMLElement>() {
+  const ref = useRef<T>(null);
+  const [visible, setVisible] = useState(true);
   useEffect(() => {
-    const block = rootRef.current;
-    const toggle = toggleRef.current;
-    if (!block || !toggle) return;
-    const scroller = block.closest(".chat-scroller") as Element | null;
-    const opts = { root: scroller || null, threshold: 0 };
-
-    const toggleObs = new IntersectionObserver((entries) => {
-      for (const e of entries) setToggleVisible(e.isIntersecting);
-    }, opts);
-    toggleObs.observe(toggle);
-
-    const blockObs = new IntersectionObserver((entries) => {
-      for (const e of entries) setBlockVisible(e.isIntersecting);
-    }, opts);
-    blockObs.observe(block);
-
-    return () => {
-      toggleObs.disconnect();
-      blockObs.disconnect();
-    };
+    const el = ref.current;
+    if (!el) return;
+    return observeVisibility(el, setVisible);
   }, []);
+  return [ref, visible] as const;
+}
 
+/** Tracks a collapsible block so a bottom "collapse" link can be shown when
+ *  the expanded block's top scrolls out of view while its bottom is still on
+ *  screen (i.e. the block is taller than the viewport). Attach `rootRef` to
+ *  the block element and `toggleRef` to its header. */
+function useBottomCollapse(open: boolean) {
+  const [rootRef, blockVisible] = useVisibility<HTMLDivElement>();
+  const [toggleRef, toggleVisible] = useVisibility<HTMLButtonElement>();
   return {
     rootRef,
     toggleRef,
@@ -551,11 +539,13 @@ export const MessageItem = memo(function MessageItem({
     toggleRef: thinkingToggleRef,
     showCollapse: showThinkingCollapse,
   } = useBottomCollapse(thinkingOpen);
-  const [topVisible, setTopVisible] = useState(true);
-  const [msgVisible, setMsgVisible] = useState(true);
   const bodyRef = useRef<HTMLDivElement>(null);
-  const headerRef = useRef<HTMLDivElement>(null);
-  const rootRef = useRef<HTMLDivElement>(null);
+  // Track whether the message header (top) is visible in the viewport. When
+  // the message is taller than the viewport and the top scrolls out of view
+  // while the bottom remains visible, we surface the action buttons at the
+  // bottom so they remain reachable.
+  const [headerRef, topVisible] = useVisibility<HTMLDivElement>();
+  const [rootRef, msgVisible] = useVisibility<HTMLDivElement>();
 
   // Render content. For streaming, memoize on the block/partial split so we
   // only re-render block HTML when a newline arrives.
@@ -593,39 +583,6 @@ export const MessageItem = memo(function MessageItem({
     if (!bodyRef.current) return;
     renderMermaidIn(bodyRef.current, { skipLast: rendered.skipLastMermaid });
   }, [rendered.blockHtml, rendered.skipLastMermaid, isStreaming]);
-
-  // Track whether the message header (top) is visible in the viewport. When
-  // the message is taller than the viewport and the top scrolls out of view
-  // while the bottom remains visible, we surface the action buttons at the
-  // bottom so they remain reachable.
-  useEffect(() => {
-    const header = headerRef.current;
-    const root = rootRef.current;
-    if (!header || !root) return;
-    const scroller = root.closest(".chat-scroller") as Element | null;
-    const rootEl = scroller || null;
-
-    const headerObs = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) setTopVisible(e.isIntersecting);
-      },
-      { root: rootEl, threshold: 0 }
-    );
-    headerObs.observe(header);
-
-    const rootObs = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) setMsgVisible(e.isIntersecting);
-      },
-      { root: rootEl, threshold: 0 }
-    );
-    rootObs.observe(root);
-
-    return () => {
-      headerObs.disconnect();
-      rootObs.disconnect();
-    };
-  }, []);
 
   // When the top is scrolled out of view but the message is still on screen,
   // show the action buttons at the bottom (always visible, not hover-gated).

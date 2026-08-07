@@ -364,6 +364,11 @@ body {
   padding: 4px 8px;
   border-radius: 8px;
   transition: background 0.12s ease;
+  /* Skip layout/paint for off-screen messages. The intrinsic height is only
+     a placeholder for never-rendered rows; once a row has been on screen the
+     browser remembers its real height, keeping the scrollbar stable. */
+  content-visibility: auto;
+  contain-intrinsic-height: auto 200px;
 }
 
 .msg:hover {
