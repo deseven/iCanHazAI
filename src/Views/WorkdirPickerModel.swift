@@ -12,14 +12,12 @@ enum WorkdirItem: Identifiable, Hashable {
     /// A directory from browsing: the typed directory itself or one of its
     /// subdirectories (local or remote).
     case directory(String)
-    /// The role's pre-set working directory, pinned at the bottom.
-    case roleDefault(String)
 
     var id: Self { self }
 
     var path: String {
         switch self {
-        case .recent(let p), .directory(let p), .roleDefault(let p): return p
+        case .recent(let p), .directory(let p): return p
         }
     }
 

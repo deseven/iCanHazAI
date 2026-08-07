@@ -3,13 +3,14 @@
 
 import SwiftUI
 
-/// A modal sheet for picking the per-chat working directory.
+/// A modal sheet for picking the chat's working directory. The pick is
+/// permanent (like the role itself): the sheet is only reachable while the
+/// chat has no directory, so it never offers a "current" entry.
 ///
 /// With an empty search the sheet lists recently picked directories (the MRU
 /// list from the app config, capped at 30 — see
 /// [`AppViewModel.recordWorkingDirectory()`](src/App/AppViewModel.swift:975)),
-/// each with a remove button; the role's pre-set working directory (when it
-/// allows overrides) is pinned at the bottom as the default option.
+/// each with a remove button.
 ///
 /// Typing into the search field browses directories (see
 /// [`WorkdirQuery`](src/Views/WorkdirPickerModel.swift:32) for the query
@@ -36,23 +37,6 @@ struct WorkdirPickerView: View {
     @StateObject private var sshLister = WorkdirSSHLister()
 
     private var directories: [String] { store.workingDirectories }
-
-    /// The role's pre-set working directory (standardized), shown as a pinned
-    /// default at the bottom when the role allows overrides. May duplicate an
-    /// entry in `directories`; that's intentional — it's still offered as the
-    /// default so the user can accept it with ↵.
-    private var roleDefaultWorkdir: String? {
-        guard let role = store.selectedRole,
-              role.workingDirectoryOverrideAllowed,
-              let path = role.workingDirectory, !path.isEmpty else { return nil }
-        return SSHSpec.isSSH(path) ? path : (path as NSString).standardizingPath
-    }
-
-    /// The currently selected chat's working directory, so we can highlight it.
-    private var currentWorkdir: String? {
-        guard let path = store.selectedChatWorkingDirectory else { return nil }
-        return SSHSpec.isSSH(path) ? path : (path as NSString).standardizingPath
-    }
 
     /// The current query, classified.
     private var parsedQuery: WorkdirQuery { WorkdirQuery.parse(query) }
@@ -86,37 +70,25 @@ struct WorkdirPickerView: View {
         }
     }
 
-    /// Pinned entries: the role's default working directory, if any.
-    private var pinnedItems: [WorkdirItem] {
-        roleDefaultWorkdir.map { [.roleDefault($0)] } ?? []
-    }
-
     private var initialSelection: WorkdirItem? {
-        if let roleDefault = roleDefaultWorkdir {
-            return .roleDefault(roleDefault)
-        }
-        if let current = currentWorkdir, directories.contains(current) {
-            return .recent(current)
-        }
-        return directories.first.map { .recent($0) }
+        directories.first.map { .recent($0) }
     }
 
     var body: some View {
         PickerDialog<WorkdirItem>(
             title: "Working directory",
-            subtitle: "Pick a directory for this chat. Recently picked directories are remembered; type a local path or host:/path to browse.",
+            subtitle: "Pick a directory for this chat — the choice is permanent. Recently picked directories are remembered; type a local path or host:/path to browse.",
             searchText: $query,
             searchPlaceholder: "Type a path or host:/path",
             items: scrollItems,
-            pinnedHeader: pinnedItems.isEmpty ? nil : "Default",
-            pinnedItems: pinnedItems,
+            pinnedHeader: nil,
+            pinnedItems: [],
             emptyTitle: "No recent directories",
             emptySubtitle: "Type a local path or host:/path above",
             width: 420,
             rowContent: { item, _ in
                 AnyView(WorkdirRowContent(
                     item: item,
-                    isCurrent: currentWorkdir == item.path,
                     onRemove: { store.removeWorkingDirectory(item.path) }
                 ))
             },
@@ -145,7 +117,6 @@ struct WorkdirPickerView: View {
 /// [`PickerDialog`](src/Views/PickerDialog.swift:37).
 private struct WorkdirRowContent: View {
     let item: WorkdirItem
-    let isCurrent: Bool
     let onRemove: () -> Void
 
     var body: some View {
@@ -163,11 +134,6 @@ private struct WorkdirRowContent: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-            }
-            if isCurrent {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(Color.accentColor)
             }
             Spacer()
             if case .recent = item {

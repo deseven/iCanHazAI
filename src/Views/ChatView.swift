@@ -257,8 +257,8 @@ struct ChatView: View {
         if store.isStreaming { return false }
         if !store.selectedChatHasValidRole { return true }
         if !store.selectedChatHasConnection { return true }
-        // Directory isolation requires a working directory before requests can
-        // be sent (the isolated MCPs have no target to isolate to otherwise).
+        // Directory-relevant tools (Filesystem/Code) require a working
+        // directory before requests can be sent.
         if store.selectedChatWorkdirRequired { return true }
         if !pendingImages.isEmpty { return false }
         let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -320,10 +320,10 @@ struct ChatView: View {
                 }
 
                 // The workdir and MCP controls share the same look: an icon
-                // plus tag(s), white when the role allows overrides (clickable
-                // picker), grey when the value is fixed by the role. Red marks
-                // a missing required directory. `allowsHitTesting` is used
-                // instead of `disabled` so the colors aren't dimmed.
+                // plus tag(s), white while the value can be (re)set via a
+                // picker, grey when it's fixed. Red marks a missing required
+                // directory. `allowsHitTesting` is used instead of `disabled`
+                // so the colors aren't dimmed.
                 if store.selectedChatWorkdirPickerVisible {
                     Button {
                         store.showWorkdirPicker = true
@@ -399,9 +399,9 @@ struct ChatView: View {
             return "No directory"
         }
 
-        /// Red when directory isolation is active but no directory is set
-        /// (the chat is blocked until the user picks one); white when the
-        /// directory can be changed; grey when it's fixed by the role.
+        /// Red when a required directory is missing (the chat is blocked
+        /// until the user picks one); white while the directory can be
+        /// picked; grey once it's fixed (picked or pre-set by the role).
         private var workdirColor: Color {
             if store.selectedChatWorkdirRequired { return .red }
             return store.selectedChatWorkdirPickerEnabled ? .primary : .secondary
@@ -422,12 +422,12 @@ struct ChatView: View {
 
         private var workdirHelp: String {
             if store.selectedChatWorkdirRequired {
-                return "A working directory is required (directory isolation is enabled)"
+                return "A working directory is required by this role"
             }
             if !store.selectedChatWorkdirPickerEnabled {
-                return "Working directory (set by role)"
+                return "Working directory (fixed for this chat)"
             }
-            return "Working directory"
+            return "Working directory (permanent once picked)"
         }
     }
 

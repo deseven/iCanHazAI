@@ -1126,6 +1126,57 @@ extension AllAppTests {
         }
     }
 
+    // MARK: - Tilde paths
+
+    @Suite("Builtin tools: tilde paths")
+    struct BuiltinTildeTests {
+        @Test("local resolution expands ~ to the user home")
+        func localResolve() throws {
+            let home = NSHomeDirectory()
+            #expect(try Workdir.none.resolve("~") == home)
+            #expect(try Workdir.none.resolve("~/x") == home + "/x")
+
+            // A tilde wins over the workdir root, like in a real shell.
+            let tmp = try TestDir()
+            let wd = Workdir(root: tmp.path, isolated: false)
+            #expect(try wd.resolve("~/x") == home + "/x")
+        }
+
+        @Test("local resolution rejects an unknown ~user instead of misplacing the path")
+        func localUnknownUser() {
+            #expect(throws: BuiltinToolError.self) { try Workdir.none.resolve("~ichai-no-such-user-xyz/x") }
+        }
+
+        @Test("isolated tilde maps to the virtual home (the root)")
+        func isolatedResolve() throws {
+            let tmp = try TestDir()
+            let wd = Workdir(root: tmp.path, isolated: true)
+            let root = try #require(wd.root)
+            #expect(try wd.resolve("~") == root)
+            #expect(try wd.resolve("~/x") == root + "/x")
+            #expect(throws: BuiltinToolError.self) { try wd.resolve("~root/x") }
+        }
+
+        @Test("ls accepts a tilde path")
+        func lsTilde() async {
+            let (_, err) = await Self.call("ls", BuiltinTools.filesystemGroup, ["path": "~"])
+            #expect(!err)
+        }
+
+        @Test("shell cwd accepts a tilde path")
+        func shellTildeCwd() async {
+            let (text, err) = await Self.call("shell", BuiltinTools.shellGroup, ["command": "pwd", "cwd": "~"])
+            #expect(!err)
+            #expect(text.contains(NSHomeDirectory()))
+        }
+
+        static func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir = .none) async -> (text: String, isError: Bool) {
+            let arguments = (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
+            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir)
+            return (result.content, result.isError)
+        }
+    }
+
     // MARK: - Tool registry
 
     @Suite("Builtin tools: registry")

@@ -68,16 +68,15 @@ enum ConfigValidation {
 
     /// Cross-field validation for a decoded [`RoleConfig`](src/Chat/Models.swift).
     ///
-    /// - `working_directory` / `working_directory_override_allowed` require at
-    ///   least one workdir-capable built-in group (Filesystem, Code, or Shell).
-    ///   Without one, the directory setting is meaningless because nothing
-    ///   consumes it.
+    /// - `working_directory` requires at least one workdir-capable built-in
+    ///   group (Filesystem, Code, or Shell). Without one, the directory
+    ///   setting is meaningless because nothing consumes it.
     /// - `directory_isolation` is only meaningful on the Filesystem and Code
     ///   groups. Setting it on any other group (including Shell) is an error.
-    /// - `directory_isolation` requires a working directory to be available —
-    ///   either pre-set (`working_directory`) or user-pickable
-    ///   (`working_directory_override_allowed = true`). Without one, the
-    ///   isolation target is undefined.
+    ///   Isolation always needs a directory to isolate to, but it doesn't
+    ///   have to come from the role: Filesystem/Code can't run without a
+    ///   directory, so when `working_directory` is omitted the user is forced
+    ///   to pick one per chat.
     static func validateRole(_ config: RoleConfig) throws {
         let enabledGroups = BuiltinTools.groupOrder.filter { group in
             switch group {
@@ -93,12 +92,9 @@ enum ConfigValidation {
             BuiltinTools.workdirCapableGroups.contains($0)
         }
 
-        let hasWorkdir = config.workingDirectory?.isEmpty == false
-        let hasOverride = config.workingDirectoryOverrideAllowed ?? false
-
-        if (hasWorkdir || hasOverride) && !hasWorkdirCapableGroup {
+        if config.workingDirectory?.isEmpty == false && !hasWorkdirCapableGroup {
             throw ConfigValidationError(
-                "role config sets working_directory or working_directory_override_allowed "
+                "role config sets working_directory "
                 + "but selects no workdir-capable built-in group (Filesystem, Code, or Shell)"
             )
         }
@@ -116,13 +112,6 @@ enum ConfigValidation {
                 throw ConfigValidationError(
                     "role config sets directory_isolation on group \"\(group)\", "
                     + "but it is only supported on Filesystem and Code"
-                )
-            }
-            if !hasWorkdir && !hasOverride {
-                throw ConfigValidationError(
-                    "role config sets directory_isolation on group \"\(group)\" "
-                    + "but provides no working directory (set working_directory "
-                    + "or working_directory_override_allowed = true)"
                 )
             }
         }

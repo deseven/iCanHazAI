@@ -67,7 +67,9 @@ struct Workdir: Sendable {
     func resolve(_ path: String) throws -> String {
         if ssh != nil { return try resolveRemote(path) }
         if isolated, let root {
-            let relative = path.hasPrefix("/") ? String(path.dropFirst()) : path
+            // `~` is the virtual home: the root itself (pwd reports "/").
+            let p = try Self.strippingTildeForIsolated(path)
+            let relative = p.hasPrefix("/") ? String(p.dropFirst()) : p
             let joined = (root as NSString).appendingPathComponent(relative)
             let standardized = (joined as NSString).standardizingPath
             let resolved = URL(fileURLWithPath: standardized).resolvingSymlinksInPath().path
@@ -76,12 +78,32 @@ struct Workdir: Sendable {
             }
             return resolved
         } else {
-            if path.hasPrefix("/") {
-                return (path as NSString).standardizingPath
+            var p = path
+            if p.hasPrefix("~") {
+                p = (p as NSString).expandingTildeInPath
+                // expandingTildeInPath leaves an unknown `~user` untouched;
+                // joining that onto the base would silently produce garbage.
+                if p.hasPrefix("~") {
+                    throw BuiltinToolError("cannot expand tilde in \"\(path)\" (unknown user?)")
+                }
             }
-            let joined = (base as NSString).appendingPathComponent(path)
+            if p.hasPrefix("/") {
+                return (p as NSString).standardizingPath
+            }
+            let joined = (base as NSString).appendingPathComponent(p)
             return (joined as NSString).standardizingPath
         }
+    }
+
+    /// Maps an isolated-mode tilde path onto the jail: `~` and `~/...` are the
+    /// virtual home (the root), `~user` has no meaning inside the jail.
+    private static func strippingTildeForIsolated(_ path: String) throws -> String {
+        if path == "~" { return "/" }
+        if path.hasPrefix("~/") { return String(path.dropFirst(1)) }
+        if path.hasPrefix("~") {
+            throw BuiltinToolError("\"~user\" paths are not supported in an isolated working directory")
+        }
+        return path
     }
 
     /// Display spelling for a resolved path. In isolated mode the root is
@@ -100,7 +122,9 @@ struct Workdir: Sendable {
     /// shell against the login directory, i.e. the remote home).
     private func resolveRemote(_ path: String) throws -> String {
         if isolated, let root {
-            let relative = path.hasPrefix("/") ? String(path.dropFirst()) : path
+            // `~` is the virtual home: the root itself (pwd reports "/").
+            let p = try Self.strippingTildeForIsolated(path)
+            let relative = p.hasPrefix("/") ? String(p.dropFirst()) : p
             // Root "/" contains every absolute path by definition.
             if root == "/" { return Self.posixNormalize("/" + relative) }
             let joined = root + "/" + relative
@@ -109,6 +133,16 @@ struct Workdir: Sendable {
                 throw BuiltinToolError("path escapes the workdir")
             }
             return normalized
+        }
+        // A leading `~` refers to the remote user's home. The remote
+        // filesystem is never queried during resolution, so the tilde stays
+        // as a literal prefix and is expanded by the remote shell at exec
+        // time (see BuiltinToolsSSH.qp). Home is independent of the root.
+        if path.hasPrefix("~") {
+            guard let slash = path.firstIndex(of: "/") else { return path }
+            let prefix = path[..<slash]
+            let rest = Self.posixNormalize(String(path[path.index(after: slash)...]))
+            return rest == "." ? String(prefix) : prefix + "/" + rest
         }
         if path.hasPrefix("/") { return Self.posixNormalize(path) }
         guard let root else { return Self.posixNormalize(path) }
@@ -179,6 +213,11 @@ enum BuiltinTools {
     static let groupOrder: [String] = [utilsGroup, filesystemGroup, codeGroup, shellGroup]
     static let workdirCapableGroups: Set<String> = [filesystemGroup, codeGroup, shellGroup]
     static let isolationCapableGroups: Set<String> = [filesystemGroup, codeGroup]
+    /// Groups whose tools operate on files and therefore require a working
+    /// directory (pre-set by the role or picked once per chat by the user).
+    /// Shell is excluded — it defaults to the user's home when no directory
+    /// is set.
+    static let directoryRelevantGroups: Set<String> = [filesystemGroup, codeGroup]
 
     /// Tools that only make sense against the local machine (macOS
     /// automation) and are not advertised when the chat's working directory
@@ -1196,7 +1235,7 @@ enum BuiltinTools {
 
     private static func shell(_ args: [String: Any], workdir: Workdir) async throws -> ToolOutput {
         let command = try requireString(args, "command")
-        let cwd = optionalString(args, "cwd") ?? workdir.defaultCwd
+        let cwd = try workdir.resolve(optionalString(args, "cwd") ?? workdir.defaultCwd)
         let timeout = optionalInt(args, "timeout").map { TimeInterval($0) }
 
         let process = Process()

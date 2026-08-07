@@ -4,6 +4,7 @@ icon = "terminal"
 accent = "green"
 connection_override_allowed = true
 mcps_override_allowed = true
+working_directory = "~"
 
 [utils]
 auto_allow_all = true

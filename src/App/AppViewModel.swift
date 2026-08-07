@@ -695,55 +695,52 @@ final class AppViewModel: ObservableObject {
         selectedRole?.promptOverrideAllowed ?? false
     }
 
-    /// The effective working directory for the selected chat. The per-chat
-    /// override is honored when the role allows overrides; otherwise the role's
-    /// pre-set working directory is used. New chats are seeded with the role's
-    /// working directory (see `ChatEngine.createNewChat`), so the per-chat value
-    /// mirrors the role's when overrides aren't allowed.
+    /// The effective working directory for the selected chat: the per-chat
+    /// value (seeded from the role at creation or picked by the user —
+    /// permanent either way), falling back to the role's working directory.
     var selectedChatWorkingDirectory: String? {
-        guard let chat = selectedChatItem?.chat, let role = selectedRole else { return nil }
-        if role.workingDirectoryOverrideAllowed, let override = chat.workingDirectory, !override.isEmpty {
-            return override
-        }
-        return role.workingDirectory
+        guard let chat = selectedChatItem?.chat else { return nil }
+        if let dir = chat.workingDirectory, !dir.isEmpty { return dir }
+        return selectedRole?.workingDirectory
     }
 
-    /// Whether the working-directory picker should be shown in the chat toolbar.
-    ///
-    /// The picker is shown when the role selects at least one workdir-capable
-    /// bundled MCP (Filesystem, Code, or Shell) AND either:
-    /// - the role pre-sets a working directory (the toolbar shows it; the user
-    ///   can change it only when `working_directory_override_allowed` is true),
-    ///   or
-    /// - the role allows the user to pick a working directory
-    ///   (`working_directory_override_allowed = true`), in which case the
-    ///   toolbar shows "No directory" until the user picks one.
-    ///
-    /// When the role has no workdir-capable MCP, the directory is meaningless
-    /// (nothing consumes it), so the picker is hidden regardless of the
-    /// override flag.
+    /// Whether the working-directory control should be shown in the chat
+    /// toolbar. Shown when the role pre-sets a working directory (display
+    /// only — the value is permanent) or when the role selects
+    /// directory-relevant tools (Filesystem/Code) so a directory must be
+    /// picked. Hidden otherwise: with no directory-relevant tools nothing
+    /// requires a directory (Shell alone defaults to the user's home).
     var selectedChatWorkdirPickerVisible: Bool {
         guard let role = selectedRole else { return false }
-        guard role.hasWorkdirCapableMCP else { return false }
         if role.workingDirectory?.isEmpty == false { return true }
-        return role.workingDirectoryOverrideAllowed
+        return role.hasDirectoryRelevantTools
     }
 
-    /// Whether the user is allowed to change the working directory for the
-    /// selected chat (i.e. the picker button is enabled). True only when the
-    /// role allows overrides. When false, the directory is fixed by the role.
+    /// Whether the user can pick a working directory for the selected chat
+    /// (i.e. the control opens the picker). True only while the chat has no
+    /// directory yet and the role doesn't pre-set one. The pick is permanent,
+    /// like the role itself: once a directory is set, a different one
+    /// requires a new chat (a mid-chat swap would confuse the model).
     var selectedChatWorkdirPickerEnabled: Bool {
-        selectedRole?.workingDirectoryOverrideAllowed ?? false
+        guard let role = selectedRole else { return false }
+        return Self.workdirPickerEnabled(role: role, chatWorkingDirectory: selectedChatItem?.chat?.workingDirectory)
+    }
+
+    /// Pure decision logic behind `selectedChatWorkdirPickerEnabled`
+    /// (testable without an app instance).
+    nonisolated static func workdirPickerEnabled(role: Role, chatWorkingDirectory: String?) -> Bool {
+        guard role.hasDirectoryRelevantTools else { return false }
+        guard role.workingDirectory?.isEmpty ?? true else { return false }
+        return chatWorkingDirectory?.isEmpty ?? true
     }
 
     /// Whether the selected chat requires a working directory before the user
-    /// can send a request. True when the role enables `directory_isolation` on
-    /// at least one isolation-capable bundled MCP (Filesystem or Code) and no
-    /// directory is currently set (neither the role's pre-set value nor a
-    /// user-picked override). Drives the red "No directory" placeholder and the
-    /// send gate.
+    /// can send a request. True when the role selects directory-relevant tools
+    /// (Filesystem/Code) and no directory is set (neither the role's pre-set
+    /// value nor a user pick). Drives the red "No directory" placeholder and
+    /// the send gate.
     var selectedChatWorkdirRequired: Bool {
-        guard let role = selectedRole, role.hasDirectoryIsolation else { return false }
+        guard let role = selectedRole, role.hasDirectoryRelevantTools else { return false }
         return selectedChatWorkingDirectory?.isEmpty ?? true
     }
 
@@ -931,8 +928,8 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// True when a role requires the user to pick a working directory: it has a
-    /// workdir-capable bundled MCP, allows overrides, and doesn't pre-set a
+    /// True when a role requires the user to pick a working directory: it has
+    /// directory-relevant tools (Filesystem/Code) and doesn't pre-set a
     /// directory. Used to auto-present the workdir picker after a role is picked.
     private func roleNeedsWorkdirPick(_ roleName: String) -> Bool {
         guard let role = roles.first(where: { $0.name == roleName }) else { return false }
@@ -941,8 +938,7 @@ final class AppViewModel: ObservableObject {
 
     /// Pure decision logic (testable without an app instance).
     nonisolated static func roleNeedsWorkdirPick(_ role: Role) -> Bool {
-        guard role.hasWorkdirCapableMCP else { return false }
-        guard role.workingDirectoryOverrideAllowed else { return false }
+        guard role.hasDirectoryRelevantTools else { return false }
         return role.workingDirectory?.isEmpty ?? true
     }
 

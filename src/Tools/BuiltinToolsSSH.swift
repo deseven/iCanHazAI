@@ -38,6 +38,19 @@ enum BuiltinToolsSSH {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
+    /// Quotes a resolved remote path like `q()`, but leaves a leading
+    /// `~`/`~user` prefix unquoted so the remote shell performs tilde
+    /// expansion (single quotes would freeze it). Resolution keeps the tilde
+    /// as a literal prefix precisely so the remote side can expand it against
+    /// the remote home — see [`Workdir.resolveRemote`](src/Tools/BuiltinTools.swift:120).
+    static func qp(_ path: String) -> String {
+        guard path.hasPrefix("~") else { return q(path) }
+        guard let slash = path.firstIndex(of: "/") else { return path }
+        let prefix = path[..<slash]
+        let rest = path[path.index(after: slash)...]
+        return prefix + "/" + q(String(rest))
+    }
+
     /// String-only dirname for remote paths (never touches the local FS).
     static func posixDirname(_ path: String) -> String {
         guard let idx = path.lastIndex(of: "/") else { return "." }
@@ -121,16 +134,16 @@ enum BuiltinToolsSSH {
             // 1000-entry cap is deterministic.
             let prune = includeHidden ? "" : "\\( -name '.*' ! -name . -prune \\) -o "
             script = """
-            if [ ! -e \(q(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
-            if [ ! -d \(q(resolved)) ]; then printf 'not a directory: %s\\n' \(q(path)) >&2; exit 1; fi
+            if [ ! -e \(qp(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
+            if [ ! -d \(qp(resolved)) ]; then printf 'not a directory: %s\\n' \(q(path)) >&2; exit 1; fi
             command -v find >/dev/null 2>&1 || { echo 'find: command not found on the remote host' >&2; exit 127; }
-            cd \(q(resolved)) && find . -mindepth 1 -maxdepth 2 \(prune)-print | while IFS= read -r p; do if [ -d "$p" ]; then printf '%s/\\n' "${p#./}"; else printf '%s\\n' "${p#./}"; fi; done | sort
+            cd \(qp(resolved)) && find . -mindepth 1 -maxdepth 2 \(prune)-print | while IFS= read -r p; do if [ -d "$p" ]; then printf '%s/\\n' "${p#./}"; else printf '%s\\n' "${p#./}"; fi; done | sort
             """
         } else {
             script = """
-            if [ ! -e \(q(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
-            if [ ! -d \(q(resolved)) ]; then printf 'not a directory: %s\\n' \(q(path)) >&2; exit 1; fi
-            ls -1\(includeHidden ? "A" : "")p \(q(resolved))
+            if [ ! -e \(qp(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
+            if [ ! -d \(qp(resolved)) ]; then printf 'not a directory: %s\\n' \(q(path)) >&2; exit 1; fi
+            ls -1\(includeHidden ? "A" : "")p \(qp(resolved))
             """
         }
         let r = try await run(ssh, script: script)
@@ -146,9 +159,9 @@ enum BuiltinToolsSSH {
         let resolved = try workdir.resolve(path)
 
         let script = """
-        if [ ! -e \(q(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
-        if [ -d \(q(resolved)) ]; then printf 'is a directory: %s\\n' \(q(path)) >&2; exit 1; fi
-        cat \(q(resolved))
+        if [ ! -e \(qp(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
+        if [ -d \(qp(resolved)) ]; then printf 'is a directory: %s\\n' \(q(path)) >&2; exit 1; fi
+        cat \(qp(resolved))
         """
         let r = try await run(ssh, script: script)
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
@@ -162,7 +175,7 @@ enum BuiltinToolsSSH {
 
         // `cat >` consumes the raw bytes from the same stdin stream right
         // after the script line; EOF terminates it — no heredoc markers.
-        let script = "mkdir -p \(q(posixDirname(resolved))) && cat > \(q(resolved))"
+        let script = "mkdir -p \(qp(posixDirname(resolved))) && cat > \(qp(resolved))"
         let r = try await run(ssh, script: script, stdin: Data(content.utf8))
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
         return ("Wrote \(content.utf8.count) bytes to \(path)", false)
@@ -195,8 +208,8 @@ enum BuiltinToolsSSH {
         let prune = includeHidden ? "" : "\\( -name '.*' ! -name . -prune \\) -o "
 
         let script = """
-        if [ ! -d \(q(resolved)) ]; then printf 'not a directory: %s\\n' \(q(searchRoot)) >&2; exit 1; fi
-        cd \(q(resolved)) && find . \(prune)\(predicate) -print | sort
+        if [ ! -d \(qp(resolved)) ]; then printf 'not a directory: %s\\n' \(q(searchRoot)) >&2; exit 1; fi
+        cd \(qp(resolved)) && find . \(prune)\(predicate) -print | sort
         """
         let r = try await run(ssh, script: script)
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
@@ -251,7 +264,7 @@ enum BuiltinToolsSSH {
         if !includeHidden {
             script += " --exclude='.*' --exclude-dir='.*'"
         }
-        script += " -- \(q(regex)) \(q(resolved))"
+        script += " -- \(q(regex)) \(qp(resolved))"
         script = "{ \(script); printf 'ICHAI-GREP-EXIT %s\\n' \"$?\" >&2; } | head -c 1048576"
 
         let r = try await run(ssh, script: script)
@@ -335,7 +348,7 @@ enum BuiltinToolsSSH {
     private static func mkdir(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
         let path = try BuiltinTools.requireString(args, "path")
         let resolved = try workdir.resolve(path)
-        let r = try await run(ssh, script: "mkdir -p \(q(resolved))")
+        let r = try await run(ssh, script: "mkdir -p \(qp(resolved))")
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
         return ("Created directory \(path)", false)
     }
@@ -345,7 +358,7 @@ enum BuiltinToolsSSH {
         let dst = try BuiltinTools.requireString(args, "dst")
         let resolvedSrc = try workdir.resolve(src)
         let resolvedDst = try workdir.resolve(dst)
-        let r = try await run(ssh, script: "mv \(q(resolvedSrc)) \(q(resolvedDst))")
+        let r = try await run(ssh, script: "mv \(qp(resolvedSrc)) \(qp(resolvedDst))")
         try requireSuccess(r, scrubbing: [
             (resolvedSrc, workdir.displayPath(forResolved: resolvedSrc)),
             (resolvedDst, workdir.displayPath(forResolved: resolvedDst)),
@@ -362,16 +375,16 @@ enum BuiltinToolsSSH {
         // them), matching the local tool where a non-recursive delete of an
         // empty directory succeeds.
         let script = """
-        if [ ! -e \(q(resolved)) ] && [ ! -L \(q(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
-        if [ -d \(q(resolved)) ] && [ ! -L \(q(resolved)) ]; then
+        if [ ! -e \(qp(resolved)) ] && [ ! -L \(qp(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
+        if [ -d \(qp(resolved)) ] && [ ! -L \(qp(resolved)) ]; then
           if [ \(recursive ? 1 : 0) -eq 0 ]; then
-            if [ -n "$(ls -A \(q(resolved)) 2>/dev/null)" ]; then printf 'directory is not empty; use recursive: true to delete it\\n' >&2; exit 1; fi
-            rmdir \(q(resolved))
+            if [ -n "$(ls -A \(qp(resolved)) 2>/dev/null)" ]; then printf 'directory is not empty; use recursive: true to delete it\\n' >&2; exit 1; fi
+            rmdir \(qp(resolved))
           else
-            rm -r \(q(resolved))
+            rm -r \(qp(resolved))
           fi
         else
-          rm \(q(resolved))
+          rm \(qp(resolved))
         fi
         """
         let r = try await run(ssh, script: script)
@@ -387,7 +400,7 @@ enum BuiltinToolsSSH {
         // are parsed back in Swift, which also assembles the JSON (so `file`
         // output never needs shell-side JSON escaping).
         let script = """
-        p=\(q(resolved))
+        p=\(qp(resolved))
         if [ -L "$p" ]; then t=symlink; elif [ -d "$p" ]; then t=dir; elif [ -e "$p" ]; then t=file; else printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
         meta=$(stat -c '%s %Y %W' "$p" 2>/dev/null) || meta=$(stat -f '%z %m %B' "$p" 2>/dev/null) || meta=
         printf 'ICHAI-TYPE %s\\nICHAI-META %s\\nICHAI-FILE ' "$t" "$meta"
@@ -447,7 +460,7 @@ enum BuiltinToolsSSH {
     private static func pwd(workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
         // Isolated mode presents the root as the virtual "/" (local parity).
         if workdir.isolated { return ("/", false) }
-        let script = workdir.root.map { "cd \(q($0)) && pwd" } ?? "pwd"
+        let script = workdir.root.map { "cd \(qp($0)) && pwd" } ?? "pwd"
         let r = try await run(ssh, script: script)
         try requireSuccess(r)
         return (r.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines), false)
@@ -517,13 +530,13 @@ enum BuiltinToolsSSH {
                 try await remoteWrite(ssh, resolved: resolved, contents: contents)
                 summary.append("Added: \(path)")
             case .deleteFile(let path, let resolved, _):
-                let r = try await run(ssh, script: "rm \(q(resolved))")
+                let r = try await run(ssh, script: "rm \(qp(resolved))")
                 try requireSuccess(r)
                 summary.append("Deleted: \(path)")
             case .updateFile(let path, let resolved, let movePath, let moveResolved, let chunkCount, _, let newContent):
                 if let movePath, let moveResolved {
                     try await remoteWrite(ssh, resolved: moveResolved, contents: newContent)
-                    let r = try await run(ssh, script: "rm \(q(resolved))")
+                    let r = try await run(ssh, script: "rm \(qp(resolved))")
                     try requireSuccess(r)
                     summary.append("Updated: \(path) → \(movePath) (\(chunkCount) hunks)")
                 } else {
@@ -540,8 +553,8 @@ enum BuiltinToolsSSH {
     private static func fetchFile(_ ssh: SSHContext, resolved: String) async throws -> (exists: Bool, data: Data?) {
         let marker = "ICHAI-\(UUID().uuidString)"
         let script = """
-        if [ -e \(q(resolved)) ] || [ -L \(q(resolved)) ]; then
-          if [ -d \(q(resolved)) ]; then printf '%s dir\\n' \(q(marker)); else printf '%s file\\n' \(q(marker)); cat \(q(resolved)); fi
+        if [ -e \(qp(resolved)) ] || [ -L \(qp(resolved)) ]; then
+          if [ -d \(qp(resolved)) ]; then printf '%s dir\\n' \(q(marker)); else printf '%s file\\n' \(q(marker)); cat \(qp(resolved)); fi
         else
           printf '%s missing\\n' \(q(marker))
         fi
@@ -562,7 +575,7 @@ enum BuiltinToolsSSH {
     }
 
     private static func remoteWrite(_ ssh: SSHContext, resolved: String, contents: String) async throws {
-        let script = "mkdir -p \(q(posixDirname(resolved))) && cat > \(q(resolved))"
+        let script = "mkdir -p \(qp(posixDirname(resolved))) && cat > \(qp(resolved))"
         let r = try await run(ssh, script: script, stdin: Data(contents.utf8))
         try requireSuccess(r)
     }
@@ -621,7 +634,7 @@ enum BuiltinToolsSSH {
         let cwd = BuiltinTools.optionalString(args, "cwd") ?? workdir.root
         if let cwd, !cwd.isEmpty {
             let resolved = try workdir.resolve(cwd)
-            script += "cd \(q(resolved)) || exit 1\n"
+            script += "cd \(qp(resolved)) || exit 1\n"
         }
         script += command
 

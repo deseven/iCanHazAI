@@ -184,8 +184,11 @@ struct Chat: Codable, Identifiable, Equatable {
     /// Per-chat prompt override (name of a prompt file, without extension).
     /// Only honored when the role's `prompt_override_allowed` is true.
     var prompt: String?
-    /// Per-chat working-directory override. Only honored when the role's
-    /// `working_directory_override_allowed` is true.
+    /// The chat's working directory: seeded from the role's
+    /// `working_directory` at creation, or picked by the user (picker or CLI)
+    /// when the role doesn't pre-set one. Permanent once set — a directory
+    /// swap mid-chat confuses the model, so a different directory requires a
+    /// new chat.
     var workingDirectory: String?
     /// Names of the custom MCP servers active for this chat. Seeded from the
     /// role's `[[mcps]]` entries when the chat is created (or the role is
@@ -735,7 +738,6 @@ struct RoleConfig: Codable, Equatable, Hashable {
     var prompt: String?
     var promptOverrideAllowed: Bool?
     var workingDirectory: String?
-    var workingDirectoryOverrideAllowed: Bool?
     var connection: String?
     var connectionOverrideAllowed: Bool?
     /// Built-in tool groups. A group key is present (non-nil) when its `[group]`
@@ -764,7 +766,6 @@ struct RoleConfig: Codable, Equatable, Hashable {
         case prompt
         case promptOverrideAllowed = "prompt_override_allowed"
         case workingDirectory = "working_directory"
-        case workingDirectoryOverrideAllowed = "working_directory_override_allowed"
         case connection
         case connectionOverrideAllowed = "connection_override_allowed"
         case utils
@@ -799,7 +800,6 @@ struct Role: Identifiable, Equatable, Hashable {
     var promptName: String? { config.prompt }
     var promptOverrideAllowed: Bool { config.promptOverrideAllowed ?? false }
     var connectionOverrideAllowed: Bool { config.connectionOverrideAllowed ?? false }
-    var workingDirectoryOverrideAllowed: Bool { config.workingDirectoryOverrideAllowed ?? false }
     var mcpsOverrideAllowed: Bool { config.mcpsOverrideAllowed ?? false }
     var workingDirectory: String? { config.workingDirectory }
     var connection: String? { config.connection }
@@ -838,10 +838,20 @@ struct Role: Identifiable, Equatable, Hashable {
     var mcpCount: Int { config.mcps?.count ?? 0 }
 
     /// Whether this role selects at least one workdir-capable built-in group
-    /// (Filesystem, Code, or Shell). Drives whether the working-directory
-    /// picker is shown in the chat toolbar.
+    /// (Filesystem, Code, or Shell) — i.e. anything that consumes a working
+    /// directory at all. Drives the `current_directory` prompt variable and
+    /// whether the CLI applies its working directory to chats.
     var hasWorkdirCapableMCP: Bool {
         enabledGroups.contains { BuiltinTools.workdirCapableGroups.contains($0) }
+    }
+
+    /// Whether this role selects at least one directory-relevant built-in
+    /// group (Filesystem or Code) — tools that operate on files and therefore
+    /// need a working directory. When the role doesn't pre-set one, the user
+    /// must pick a directory once per chat (permanent). Shell is excluded:
+    /// without a directory it simply defaults to the user's home.
+    var hasDirectoryRelevantTools: Bool {
+        enabledGroups.contains { BuiltinTools.directoryRelevantGroups.contains($0) }
     }
 
     /// Whether this role enables `directory_isolation` on at least one

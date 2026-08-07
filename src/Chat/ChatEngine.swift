@@ -65,6 +65,10 @@ actor ChatEngine {
     /// screen — the user has seen the answer, so no notification is needed.
     private(set) var selectedFilename: String?
 
+    /// Runtime cache for `{load_first_available:...}` prompt variables:
+    /// remembers which file was picked, its modification date, and contents.
+    private let loadFirstAvailableCache = LoadFirstAvailableCache()
+
     /// In-flight streaming tasks keyed by chat filename, used for cancellation.
     private var streamTasks: [String: Task<Void, Never>] = [:]
 
@@ -1467,7 +1471,7 @@ actor ChatEngine {
 
     /// Builds the system message for a chat by loading the prompt's raw content
     /// and substituting variables (`{output_rendering}`, `{user}`, `{date}`,
-    /// `{current_directory}`) at request time. Returns nil when the role has no
+    /// `{current_directory}`, `{load_first_available:...}`) at request time. Returns nil when the role has no
     /// prompt or the referenced prompt can't be found. Substitution happens here
     /// — never at load time — so each request gets fresh values (e.g. the
     /// current date) and the raw prompt text stays available for editing.
@@ -1481,6 +1485,7 @@ actor ChatEngine {
         let outputRendering = chat.outputRendering == .plain
             ? PromptVariables.plainTextRendering()
             : PromptVariables.renderingCapabilities(mermaid: mermaid, katex: katex)
+        let workdir = effectiveWorkingDirectory(for: chat)
         let values: [String: String] = [
             "output_rendering": outputRendering,
             "user": PromptVariables.currentUserName(),
@@ -1488,10 +1493,14 @@ actor ChatEngine {
             "current_directory": PromptVariables.currentDirectory(
                 workdirCapable: role?.hasWorkdirCapableMCP ?? false,
                 isolated: role?.hasDirectoryIsolation ?? false,
-                directory: effectiveWorkingDirectory(for: chat)
+                directory: workdir
             ),
         ]
-        return ChatMessage(role: .system, content: PromptVariables.substitute(text: promptContent, values: values))
+        let cache = loadFirstAvailableCache
+        let content = PromptVariables.substitute(text: promptContent, values: values) { args in
+            cache.resolve(args: args, baseDirectory: workdir)
+        }
+        return ChatMessage(role: .system, content: content)
     }
 
     /// Resolves the chat's tool sources: the role's enabled built-in groups
@@ -1540,16 +1549,14 @@ actor ChatEngine {
         return sources
     }
 
-    /// The effective working directory for a chat: the per-chat override when
-    /// the role allows it, otherwise the role's working directory. Nil when
-    /// neither is set. Forwarded to built-in Filesystem/Code/Shell tools so
-    /// relative paths resolve against it.
+    /// The effective working directory for a chat: the per-chat value (seeded
+    /// from the role at creation or picked by the user — permanent either way),
+    /// falling back to the role's working directory. Nil when neither is set.
+    /// Forwarded to built-in Filesystem/Code/Shell tools so relative paths
+    /// resolve against it.
     private func effectiveWorkingDirectory(for chat: Chat) -> String? {
-        guard let role = self.role(for: chat) else { return nil }
-        if role.workingDirectoryOverrideAllowed, let override = chat.workingDirectory, !override.isEmpty {
-            return override
-        }
-        return role.workingDirectory
+        if let dir = chat.workingDirectory, !dir.isEmpty { return dir }
+        return self.role(for: chat)?.workingDirectory
     }
 
     // MARK: - Sending messages
@@ -1691,13 +1698,19 @@ actor ChatEngine {
 
         // Apply the CLI's working directory (the client process's cwd, or the
         // explicit --workdir value) — but only for roles that actually consume
-        // one. An explicitly-passed workdir for a role without workdir-capable
-        // tools triggers a warning.
+        // one and don't already fix the directory themselves: a role's pre-set
+        // working directory is permanent and always wins. An explicitly-passed
+        // workdir that can't be applied triggers a warning.
         if let workdir, !workdir.isEmpty {
             await ensureChatLoaded(filename: filename)
             if let idx = records.firstIndex(where: { $0.filename == filename }),
                var chat = records[idx].chat {
-                if role(for: chat)?.hasWorkdirCapableMCP == true {
+                let role = role(for: chat)
+                if role?.workingDirectory?.isEmpty == false {
+                    if workdirExplicit {
+                        notifyOneShot(filename: filename, .notice("--workdir has no effect: role \"\(chat.role ?? "?")\" fixes the working directory"))
+                    }
+                } else if role?.hasWorkdirCapableMCP == true {
                     chat.workingDirectory = workdir
                     records[idx].chat = chat
                     // Persisted by finishStream once the stream settles.

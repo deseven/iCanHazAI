@@ -15,13 +15,22 @@ import Foundation
 /// by a non-identifier (a quote, a space, a newline, …) is left untouched, so
 /// JSON/TOML/code blocks with braces pass through without escaping.
 ///
+/// `{load_first_available:file1,file2,...}` is the one variable that takes
+/// arguments: it substitutes the contents of the first readable text file from
+/// the comma-separated list (see
+/// [`LoadFirstAvailableCache`](src/Chat/LoadFirstAvailableCache.swift)).
+///
 /// Prompts are always loaded with their raw text (variables unsubstituted);
 /// substitution happens only when building an individual LLM request, so each
 /// request gets fresh values (e.g. the current date).
 enum PromptVariables {
 
-    /// The set of variables a prompt may reference.
+    /// The set of argument-less variables a prompt may reference.
     static let knownVariables: Set<String> = ["output_rendering", "user", "date", "current_directory"]
+
+    /// The variable that loads the first readable file from a list. Unlike the
+    /// others it requires an argument list: `{load_first_available:file1,file2}`.
+    static let loadFirstAvailableName = "load_first_available"
 
     // MARK: - Parsing primitives
 
@@ -36,9 +45,10 @@ enum PromptVariables {
     }
 
     /// Scans `text` starting at the char after `{`. If the following run is an
-    /// identifier immediately closed by `}`, returns `(name, indexAfterBrace)`.
-    /// Otherwise returns `nil` (the `{` is not a variable reference).
-    private static func readVariable(in chars: [Character], from start: Int) -> (name: String, end: Int)? {
+    /// identifier closed by `}` — optionally with `:arguments` in between —
+    /// returns `(name, args, indexAfterBrace)`; `args` is nil when no colon is
+    /// present. Otherwise returns `nil` (the `{` is not a variable reference).
+    private static func readVariable(in chars: [Character], from start: Int) -> (name: String, args: String?, end: Int)? {
         var j = start
         var name = ""
         while j < chars.count {
@@ -49,8 +59,31 @@ enum PromptVariables {
                 if isNameChar(c) { name.append(c); j += 1 } else { break }
             }
         }
-        guard !name.isEmpty, j < chars.count, chars[j] == "}" else { return nil }
-        return (name, j + 1)
+        guard !name.isEmpty, j < chars.count else { return nil }
+        if chars[j] == "}" {
+            return (name, nil, j + 1)
+        }
+        guard chars[j] == ":" else { return nil }
+        // Arguments run to the closing brace and may contain anything but `}`.
+        var args = ""
+        j += 1
+        while j < chars.count, chars[j] != "}" {
+            args.append(chars[j])
+            j += 1
+        }
+        guard j < chars.count else { return nil }
+        return (name, args, j + 1)
+    }
+
+    /// Whether a parsed variable reference is valid: either a plain known
+    /// variable with no arguments, or `load_first_available` with at least one
+    /// non-empty file in its list.
+    private static func isValidReference(name: String, args: String?) -> Bool {
+        if name == loadFirstAvailableName {
+            guard let args else { return false }
+            return args.split(separator: ",").contains { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        }
+        return args == nil && knownVariables.contains(name)
     }
 
     // MARK: - Validation
@@ -72,7 +105,7 @@ enum PromptVariables {
                 continue
             }
             if c == "{", let v = readVariable(in: chars, from: i + 1) {
-                if !knownVariables.contains(v.name), !seen.contains(v.name) {
+                if !isValidReference(name: v.name, args: v.args), !seen.contains(v.name) {
                     seen.insert(v.name)
                     found.append(v.name)
                 }
@@ -87,13 +120,18 @@ enum PromptVariables {
     /// A human-readable message for a set of unknown variable names, e.g.
     /// `unknown prompt variable {foo}` or `unknown prompt variables {foo}, {bar}`.
     static func unknownVariablesMessage(_ names: [String]) -> String {
-        let vars = names.map { "{\($0)}" }.joined(separator: ", ")
+        let vars = names.map { name in
+            // A malformed load_first_available is reported under its bare name;
+            // show the correct form instead of a confusing "{load_first_available}".
+            name == loadFirstAvailableName ? "{load_first_available:file1,file2,...}" : "{\(name)}"
+        }.joined(separator: ", ")
         return "unknown prompt variable\(names.count > 1 ? "s" : "") \(vars)"
     }
 
     /// The known variables as a comma-separated `{name}` list, for error hints.
     static var knownVariablesList: String {
-        knownVariables.sorted().map { "{\($0)}" }.joined(separator: ", ")
+        (knownVariables.sorted() + ["\(loadFirstAvailableName):file1,file2,..."])
+            .map { "{\($0)}" }.joined(separator: ", ")
     }
 
     // MARK: - Substitution
@@ -101,7 +139,15 @@ enum PromptVariables {
     /// Replaces known variables in `text` using `values`. Escaped `\{` becomes a
     /// literal `{`; unknown variables are left verbatim (they should have been
     /// caught by validation, but leaving them is safer than dropping text).
-    static func substitute(text: String, values: [String: String]) -> String {
+    ///
+    /// `{load_first_available:...}` is resolved via `loadFirstAvailable`, which
+    /// receives the raw argument list (`"file1,file2,..."`) and returns the
+    /// replacement; without a resolver the reference is left verbatim.
+    static func substitute(
+        text: String,
+        values: [String: String],
+        loadFirstAvailable: ((String) -> String)? = nil
+    ) -> String {
         let chars = Array(text)
         var i = 0
         var result = ""
@@ -114,11 +160,17 @@ enum PromptVariables {
                 continue
             }
             if c == "{", let v = readVariable(in: chars, from: i + 1) {
-                if let value = values[v.name] {
+                if v.name == loadFirstAvailableName, let args = v.args, let loadFirstAvailable {
+                    result.append(loadFirstAvailable(args))
+                } else if v.args == nil, let value = values[v.name] {
                     result.append(value)
                 } else {
                     result.append("{")
                     result.append(v.name)
+                    if let args = v.args {
+                        result.append(":")
+                        result.append(args)
+                    }
                     result.append("}")
                 }
                 i = v.end

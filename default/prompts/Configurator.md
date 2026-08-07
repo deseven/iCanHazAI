@@ -119,6 +119,7 @@ Prompts support `{variable}` placeholders substituted at request time (the raw t
 - `{user}` — the current system user name (the last path component of the home directory, e.g. `alice`).
 - `{date}` — the current date as `Thu Jun 16 2026`.
 - `{current_directory}` — the chat's effective working directory as `Current directory: /some/path`. Substitutes to an empty string when the role selects no workdir-capable built-in group (Filesystem, Code, or Shell); to `Current directory: /` when directory isolation is enabled; and to `Current directory: ~` when no directory is set.
+- `{load_first_available:file1,file2,...}` — the contents of the first readable text file from the comma-separated list, checked in order. Relative paths resolve against the chat's working directory (or the user's home when no working directory is set); absolute paths are used as-is. The substitution is the winning path as written in parentheses followed by the file contents, e.g. `(AGENTS.md)` + newline + the file's text. Substitutes to an empty string when none of the files exists, is readable, or is valid UTF-8 text. The picked file is cached at runtime and re-read when its modification time changes; if a higher-priority file from the list appears, it takes over on the next request. Typical use: project instructions, e.g. `{load_first_available:AGENTS.md,CLAUDE.md,.roorules}` (this is what the bundled Developer prompt does).
 
 Only `{identifier}`-shaped references are variables — braces around non-identifier content (e.g. JSON objects like `{"a": 1}`) pass through untouched, so code blocks need no escaping. To emit a literal `{name}` that would otherwise look like a variable, escape it as `\{name}`. Unknown variables (an unescaped `{name}` that isn't one of the known ones) are a validation error: the prompt is disabled and surfaced in the configuration-errors sheet, and `write_prompt` rejects it before writing.
 
@@ -138,24 +139,21 @@ Separate from role config: when approving a tool call, the user can pick "Allow 
 
 ### Working directory & directory isolation rules
 
-These three fields interact and are validated on role load:
+A chat's working directory is permanent, like its role: it is set exactly once — either pre-set by the role (`working_directory`) or picked by the user when the chat is created — and can never be changed afterwards (a mid-chat swap would confuse the model; a different directory requires a new chat).
 
 - `working_directory` — pre-set directory applied to every new chat.
-- `working_directory_override_allowed` — let the user pick a different directory per chat.
 - `directory_isolation` (per group) — isolate Filesystem/Code to the working directory.
 
 **Validation errors** (the role fails to load and surfaces a config error):
-1. Setting `working_directory` or `working_directory_override_allowed` without selecting at least one workdir-capable group (Filesystem, Code, or Shell). Nothing would consume the directory, so the setting is meaningless.
-2. Setting `directory_isolation = true` on any group other than Filesystem and Code (including Shell).
-3. Setting `directory_isolation = true` without providing a working directory (neither `working_directory` nor `working_directory_override_allowed = true`). Confinement needs a target directory.
+1. Setting `working_directory` without selecting at least one workdir-capable group (Filesystem, Code, or Shell). Nothing would consume the directory, so the setting is meaningless.
+2. Setting `directory_isolation = true` on any group other than Filesystem and Code. Isolation always needs a directory to isolate to — but it doesn't have to come from the role: when `working_directory` is omitted, the user is forced to pick one (Filesystem/Code can't run without a directory), so `directory_isolation` without `working_directory` is valid.
 
-**Toolbar behavior** (when a workdir-capable group is selected):
-- `working_directory` set, override allowed → directory shown, user can change it.
-- `working_directory` set, override not allowed → directory shown, fixed (button disabled).
-- `working_directory` not set, override allowed → "No directory" shown; user must pick one. When `directory_isolation` is also active, the placeholder is red and sending is blocked until a directory is picked.
-- `working_directory` not set, override not allowed → directory picker hidden.
+**Toolbar behavior**:
+- `working_directory` set → directory shown, fixed (picker disabled).
+- `working_directory` not set, role selects Filesystem and/or Code → "No directory" shown in red and sending is blocked until the user picks a directory (the picker is auto-presented when the chat is created). The pick is permanent.
+- `working_directory` not set, no Filesystem/Code (e.g. Shell-only or no built-in groups) → control hidden; Shell simply runs in the user's home.
 
-**CLI behavior**: for roles with a workdir-capable group, a chat driven via the command line gets the CLI process's working directory (or the explicit `--workdir` value) as its per-chat directory — so command-line runs operate on the directory the user invoked them from. The usual override rules still apply: a role-pinned `working_directory` without override wins over the CLI value.
+**CLI behavior**: for roles with a workdir-capable group and no pre-set `working_directory`, a chat driven via the command line gets the CLI process's working directory (or the explicit `--workdir` value) as its directory — so command-line runs operate on the directory the user invoked them from. A role-pinned `working_directory` always wins over the CLI value (an explicit `--workdir` then triggers a warning).
 
 ### SSH working directories
 
@@ -165,8 +163,7 @@ A working directory may be remote (SSH), written in scp form as `host:/absolute/
 description = "Web research role with search and note-taking tools."  # shown in picker when creating a new chat
 prompt = "Assistant"                        # required, name of the prompt to use
 prompt_override_allowed = false             # optional, default false, let user pick a different prompt per chat
-working_directory = "~/research"            # optional, default empty, ~ is expanded internally
-working_directory_override_allowed = true   # optional, default false, if we allow user to pick a different directory in the chat
+working_directory = "~/research"            # optional, default empty, ~ is expanded internally; when omitted and Filesystem/Code is enabled, the user picks the directory once per chat (permanent)
 connection = "anthropic/claude"             # optional, "type/name"; omit to use chat/default
 connection_override_allowed = true          # optional, default false, if we allow user to pick any model in the chat
 mcps_override_allowed = true                # optional, default false, if we allow user to change the active MCP servers per chat

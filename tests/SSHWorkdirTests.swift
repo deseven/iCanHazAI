@@ -137,6 +137,27 @@ extension AllAppTests {
             #expect(try wd.resolve("/abs") == "/abs")
         }
 
+        @Test("tilde stays a literal home prefix, normalized but never joined with the root")
+        func tilde() throws {
+            let wd = Workdir(root: "h:/a/b", isolated: false)
+            #expect(try wd.resolve("~") == "~")
+            #expect(try wd.resolve("~/x") == "~/x")
+            #expect(try wd.resolve("~/a/../b") == "~/b")
+            #expect(try wd.resolve("~bob/x") == "~bob/x")
+            #expect(try wd.resolve("~bob") == "~bob")
+
+            let noRoot = Workdir(root: "h:", isolated: false)
+            #expect(try noRoot.resolve("~/x") == "~/x")
+        }
+
+        @Test("isolated tilde maps to the virtual home (the root)")
+        func tildeIsolated() throws {
+            let wd = Workdir(root: "h:/a/b", isolated: true)
+            #expect(try wd.resolve("~") == "/a/b")
+            #expect(try wd.resolve("~/x") == "/a/b/x")
+            #expect(throws: BuiltinToolError.self) { try wd.resolve("~root/x") }
+        }
+
         @Test("local workdirs are unaffected")
         func localUnaffected() {
             let wd = Workdir(root: "/tmp", isolated: false)
@@ -183,6 +204,16 @@ extension AllAppTests {
             #expect(BuiltinToolsSSH.q("") == "''")
             #expect(BuiltinToolsSSH.q("it's") == "'it'\\''s'")
             #expect(BuiltinToolsSSH.q("a b\"c") == "'a b\"c'")
+        }
+
+        @Test("tilde-aware path quoting leaves the home prefix unquoted")
+        func tildeQuoting() {
+            #expect(BuiltinToolsSSH.qp("/a b") == "'/a b'")
+            #expect(BuiltinToolsSSH.qp("~") == "~")
+            #expect(BuiltinToolsSSH.qp("~bob") == "~bob")
+            #expect(BuiltinToolsSSH.qp("~/a b") == "~/'a b'")
+            #expect(BuiltinToolsSSH.qp("~bob/x") == "~bob/'x'")
+            #expect(BuiltinToolsSSH.qp("~/it's") == "~/'it'\\''s'")
         }
 
         @Test("posixDirname")

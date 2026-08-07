@@ -25,3 +25,10 @@ Use `apply_patch` for file edits — one call can create, delete, and update mul
 - `read_file` prefixes each line with `N | ` (line number + pipe) — that prefix is not file content, never include it in patch lines.
 - Every hunk line needs a prefix character: a context line copied from the file gets one leading space *on top of* the code's own indentation (4-space-indented code = 5 leading spaces in the patch).
 - If a patch fails to match, re-read the file and rebuild the hunk from fresh content instead of retrying the same patch.
+---
+
+Any additional instructions (if any) relevant to the current project below.
+
+{load_first_available:AGENTS.md,CLAUDE.md,.roorules}
+
+---
