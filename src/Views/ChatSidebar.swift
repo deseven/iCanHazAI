@@ -13,6 +13,9 @@ struct ChatSidebar: View {
     /// Filename pending a delete confirmation (drives the confirmation dialog).
     @State private var deletingFilename: String?
 
+    /// Whether the archived-chats picker sheet is currently shown.
+    @State private var showArchivedPicker = false
+
     /// Whether the option key is currently held — swaps the new-chat button
     /// to its "temporary chat" variant (dashed circle).
     @State private var optionHeld = false
@@ -26,21 +29,35 @@ struct ChatSidebar: View {
                     .font(.headline)
                     .padding(.leading, 12)
                 Spacer()
-                Button(action: {
-                    if NSEvent.modifierFlags.contains(.option) {
-                        store.createNewTemporaryChat()
-                    } else {
-                        store.createNewChat()
+                // Zero-spacing group so the two buttons read as a unit stuck
+                // to the sidebar's trailing edge.
+                HStack(spacing: 0) {
+                    Button(action: { showArchivedPicker = true }) {
+                        Image(systemName: "archivebox.circle")
+                            .font(.system(size: 20))
+                            .frame(width: 24, height: 24)
                     }
-                }) {
-                    Image(systemName: optionHeld ? "plus.circle.dashed" : "plus.circle")
-                        .frame(width: 24, height: 24)
+                    .buttonStyle(.borderless)
+                    .frame(width: 28, height: 36)
+                    .contentShape(Rectangle())
+                    .help("Archived chats")
+                    Button(action: {
+                        if NSEvent.modifierFlags.contains(.option) {
+                            store.createNewTemporaryChat()
+                        } else {
+                            store.createNewChat()
+                        }
+                    }) {
+                        Image(systemName: optionHeld ? "plus.circle.dashed" : "plus.circle")
+                            .font(.system(size: 20))
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.borderless)
+                    .frame(width: 32, height: 36)
+                    .contentShape(Rectangle())
+                    .help("New chat (hold ⌥ for a temporary chat)")
                 }
-                .buttonStyle(.borderless)
                 .padding(.trailing, 4)
-                .frame(width: 44, height: 36)
-                .contentShape(Rectangle())
-                .help("New chat (hold ⌥ for a temporary chat)")
             }
             .frame(height: 36)
             .onAppear {
@@ -94,6 +111,9 @@ struct ChatSidebar: View {
                     renamingFilename = nil
                 }
             )
+        }
+        .sheet(isPresented: $showArchivedPicker) {
+            ArchivedChatsPickerView(onCancel: { showArchivedPicker = false })
         }
         .sheet(item: Binding(
             get: { deletingFilename.map(ChatDeleteTarget.init) },

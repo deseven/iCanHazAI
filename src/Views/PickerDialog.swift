@@ -76,6 +76,9 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
     let initialSelection: Item?
     /// When non-nil, the dialog runs in multi-select mode (see `MultiSelect`).
     var multiSelect: MultiSelect? = nil
+    /// Optional extra button(s) placed in the footer before Apply/Cancel
+    /// (e.g. a destructive "Delete All" in the archived-chats picker).
+    var footerExtra: (() -> AnyView)? = nil
 
     /// Currently highlighted item (driven by both keyboard and hover).
     @State private var selection: Item?
@@ -194,6 +197,9 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
+                    if let footerExtra {
+                        footerExtra()
+                    }
                     if let multiSelect {
                         Button("Apply", action: multiSelect.onApply)
                             .keyboardShortcut(.defaultAction)

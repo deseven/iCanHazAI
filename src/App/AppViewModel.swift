@@ -64,6 +64,12 @@ final class AppViewModel: ObservableObject {
             }
         }
     }
+    /// Filename of an archived chat explicitly opened from the archived-chats
+    /// picker for viewing without unarchiving: it stays hidden from the
+    /// sidebar (like a temporary chat) but the selection survives the
+    /// `.chatsChanged` fallback logic. Cleared when another chat is selected
+    /// or when the chat is restored or deleted.
+    private var archivedPreviewID: String?
     @Published var errorMessage: String?
     /// Whether the currently selected chat is scrolled to the bottom. Updated
     /// by `ChatView`; used to suppress the unread marker when the user is
@@ -364,10 +370,12 @@ final class AppViewModel: ObservableObject {
                 LoaderController.shared.markChatsCompleted(total: stats.totalFiles, freshCached: stats.freshCached, failed: stats.failed)
             }
             // Treat an archived (or deleted) selected chat as "no selection"
-            // so the UI falls back to the first visible chat.
+            // so the UI falls back to the first visible chat — except an
+            // archived chat explicitly opened from the archived-chats picker,
+            // which stays selected while remaining hidden from the sidebar.
             let selectedStillVisible = selectedChatID.flatMap { id in
                 records.first(where: { $0.id == id })
-            }.map { !$0.isArchived } ?? false
+            }.map { Self.isSelectedChatVisible($0, archivedPreviewID: archivedPreviewID) } ?? false
             if selectedStillVisible, let selected = selectedChatID {
                 // Keep selection — if the chat is not loaded, load it so the
                 // UI can display its messages. This handles the initial
@@ -376,6 +384,7 @@ final class AppViewModel: ObservableObject {
                     Task { await engine.ensureChatLoaded(filename: selected) }
                 }
             } else {
+                archivedPreviewID = nil
                 // The selected chat vanished (deleted/archived) or none was
                 // selected yet (startup). Fall back to the first non-archived
                 // chat and route through `selectChat` so the engine's
@@ -941,6 +950,13 @@ final class AppViewModel: ObservableObject {
     /// Builds the message sent to a Configurator chat for a set of errors: a
     /// header followed by a numbered list of one-line descriptions. Pure logic,
     /// so `nonisolated` to allow use from tests and any context.
+    /// Whether the selected chat record may keep the UI selection: visible
+    /// chats always; archived chats only when explicitly opened for preview
+    /// from the archived-chats picker. `nonisolated` for testability.
+    nonisolated static func isSelectedChatVisible(_ record: ChatRecord, archivedPreviewID: String?) -> Bool {
+        !record.isArchived || record.filename == archivedPreviewID
+    }
+
     nonisolated static func configuratorMessage(for errors: [ConfigError]) -> String {
         var lines = ["Please investigate the following problems and propose solutions:"]
         for (i, error) in errors.enumerated() {
@@ -968,8 +984,25 @@ final class AppViewModel: ObservableObject {
     }
 
     func deleteChat(_ filename: String) {
+        if archivedPreviewID == filename { archivedPreviewID = nil }
         inputDrafts.remove(for: filename)
         Task { await engine.deleteChat(filename: filename) }
+    }
+
+    /// Deletes every archived chat (the archived-chats picker's "Delete All"
+    /// action). Deletions run sequentially through the engine.
+    func deleteAllArchivedChats() {
+        let filenames = chatItems.filter { $0.isArchived && !$0.isTemporary }.map(\.filename)
+        for filename in filenames { inputDrafts.remove(for: filename) }
+        if let preview = archivedPreviewID, filenames.contains(preview) { archivedPreviewID = nil }
+        Task { for filename in filenames { await engine.deleteChat(filename: filename) } }
+    }
+
+    /// Opens an archived chat in the chat view without unarchiving it: it
+    /// stays hidden from the sidebar, like a temporary chat.
+    func openArchivedChat(_ filename: String) {
+        archivedPreviewID = filename
+        selectChat(filename)
     }
 
     func renameChat(_ filename: String, to newTitle: String) {
@@ -978,6 +1011,9 @@ final class AppViewModel: ObservableObject {
 
     /// Archives a chat (hides it from the chat list) or unarchives it.
     func setChatArchived(_ filename: String, archived: Bool) {
+        // Archiving the previewed chat ends its preview (it becomes hidden);
+        // restoring makes the preview flag moot — the chat is visible anyway.
+        if archivedPreviewID == filename { archivedPreviewID = nil }
         Task { await engine.setChatArchived(filename: filename, archived: archived) }
     }
 
@@ -1076,6 +1112,9 @@ final class AppViewModel: ObservableObject {
     /// Re-selecting a chat clears any prior role-picker dismissal so the
     /// picker re-prompts if the chat's role is still missing.
     func selectChat(_ filename: String) {
+        // Selecting any chat other than the previewed archived one ends the
+        // archived preview (see `openArchivedChat`).
+        if archivedPreviewID != filename { archivedPreviewID = nil }
         if !ctrlTabSessionActive, let current = selectedChatID, current != filename {
             previousChatID = current
         }
@@ -1151,6 +1190,7 @@ final class AppViewModel: ObservableObject {
         }
 
         let targetID = items[ctrlTabCurrentIndex].id
+        archivedPreviewID = nil
         selectedChatID = targetID
         Task {
             await engine.selectChat(filename: targetID)

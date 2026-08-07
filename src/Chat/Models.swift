@@ -455,7 +455,7 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
 /// flags, sort key) — it never inspects `chat.messages`. Diffing it is
 /// O(1)-per-chat, so a busy chat's per-token emits don't force the sidebar
 /// to re-diff full message arrays for every chat.
-struct ChatSummary: Identifiable, Equatable, Sendable {
+struct ChatSummary: Identifiable, Hashable, Sendable {
     var id: String { filename }
     let filename: String
     let displayTitle: String
