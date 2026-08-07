@@ -1,156 +1,95 @@
 # iCanHazAI
 
-A macOS app for AI chat with agentic capabilities.
+<p align="center">
+  <img src="res/main.png" width="160" alt="iCanHazAI">
+</p>
 
-> [!NOTE]
-> WORK IN PROGRESS, NOT READY FOR DAILY USE YET
+<p align="center">
+  An app for AI chat with agentic capabilities, for macOS 15 or higher.
+</p>
 
-## Data Directory
 
-On first launch, iCanHazAI creates its data directory at:
+## Why
+
+To address the elephant in the room: there are many AI chat apps and agentic harnesses already, both macOS-only and crossplatform. However, none of them really checked all the points for me. I wanted a single native app covering the whole spectrum of tasks — simple chats, agentic work, coding, remote sessions, CLI. Juggling multiple harnesses, getting used to their quirks, keeping them updated and properly configured is a pain in the ass no matter how much you can offload to the AI. So I decided to invent my own bicycle that would unify anything and everything.
+
+
+## Features
+
+- native macOS app: Swift backend, heavily optimized web-based chat rendering (Markdown, code, Mermaid, KaTeX), low resource usage
+- extensive BYOK support: Anthropic, OpenAI, or any OpenAI-compatible API (OpenRouter, Together, DeepSeek, local servers like Ollama/LM Studio, and countless others)
+- roles: clearly defined templates bundling a prompt, a connection, tools, and a working directory — several bundled, easy to create your own
+- agentic toolset: built-in filesystem/code/shell/utils tool groups with per-tool approval and optional directory isolation
+- MCP: stdio and streamable HTTP servers with tool filtering, name prefixing, and run policies
+- remote work: seamless SSH working directories for agentic sessions on remote machines
+- CLI: one-shot and interactive modes, piping, unlimited concurrency — run ten chats in the CLI, ten more in the GUI, continue any of them anywhere
+- image input for capable models
+- clean configuration/data structure in a single directory (`~/iCanHazAI`), all plain text, hot-reloaded on external edits and errors gracefully handled
+- bundled Configurator role that edits the configuration for you
+- configurable notifications when chat needs your attention
+
+
+## Roadmap
+
+- chat trees / response regeneration
+- extensive attachment support
+
+
+## Quick Start
+
+1. Grab the latest release from [GitHub Releases](https://github.com/deseven/icanhazai/releases/latest).
+2. Move the app to `/Applications`.
+3. If you plan to use the CLI, add `alias ichai='/Applications/iCanHazAI.app/Contents/MacOS/iCanHazAI'` to your favourite shell.
+4. Run the app and create your first connection — the wizard will guide you. Then check Preferences to tune things how you like, or just ask the Configurator role.
+
+
+## Usage Notes
+
+- **CLI**: `ichai "your message"` sends a one-shot message, `command | ichai "..."` pipes input in, `ichai -i` starts an interactive session. Run `ichai -h` for the full list of features. The app starts itself (without a window) when needed.
+- **Tool approvals**: when a model calls a tool, approve it once or pick "Allow for this chat"; roles can also pre-approve tools via `auto_allow`. The state of tool approval can also be controlled in the Chat Info sidebar to the right.
+- **SSH**: any working directory can be remote — use the scp form `host:/absolute/path` (or `user@host:/path`; a bare `host:` means the remote home) as a role's `working_directory` or type it into the per-chat directory picker, which will browse the remote for you. Auth must be pre-configured so `ssh host` works without prompts (keys, `~/.ssh/config`) — interactive auth is not supported.
+
+
+## Data Directory & Entities
+
+On first launch, iCanHazAI creates its data directory at `~/iCanHazAI`:
 
 ```
 ~/iCanHazAI/
-├── chats/
-├── roles/
-└── connections/
-    ├── openai/
-    └── anthropic/
+├── Connections/     # provider connections (*.jsonc)
+│   ├── openai/
+│   └── anthropic/
+├── MCPs/            # MCP servers (*.toml)
+├── Prompts/         # system prompts (*.md)
+├── Roles/           # roles (*.toml)
+├── Chats/           # chats (*.json) and their attachments
+├── config.toml      # app settings
+├── app.log          # debug log
+└── app.sock         # CLI control socket
 ```
 
-The directory lives directly in your home folder so you can edit chats, roles, and connections as plain text files with any editor. All subdirectories are watched with FSEvents — editing, adding, or removing files reloads the affected data automatically.
+Everything lives directly in your home folder as plain text, so you can edit it with any editor. All files are watched — editing, adding, or removing them reloads the affected data automatically, no restart needed.
 
-## Connections
+### Connection
 
-A connection is a `{name}.toml` file placed in either `connections/openai/` or `connections/anthropic/`. The folder determines the provider (OpenAI-compatible or Anthropic) and `{name}` could be anything you like.
+A `{name}.jsonc` file in `Connections/openai/` or `Connections/anthropic/`. The folder determines the API flavor (OpenAI-compatible or Anthropic); together with the name it forms the connection id (`openai/gpt-4o`, `anthropic/claude`, ...) that roles and the app config refer to. The file defines the base URL, API key, model, and any extra request parameters — JSONC means comments and trailing commas are welcome. The first-run wizard creates one for you; afterwards use "Connection → New Connection…" or the Configurator role.
 
-### OpenAI-compatible connections (`connections/openai/{name}.toml`)
+### MCP
 
-```toml
-# Optional. Custom endpoint for OpenAI-compatible providers.
-# If omitted, the default OpenAI API is used.
-endpoint = "https://api.openai.com/v1"
+A `{name}.toml` file in `MCPs/` describing how to reach an MCP server: either stdio (a command executed via your login shell) or http (a streamable HTTP endpoint with an optional bearer token). Supports an optional tool allowlist, a name prefix for its tools, and a run policy — always-on servers start with the app, on-demand ones spin up on first use and shut down when idle.
 
-# Optional. API key. Some local endpoints may not require it.
-token = "sk-..."
+### Prompt
 
-# Required. Any model string supported by the endpoint.
-model = "gpt-4o"
+A `{name}.md` file in `Prompts/` — the entire file content is the system prompt. Prompts support `{variable}` placeholders substituted at request time: `{date}`, `{user}`, `{current_directory}`, `{output_rendering}` (markup capabilities of the chat's surface), and `{load_first_available:AGENTS.md,CLAUDE.md,...}` for pulling in project instructions.
 
-# Optional parameters (all OpenAI-compatible):
-temperature = 0.7
-top_p = 0.9
-reasoning_effort = "high"       # none/minimal/low/medium/high or custom string
-frequency_penalty = 0.0
-presence_penalty = 0.0
-max_completion_tokens = 4096
-seed = 42
+### Role
 
-# Optional. Arbitrary vendor-specific parameters injected into the request JSON.
-# Useful for providers like DeepSeek/x.ai that support non-standard fields.
-# Value must be a JSON object string.
-# Example: disable thinking on DeepSeek
-vendor_parameters = '{"thinking":{"type":"disabled"}}'
-```
+A `{name}.toml` file in `Roles/` — a template for new chats combining a prompt, a connection, a working directory, and tools. Tools come from the built-in groups (utils, filesystem, code, shell) and/or configured MCP servers, each with optional allowlists and auto-approve rules. The working directory can be pre-set, picked once per chat, or a remote SSH location (`host:/path`), and filesystem/code tools can be isolated to it. A chat's role and working directory are fixed at creation.
 
-### Anthropic connections (`connections/anthropic/{name}.toml`)
+### Chat
 
-```toml
-# Optional. Custom endpoint. If omitted, the default Anthropic API is used.
-endpoint = "https://api.anthropic.com"
+A `YYYY-MM-DD HH-mm-ss.json` file in `Chats/`, with attachments in a same-named directory next to it. Chats created via the CLI are regular chats — visible and continuable in the GUI, and vice versa.
 
-# Optional. API key. Some local endpoints may not require it.
-token = "sk-ant-..."
-
-# Required. Any model string supported by the endpoint.
-model = "claude-3-5-sonnet-latest"
-
-# Optional. Maximum number of tokens to generate. Defaults to 4096.
-max_tokens = 8192
-
-# Optional parameters (all Anthropic-specific):
-temperature = 0.7
-top_p = 0.9
-top_k = 40
-stop_sequences = ["END"]
-
-# Optional. Extended thinking mode (Claude 3.7 Sonnet).
-thinking_enabled = true
-thinking_budget = 16000         # minimum 1024
-```
-
-### Connection attributes
-
-| Attribute              | Provider  | Description                                                        |
-|------------------------|-----------|--------------------------------------------------------------------|
-| `endpoint`             | Both      | Custom API endpoint. Omit to use OpenAI/Anthropic defaults.        |
-| `token`                | Both      | API key. Some local endpoints may not require authentication.      |
-| `model`                | Both      | Model identifier (any text supported by the endpoint).             |
-| `max_tokens`           | Anthropic | Max tokens to generate. Defaults to `4096`.                        |
-| `temperature`          | Both      | Sampling temperature.                                              |
-| `top_p`                | Both      | Nucleus sampling probability.                                      |
-| `reasoning_effort`     | OpenAI    | Reasoning effort: none/minimal/low/medium/high or custom string.   |
-| `frequency_penalty`    | OpenAI    | Frequency penalty.                                                 |
-| `presence_penalty`     | OpenAI    | Presence penalty.                                                  |
-| `max_completion_tokens`| OpenAI    | Maximum completion tokens.                                         |
-| `seed`                 | OpenAI    | Random seed for deterministic output.                              |
-| `top_k`                | Anthropic | Top-K sampling.                                                    |
-| `stop_sequences`       | Anthropic | Custom stop sequences (array of strings).                          |
-| `thinking_enabled`     | Anthropic | Enable extended thinking mode.                                     |
-| `thinking_budget`      | Anthropic | Token budget for thinking (min 1024). Defaults to 16000.           |
-| `vendor_parameters`    | OpenAI    | Arbitrary vendor-specific fields injected into the request JSON.   |
-
-## Chats
-
-A chat is a `name.json` file under `chats/`. New chats are named using the current date and time:
-
-```
-YYYY-MM-DD HH:mm:ss.json
-```
-
-### Structure
-
-```json
-{
-  "id": "UUID",
-  "messages": [
-    {"id": "UUID", "role": "system", "content": "..."},
-    {"id": "UUID", "role": "user", "content": "..."},
-    {"id": "UUID", "role": "assistant", "content": "...", "thinking": "..."}
-  ],
-  "connection": "openai/my-connection",
-  "role": "Assistant"
-}
-```
-
-### Fields
-
-| Field        | Description                                                                 |
-|--------------|-----------------------------------------------------------------------------|
-| `id`         | Unique chat identifier (UUID).                                              |
-| `messages`   | Array of messages in the conversation.                                      |
-| `connection` | Selected connection ID in the form `provider/name` (e.g. `openai/my-conn`). |
-| `role`       | Selected role name. The role's content is sent as the system prompt.        |
-
-### Message roles
-
-- `system` — System prompt (injected from the selected role).
-- `user` — User message.
-- `assistant` — Model response. May include a `thinking` field for reasoning content from thinking models.
-
-## Roles
-
-A role is a `name.md` file containing plain text that becomes the system prompt when making requests.
-
-### Custom roles
-
-Place your own `name.md` files in the `roles/` directory. Custom roles with the same name as a default role will override it.
-
-Example (`roles/Translator.md`):
-
-```markdown
-You are a professional translator. Translate the user's text to French. Provide only the translation, no explanations.
-```
 
 ## Building
 
@@ -158,4 +97,18 @@ You are a professional translator. Translate the user's text to French. Provide 
 ./build.sh
 ```
 
-This builds the app and launches it. See `build.sh` for additional build modes (`dev-release`, `release`).
+This builds the app and launches it. See `build.sh` for additional build modes (`dev-release`, `release`, `clean`).
+
+Run `./build.sh test` for tests.
+
+
+## Help & Support
+
+- [File an issue](https://github.com/deseven/icanhazai/issues/new) for bugs, suggestions, or questions
+- Reddit: https://www.reddit.com/r/iCanHazApps
+- Telegram: https://t.me/icanhazapps
+
+
+## Contributions
+
+Contributions are welcome — feel free to open a pull request. AI code is welcome, AI slop isn't. Expect to receive a thorough review.
