@@ -112,6 +112,9 @@ export type HostMessage =
   | { type: "theme"; theme: "light" | "dark" }
   | { type: "scrollToBottom" }
   | { type: "startSearch" }
+  /** Blank the view and show the spinner; a chat switch is in progress and a
+   *  fresh snapshot follows. */
+  | { type: "unload" }
   | { type: "updateMessage"; chatId: string; message: ChatMessage }
   | { type: "addMessage"; chatId: string; message: ChatMessage; index: number }
   | { type: "deleteMessage"; chatId: string; messageId: string };
@@ -127,6 +130,9 @@ export type BridgeMessage =
   | { type: "retry" }
   | { type: "scrollState"; atBottom: boolean }
   | { type: "ready" }
+  /** The first snapshot of `chatId` has been committed to the DOM (and had a
+   *  frame to paint); the host dismisses its chat-switch overlay on this. */
+  | { type: "loaded"; chatId: string }
   | { type: "requestOlder"; chatId: string }
   | { type: "allowToolCall"; callId: string }
   | { type: "allowToolCallForChat"; callId: string }

@@ -943,7 +943,15 @@ body {
   align-items: center;
   gap: 6px;
   padding: 0;
-  width: fit-content;
+  /* Full width (like .tool-toggle) so clicking anywhere on the line expands
+     the block. */
+  width: 100%;
+  text-align: left;
+}
+
+/* Pin the expand/collapse chevron (always the last child) to the right. */
+.thinking-toggle > :last-child {
+  margin-left: auto;
 }
 
 .thinking-spinner {

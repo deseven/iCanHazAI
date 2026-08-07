@@ -105,6 +105,14 @@ function ChatApp() {
           debugLog("scroll", "scrollToBottom requested");
           requestAnimationFrame(() => scrollToBottom(true));
           break;
+        case "unload":
+          // Chat switch in progress on the host: drop the old chat's DOM and
+          // show the spinner until the new snapshot arrives.
+          debugLog("load", "unload — clearing for chat switch");
+          loadedChatIdRef.current = null;
+          setSnapshot(null);
+          setLoading(true);
+          break;
         case "startSearch":
           // Toggle the search bar: open if closed, close if already open.
           setSearchOpen((open) => {
@@ -173,6 +181,28 @@ function ChatApp() {
     document.documentElement.dataset.theme = theme;
     setMermaidTheme(theme);
   }, [theme]);
+
+  // ── Chat-switch handshake ───────────────────────────────────────────
+  // When a new chat's snapshot has committed to the DOM, report back to the
+  // host so it can dismiss its switch overlay. A double rAF gives the frame
+  // a chance to paint first. Fires only on chatId change, not on incremental
+  // message updates.
+  const loadedChatId = snapshot?.chatId ?? null;
+  useEffect(() => {
+    if (!loadedChatId) return;
+    let cancelled = false;
+    let inner = 0;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
+        if (!cancelled) sendToHost({ type: "loaded", chatId: loadedChatId });
+      });
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, [loadedChatId]);
 
   // ── Autoscroll during streaming ─────────────────────────────────────
   // Whenever the snapshot or tick changes (new chunk or incremental update),

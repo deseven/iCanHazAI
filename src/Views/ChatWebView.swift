@@ -66,53 +66,53 @@ struct ChatWebView: View {
     @EnvironmentObject var store: AppViewModel
     @StateObject private var model = ChatWebViewModel()
 
-    /// A lightweight signature of the selected chat's message contents.
-    /// Changes when any message is added, edited, deleted, or streamed to.
-    /// Used as an `onChange` trigger so the web view gets refreshed.
-    private var chatContentSignature: Int {
-        guard let messages = store.selectedChatItem?.chat?.messages else { return 0 }
-        var hash = messages.count
-        for msg in messages {
-            hash = hash &* 31 &+ msg.content.count
-            hash = hash &* 31 &+ (msg.thinking?.count ?? 0)
-            hash = hash &* 31 &+ (msg.error?.count ?? 0)
-        }
-        return hash
-    }
-
     var body: some View {
-        ChatWebViewRepresentable(model: model)
-            .onAppear {
-                model.bind(store: store)
+        ZStack {
+            ChatWebViewRepresentable(model: model)
+                .onAppear {
+                    model.bind(store: store)
+                }
+                .onDisappear {
+                    model.unbind()
+                }
+                .onChange(of: store.selectedChatID) { _, newID in
+                    debugLog("Chat", "selection changed → \(newID ?? "nil")")
+                    if let newID {
+                        model.beginChatSwitch(to: newID)
+                    } else {
+                        model.cancelChatSwitch()
+                    }
+                    model.pushSnapshot()
+                }
+                .onChange(of: store.isStreaming) { _, _ in
+                    model.pushSnapshot()
+                }
+                .onChange(of: store.preferencesMermaidEnabled) { _, _ in
+                    model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
+                }
+                .onChange(of: store.preferencesKatexEnabled) { _, _ in
+                    model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
+                }
+                .onChange(of: store.preferencesChatRendererDebugEnabled) { _, _ in
+                    model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
+                }
+                .onChange(of: store.preferencesExpandThinking) { _, _ in
+                    model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
+                }
+                .onChange(of: store.preferencesExpandToolUse) { _, _ in
+                    model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
+                }
+
+            // Opaque cover + spinner while the renderer loads a freshly
+            // selected chat. Native (not the renderer's own spinner) so it
+            // appears even while the WebContent process is still busy
+            // rendering the previous chat.
+            if model.switchOverlayVisible {
+                Color(nsColor: .windowBackgroundColor)
+                ProgressView()
+                    .controlSize(.large)
             }
-            .onDisappear {
-                model.unbind()
-            }
-            .onChange(of: store.selectedChatID) { _, newID in
-                debugLog("Chat", "selection changed → \(newID ?? "nil")")
-                model.pushSnapshot()
-            }
-            .onChange(of: store.isStreaming) { _, _ in
-                model.pushSnapshot()
-            }
-            .onChange(of: store.preferencesMermaidEnabled) { _, _ in
-                model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
-            }
-            .onChange(of: store.preferencesKatexEnabled) { _, _ in
-                model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
-            }
-            .onChange(of: store.preferencesChatRendererDebugEnabled) { _, _ in
-                model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
-            }
-            .onChange(of: store.preferencesExpandThinking) { _, _ in
-                model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
-            }
-            .onChange(of: store.preferencesExpandToolUse) { _, _ in
-                model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
-            }
-            .onChange(of: chatContentSignature) { _, _ in
-                model.pushSnapshot()
-            }
+        }
     }
 }
 
@@ -133,25 +133,28 @@ final class ChatWebViewModel: ObservableObject {
     /// Whether the web page has finished loading and reported `ready`.
     /// Messages sent before this are queued and flushed on ready.
     private var webReady: Bool = false
-    /// Queued host messages waiting for the web view to become ready.
-    private var pendingMessages: [HostMessageData] = []
-    /// The chat id currently rendered in the web view. Used to detect chat
-    /// switches so we send a fresh full snapshot.
-    private var renderedChatId: String?
-    /// The last streaming state we pushed, so we only send changes.
-    private var lastStreamingState: Bool = false
-    /// The last role name we pushed, so a role change forces a fresh snapshot
-    /// (incremental message diffs wouldn't otherwise reach the renderer).
-    private var lastRoleName: String? = nil
-    /// The last role accent hex we pushed. The accent is appearance-dependent,
-    /// so a theme change resolves to a different value and forces a fresh
-    /// snapshot (the renderer colors the assistant title from this).
-    private var lastRoleAccent: String? = nil
-    /// The last known messages (by id) in the rendered chat, used for diffing
-    /// to send incremental updates instead of full snapshots.
-    private var lastMessages: [String: ChatMessageData] = [:]
-    /// The last known message order (ids in order), used for diffing.
-    private var lastMessageIds: [String] = []
+    /// Queued JS statements waiting for the web view to become ready.
+    private var pendingMessages: [String] = []
+    /// Off-main pipeline that projects, diffs, and encodes chat snapshots
+    /// into JS statements (see `ChatRenderQueue`). `pushSnapshot()` just
+    /// captures the current state and enqueues a job, so the main actor never
+    /// does O(chat size) work.
+    private lazy var renderQueue = ChatRenderQueue { [weak self] js in
+        await self?.deliverJS(js)
+    }
+    /// Tail of a task chain serializing `renderQueue.enqueue` calls so jobs
+    /// reach the actor in exactly the order they were issued here.
+    private var renderQueueTail: Task<Void, Never>?
+    /// The chat the renderer is currently loading, while a chat switch is in
+    /// flight. Cleared when the renderer reports `loaded` for this id.
+    private var pendingSwitchChatId: String?
+    /// Whether the opaque switch overlay (spinner) covers the web view.
+    @Published private(set) var switchOverlayVisible: Bool = false
+    /// Force-dismisses the overlay if the renderer never reports `loaded`
+    /// (e.g. a crashed WebContent process) so the spinner can't get stranded.
+    private var switchWatchdogTask: Task<Void, Never>?
+    /// Max time to wait for the renderer's `loaded` report before giving up.
+    private static let switchWatchdogTimeout: Duration = .seconds(10)
     private var store: AppViewModel?
     private var themeObservation: NSKeyValueObservation?
     /// Retains the navigation delegate that intercepts link clicks and opens
@@ -260,12 +263,9 @@ final class ChatWebViewModel: ObservableObject {
         userContentController = nil
         config = nil
         webReady = false
-        renderedChatId = nil
-        lastMessages = [:]
-        lastMessageIds = []
-        lastStreamingState = false
         pendingMessages = []
         isTornDown = true
+        enqueueRenderJob(.reset)
     }
 
     /// Recreates the web view (if needed) and replays the current chat snapshot.
@@ -530,12 +530,7 @@ final class ChatWebViewModel: ObservableObject {
         expandToolUseEnabled = expandToolUse
         // Reset bridge state so queued messages are flushed after re-ready.
         webReady = false
-        renderedChatId = nil
-        lastMessages = [:]
-        lastMessageIds = []
-        lastStreamingState = false
-        lastRoleName = nil
-        lastRoleAccent = nil
+        enqueueRenderJob(.reset)
         loadPage()
     }
 
@@ -562,10 +557,10 @@ final class ChatWebViewModel: ObservableObject {
 
     // MARK: - Snapshot pushing
 
-    /// Called whenever the store's published state changes. Diffs the current
-    /// message list against the last known state and sends incremental updates
-    /// (updateMessage / addMessage / deleteMessage) when possible. Falls back
-    /// to a full snapshot on chat switch or streaming-end.
+    /// Called whenever the store's published state changes. Captures the
+    /// current chat state (cheap — arrays are COW value types) and hands it
+    /// to `ChatRenderQueue`, which projects/diffs/encodes off the main actor
+    /// and delivers the resulting JS back here in order.
     func pushSnapshot() {
         guard let store else { return }
         guard let item = store.selectedChatItem else { return }
@@ -574,118 +569,63 @@ final class ChatWebViewModel: ObservableObject {
 
         ImageSchemeHandler.currentChatFilename = item.filename
 
-        let chatId = item.id
-        let isStreaming = item.isStreaming
-        // The chat's role name (e.g. "Developer", "Configurator") shown
-        // as the title of assistant messages. Falls back to "Assistant" in the
-        // renderer when nil (no role set).
-        let roleName = item.effectiveRoleName
-        // The role's accent color, resolved against the current appearance so
-        // it matches the active light/dark theme. Appearance-dependent — never
-        // persisted; re-resolved on theme change (see `pushTheme`).
-        let roleAccent = RoleAccent.hexColor(for: store.selectedRole?.config.accent)
-        // Project the stored message list into the wire shape, folding
-        // `tool`-role result messages onto the preceding assistant message's
-        // `toolResults` so the renderer shows them in the same tool block
-        // (inline fold is a view concern, not a storage concern). The folded
-        // `tool` messages are dropped from the wire list.
-        let currentMessages = Self.projectToolResults(chat.messages)
-        let currentIds = currentMessages.map(\.id)
-
-        if chatId != renderedChatId {
-            renderedChatId = chatId
-            lastStreamingState = isStreaming
-            lastRoleName = roleName
-            lastRoleAccent = roleAccent
-            lastMessages = Dictionary(uniqueKeysWithValues: currentMessages.map { ($0.id, $0) })
-            lastMessageIds = currentIds
-            let snapshot = ChatSnapshotData(chatId: chatId, messages: currentMessages, isStreaming: isStreaming, roleName: roleName, roleAccent: roleAccent)
-            sendHostMessage(.snapshot(snapshot: snapshot))
-            return
-        }
-
-        // A role change (or a theme change, which re-resolves the accent)
-        // only affects the assistant message title, which the renderer derives
-        // from the snapshot's `roleName`/`roleAccent` — incremental message
-        // diffs wouldn't reflect it, so force a fresh full snapshot.
-        if roleName != lastRoleName || roleAccent != lastRoleAccent {
-            lastRoleName = roleName
-            lastRoleAccent = roleAccent
-            lastMessages = Dictionary(uniqueKeysWithValues: currentMessages.map { ($0.id, $0) })
-            lastMessageIds = currentIds
-            let snapshot = ChatSnapshotData(chatId: chatId, messages: currentMessages, isStreaming: isStreaming, roleName: roleName, roleAccent: roleAccent)
-            sendHostMessage(.snapshot(snapshot: snapshot))
-            return
-        }
-
-        if isStreaming != lastStreamingState {
-            lastStreamingState = isStreaming
-            if !isStreaming {
-                lastMessages = Dictionary(uniqueKeysWithValues: currentMessages.map { ($0.id, $0) })
-                lastMessageIds = currentIds
-                let snapshot = ChatSnapshotData(chatId: chatId, messages: currentMessages, isStreaming: false, roleName: roleName, roleAccent: roleAccent)
-                sendHostMessage(.snapshot(snapshot: snapshot))
-                return
-            } else {
-                sendHostMessage(.streaming(chatId: chatId, isStreaming: true))
-            }
-        }
-
-        let oldIds = Set(lastMessageIds)
-        let newIds = Set(currentIds)
-
-        for id in lastMessageIds where !newIds.contains(id) {
-            sendHostMessage(.deleteMessage(chatId: chatId, messageId: id))
-        }
-
-        for (index, msg) in currentMessages.enumerated() {
-            if !oldIds.contains(msg.id) {
-                sendHostMessage(.addMessage(chatId: chatId, message: msg, index: index))
-            } else if let old = lastMessages[msg.id], old != msg {
-                sendHostMessage(.updateMessage(chatId: chatId, message: msg))
-            }
-        }
-
-        lastMessages = Dictionary(uniqueKeysWithValues: currentMessages.map { ($0.id, $0) })
-        lastMessageIds = currentIds
+        enqueueRenderJob(.snapshot(
+            chatId: item.id,
+            messages: chat.messages,
+            isStreaming: item.isStreaming,
+            roleName: item.effectiveRoleName,
+            // The accent is appearance-dependent — never persisted; re-resolved
+            // on theme change (see `pushTheme`).
+            roleAccent: RoleAccent.hexColor(for: store.selectedRole?.config.accent)
+        ))
     }
 
-    /// Projects the stored message list into the wire shape, folding
-    /// `tool`-role result messages onto the preceding assistant message's
-    /// `toolResults` (matched by `callID`) so the renderer shows each result
-    /// in the same inline tool block as the call that issued it. The folded
-    /// `tool` messages are dropped from the returned list. This is a pure view
-    /// projection — storage keeps the natural provider shape (one `tool`-role
-    /// message per result).
-    static func projectToolResults(_ messages: [ChatMessage]) -> [ChatMessageData] {
-        var out: [ChatMessageData] = []
-        var lastAssistantOutIndex: Int? = nil
-        for msg in messages {
-            if msg.role == .tool, let results = msg.toolResults, !results.isEmpty {
-                if let aIdx = lastAssistantOutIndex {
-                    var folded = out[aIdx].toolResults ?? []
-                    for r in results {
-                        if let i = folded.firstIndex(where: { $0.callID == r.callID }) {
-                            folded[i] = ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming, isDenied: r.isDenied, isCancelled: r.isCancelled, summary: r.summary)
-                        } else {
-                            folded.append(ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming, isDenied: r.isDenied, isCancelled: r.isCancelled, summary: r.summary))
-                        }
-                    }
-                    out[aIdx].toolResults = folded
-                }
-                continue
-            }
-            var data = msg.webData
-            if msg.role == .assistant {
-                // Assistant messages no longer carry folded toolResults in
-                // storage; clear any stale value so the projection is the
-                // single source of truth for the fold.
-                data.toolResults = nil
-                lastAssistantOutIndex = out.count
-            }
-            out.append(data)
+    /// Enqueues a render-queue job, preserving call order: unstructured tasks
+    /// give no start-order guarantee, so each job chains onto the previous one.
+    private func enqueueRenderJob(_ job: RenderJob) {
+        let prev = renderQueueTail
+        renderQueueTail = Task {
+            await prev?.value
+            await renderQueue.enqueue(job)
         }
-        return out
+    }
+
+    // MARK: - Chat-switch overlay
+
+    /// Starts the chat-switch handshake: covers the web view with the native
+    /// overlay right away (the renderer's own spinner can't be relied on — it
+    /// can only paint once the WebContent process finishes rendering the old
+    /// chat), asks the renderer to blank itself, and arms the watchdog until
+    /// the renderer reports `loaded` for the new chat.
+    func beginChatSwitch(to chatId: String) {
+        switchWatchdogTask?.cancel()
+        pendingSwitchChatId = chatId
+        switchOverlayVisible = true
+        enqueueRenderJob(.unload)
+        switchWatchdogTask = Task { [weak self] in
+            try? await Task.sleep(for: ChatWebViewModel.switchWatchdogTimeout)
+            guard !Task.isCancelled, let self, self.pendingSwitchChatId == chatId else { return }
+            debugLog("Renderer", "watchdog: no loaded signal for \(chatId) — dismissing switch overlay")
+            self.pendingSwitchChatId = nil
+            self.switchOverlayVisible = false
+        }
+    }
+
+    /// Aborts an in-flight switch handshake (selection became nil).
+    func cancelChatSwitch() {
+        switchWatchdogTask?.cancel()
+        pendingSwitchChatId = nil
+        switchOverlayVisible = false
+    }
+
+    /// The renderer finished rendering `chatId`'s first snapshot; dismiss the
+    /// overlay if it's the chat we're waiting for. Stale reports (from an
+    /// earlier switch or a webview restore) are ignored.
+    private func handleRendererLoaded(_ chatId: String) {
+        guard pendingSwitchChatId == chatId else { return }
+        pendingSwitchChatId = nil
+        switchWatchdogTask?.cancel()
+        switchOverlayVisible = false
     }
 
     /// Forces a scroll-to-bottom in the web view (e.g. when the user sends a
@@ -704,17 +644,22 @@ final class ChatWebViewModel: ObservableObject {
 
     // MARK: - JS communication
 
+    /// Encodes and sends a small, order-independent host message (theme,
+    /// scroll, search). Chat-content messages go through `renderQueue`
+    /// instead, both for ordering and to keep encoding off the main actor.
     private func sendHostMessage(_ message: HostMessageData) {
+        guard let js = ChatRenderQueue.encodeToJS(message) else { return }
+        deliverJS(js)
+    }
+
+    /// Delivers a pre-encoded JS statement to the web view, or queues it for
+    /// the post-`ready` flush when the page isn't up yet.
+    private func deliverJS(_ js: String) {
         if !webReady {
-            pendingMessages.append(message)
+            pendingMessages.append(js)
             return
         }
-        guard let webView,
-              let json = try? JSONEncoder().encode(message),
-              let jsonString = String(data: json, encoding: .utf8) else { return }
-        let escaped = jsonString.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-        let js = "window.chatHost && window.chatHost.postMessage('\(escaped)');"
+        guard let webView else { return }
         webView.evaluateJavaScript(js, completionHandler: nil)
     }
 
@@ -736,18 +681,15 @@ final class ChatWebViewModel: ObservableObject {
             store.selectedChatAtBottom = atBottom
         case .ready:
             webReady = true
-            for msg in pendingMessages {
-                sendHostMessage(msg)
+            for js in pendingMessages {
+                webView?.evaluateJavaScript(js, completionHandler: nil)
             }
             pendingMessages.removeAll()
-            renderedChatId = nil
-            lastMessages = [:]
-            lastMessageIds = []
-            lastStreamingState = false
-            lastRoleName = nil
-            lastRoleAccent = nil
+            enqueueRenderJob(.reset)
             pushSnapshot()
             pushTheme()
+        case .loaded(let chatId):
+            handleRendererLoaded(chatId)
         case .requestOlder:
             break
         case .allowToolCall(let callId):
@@ -843,12 +785,14 @@ final class ChatWebViewHostView: NSView {
 // MARK: - Wire types (Swift <-> JSON)
 
 /// The JSON shape sent Swift -> JS. Matches `HostMessage` in types.ts.
-enum HostMessageData: Codable {
+enum HostMessageData: Codable, Sendable {
     case snapshot(snapshot: ChatSnapshotData)
     case streaming(chatId: String, isStreaming: Bool)
     case theme(theme: String)
     case scrollToBottom
     case startSearch
+    /// Blank the renderer and show its spinner (chat switch in progress).
+    case unload
     case updateMessage(chatId: String, message: ChatMessageData)
     case addMessage(chatId: String, message: ChatMessageData, index: Int)
     case deleteMessage(chatId: String, messageId: String)
@@ -881,6 +825,8 @@ enum HostMessageData: Codable {
             try c.encode("scrollToBottom", forKey: .type)
         case .startSearch:
             try c.encode("startSearch", forKey: .type)
+        case .unload:
+            try c.encode("unload", forKey: .type)
         case .updateMessage(let chatId, let message):
             try c.encode("updateMessage", forKey: .type)
             try c.encode(chatId, forKey: .chatId)
@@ -912,6 +858,8 @@ enum HostMessageData: Codable {
             self = .scrollToBottom
         case "startSearch":
             self = .startSearch
+        case "unload":
+            self = .unload
         case "updateMessage":
             self = .updateMessage(chatId: try c.decode(String.self, forKey: .chatId),
                                   message: try c.decode(ChatMessageData.self, forKey: .message))
@@ -929,13 +877,16 @@ enum HostMessageData: Codable {
 }
 
 /// The JSON shape received JS -> Swift. Matches `BridgeMessage` in types.ts.
-enum BridgeMessageData: Codable {
+enum BridgeMessageData: Codable, Sendable {
     case copy(messageId: String)
     case edit(messageId: String)
     case delete(messageId: String)
     case retry
     case scrollState(atBottom: Bool)
     case ready
+    /// The renderer finished committing the first snapshot of `chatId` to the
+    /// DOM — the host dismisses its chat-switch overlay in response.
+    case loaded(chatId: String)
     case requestOlder(chatId: String)
     /// User approved a pending tool call (Allow button).
     case allowToolCall(callId: String)
@@ -973,6 +924,9 @@ enum BridgeMessageData: Codable {
             try c.encode(atBottom, forKey: .atBottom)
         case .ready:
             try c.encode("ready", forKey: .type)
+        case .loaded(let chatId):
+            try c.encode("loaded", forKey: .type)
+            try c.encode(chatId, forKey: .chatId)
         case .requestOlder(let chatId):
             try c.encode("requestOlder", forKey: .type)
             try c.encode(chatId, forKey: .chatId)
@@ -1004,6 +958,8 @@ enum BridgeMessageData: Codable {
             self = .scrollState(atBottom: try c.decode(Bool.self, forKey: .atBottom))
         case "ready":
             self = .ready
+        case "loaded":
+            self = .loaded(chatId: try c.decode(String.self, forKey: .chatId))
         case "requestOlder":
             self = .requestOlder(chatId: try c.decode(String.self, forKey: .chatId))
         case "allowToolCall":
@@ -1019,7 +975,7 @@ enum BridgeMessageData: Codable {
 }
 
 /// A chat snapshot sent to the web view.
-struct ChatSnapshotData: Codable {
+struct ChatSnapshotData: Codable, Sendable {
     let chatId: String
     let messages: [ChatMessageData]
     let isStreaming: Bool
@@ -1035,7 +991,7 @@ struct ChatSnapshotData: Codable {
 }
 
 /// The JSON representation of a `ChatMessage` sent to the web view.
-struct ChatMessageData: Codable, Equatable {
+struct ChatMessageData: Codable, Equatable, Sendable {
     let id: String
     let role: String
     let content: String
@@ -1055,7 +1011,7 @@ struct ChatMessageData: Codable, Equatable {
     var toolResults: [ToolResultData]?
 
     /// A single image reference for the wire protocol.
-    struct ImageData: Codable, Equatable {
+    struct ImageData: Codable, Equatable, Sendable {
         /// The `ichai://` URL the renderer uses as the `src`.
         let url: String
         /// Original filename for display/alt text.
@@ -1063,7 +1019,7 @@ struct ChatMessageData: Codable, Equatable {
     }
 
     /// A tool call issued by the assistant.
-    struct ToolCallData: Codable, Equatable {
+    struct ToolCallData: Codable, Equatable, Sendable {
         let id: String
         let name: String
         /// Raw JSON arguments string as returned by the model.
@@ -1101,7 +1057,7 @@ struct ChatMessageData: Codable, Equatable {
     }
 
     /// The result of executing a tool call.
-    struct ToolResultData: Codable, Equatable {
+    struct ToolResultData: Codable, Equatable, Sendable {
         let callID: String
         let content: String
         let isError: Bool
@@ -1130,11 +1086,15 @@ struct ChatMessageData: Codable, Equatable {
     }
 }
 
+/// Shared timestamp style for `ChatMessage.webData` — allocating a formatter
+/// per message was a measurable cost when projecting large chats. A value
+/// type (Sendable), and the output matches ISO8601DateFormatter with
+/// `.withInternetDateTime` + `.withFractionalSeconds`.
+private let webDataTimestampStyle = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+
 extension ChatMessage {
     /// Converts a `ChatMessage` to its JSON wire representation.
     var webData: ChatMessageData {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let images = images?.map {
             ChatMessageData.ImageData(
                 url: "\(ImageSchemeHandler.scheme)://\($0.filename)",
@@ -1153,7 +1113,7 @@ extension ChatMessage {
             content: content,
             thinking: thinking,
             error: error,
-            timestamp: formatter.string(from: timestamp),
+            timestamp: timestamp.formatted(webDataTimestampStyle),
             connectionName: connectionName,
             images: images,
             toolCalls: toolCalls,
