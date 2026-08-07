@@ -112,6 +112,7 @@ final class MainWindowController {
 
     private var window: NSWindow?
     private var frameTracker: WindowFrameTracker?
+    private var creationInFlight = false
 
     private init() {}
 
@@ -119,57 +120,85 @@ final class MainWindowController {
     /// `startupReadyHandler` once loading is complete. No-op if the window
     /// already exists (e.g. user clicked the Dock icon while it was open).
     func reveal() {
-        if window != nil {
-            window?.makeKeyAndOrderFront(nil)
+        if let window {
+            window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
+        guard !creationInFlight else { return }
         guard let store = AppViewModel.shared else {
             debugLog("App", "⚠️ reveal() — no AppViewModel available")
             return
         }
 
-        let mainView = MainWindow()
-            .environmentObject(store)
-        let hosting = NSHostingController(rootView: mainView)
-        let window = NSWindow(contentViewController: hosting)
-        window.identifier = NSUserInterfaceItemIdentifier("main")
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
-        window.titlebarAppearsTransparent = false
-        window.toolbarStyle = .unified
-        window.isReleasedWhenClosed = false
-        self.window = window
-
-        debugLog("App", "creating main window")
-        applyMinSize()
-        trackWindowFrame(window)
-
-        // Restore the saved frame, then show the window. The config has
-        // already been loaded by the engine at this point, so the actor
-        // calls return immediately (one run-loop hop). Showing after the
-        // frame is restored avoids a flash of a tiny default-sized window.
+        // The config has already been loaded by the engine by the time
+        // reveal() is called, so the await resolves immediately. Fetching the
+        // saved frame BEFORE the window is created lets the window appear at
+        // its final size — resizing an already-shown window re-distributes
+        // the split view and stretches the sidebars beyond their saved widths.
+        creationInFlight = true
         Task {
+            defer { creationInFlight = false }
             let config = ConfigManager.shared
             await config.load()
-            if let wc = await config.getWindow() {
-                var frame = window.frame
-                if let x = wc.x { frame.origin.x = x }
-                if let y = wc.y { frame.origin.y = y }
-                if let width = wc.width { frame.size.width = width }
-                if let height = wc.height { frame.size.height = height }
-                window.setFrame(frame, display: true)
+            let savedWindow = await config.getWindow()
+
+            let mainView = MainWindow()
+                .environmentObject(store)
+            let hosting = NSHostingController(rootView: mainView)
+            let window = NSWindow(contentViewController: hosting)
+            window.identifier = NSUserInterfaceItemIdentifier("main")
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+            window.titlebarAppearsTransparent = false
+            window.toolbarStyle = .unified
+            window.isReleasedWhenClosed = false
+            self.window = window
+
+            debugLog("App", "creating main window")
+            trackWindowFrame(window)
+
+            // The final frame must be the FIRST size the window ever gets:
+            // the split view applies the saved sidebar widths on its first
+            // layout pass and proportionally scales them on every later one,
+            // so an intermediate resize (e.g. applyMinSize growing a small
+            // default frame) would stretch the sidebars.
+            if let savedWindow {
+                let minimumFrameSize = window.frameRect(
+                    forContentRect: NSRect(origin: .zero, size: Self.minWindowSize)
+                ).size
+                window.setFrame(
+                    Self.restoredFrame(from: savedWindow, minimumFrameSize: minimumFrameSize, fallbackOrigin: window.frame.origin),
+                    display: false
+                )
             } else {
                 // First launch: default to the minimum size, centered.
                 window.setContentSize(Self.minWindowSize)
                 window.center()
             }
-            // Re-apply min size after frame restoration in case the saved
-            // frame was smaller than the current minimum.
+            // Sets the min-size constraints only — the frame is already at or
+            // above the minimum (restoredFrame clamps), so no resize happens.
             applyMinSize()
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             debugLog("App", "main window shown — \(window.frame)")
         }
+    }
+
+    /// The frame to create the main window with, computed from the saved
+    /// config. Sizes are clamped up to the minimum frame size; missing or
+    /// invalid (non-finite, non-positive) sizes fall back to the minimum,
+    /// missing/invalid positions keep `fallbackOrigin`.
+    nonisolated static func restoredFrame(from saved: WindowConfig, minimumFrameSize: NSSize, fallbackOrigin: NSPoint) -> NSRect {
+        var frame = NSRect(origin: fallbackOrigin, size: minimumFrameSize)
+        if let x = saved.x, x.isFinite { frame.origin.x = x }
+        if let y = saved.y, y.isFinite { frame.origin.y = y }
+        if let width = saved.width, width.isFinite, width > 0 {
+            frame.size.width = max(width, minimumFrameSize.width)
+        }
+        if let height = saved.height, height.isFinite, height > 0 {
+            frame.size.height = max(height, minimumFrameSize.height)
+        }
+        return frame
     }
 
     // MARK: - Window frame persistence

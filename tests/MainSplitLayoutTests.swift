@@ -39,5 +39,30 @@ struct MainSplitLayoutTests {
     func minimumWindowSize() {
         #expect(MainWindowController.minWindowSize == NSSize(width: 1024, height: 600))
     }
+
+    private let minFrame = NSSize(width: 1024, height: 628) // frame size incl. title bar
+    private let fallbackOrigin = NSPoint(x: 50, y: 60)
+
+    @Test("restored frame passes through valid saved values")
+    func restoredFramePassthrough() {
+        let saved = WindowConfig(x: 100, y: 200, width: 1400, height: 900)
+        let frame = MainWindowController.restoredFrame(from: saved, minimumFrameSize: minFrame, fallbackOrigin: fallbackOrigin)
+        #expect(frame == NSRect(x: 100, y: 200, width: 1400, height: 900))
+    }
+
+    @Test("restored frame clamps undersized saved values to the minimum")
+    func restoredFrameClampsToMinimum() {
+        let saved = WindowConfig(x: 100, y: 200, width: 800, height: 400)
+        let frame = MainWindowController.restoredFrame(from: saved, minimumFrameSize: minFrame, fallbackOrigin: fallbackOrigin)
+        #expect(frame.size == minFrame)
+        #expect(frame.origin == NSPoint(x: 100, y: 200))
+    }
+
+    @Test("restored frame replaces invalid saved values with the minimum bounds")
+    func restoredFrameReplacesInvalidValues() {
+        let saved = WindowConfig(x: .nan, y: nil, width: -10, height: 0)
+        let frame = MainWindowController.restoredFrame(from: saved, minimumFrameSize: minFrame, fallbackOrigin: fallbackOrigin)
+        #expect(frame == NSRect(origin: fallbackOrigin, size: minFrame))
+    }
 }
 }
