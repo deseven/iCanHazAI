@@ -22,6 +22,17 @@ struct ChatSidebar: View {
     /// Local monitor tracking option-key presses for the button icon swap.
     @State private var modifierMonitor: Any?
 
+    /// Filter text for the chat list (fuzzy on titles, exact substring on
+    /// filenames). Empty means the full sectioned list is shown.
+    @State private var filterText = ""
+    /// Highlighted chat while filtering — driven by ↑/↓ in the filter field,
+    /// confirmed with ↵. Nil when the filter is empty.
+    @State private var filterSelection: ChatSummary?
+    /// Set by keyboard navigation so the list scrolls to keep the highlight
+    /// visible (mirrors `PickerDialog`'s `isKeyboardSelection`).
+    @State private var filterKeyboardScroll = false
+    @FocusState private var filterFocused: Bool
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -73,29 +84,84 @@ struct ChatSidebar: View {
                 }
             }
 
+            // Filter field: fuzzy-matches chat titles and exactly matches
+            // (case-insensitive substring) filenames; contents are never
+            // touched, so filtering stays instant. ↑/↓ move the highlight,
+            // ↵ opens the highlighted chat, Esc clears the filter.
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                TextField("Filter by name or filename", text: $filterText)
+                    .textFieldStyle(.plain)
+                    .focused($filterFocused)
+                    .onKeyPress(keys: [.upArrow, .downArrow, .return, .escape]) { handleFilterKeyPress($0) }
+                    // Fallback for ↵ if the field editor gets it first.
+                    .onSubmit(confirmFilterSelection)
+                if !filterText.isEmpty {
+                    Button(action: clearFilter) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Clear filter")
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+
             Divider()
 
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    // A single flat ForEach, NOT nested ForEach(sections) {
-                    // ForEach(items) }: with nesting, a chat moving between
-                    // sections (e.g. "Today" -> "Yesterday" at day rollover)
-                    // jumps between two different ForEach containers, and
-                    // LazyVStack reuses the cached row view with its stale
-                    // selection highlight. Flat entries with stable ids turn
-                    // the move into a plain reorder, which diffs correctly.
-                    ForEach(ChatSidebar.sidebarEntries(for: store.chatSummaries)) { entry in
-                        switch entry {
-                        case .header(let title):
-                            PickerSectionHeader(title: title)
-                        case .row(let item, let showsDivider):
-                            chatRow(for: item)
-                            if showsDivider {
-                                Divider()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        if isFiltering {
+                            // Filtered: a flat ranked list, no date sections.
+                            ForEach(filteredChats) { item in
+                                chatRow(for: item)
+                                    .id(item.id)
+                                if item.id != filteredChats.last?.id {
+                                    Divider()
+                                }
+                            }
+                        } else {
+                            // A single flat ForEach, NOT nested ForEach(sections) {
+                            // ForEach(items) }: with nesting, a chat moving between
+                            // sections (e.g. "Today" -> "Yesterday" at day rollover)
+                            // jumps between two different ForEach containers, and
+                            // LazyVStack reuses the cached row view with its stale
+                            // selection highlight. Flat entries with stable ids turn
+                            // the move into a plain reorder, which diffs correctly.
+                            ForEach(ChatSidebar.sidebarEntries(for: store.chatSummaries)) { entry in
+                                switch entry {
+                                case .header(let title):
+                                    PickerSectionHeader(title: title)
+                                case .row(let item, let showsDivider):
+                                    chatRow(for: item)
+                                    if showsDivider {
+                                        Divider()
+                                    }
+                                }
                             }
                         }
                     }
                 }
+                .onChange(of: filterSelection) { _, newSelection in
+                    guard filterKeyboardScroll, let newSelection else { return }
+                    filterKeyboardScroll = false
+                    proxy.scrollTo(newSelection.id, anchor: .center)
+                }
+            }
+            .onChange(of: filterText) { _, _ in
+                filterSelection = filteredChats.first
+            }
+            // "Filter Chat List…" (⌥⌘F) in the Edit menu.
+            .onChange(of: store.chatListFilterFocusRequest) { _, _ in
+                filterFocused = true
             }
         }
         .background(.regularMaterial)
@@ -132,6 +198,83 @@ struct ChatSidebar: View {
         }
     }
 
+    // MARK: - Filtering
+
+    private var isFiltering: Bool { !filterText.isEmpty }
+
+    /// The chat list filtered by `filterText` (identity when the filter is
+    /// empty).
+    private var filteredChats: [ChatSummary] {
+        ChatSidebar.filterChats(store.chatSummaries, query: filterText)
+    }
+
+    /// Filters the chat list: fuzzy matching on the display title plus exact
+    /// (case-insensitive substring) matching on the filename. Chat contents
+    /// are never inspected, so this is instant even for large histories.
+    /// Fuzzy title matches come first (best match first); filename matches
+    /// the fuzzy pass missed follow in list order. `nonisolated` so it can be
+    /// unit-tested without the main actor.
+    nonisolated static func filterChats(_ summaries: [ChatSummary], query: String) -> [ChatSummary] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return summaries }
+        let byTitle = FuzzySearch.rank(summaries, query: q) { [$0.displayTitle] }
+        let matched = Set(byTitle.map(\.id))
+        let byFilename = summaries.filter {
+            !matched.contains($0.id) && $0.filename.range(of: q, options: .caseInsensitive) != nil
+        }
+        return byTitle + byFilename
+    }
+
+    /// Handles ↑/↓/↵/Esc while the filter field is focused.
+    private func handleFilterKeyPress(_ press: KeyPress) -> KeyPress.Result {
+        switch press.key {
+        case .upArrow:
+            moveFilterSelection(by: -1)
+        case .downArrow:
+            moveFilterSelection(by: 1)
+        case .return:
+            confirmFilterSelection()
+        case .escape:
+            clearFilter()
+        default:
+            return .ignored
+        }
+        return .handled
+    }
+
+    /// Moves the filter highlight by `delta` positions, clamped to the list.
+    private func moveFilterSelection(by delta: Int) {
+        let items = filteredChats
+        guard !items.isEmpty else { return }
+        let current = filterSelection.flatMap { sel in items.firstIndex(where: { $0.id == sel.id }) }
+            ?? (delta > 0 ? -1 : 0)
+        let newIndex = min(max(current + delta, 0), items.count - 1)
+        filterKeyboardScroll = true
+        filterSelection = items[newIndex]
+    }
+
+    /// ↵ action: opens the highlighted chat (falling back to the first match).
+    private func confirmFilterSelection() {
+        let items = filteredChats
+        guard let target = filterSelection.flatMap({ sel in items.first(where: { $0.id == sel.id }) })
+            ?? items.first else { return }
+        openChat(target.id)
+    }
+
+    /// Opens a chat from the list (tap or ↵): selects it, then clears the
+    /// filter and drops field focus so the message input takes over.
+    private func openChat(_ filename: String) {
+        store.selectChat(filename)
+        clearFilter()
+    }
+
+    /// Clears the filter text and unfocuses the filter field.
+    private func clearFilter() {
+        filterText = ""
+        filterSelection = nil
+        filterFocused = false
+    }
+
     @ViewBuilder
     private func chatRow(for item: ChatSummary) -> some View {
         let role = item.roleName.flatMap { name in
@@ -141,14 +284,14 @@ struct ChatSidebar: View {
             item: item,
             roleIcon: role?.icon ?? Role.defaultIcon,
             roleAccent: role?.accentColor ?? .accentColor,
-            isSelected: item.id == store.selectedChatID,
+            isSelected: isFiltering ? item.id == filterSelection?.id : item.id == store.selectedChatID,
             isUnread: item.hasUnreadActivity && item.id != store.selectedChatID,
             isStreaming: item.isStreaming,
             isBlinking: store.blinkingChatIDs.contains(item.id)
         )
         .contentShape(Rectangle())
         .onTapGesture {
-            store.selectChat(item.id)
+            openChat(item.id)
         }
         .contextMenu {
             Button("Rename") {

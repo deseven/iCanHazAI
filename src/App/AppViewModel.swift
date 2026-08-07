@@ -75,10 +75,14 @@ final class AppViewModel: ObservableObject {
     /// by `ChatView`; used to suppress the unread marker when the user is
     /// already looking at the latest content.
     @Published var selectedChatAtBottom: Bool = true
-    /// Whether the left sidebar (chat list) is currently shown.
-    @Published var chatListSidebarVisible: Bool = true
     /// Whether the right-hand chat info sidebar is currently shown.
     @Published var chatInfoSidebarVisible: Bool = false
+    /// Width of the chat list sidebar. Drag-resizable via the split view
+    /// divider (clamped to `SidebarSizing.chatListRange`, never collapsible).
+    @Published var chatListSidebarWidth: CGFloat = SidebarSizing.defaultChatListWidth
+    /// Width of the chat info sidebar. Drag-resizable, never collapsible
+    /// (it's shown/hidden wholesale instead).
+    @Published var chatInfoSidebarWidth: CGFloat = SidebarSizing.defaultChatInfoWidth
     /// Message id pending an edit action (set by the web view bridge; consumed
     /// by ChatView's edit sheet).
     @Published var pendingEditMessageID: UUID?
@@ -203,8 +207,9 @@ final class AppViewModel: ObservableObject {
             let dr = await config.getDefaultRole()
             let uc = await config.getUtilityConnection()
             let wd = await config.getWorkingDirectories()
-            let ls = await config.getChatListSidebarVisible()
             let rs = await config.getChatInfoSidebarVisible()
+            let lw = await config.getChatListSidebarWidth()
+            let iw = await config.getChatInfoSidebarWidth()
             let me = await config.getMermaidEnabled()
             let ke = await config.getKatexEnabled()
             let ad = await config.getAppDebugEnabled()
@@ -222,18 +227,26 @@ final class AppViewModel: ObservableObject {
             preferencesExpandThinking = et
             preferencesExpandToolUse = eu
             DebugLogger.setEnabled(ad)
-            if let ls { chatListSidebarVisible = ls }
             if let rs { chatInfoSidebarVisible = rs }
+            // Clamp restored widths into the allowed ranges so a hand-edited
+            // config can't squeeze a sidebar out of existence.
+            if let lw {
+                chatListSidebarWidth = min(max(CGFloat(lw), SidebarSizing.chatListRange.lowerBound), SidebarSizing.chatListRange.upperBound)
+            }
+            if let iw {
+                chatInfoSidebarWidth = min(max(CGFloat(iw), SidebarSizing.chatInfoRange.lowerBound), SidebarSizing.chatInfoRange.upperBound)
+            }
         }
     }
 
-    /// Persists the current sidebar visibility states to config.
+    /// Persists the sidebar states (info sidebar visibility, both sidebar
+    /// widths) to config.
     func saveSidebarState() {
-        let listVisible = chatListSidebarVisible
         let infoVisible = chatInfoSidebarVisible
+        let listWidth = Double(chatListSidebarWidth)
+        let infoWidth = Double(chatInfoSidebarWidth)
         Task {
-            await config.setChatListSidebarVisible(listVisible)
-            await config.setChatInfoSidebarVisible(infoVisible)
+            await config.setSidebarState(chatInfoVisible: infoVisible, chatListWidth: listWidth, chatInfoWidth: infoWidth)
         }
     }
 
@@ -801,6 +814,17 @@ final class AppViewModel: ObservableObject {
     func startSearchInChat() {
         guard selectedChatItem != nil else { return }
         chatWebViewModel?.startSearch()
+    }
+
+    /// Incremented to ask the chat sidebar to focus its filter field
+    /// (Option-Cmd-F). A counter rather than a bool so repeated invocations
+    /// each fire `.onChange`.
+    @Published var chatListFilterFocusRequest = 0
+
+    /// Focuses the chat list filter field in the sidebar (the sidebar can't
+    /// be collapsed, so it's always there to receive the request).
+    func focusChatListFilter() {
+        chatListFilterFocusRequest += 1
     }
 
     /// Edits a message's plain-text content in the selected chat.

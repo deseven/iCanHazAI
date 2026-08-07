@@ -120,18 +120,21 @@ struct WindowConfig: Codable, Equatable {
     var y: Double?
     var width: Double?
     var height: Double?
-    /// Whether the left sidebar (chat list) was visible when the window was last closed.
-    var chatListSidebarVisible: Bool?
     /// Whether the right sidebar (chat info) was visible when the window was last closed.
     var chatInfoSidebarVisible: Bool?
+    /// Width of the left sidebar (chat list) when the window was last closed.
+    var chatListSidebarWidth: Double?
+    /// Width of the right sidebar (chat info) when the window was last closed.
+    var chatInfoSidebarWidth: Double?
 
     enum CodingKeys: String, CodingKey {
         case x
         case y
         case width
         case height
-        case chatListSidebarVisible = "chat_list_sidebar_visible"
         case chatInfoSidebarVisible = "chat_info_sidebar_visible"
+        case chatListSidebarWidth = "chat_list_sidebar_width"
+        case chatInfoSidebarWidth = "chat_info_sidebar_width"
     }
 }
 
@@ -463,12 +466,16 @@ actor ConfigManager {
         config.debug.chatRendererDebugEnabled ?? false
     }
 
-    func getChatListSidebarVisible() -> Bool? {
-        config.window?.chatListSidebarVisible
-    }
-
     func getChatInfoSidebarVisible() -> Bool? {
         config.window?.chatInfoSidebarVisible
+    }
+
+    func getChatListSidebarWidth() -> Double? {
+        config.window?.chatListSidebarWidth
+    }
+
+    func getChatInfoSidebarWidth() -> Double? {
+        config.window?.chatInfoSidebarWidth
     }
 
     func setDefaultConnection(_ id: String?) {
@@ -520,8 +527,9 @@ actor ConfigManager {
         // Merge: preserve existing sidebar visibility if the incoming config
         // doesn't specify it (e.g. when the window frame tracker saves position).
         if var w = window {
-            if w.chatListSidebarVisible == nil { w.chatListSidebarVisible = config.window?.chatListSidebarVisible }
             if w.chatInfoSidebarVisible == nil { w.chatInfoSidebarVisible = config.window?.chatInfoSidebarVisible }
+            if w.chatListSidebarWidth == nil { w.chatListSidebarWidth = config.window?.chatListSidebarWidth }
+            if w.chatInfoSidebarWidth == nil { w.chatInfoSidebarWidth = config.window?.chatInfoSidebarWidth }
             config.window = w
         } else {
             config.window = nil
@@ -529,15 +537,13 @@ actor ConfigManager {
         persist()
     }
 
-    func setChatListSidebarVisible(_ visible: Bool) {
+    /// Persists the sidebar UI state (info sidebar visibility + both sidebar
+    /// widths) in one write.
+    func setSidebarState(chatInfoVisible: Bool, chatListWidth: Double, chatInfoWidth: Double) {
         if config.window == nil { config.window = WindowConfig() }
-        config.window?.chatListSidebarVisible = visible
-        persist()
-    }
-
-    func setChatInfoSidebarVisible(_ visible: Bool) {
-        if config.window == nil { config.window = WindowConfig() }
-        config.window?.chatInfoSidebarVisible = visible
+        config.window?.chatInfoSidebarVisible = chatInfoVisible
+        config.window?.chatListSidebarWidth = chatListWidth
+        config.window?.chatInfoSidebarWidth = chatInfoWidth
         persist()
     }
 }

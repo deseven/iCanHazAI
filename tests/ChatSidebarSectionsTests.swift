@@ -166,4 +166,63 @@ struct ChatSidebarSectionsTests {
     }()
 }
 
+@Suite("ChatSidebarFilter")
+struct ChatSidebarFilterTests {
+
+    /// Builds a `ChatSummary` with a display title (via the cached name) and
+    /// a filename — the two fields `filterChats` matches against.
+    private func summary(_ filename: String, title: String) -> ChatSummary {
+        ChatSummary(record: ChatRecord(filename: filename, cachedName: title))
+    }
+
+    @Test("empty query returns the list unchanged")
+    func emptyQuery() {
+        let items = [summary("a.json", title: "Alpha"), summary("b.json", title: "Beta")]
+        #expect(ChatSidebar.filterChats(items, query: "").map(\.filename) == ["a.json", "b.json"])
+        #expect(ChatSidebar.filterChats(items, query: "   ").map(\.filename) == ["a.json", "b.json"])
+    }
+
+    @Test("fuzzy match on the display title")
+    func fuzzyTitleMatch() {
+        let items = [
+            summary("a.json", title: "Deploy scripts"),
+            summary("b.json", title: "Grocery list"),
+        ]
+        // "dpl" fuzzy-matches "Deploy scripts" but not "Grocery list".
+        #expect(ChatSidebar.filterChats(items, query: "dpl").map(\.filename) == ["a.json"])
+    }
+
+    @Test("exact substring match on the filename, case-insensitive")
+    func filenameMatch() {
+        let items = [
+            summary("2026-08-07-chat-one.json", title: "Unrelated title"),
+            summary("other.json", title: "Also unrelated"),
+        ]
+        #expect(ChatSidebar.filterChats(items, query: "CHAT-ONE").map(\.filename) == ["2026-08-07-chat-one.json"])
+    }
+
+    @Test("filename match includes chats the fuzzy title pass missed")
+    func filenameMatchAppendedAfterTitleMatches() {
+        let items = [
+            summary("match-in-filename.json", title: "Nothing alike"),
+            summary("plain.json", title: "Match in title"),
+        ]
+        let result = ChatSidebar.filterChats(items, query: "match")
+        // Title match ranks first; the filename-only match follows.
+        #expect(result.map(\.filename) == ["plain.json", "match-in-filename.json"])
+    }
+
+    @Test("a chat matching both title and filename appears only once")
+    func noDuplicates() {
+        let items = [summary("deploy.json", title: "Deploy chat")]
+        #expect(ChatSidebar.filterChats(items, query: "deploy").map(\.filename) == ["deploy.json"])
+    }
+
+    @Test("non-matching query yields an empty list")
+    func noMatches() {
+        let items = [summary("a.json", title: "Alpha")]
+        #expect(ChatSidebar.filterChats(items, query: "zzzzzz").isEmpty)
+    }
+}
+
 } // extension AllAppTests

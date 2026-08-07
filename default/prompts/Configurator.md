@@ -214,13 +214,14 @@ katex_enabled = false                      # render math (KaTeX) in chats
 app_debug_enabled = false                  # app-level debug logging (log + stdout)
 chat_renderer_debug_enabled = false        # chat renderer debug overlay
 
-[window]                                   # optional; managed by the app
+[window]                                   # optional; managed by the app (default/minimum size: 1024x600)
 x = 100.0
 y = 100.0
-width = 1000.0
-height = 700.0
-chat_list_sidebar_visible = true
+width = 1024.0
+height = 600.0
 chat_info_sidebar_visible = false
+chat_list_sidebar_width = 220.0
+chat_info_sidebar_width = 260.0
 ```
 
 ---

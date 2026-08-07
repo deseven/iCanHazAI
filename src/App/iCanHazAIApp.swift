@@ -141,7 +141,7 @@ final class MainWindowController {
         self.window = window
 
         debugLog("App", "creating main window")
-        applyMinSize(to: window, sidebarVisible: store.chatInfoSidebarVisible)
+        applyMinSize()
         trackWindowFrame(window)
 
         // Restore the saved frame, then show the window. The config has
@@ -159,11 +159,13 @@ final class MainWindowController {
                 if let height = wc.height { frame.size.height = height }
                 window.setFrame(frame, display: true)
             } else {
+                // First launch: default to the minimum size, centered.
+                window.setContentSize(Self.minWindowSize)
                 window.center()
             }
             // Re-apply min size after frame restoration in case the saved
             // frame was smaller than the current minimum.
-            applyMinSize(to: window, sidebarVisible: store.chatInfoSidebarVisible)
+            applyMinSize()
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             debugLog("App", "main window shown — \(window.frame)")
@@ -192,23 +194,17 @@ final class MainWindowController {
         tracker.attach(to: window)
     }
 
-    /// Applies the minimum window size based on whether the chat info sidebar
-    /// is visible. If the current width is below the new minimum, the window
-    /// is widened to meet it. Called at creation and when sidebar visibility
-    /// changes.
-    func applyMinSize(sidebarVisible: Bool? = nil) {
-        guard let window else { return }
-        let visible = sidebarVisible ?? AppViewModel.shared?.chatInfoSidebarVisible ?? false
-        applyMinSize(to: window, sidebarVisible: visible)
-    }
+    /// The minimum window size — also the default size on first launch.
+    static let minWindowSize = NSSize(width: 1024, height: 600)
 
-    private func applyMinSize(to window: NSWindow, sidebarVisible: Bool) {
-        let minWidth: CGFloat = sidebarVisible ? 1050 : 860
-        let minHeight: CGFloat = 600
-        var minSize = window.minSize
-        minSize.width = minWidth
-        minSize.height = minHeight
-        window.minSize = minSize
+    /// Applies the minimum window size. If the current frame is below the
+    /// minimum, the window grows to meet it. Called at creation and when the
+    /// info sidebar toggles.
+    func applyMinSize() {
+        guard let window else { return }
+        window.minSize = Self.minWindowSize
+        let minWidth = Self.minWindowSize.width
+        let minHeight = Self.minWindowSize.height
 
         if window.frame.width < minWidth || window.frame.height < minHeight {
             var frame = window.frame
@@ -250,6 +246,10 @@ struct iCanHazAIApp: App {
                     AppViewModel.shared?.startSearchInChat()
                 }
                 .keyboardShortcut("f", modifiers: .command)
+                Button("Filter Chat List…") {
+                    AppViewModel.shared?.focusChatListFilter()
+                }
+                .keyboardShortcut("f", modifiers: [.option, .command])
                 Divider()
                 Button("Stop Streaming") {
                     AppViewModel.shared?.stopStreaming()
