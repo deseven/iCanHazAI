@@ -351,5 +351,119 @@ extension AllAppTests {
                                           status: CLIToolStatus(kind: "done", label: "done", description: "Read 12 lines."))))
             #expect(frames.last == .done(id: "r", chat: "cli-chat.json", name: "Test"))
         }
+
+        @Test("tool approval requests are forwarded as approve frames")
+        func toolApprovalForwarding() async throws {
+            let (dir, path) = try makeTempSocketPath()
+            defer { cleanup(dir) }
+
+            let server = CLIServer(socketPath: path) { request in
+                #expect(request.params.interactive)
+                let (stream, continuation) = AsyncStream<OneShotEvent>.makeStream()
+                Task {
+                    continuation.yield(.toolCall(name: "write_file", summary: "a.txt · +5 -0"))
+                    continuation.yield(.toolApprovalRequest(callID: "call-1", name: "write_file", summary: "a.txt · +5 -0"))
+                    continuation.yield(.toolResult(name: "write_file", summary: ToolSummary.Status(kind: .done, label: "done", description: "Wrote a.txt.")))
+                    continuation.yield(.finished(error: nil, chatName: nil))
+                    continuation.finish()
+                }
+                return .started(filename: "cli-chat.json", events: stream)
+            }
+            server.start()
+            defer { server.stop() }
+
+            let fd = try UnixSocket.connect(path: path)
+            let conn = CLIConnection(fd: fd)
+            defer { conn.close() }
+            try conn.send(.hello(pid: getpid(), client: "test", protocolVersion: CLIProtocol.version))
+
+            var frames: [CLIFrame] = []
+            var requestSent = false
+            for await event in conn.events {
+                guard case .frame(let frame) = event else { continue }
+                frames.append(frame)
+                if case .welcome = frame, !requestSent {
+                    requestSent = true
+                    try conn.send(.request(CLIRequest(id: "r", method: CLIRequest.methodChatSend,
+                                                    params: CLIRequestParams(message: "hi", interactive: true))))
+                }
+                if case .done = frame { break }
+            }
+
+            #expect(frames.contains(.approve(id: "r", callID: "call-1", name: "write_file", args: "a.txt · +5 -0")))
+            #expect(frames.last == .done(id: "r", chat: "cli-chat.json", name: nil))
+        }
+
+        @Test("tool.approve and chat.stop requests reach their handlers")
+        func interactiveRequestRouting() async throws {
+            actor Recorder {
+                private(set) var approvals: [(callID: String, decision: String, reason: String?)] = []
+                private(set) var stops: [(chat: String, immediate: Bool)] = []
+                func recordApproval(callID: String, decision: String, reason: String?) {
+                    approvals.append((callID, decision, reason))
+                }
+                func recordStop(_ chat: String, immediate: Bool) { stops.append((chat, immediate)) }
+            }
+
+            let (dir, path) = try makeTempSocketPath()
+            defer { cleanup(dir) }
+
+            let recorder = Recorder()
+            let server = CLIServer(
+                socketPath: path,
+                oneShotHandler: { _ in .failed("should not be called") },
+                toolApprovalHandler: { await recorder.recordApproval(callID: $0, decision: $1, reason: $2) },
+                stopHandler: { await recorder.recordStop($0, immediate: $1) }
+            )
+            server.start()
+            defer { server.stop() }
+
+            let fd = try UnixSocket.connect(path: path)
+            let conn = CLIConnection(fd: fd)
+            defer { conn.close() }
+            try conn.send(.hello(pid: getpid(), client: "test", protocolVersion: CLIProtocol.version))
+            try conn.send(.request(CLIRequest(id: "a1", method: CLIRequest.methodToolApprove,
+                                              params: CLIRequestParams(message: "", callID: "call-1", decision: "deny", reason: "nope"))))
+            try conn.send(.request(CLIRequest(id: "a2", method: CLIRequest.methodToolApprove,
+                                              params: CLIRequestParams(message: "", callID: "call-2", decision: "allow_chat"))))
+            try conn.send(.request(CLIRequest(id: "s1", method: CLIRequest.methodChatStop,
+                                              params: CLIRequestParams(message: "", chat: "cli-chat.json"))))
+            try conn.send(.request(CLIRequest(id: "s3", method: CLIRequest.methodChatStop,
+                                              params: CLIRequestParams(message: "", chat: "cli-chat.json", immediate: true))))
+            // Malformed variants get bad_params errors and don't reach the handlers.
+            try conn.send(.request(CLIRequest(id: "a3", method: CLIRequest.methodToolApprove,
+                                              params: CLIRequestParams(message: "", callID: "call-3"))))
+            try conn.send(.request(CLIRequest(id: "s2", method: CLIRequest.methodChatStop,
+                                              params: CLIRequestParams(message: ""))))
+
+            var errors: [CLIFrame] = []
+            for await event in conn.events {
+                guard case .frame(let frame) = event else { continue }
+                if case .error = frame { errors.append(frame) }
+                if errors.count == 2 { break }
+            }
+
+            #expect(errors == [
+                .error(id: "a3", code: "bad_params", message: "tool.approve requires call_id and decision"),
+                .error(id: "s2", code: "bad_params", message: "chat.stop requires a chat"),
+            ])
+
+            var waited = 0
+            while waited < 100 {
+                let approvalCount = await recorder.approvals.count
+                let stopCount = await recorder.stops.count
+                if approvalCount >= 2, stopCount >= 2 { break }
+                try await Task.sleep(nanoseconds: 20_000_000)
+                waited += 1
+            }
+            let approvals = await recorder.approvals
+            #expect(approvals.count == 2)
+            #expect(approvals[0].callID == "call-1" && approvals[0].decision == "deny" && approvals[0].reason == "nope")
+            #expect(approvals[1].callID == "call-2" && approvals[1].decision == "allow_chat" && approvals[1].reason == nil)
+            let stops = await recorder.stops
+            #expect(stops.count == 2)
+            #expect(stops[0].chat == "cli-chat.json" && stops[0].immediate == false)
+            #expect(stops[1].chat == "cli-chat.json" && stops[1].immediate == true)
+        }
     }
 }

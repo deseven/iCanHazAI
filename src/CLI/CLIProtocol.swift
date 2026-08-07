@@ -16,10 +16,12 @@ import Foundation
 ///   (verified by the server against the kernel-reported peer PID) and its
 ///   protocol version. Server replies with `welcome`.
 /// - `ping` — liveness probe for long-lived sessions. Server replies `pong`.
-/// - `request` — a method call. Currently only `chat.send` (one-shot message,
-///   optionally continuing an existing chat). Replies are correlated by `id`,
-///   so a single connection can multiplex concurrent requests (the basis for a
-///   future interactive mode).
+/// - `request` — a method call. Methods: `chat.send` (one-shot message,
+///   optionally continuing an existing chat; `interactive` marks the chat as
+///   driven by an interactive CLI session), `tool.approve` (the interactive
+///   CLI's answer to an `approve` frame), `chat.stop` (stop the chat's stream
+///   after the current iteration). Replies are correlated by `id`, so a
+///   single connection can multiplex concurrent requests.
 ///
 /// Server → client:
 /// - `welcome` — greeting reply: session id, app version, and the negotiated
@@ -28,6 +30,8 @@ import Foundation
 /// - `started` — a request was accepted; carries the chat filename so the CLI
 ///   user can find the chat in the GUI.
 /// - `delta` — a streamed response chunk for the request.
+/// - `approve` — a tool call of an interactive-session chat needs the user's
+///   confirmation; the client answers with a `tool.approve` request.
 /// - `done` — the request completed successfully. Terminal.
 /// - `error` — the request (or the connection, when `id` is nil) failed.
 ///   Terminal for that request.
@@ -45,6 +49,11 @@ enum CLIFrame: Sendable, Equatable {
     /// final result (`status` set). `args` is the collapsed one-line argument
     /// summary (see `ToolCall.summary`).
     case tool(id: String, name: String, args: String?, status: CLIToolStatus?)
+    /// A tool call of an interactive-session chat awaits the user's
+    /// confirmation. `args` is the collapsed one-line argument summary — the
+    /// client never sees the full request. The client answers with a
+    /// `tool.approve` request carrying `callID`.
+    case approve(id: String, callID: String, name: String, args: String?)
     /// An out-of-band warning for the CLI user (not part of the chat
     /// content), printed to stderr by the client.
     case notice(id: String?, text: String)
@@ -64,11 +73,14 @@ struct CLIToolStatus: Sendable, Equatable {
 }
 
 /// A method call from the client. `method` is namespaced (`"chat.send"`) so
-/// future request kinds (interactive input, tool approval, cancellation) slot
-/// in without changing the envelope.
+/// future request kinds slot in without changing the envelope.
 struct CLIRequest: Sendable, Equatable {
-    /// The only currently-supported method.
+    /// Send a message (creating or continuing a chat) and stream the reply.
     static let methodChatSend = "chat.send"
+    /// Answer a tool-call approval prompt (interactive sessions only).
+    static let methodToolApprove = "tool.approve"
+    /// Stop the chat's stream after the current iteration.
+    static let methodChatStop = "chat.stop"
 
     var id: String
     var method: String
@@ -98,6 +110,20 @@ struct CLIRequestParams: Sendable, Equatable {
     var workdirExplicit = false
     /// Auto-approve every tool call that would otherwise need confirmation.
     var allowAll = false
+    /// The client is an interactive CLI session: tool calls that need
+    /// confirmation are relayed to the client as `approve` frames instead of
+    /// being skipped, and follow-up `chat.send` requests continue the chat.
+    var interactive = false
+    /// `tool.approve`: the call id from the `approve` frame being answered.
+    var callID: String?
+    /// `tool.approve`: "allow" (once), "allow_chat" (remember for this chat),
+    /// or "deny".
+    var decision: String?
+    /// `tool.approve`: the optional reason for a "deny" decision.
+    var reason: String?
+    /// `chat.stop`: cancel the stream immediately (like the GUI's Stop)
+    /// instead of after the current iteration.
+    var immediate = false
 }
 
 enum CLIProtocolError: Error, Equatable {
@@ -109,12 +135,15 @@ enum CLIProtocolError: Error, Equatable {
 /// single line without the terminator.
 enum CLIProtocol {
 
-    /// Wire protocol version, sent as `v` in every frame.
-    static let version = 1
+    /// Wire protocol version, sent as `v` in every frame. v2 added the
+    /// interactive session frames (`approve`, `tool.approve`, `chat.stop`).
+    static let version = 2
 
     private enum Key: String {
         case v, type, id, method, params, chat, text, code, message, client
         case session, name, summary, status, kind, label, description
+        case decision, reason
+        case callID = "call_id"
         case appVersion = "app_version"
         case protocolVersion = "protocol_version"
         case pid
@@ -122,7 +151,7 @@ enum CLIProtocol {
 
     private enum FrameType: String {
         case hello, welcome, ping, pong, request, started, delta, done, error
-        case tool, notice
+        case tool, notice, approve
     }
 
     static func encode(_ frame: CLIFrame) throws -> Data {
@@ -152,6 +181,11 @@ enum CLIProtocol {
             if let workdir = req.params.workdir { params["workdir"] = workdir }
             if req.params.workdirExplicit { params["workdir_explicit"] = true }
             if req.params.allowAll { params["allow_all"] = true }
+            if req.params.interactive { params["interactive"] = true }
+            if let callID = req.params.callID { params[Key.callID.rawValue] = callID }
+            if let decision = req.params.decision { params[Key.decision.rawValue] = decision }
+            if let reason = req.params.reason { params[Key.reason.rawValue] = reason }
+            if req.params.immediate { params["immediate"] = true }
             obj[Key.params.rawValue] = params
         case .pong(let appVersion, let pid):
             obj[Key.type.rawValue] = FrameType.pong.rawValue
@@ -177,6 +211,12 @@ enum CLIProtocol {
                     Key.description.rawValue: status.description,
                 ]
             }
+        case .approve(let id, let callID, let name, let args):
+            obj[Key.type.rawValue] = FrameType.approve.rawValue
+            obj[Key.id.rawValue] = id
+            obj[Key.callID.rawValue] = callID
+            obj[Key.name.rawValue] = name
+            if let args { obj[Key.summary.rawValue] = args }
         case .notice(let id, let text):
             obj[Key.type.rawValue] = FrameType.notice.rawValue
             if let id { obj[Key.id.rawValue] = id }
@@ -239,7 +279,12 @@ enum CLIProtocol {
                 temporary: paramsObj["temporary"] as? Bool ?? false,
                 workdir: paramsObj["workdir"] as? String,
                 workdirExplicit: paramsObj["workdir_explicit"] as? Bool ?? false,
-                allowAll: paramsObj["allow_all"] as? Bool ?? false
+                allowAll: paramsObj["allow_all"] as? Bool ?? false,
+                interactive: paramsObj["interactive"] as? Bool ?? false,
+                callID: paramsObj[Key.callID.rawValue] as? String,
+                decision: paramsObj[Key.decision.rawValue] as? String,
+                reason: paramsObj[Key.reason.rawValue] as? String,
+                immediate: paramsObj["immediate"] as? Bool ?? false
             )
             return .request(CLIRequest(id: id, method: method, params: params))
         case FrameType.pong.rawValue:
@@ -273,6 +318,13 @@ enum CLIProtocol {
                 status = CLIToolStatus(kind: kind, label: label, description: description)
             }
             return .tool(id: id, name: name, args: obj[Key.summary.rawValue] as? String, status: status)
+        case FrameType.approve.rawValue:
+            guard let id = obj[Key.id.rawValue] as? String,
+                  let callID = obj[Key.callID.rawValue] as? String,
+                  let name = obj[Key.name.rawValue] as? String else {
+                throw CLIProtocolError.malformedFrame("approve frame missing id/call_id/name")
+            }
+            return .approve(id: id, callID: callID, name: name, args: obj[Key.summary.rawValue] as? String)
         case FrameType.notice.rawValue:
             guard let text = obj[Key.text.rawValue] as? String else {
                 throw CLIProtocolError.malformedFrame("notice frame missing text")

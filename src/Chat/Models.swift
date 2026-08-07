@@ -455,6 +455,11 @@ enum OneShotEvent: Sendable {
     /// A tool call produced its final result. `summary` is the persisted
     /// one-line status summary (see `ToolResult.summary`).
     case toolResult(name: String, summary: ToolSummary.Status)
+    /// A tool call of an interactive CLI session awaits the user's
+    /// confirmation. `summary` is the collapsed one-line argument summary
+    /// (see `ToolCall.summary`). The CLI answers out of band; the stream
+    /// resumes with the corresponding `toolResult`.
+    case toolApprovalRequest(callID: String, name: String, summary: String?)
     /// A warning worth surfacing to the CLI user (e.g. an ignored --workdir,
     /// a tool call skipped for lack of --allow-all). Not part of the chat.
     case notice(String)

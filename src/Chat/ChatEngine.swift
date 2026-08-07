@@ -77,15 +77,21 @@ actor ChatEngine {
     private var oneShotSinks: [String: [UUID: AsyncStream<OneShotEvent>.Continuation]] = [:]
 
     /// Filenames of chats driven by a CLI one-shot request (created or
-    /// continued via the CLI). CLI chats are non-interactive: tool calls that
-    /// need confirmation are auto-approved (--allow-all) or skipped with a
-    /// notice instead of showing an approval prompt, and the chat never gets
-    /// the unread marker — its output was already shown in the terminal.
+    /// continued via the CLI). Non-interactive CLI chats have nobody to
+    /// answer an approval prompt: tool calls that need confirmation are
+    /// auto-approved (--allow-all) or skipped with a notice (interactive
+    /// sessions are the exception — see `cliInteractive`). A CLI chat never
+    /// gets the unread marker — its output was already shown in the terminal.
     private var cliDriven: Set<String> = []
 
     /// CLI-driven chats whose client passed --allow-all: every tool call is
     /// auto-approved without confirmation.
     private var cliAllowAll: Set<String> = []
+
+    /// CLI-driven chats owned by an interactive CLI session (-i): tool calls
+    /// that need confirmation are relayed to the client as approval requests
+    /// (answered in the terminal) instead of being skipped.
+    private var cliInteractive: Set<String> = []
 
     /// Tool-call approvals awaiting a user decision, keyed by call id. The
     /// continuation is registered from `approveToolCall` (running on this
@@ -1196,6 +1202,7 @@ actor ChatEngine {
         if selectedFilename == filename { selectedFilename = nil }
         cliDriven.remove(filename)
         cliAllowAll.remove(filename)
+        cliInteractive.remove(filename)
         debugLog("Engine", "destroyed temporary chat \(filename)")
     }
 
@@ -1215,6 +1222,7 @@ actor ChatEngine {
         streamTasks[filename] = nil
         cliDriven.remove(filename)
         cliAllowAll.remove(filename)
+        cliInteractive.remove(filename)
         // Suppress the FSEvent for the file we're about to remove.
         markSelfWrite(path: env.chatsURL.appendingPathComponent(filename).path)
         store.deleteChat(filename: filename)
@@ -1644,7 +1652,7 @@ actor ChatEngine {
     /// disconnects. For regular chats the chat itself stays visible and
     /// continuable in the GUI, but a client disconnecting mid-stream stops
     /// the stream — nobody is consuming it anymore.
-    func performOneShot(message: String, role requestedRole: String?, connection requestedConnection: String?, chatName: String?, temporary: Bool = false, workdir: String? = nil, workdirExplicit: Bool = false, allowAll: Bool = false) async -> OneShotStart {
+    func performOneShot(message: String, role requestedRole: String?, connection requestedConnection: String?, chatName: String?, temporary: Bool = false, workdir: String? = nil, workdirExplicit: Bool = false, allowAll: Bool = false, interactive: Bool = false) async -> OneShotStart {
         let filename: String
         if let chatName {
             guard !temporary else {
@@ -1671,6 +1679,7 @@ actor ChatEngine {
 
         cliDriven.insert(filename)
         if allowAll { cliAllowAll.insert(filename) }
+        if interactive { cliInteractive.insert(filename) }
 
         // Register the sink before sending so no early chunk can be missed.
         let sinkID = UUID()
@@ -2178,14 +2187,18 @@ actor ChatEngine {
             debugLog("Tool", "auto-allowed \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
             approval = .allow
         } else if cliDriven.contains(filename) {
-            // CLI-driven chats are non-interactive — there's nobody to answer
-            // an approval prompt. With --allow-all the call is auto-approved;
-            // otherwise it's skipped: the CLI user gets a warning and the
-            // model gets a cancellation result explaining what happened.
             if cliAllowAll.contains(filename) {
                 debugLog("Tool", "auto-approved via --allow-all \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
                 approval = .allow
+            } else if cliInteractive.contains(filename) {
+                // Interactive CLI session: the approval prompt is relayed to
+                // the client and answered in the terminal.
+                approval = try await approveToolCall(chatFilename: filename, call: call)
             } else {
+                // Non-interactive CLI: there's nobody to answer an approval
+                // prompt. The call is skipped: the CLI user gets a warning
+                // and the model gets a cancellation result explaining what
+                // happened.
                 debugLog("Tool", "skipping unconfirmed CLI tool call \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
                 notifyOneShot(filename: filename, .notice("tool call \"\(call.name)\" requires confirmation — skipped (re-run with --allow-all to auto-approve tool calls)"))
                 // The changes were never applied — drop any diff preview.
@@ -2248,15 +2261,40 @@ actor ChatEngine {
         emit(.chatsChanged(records))
     }
 
-    /// The tool-call approval decision point. Marks the call as pending, draws
-    /// the UI's attention (`.toolApprovalRequested`), then suspends on a
-    /// continuation until `resolveToolCallApproval` (allow/deny) or
-    /// `cancelPendingApprovals` (stop) resumes it.
+    /// The tool-call approval decision point. For GUI chats: marks the call
+    /// as pending and draws the UI's attention (`.toolApprovalRequested`).
+    /// For interactive CLI chats: relays the request to the client as a
+    /// one-shot event instead (the prompt lives in the terminal — the GUI
+    /// stays out of it). Either way, suspends on a continuation until
+    /// `resolveToolCallApproval` (allow/deny) or `cancelPendingApprovals`
+    /// (stop) resumes it.
     private func approveToolCall(chatFilename: String, call: ToolCall) async throws -> ToolApproval {
-        setPendingApproval(callID: call.id, filename: chatFilename, pending: true)
-        emit(.toolApprovalRequested(filename: chatFilename, callID: call.id))
+        if cliInteractive.contains(chatFilename) {
+            let summary = call.summary ?? ToolSummary.callLine(name: call.name, arguments: call.arguments, requiredArgs: call.requiredArgs)
+            notifyOneShot(filename: chatFilename, .toolApprovalRequest(callID: call.id, name: call.name, summary: summary))
+        } else {
+            setPendingApproval(callID: call.id, filename: chatFilename, pending: true)
+            emit(.toolApprovalRequested(filename: chatFilename, callID: call.id))
+        }
         return try await withCheckedThrowingContinuation { continuation in
             pendingApprovals[call.id] = PendingToolApproval(filename: chatFilename, continuation: continuation)
+        }
+    }
+
+    /// Resolves a tool-call approval coming from an interactive CLI session.
+    /// `decision` is "allow" (once), "allow_chat" (remember for this chat),
+    /// or "deny" (with an optional reason). Unknown decisions and stale call
+    /// ids are ignored.
+    func resolveCLIToolApproval(callID: String, decision: String, reason: String?) {
+        switch decision {
+        case "allow":
+            resolveToolCallApproval(callID: callID, approval: .allow)
+        case "allow_chat":
+            allowToolCallForChat(callID: callID)
+        case "deny":
+            resolveToolCallApproval(callID: callID, approval: .deny(reason: reason ?? ""))
+        default:
+            debugLog("Tool", "ignoring CLI approval with unknown decision \"\(decision)\" — callID=\(callID)")
         }
     }
 

@@ -25,6 +25,16 @@ final class CLIServer: @unchecked Sendable {
     /// for tests; nil means temporary chats outlive their client.
     typealias TemporaryChatCleanup = @Sendable ([String]) async -> Void
 
+    /// Resolves a `tool.approve` request (interactive CLI sessions). Params:
+    /// call id, decision ("allow"/"allow_chat"/"deny"), optional deny reason.
+    /// Injectable for tests; nil means approvals are not supported.
+    typealias ToolApprovalHandler = @Sendable (String, String, String?) async -> Void
+
+    /// Handles a `chat.stop` request. Params: the chat filename and whether
+    /// to cancel the stream immediately (true — like the GUI's Stop) or stop
+    /// after the current iteration (false). Injectable for tests.
+    typealias StopHandler = @Sendable (String, Bool) async -> Void
+
     static let shared = CLIServer(
         socketPath: EnvironmentManager.shared.socketURL.path,
         oneShotHandler: { request in
@@ -36,26 +46,41 @@ final class CLIServer: @unchecked Sendable {
                 temporary: request.params.temporary,
                 workdir: request.params.workdir,
                 workdirExplicit: request.params.workdirExplicit,
-                allowAll: request.params.allowAll
+                allowAll: request.params.allowAll,
+                interactive: request.params.interactive
             )
         },
         temporaryChatCleanup: { filenames in
             await ChatEngine.shared.destroyTemporaryChats(filenames: filenames)
+        },
+        toolApprovalHandler: { callID, decision, reason in
+            await ChatEngine.shared.resolveCLIToolApproval(callID: callID, decision: decision, reason: reason)
+        },
+        stopHandler: { chat, immediate in
+            if immediate {
+                await ChatEngine.shared.stopStreaming(filename: chat)
+            } else {
+                await ChatEngine.shared.stopStreamingAfterIteration(filename: chat)
+            }
         }
     )
 
     let socketPath: String
     private let oneShotHandler: OneShotHandler
     private let temporaryChatCleanup: TemporaryChatCleanup?
+    private let toolApprovalHandler: ToolApprovalHandler?
+    private let stopHandler: StopHandler?
 
     private let lock = NSLock()
     private var listenerFD: Int32 = -1
     private var clients: [ObjectIdentifier: ClientContext] = [:]
 
-    init(socketPath: String, oneShotHandler: @escaping OneShotHandler, temporaryChatCleanup: TemporaryChatCleanup? = nil) {
+    init(socketPath: String, oneShotHandler: @escaping OneShotHandler, temporaryChatCleanup: TemporaryChatCleanup? = nil, toolApprovalHandler: ToolApprovalHandler? = nil, stopHandler: StopHandler? = nil) {
         self.socketPath = socketPath
         self.oneShotHandler = oneShotHandler
         self.temporaryChatCleanup = temporaryChatCleanup
+        self.toolApprovalHandler = toolApprovalHandler
+        self.stopHandler = stopHandler
     }
 
     // MARK: - Stale socket cleanup
@@ -239,17 +264,36 @@ final class CLIServer: @unchecked Sendable {
                 send(.pong(appVersion: Self.appVersion, pid: getpid()), to: ctx)
             case .request(let request):
                 handleRequest(request, ctx: ctx)
-            case .welcome, .pong, .started, .delta, .tool, .notice, .done, .error:
+            case .welcome, .pong, .started, .delta, .tool, .approve, .notice, .done, .error:
                 send(.error(id: nil, code: "unexpected_frame", message: "server-side frame received from a client"), to: ctx)
             }
         }
     }
 
     private func handleRequest(_ request: CLIRequest, ctx: ClientContext) {
-        guard request.method == CLIRequest.methodChatSend else {
+        switch request.method {
+        case CLIRequest.methodChatSend:
+            handleChatSend(request, ctx: ctx)
+        case CLIRequest.methodToolApprove:
+            guard let callID = request.params.callID, let decision = request.params.decision,
+                  let handler = toolApprovalHandler else {
+                send(.error(id: request.id, code: "bad_params", message: "tool.approve requires call_id and decision"), to: ctx)
+                return
+            }
+            Task { await handler(callID, decision, request.params.reason) }
+        case CLIRequest.methodChatStop:
+            guard let chat = request.params.chat, !chat.isEmpty,
+                  let handler = stopHandler else {
+                send(.error(id: request.id, code: "bad_params", message: "chat.stop requires a chat"), to: ctx)
+                return
+            }
+            Task { await handler(chat, request.params.immediate) }
+        default:
             send(.error(id: request.id, code: "unknown_method", message: "unknown method \"\(request.method)\""), to: ctx)
-            return
         }
+    }
+
+    private func handleChatSend(_ request: CLIRequest, ctx: ClientContext) {
         guard !request.params.message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             send(.error(id: request.id, code: "bad_params", message: "message is empty"), to: ctx)
             return
@@ -283,6 +327,8 @@ final class CLIServer: @unchecked Sendable {
                             try ctx.connection.send(.tool(id: requestID, name: name, args: summary, status: nil))
                         case .toolResult(let name, let summary):
                             try ctx.connection.send(.tool(id: requestID, name: name, args: nil, status: CLIToolStatus(kind: summary.kind.rawValue, label: summary.label, description: summary.description)))
+                        case .toolApprovalRequest(let callID, let name, let summary):
+                            try ctx.connection.send(.approve(id: requestID, callID: callID, name: name, args: summary))
                         case .notice(let text):
                             try ctx.connection.send(.notice(id: requestID, text: text))
                         case .finished(let error, let chatName):

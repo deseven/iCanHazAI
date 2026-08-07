@@ -29,11 +29,21 @@ extension AllAppTests {
                                     params: CLIRequestParams(message: "hi"))),
                 .request(CLIRequest(id: "r3", method: CLIRequest.methodChatSend,
                                     params: CLIRequestParams(message: "hi", workdir: "/tmp/proj", workdirExplicit: true, allowAll: true))),
+                .request(CLIRequest(id: "r4", method: CLIRequest.methodChatSend,
+                                    params: CLIRequestParams(message: "hi", interactive: true))),
+                .request(CLIRequest(id: "r5", method: CLIRequest.methodToolApprove,
+                                    params: CLIRequestParams(message: "", callID: "call-1", decision: "deny", reason: "too risky"))),
+                .request(CLIRequest(id: "r6", method: CLIRequest.methodToolApprove,
+                                    params: CLIRequestParams(message: "", callID: "call-2", decision: "allow_chat"))),
+                .request(CLIRequest(id: "r7", method: CLIRequest.methodChatStop,
+                                    params: CLIRequestParams(message: "", chat: "c.json", immediate: true))),
                 .started(id: "r1", chat: "c.json"),
                 .delta(id: "r1", text: "Hello, {json} \"escaped\"\nnewlines"),
                 .tool(id: "r1", name: "read_file", args: "src/main.swift · offset: 10", status: nil),
                 .tool(id: "r1", name: "read_file", args: nil,
                       status: CLIToolStatus(kind: "done", label: "done", description: "Read 50 lines.")),
+                .approve(id: "r1", callID: "call-1", name: "write_file", args: "src/main.swift · +12 -3"),
+                .approve(id: "r1", callID: "call-2", name: "sleep", args: nil),
                 .notice(id: "r1", text: "tool call \"rm\" requires confirmation — skipped"),
                 .notice(id: nil, text: "connection-less notice"),
                 .done(id: "r1", chat: "c.json", name: "Line counting"),
@@ -139,6 +149,16 @@ extension AllAppTests {
             let temp = try CLIClient.CLIOptions.parse(["--temporary", "hi"])
             #expect(temp.temporary)
             #expect(temp.chat == nil)
+        }
+
+        @Test("--interactive parses in both short and long form")
+        func interactiveFlag() throws {
+            #expect(try CLIClient.CLIOptions.parse(["-i"]).interactive)
+            #expect(try CLIClient.CLIOptions.parse(["--interactive"]).interactive)
+            let withMessage = try CLIClient.CLIOptions.parse(["-i", "hi there"])
+            #expect(withMessage.interactive)
+            #expect(withMessage.words == ["hi there"])
+            #expect(!CLIClient.CLIOptions().interactive)
         }
 
         @Test("--workdir and --allow-all parse in both short and long form")
@@ -290,6 +310,67 @@ extension AllAppTests {
             #expect(!CLIClient.isCLIInvocation(["--headless"], environment: [:], bundleID: nil))
             // Hidden --gui flag (direct terminal run of the bundled binary) → GUI.
             #expect(!CLIClient.isCLIInvocation(["--gui"], environment: [:], bundleID: nil))
+        }
+    }
+
+    @Suite("CLI output renderer")
+    struct CLIOutputRendererTests {
+
+        private let done = CLIToolStatus(kind: "done", label: "done", description: "All good.")
+
+        @Test("only the first line of an agent message is prefixed")
+        func firstLinePrefix() {
+            let r = CLIClient.OutputRenderer()
+            #expect(r.delta("Hello,\nworld\n") == "> Hello,\nworld\n")
+            // Continuation chunks of the same message stay unprefixed.
+            #expect(r.delta("more\ntext") == "more\ntext")
+            // A mid-line ending is terminated and closed with a blank line.
+            #expect(r.streamEnd() == "\n\n")
+        }
+
+        @Test("agent messages and tool blocks are separated by blank lines")
+        func blockSpacing() {
+            let r = CLIClient.OutputRenderer()
+            #expect(r.delta("working\n") == "> working\n")
+            r.toolStart(name: "ls", args: "-la")
+            #expect(r.toolResult(name: "ls", status: done) == "\n⚙ ls -la\n  ✓ done — All good.\n")
+            // A new agent message after a tool block: blank line + prefix.
+            #expect(r.delta("done\n") == "\n> done\n")
+            #expect(r.streamEnd() == "\n")
+        }
+
+        @Test("frames within one tool block stay contiguous")
+        func contiguousToolFrames() {
+            let r = CLIClient.OutputRenderer()
+            r.toolStart(name: "a", args: "1")
+            r.toolStart(name: "b", args: "2")
+            #expect(r.toolResult(name: "a", status: done) == "⚙ a 1\n  ✓ done — All good.\n")
+            #expect(r.toolResult(name: "b", status: done) == "⚙ b 2\n  ✓ done — All good.\n")
+            #expect(r.streamEnd() == "\n")
+        }
+
+        @Test("an approval prints the header; the result prints only the status")
+        func approvalFlow() {
+            let r = CLIClient.OutputRenderer()
+            r.toolStart(name: "write_file", args: "a.txt · +5 -0")
+            #expect(r.approval(name: "write_file", args: "a.txt · +5 -0") == "⚙ write_file a.txt · +5 -0\n")
+            #expect(r.toolResult(name: "write_file", status: done) == "  ✓ done — All good.\n")
+        }
+
+        @Test("a result for an unannounced call falls back to a bare header")
+        func orphanResult() {
+            let r = CLIClient.OutputRenderer()
+            #expect(r.toolResult(name: "ls", status: done) == "⚙ ls\n  ✓ done — All good.\n")
+        }
+
+        @Test("a user message is separated from the reply by a blank line")
+        func userMessageSpacing() {
+            let r = CLIClient.OutputRenderer()
+            #expect(r.delta("hi\n") == "> hi\n")
+            #expect(r.streamEnd() == "\n")
+            #expect(r.userMessageSent() == "\n")
+            // The reply is a fresh prefixed message.
+            #expect(r.delta("next\n") == "> next\n")
         }
     }
 
