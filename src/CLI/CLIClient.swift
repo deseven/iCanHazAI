@@ -196,9 +196,9 @@ enum CLIClient {
             if isAppRunning() {
                 // The app is up but hasn't created the socket yet (still
                 // initializing) — wait for it instead of spawning a copy.
-                stderr("waiting for iCanHazAI's control socket…")
+                stderr("Waiting for iCanHazAI's control socket...")
             } else {
-                stderr("iCanHazAI is not running — starting it in the background…")
+                stderr("iCanHazAI is not running — starting it in the background...")
                 spawnHeadlessApp()
             }
             let deadline = Date().addingTimeInterval(60)
@@ -207,7 +207,7 @@ enum CLIClient {
                 fd = try? UnixSocket.connect(path: socketPath)
             }
             guard fd != nil else {
-                stderr("timed out waiting for iCanHazAI's control socket.")
+                stderr("Timed out waiting for iCanHazAI's control socket.")
                 return nil
             }
         }
@@ -216,7 +216,7 @@ enum CLIClient {
         do {
             try conn.send(.hello(pid: getpid(), client: "cli", protocolVersion: CLIProtocol.version))
         } catch {
-            stderr("failed to greet iCanHazAI — \(error.localizedDescription)")
+            stderr("Failed to greet iCanHazAI — \(error.localizedDescription)")
             conn.close()
             return nil
         }
@@ -257,7 +257,7 @@ enum CLIClient {
                             params: CLIRequestParams(message: message, role: opts.role, connection: opts.connection, chat: opts.chat, temporary: opts.temporary, workdir: wd.workdir, workdirExplicit: wd.explicit, allowAll: opts.allowAll)
                         )))
                     } catch {
-                        stderr("failed to send the request — \(error.localizedDescription)")
+                        stderr("Failed to send the request — \(error.localizedDescription)")
                         break loop
                     }
                 case .started(let id, _):
@@ -313,11 +313,11 @@ enum CLIClient {
         watchdog.cancel()
 
         if !greeted.get() {
-            stderr("timed out waiting for iCanHazAI's greeting.")
+            stderr("Timed out waiting for iCanHazAI's greeting.")
             return 1
         }
         if !terminated {
-            stderr("connection to iCanHazAI was lost.")
+            stderr("Connection to iCanHazAI was lost.")
             return 1
         }
         return exitCode
@@ -508,7 +508,7 @@ enum CLIClient {
                 // Separate the typed message from the reply with a blank line.
                 _ = writeStdout(renderer.userMessageSent())
             } catch {
-                stderr("failed to send the message — \(error.localizedDescription)")
+                stderr("Failed to send the message — \(error.localizedDescription)")
                 showInputPrompt()
             }
         }
@@ -583,9 +583,9 @@ enum CLIClient {
             case .disconnected:
                 if promptVisible { _ = writeStdout("\n") }
                 if greeted.get() {
-                    stderr("connection to iCanHazAI was lost.")
+                    stderr("Connection to iCanHazAI was lost.")
                 } else {
-                    stderr("timed out waiting for iCanHazAI's greeting.")
+                    stderr("Timed out waiting for iCanHazAI's greeting.")
                 }
                 result = 1
                 break loop
@@ -597,13 +597,13 @@ enum CLIClient {
                     result = 130
                     break loop
                 }
-                quitArmed = true
                 if promptVisible { _ = writeStdout("\n"); promptVisible = false }
                 if !approvalQueue.isEmpty || awaitingDenyReason {
                     // Ctrl-C at a tool confirmation cancels the whole request
                     // — like the GUI's Stop: the pending approval and the
                     // remaining tool calls are cancelled, the stream ends
                     // (done arrives below and returns the input prompt).
+                    quitArmed = true
                     approvalQueue.removeAll()
                     awaitingDenyReason = false
                     exitKeyMode()
@@ -616,6 +616,7 @@ enum CLIClient {
                     }
                     warn("stopped — press ctrl-c again to quit")
                 } else if streaming, let chatFilename {
+                    quitArmed = true
                     try? conn.send(.request(CLIRequest(
                         id: UUID().uuidString,
                         method: CLIRequest.methodChatStop,
@@ -623,8 +624,9 @@ enum CLIClient {
                     )))
                     warn("stopping after the current iteration — press ctrl-c again to quit")
                 } else {
-                    warn("press ctrl-c again to quit")
-                    showInputPrompt()
+                    // Idle at the input prompt: nothing to stop, quit right away.
+                    result = 130
+                    break loop
                 }
             case .input(let bytes):
                 inputBuffer.append(bytes)
@@ -648,7 +650,7 @@ enum CLIClient {
                 case .welcome(_, _, let negotiated):
                     greeted.set(true)
                     guard negotiated >= 2 else {
-                        stderr("interactive mode requires a newer version of the running app — restart iCanHazAI and try again.")
+                        stderr("Interactive mode requires a newer version of the running app — restart iCanHazAI and try again.")
                         result = 1
                         break loop
                     }
@@ -744,10 +746,10 @@ enum CLIClient {
             if process.terminationStatus != 0 {
                 let output = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                stderr("failed to start iCanHazAI — \(output ?? "open exited with \(process.terminationStatus)")")
+                stderr("Failed to start iCanHazAI — \(output ?? "open exited with \(process.terminationStatus)")")
             }
         } catch {
-            stderr("failed to start iCanHazAI — \(error.localizedDescription)")
+            stderr("Failed to start iCanHazAI — \(error.localizedDescription)")
         }
     }
 
