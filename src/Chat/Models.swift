@@ -201,12 +201,18 @@ struct Chat: Codable, Identifiable, Equatable {
     /// to auto-approve for this chat only, via the "Allow for this chat"
     /// button. Appends to the role's auto-allow rules. Completely optional.
     var autoAllow: [String]?
+    /// Tool call names (namespaced) the user explicitly requires approval for
+    /// in this chat, overriding a role-level auto-allow. Together with
+    /// `autoAllow` this lets a chat deviate from role defaults in both
+    /// directions; entries matching the role defaults are never written.
+    /// Completely optional.
+    var autoDeny: [String]?
     /// The rendering target this chat was created from. Nil (and `.rich`)
     /// means the full chat-renderer capabilities; `.plain` means terminal
     /// plain text (CLI-created chats). Completely optional — older chat files
     /// without this key decode as rich.
     var outputRendering: ChatOutputRendering?
-    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, prompt: String? = nil, workingDirectory: String? = nil, mcps: [String]? = nil, title: String? = nil, archive: Bool? = nil, autoAllow: [String]? = nil, outputRendering: ChatOutputRendering? = nil) {
+    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, prompt: String? = nil, workingDirectory: String? = nil, mcps: [String]? = nil, title: String? = nil, archive: Bool? = nil, autoAllow: [String]? = nil, autoDeny: [String]? = nil, outputRendering: ChatOutputRendering? = nil) {
         self.id = id
         self.messages = messages
         self.connection = connection
@@ -217,12 +223,14 @@ struct Chat: Codable, Identifiable, Equatable {
         self.title = title
         self.archive = archive
         self.autoAllow = autoAllow
+        self.autoDeny = autoDeny
         self.outputRendering = outputRendering
     }
 
     enum CodingKeys: String, CodingKey {
         case id, messages, connection, role, prompt, workingDirectory, mcps, title, archive
         case autoAllow = "auto_allow"
+        case autoDeny = "auto_deny"
         case outputRendering = "output_rendering"
     }
 
@@ -243,6 +251,7 @@ struct Chat: Codable, Identifiable, Equatable {
         title = try? c.decode(String.self, forKey: .title)
         archive = try? c.decode(Bool.self, forKey: .archive)
         autoAllow = try? c.decode([String].self, forKey: .autoAllow)
+        autoDeny = try? c.decode([String].self, forKey: .autoDeny)
         outputRendering = try? c.decode(ChatOutputRendering.self, forKey: .outputRendering)
         let wrappers = (try? c.decode([SafeMessage].self, forKey: .messages)) ?? []
         let recovered = wrappers.compactMap(\.message)
@@ -272,6 +281,43 @@ struct Chat: Codable, Identifiable, Equatable {
     /// `distantPast` (which would pin it to the very bottom of the list).
     func lastActivity(fallback: Date) -> Date {
         messages.last?.timestamp ?? fallback
+    }
+}
+
+// MARK: - Per-chat tool approval overrides
+
+extension Chat {
+    /// Whether a tool (by namespaced name, as advertised to the model) is
+    /// effectively auto-approved for this chat: the role default, adjusted by
+    /// the chat's own `autoAllow` / `autoDeny` lists. A deny entry always wins.
+    func isToolAutoApproved(namespacedName: String, roleDefault: Bool) -> Bool {
+        if autoDeny?.contains(namespacedName) == true { return false }
+        return roleDefault || (autoAllow?.contains(namespacedName) ?? false)
+    }
+
+    /// Sets the per-chat auto-approval state for a tool, relative to the
+    /// role's default. When the target state matches the role default, both
+    /// override lists are cleaned of the entry (nothing extra is persisted);
+    /// otherwise the entry lands in `autoAllow` (approved) or `autoDeny`
+    /// (requires approval). Empty lists are normalized back to nil.
+    mutating func setToolAutoApproval(namespacedName: String, approved: Bool, roleDefault: Bool) {
+        autoAllow?.removeAll { $0 == namespacedName }
+        autoDeny?.removeAll { $0 == namespacedName }
+        if approved != roleDefault {
+            if approved {
+                autoAllow = (autoAllow ?? []) + [namespacedName]
+            } else {
+                autoDeny = (autoDeny ?? []) + [namespacedName]
+            }
+        }
+        if autoAllow?.isEmpty == true { autoAllow = nil }
+        if autoDeny?.isEmpty == true { autoDeny = nil }
+    }
+
+    /// Flips the effective per-chat auto-approval state for a tool.
+    mutating func toggleToolAutoApproval(namespacedName: String, roleDefault: Bool) {
+        let current = isToolAutoApproved(namespacedName: namespacedName, roleDefault: roleDefault)
+        setToolAutoApproval(namespacedName: namespacedName, approved: !current, roleDefault: roleDefault)
     }
 }
 

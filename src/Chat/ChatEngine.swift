@@ -2111,11 +2111,12 @@ actor ChatEngine {
 
         // Auto-allow: if the role marks this tool (or all tools from this
         // source) as auto-approved, or the user previously allowed this tool
-        // for this chat ("Allow for this chat"), skip the approval prompt.
+        // for this chat ("Allow for this chat"), skip the approval prompt —
+        // unless the chat explicitly re-requires approval for it (auto_deny).
         let chat = records.first(where: { $0.filename == filename })?.chat
         let resolved = chat.map { resolvedToolSources(for: $0) } ?? []
-        let autoAllowed = (resolved.first(where: { $0.name == sourceName })?.autoAllows(tool: toolName) ?? false)
-            || (chat?.autoAllow?.contains(call.name) ?? false)
+        let roleAllows = resolved.first(where: { $0.name == sourceName })?.autoAllows(tool: toolName) ?? false
+        let autoAllowed = chat?.isToolAutoApproved(namespacedName: call.name, roleDefault: roleAllows) ?? roleAllows
         // Working directory + isolation for built-in groups.
         let workdir = chat.flatMap { effectiveWorkingDirectory(for: $0) }
         let isolation = resolved.first(where: { $0.name == sourceName })?.directoryIsolation ?? false
@@ -2320,10 +2321,19 @@ actor ChatEngine {
         if let idx = records.firstIndex(where: { $0.filename == pending.filename }),
            var chat = records[idx].chat,
            let call = chat.messages.lazy.compactMap(\.toolCalls).joined().first(where: { $0.id == callID }) {
+            var changed = false
+            if chat.autoDeny?.contains(call.name) == true {
+                chat.autoDeny?.removeAll { $0 == call.name }
+                if chat.autoDeny?.isEmpty == true { chat.autoDeny = nil }
+                changed = true
+            }
             var allowed = chat.autoAllow ?? []
             if !allowed.contains(call.name) {
                 allowed.append(call.name)
                 chat.autoAllow = allowed
+                changed = true
+            }
+            if changed {
                 records[idx].chat = chat
                 saveChat(chat, filename: pending.filename)
                 debugLog("Tool", "auto-allowing \(call.name) for chat \(pending.filename)")
@@ -2808,6 +2818,82 @@ actor ChatEngine {
         emit(.chatsChanged(records))
     }
 
+    /// Builds the tool snapshot for the chat-info sidebar: every tool currently
+    /// available to the chat, split into built-in groups and external (custom
+    /// MCP) sources, each entry carrying its effective auto-approval state
+    /// (role default adjusted by the chat's `auto_allow` / `auto_deny`).
+    /// Read-only: uses cached MCP tool lists and never starts on-demand
+    /// servers, so servers that are down simply contribute no tools.
+    func toolSnapshot(filename: String) async -> ChatToolSnapshot {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }),
+              let chat = records[idx].chat else { return ChatToolSnapshot(builtin: [], external: []) }
+        let resolved = resolvedToolSources(for: chat)
+        let sshWorkdir = effectiveWorkingDirectory(for: chat).map { SSHSpec.isSSH($0) } ?? false
+        var builtin: [ChatToolEntry] = []
+        var external: [ChatToolEntry] = []
+        for r in resolved {
+            if r.isBuiltinGroup {
+                let roleAllow = Set(r.toolsFilter)
+                for tool in BuiltinTools.tools(for: r.name) {
+                    if sshWorkdir, BuiltinTools.sshUnavailableToolNames.contains(tool.name) { continue }
+                    if !roleAllow.isEmpty && !roleAllow.contains(tool.name) { continue }
+                    builtin.append(ChatToolEntry(
+                        name: tool.name,
+                        description: tool.description,
+                        autoApproved: chat.isToolAutoApproved(namespacedName: tool.name, roleDefault: r.autoAllows(tool: tool.name)),
+                        roleAutoApproved: r.autoAllows(tool: tool.name)
+                    ))
+                }
+            } else {
+                guard let tools = await MCPManager.shared.cachedTools(for: r.name) else { continue }
+                let serverConfig = await MCPManager.shared.serverConfig(for: r.name)
+                let serverAllow = Set(serverConfig?.tools ?? [])
+                let roleAllow = Set(r.toolsFilter)
+                let prefix = serverConfig?.prefix ?? r.name
+                for tool in tools {
+                    if !serverAllow.isEmpty && !serverAllow.contains(tool.name) { continue }
+                    if !roleAllow.isEmpty && !roleAllow.contains(tool.name) { continue }
+                    let namespaced = prefix.isEmpty ? tool.name : "\(prefix)_\(tool.name)"
+                    external.append(ChatToolEntry(
+                        name: namespaced,
+                        description: tool.description ?? "",
+                        autoApproved: chat.isToolAutoApproved(namespacedName: namespaced, roleDefault: r.autoAllows(tool: tool.name)),
+                        roleAutoApproved: r.autoAllows(tool: tool.name)
+                    ))
+                }
+            }
+        }
+        return ChatToolSnapshot(
+            builtin: Self.deduplicated(builtin),
+            external: Self.deduplicated(external)
+        )
+    }
+
+    /// Dedupes entries by name (first occurrence wins) and sorts them
+    /// alphabetically, mirroring the request-time tool dedup.
+    private static func deduplicated(_ entries: [ChatToolEntry]) -> [ChatToolEntry] {
+        var seen = Set<String>()
+        return entries
+            .filter { seen.insert($0.name).inserted }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Toggles the effective auto-approval state of a single tool for a chat,
+    /// relative to the role's default, and persists the chat. When the new
+    /// state matches the role default no override is written. Tool names that
+    /// aren't currently available to the chat are ignored.
+    func toggleToolAutoApproval(filename: String, toolName: String) async {
+        guard records.contains(where: { $0.filename == filename }) else { return }
+        await ensureChatLoaded(filename: filename)
+        let snapshot = await toolSnapshot(filename: filename)
+        guard let entry = (snapshot.builtin + snapshot.external).first(where: { $0.name == toolName }) else { return }
+        guard let idx = records.firstIndex(where: { $0.filename == filename }),
+              var chat = records[idx].chat else { return }
+        chat.toggleToolAutoApproval(namespacedName: toolName, roleDefault: entry.roleAutoApproved)
+        saveChat(chat, filename: filename)
+        emit(.chatsChanged(records))
+    }
+
     /// Updates the per-chat custom MCP selection (names of active servers).
     /// Only meaningful when the chat's role allows MCP overrides; the engine
     /// stores the value regardless and resolution falls back to it.
@@ -2867,6 +2953,26 @@ enum ToolApproval: Sendable {
             ? "User denied this tool call"
             : "User denied this tool call with the following reason: \(trimmed)"
     }
+}
+
+/// One tool row for the chat-info sidebar: the namespaced display name (what
+/// the model sees), the description (empty when the tool provides none), and
+/// the effective auto-approval state for the chat.
+struct ChatToolEntry: Equatable, Sendable {
+    let name: String
+    let description: String
+    /// Effective state: role default adjusted by per-chat overrides.
+    let autoApproved: Bool
+    /// The role's default auto-approval state, used when toggling so a state
+    /// matching the default persists no override.
+    let roleAutoApproved: Bool
+}
+
+/// The tools available to a chat, split into built-in groups ("Tools") and
+/// external custom MCP servers ("External Tools"), each sorted alphabetically.
+struct ChatToolSnapshot: Equatable, Sendable {
+    var builtin: [ChatToolEntry]
+    var external: [ChatToolEntry]
 }
 
 /// A tool-call approval awaiting a user decision, stored in

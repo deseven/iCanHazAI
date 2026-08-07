@@ -9,6 +9,11 @@ import SwiftUI
 struct ChatInfoSidebar: View {
     @EnvironmentObject var store: AppViewModel
 
+    /// The tools available to the selected chat, fetched from the engine.
+    /// Refetched whenever `toolRefreshKey` changes (role, per-chat overrides,
+    /// MCP configuration, etc.).
+    @State private var toolSnapshot: ChatToolSnapshot?
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -33,9 +38,28 @@ struct ChatInfoSidebar: View {
                     Section("Usage") {
                         LabeledContent("Tokens", value: item.tokenCount.map { "\($0)" } ?? "N/A")
                     }
+                    if let snapshot = toolSnapshot {
+                        if !snapshot.builtin.isEmpty {
+                            Section("Tools") {
+                                ToolTagCloud(tools: snapshot.builtin) { name in
+                                    store.toggleChatToolAutoApproval(toolName: name)
+                                }
+                            }
+                        }
+                        if !snapshot.external.isEmpty {
+                            Section("External Tools") {
+                                ToolTagCloud(tools: snapshot.external) { name in
+                                    store.toggleChatToolAutoApproval(toolName: name)
+                                }
+                            }
+                        }
+                    }
                 }
                 .formStyle(.grouped)
                 .scrollContentBackground(.hidden)
+                .task(id: toolRefreshKey(for: item)) {
+                    toolSnapshot = await store.chatToolSnapshot()
+                }
             } else {
                 Spacer()
                 Text("No chat selected")
@@ -48,6 +72,35 @@ struct ChatInfoSidebar: View {
     }
 
     // MARK: - Helpers
+
+    /// Everything that can change the tool list or its approval states: the
+    /// chat itself, its role, its per-chat MCP selection and approval
+    /// overrides, the role definitions (a role edit may change defaults), the
+    /// MCP configs, and the MCP configuration pass counter (tools coming and
+    /// going as servers are reconfigured).
+    private func toolRefreshKey(for item: ChatRecord) -> ToolRefreshKey {
+        ToolRefreshKey(
+            filename: item.filename,
+            role: item.chat?.role,
+            chatMCPs: item.chat?.mcps ?? [],
+            autoAllow: item.chat?.autoAllow ?? [],
+            autoDeny: item.chat?.autoDeny ?? [],
+            roles: store.roles,
+            mcps: store.mcps,
+            mcpConfigurationVersion: store.mcpConfigurationVersion
+        )
+    }
+
+    private struct ToolRefreshKey: Hashable {
+        let filename: String
+        let role: String?
+        let chatMCPs: [String]
+        let autoAllow: [String]
+        let autoDeny: [String]
+        let roles: [Role]
+        let mcps: [MCPServer]
+        let mcpConfigurationVersion: Int
+    }
 
     private func displayName(for item: ChatRecord) -> String {
         if let title = item.chat?.title, !title.isEmpty {
@@ -91,5 +144,92 @@ private struct InfoCell: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 2)
+    }
+}
+
+/// A wrapping cloud of tool tags. Auto-approved tools are green, tools that
+/// require user confirmation are gray; clicking a tag flips its state.
+private struct ToolTagCloud: View {
+    let tools: [ChatToolEntry]
+    let onToggle: (String) -> Void
+
+    var body: some View {
+        FlowLayout(spacing: 6) {
+            ForEach(tools, id: \.name) { tool in
+                ToolTag(tool: tool) { onToggle(tool.name) }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+/// A single tool tag: a capsule with the tool name, tinted by approval state.
+/// Hovering shows the tool's description as a tooltip.
+private struct ToolTag: View {
+    let tool: ChatToolEntry
+    let action: () -> Void
+
+    /// Tool descriptions can be huge (e.g. apply_patch); the tooltip shows
+    /// only the first 300 characters, terminated by an ellipsis when cut.
+    private var tooltip: String {
+        tool.description.count <= 300 ? tool.description : String(tool.description.prefix(300)) + "..."
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(tool.name)
+                .font(.caption)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule().fill(tool.autoApproved ? Color.green.opacity(0.25) : Color.gray.opacity(0.15))
+                )
+                .overlay(
+                    Capsule().strokeBorder(tool.autoApproved ? Color.green.opacity(0.6) : Color.gray.opacity(0.4))
+                )
+        }
+        .buttonStyle(.plain)
+        .help(tool.description.isEmpty ? tool.name : tooltip)
+    }
+}
+
+/// A minimal left-aligned flow layout: subviews are placed row by row,
+/// wrapping to the next row when they exceed the available width.
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        var point = CGPoint.zero
+        var rowHeight: CGFloat = 0
+        var maxWidth: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if point.x > 0, point.x + size.width > width {
+                point.x = 0
+                point.y += rowHeight + spacing
+                rowHeight = 0
+            }
+            point.x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+            maxWidth = max(maxWidth, point.x - spacing)
+        }
+        return CGSize(width: maxWidth, height: point.y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var point = bounds.origin
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if point.x > bounds.minX, point.x + size.width > bounds.maxX {
+                point.x = bounds.minX
+                point.y += rowHeight + spacing
+                rowHeight = 0
+            }
+            subview.place(at: point, proposal: ProposedViewSize(size))
+            point.x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
     }
 }

@@ -129,6 +129,9 @@ final class AppViewModel: ObservableObject {
     @Published var showWorkdirPicker: Bool = false
     /// Whether the MCP picker sheet is currently shown.
     @Published var showMCPPicker: Bool = false
+    /// Monotonic counter bumped on every MCP configuration state change, so
+    /// views displaying live MCP tool lists know when to refetch.
+    @Published var mcpConfigurationVersion: Int = 0
 
     // MARK: - Private
 
@@ -430,6 +433,9 @@ final class AppViewModel: ObservableObject {
             self.mcps = mcps
         case .mcpConfiguration(let state):
             LoaderController.shared.setMCPState(state)
+            // Bump so views showing live MCP tool lists (chat info sidebar)
+            // refetch once a configuration pass changes the discovered tools.
+            mcpConfigurationVersion += 1
         case .loaderActivity(let activity):
             LoaderController.shared.applicationStarted(activity.counts, refreshCounts: activity.refreshCounts)
         case .configChanged:
@@ -1001,6 +1007,20 @@ final class AppViewModel: ObservableObject {
     func setChatMCPs(_ names: [String]) {
         guard let filename = selectedChatID else { return }
         Task { await engine.setChatMCPs(filename: filename, names: names) }
+    }
+
+    /// The tools available to the selected chat (built-in groups + external
+    /// MCP servers), for the chat info sidebar. Nil when no chat is selected.
+    func chatToolSnapshot() async -> ChatToolSnapshot? {
+        guard let filename = selectedChatID else { return nil }
+        return await engine.toolSnapshot(filename: filename)
+    }
+
+    /// Toggles the per-chat auto-approval state of a tool for the selected
+    /// chat, relative to the role's defaults (persisted by the engine).
+    func toggleChatToolAutoApproval(toolName: String) {
+        guard let filename = selectedChatID else { return }
+        Task { await engine.toggleToolAutoApproval(filename: filename, toolName: toolName) }
     }
 
     /// Maximum number of recently used working directories kept in the app
