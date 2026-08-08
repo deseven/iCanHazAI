@@ -129,7 +129,7 @@ Bundles a prompt, connection, working directory, and tools. Tools come from two 
 
 1. **Built-in tool groups** — `[utils]`, `[filesystem]`, `[code]`, `[shell]`, `[web]`. These run in-process (no subprocess). A group is enabled simply by mentioning it; an empty group (e.g. `[utils]` with no keys) enables all its tools with defaults. Each group accepts:
    - `tools` — allowlist (empty/missing = all). `auto_allow` — tools to auto-approve (empty/missing = none). `auto_allow_all = true` — auto-approve everything.
-   - `directory_isolation = true` (Filesystem/Code only) — isolate to the working directory (chroot-like). Only supported on these two groups; setting it on any other group (including Shell) is a validation error.
+   - `directory_isolation = true` (Filesystem/Code only) — isolate to the working directory (chroot-like). Only supported on these two groups; setting it on any other group (including Shell) is a validation error. Enabling it while the `[shell]` group is also selected is a validation error too — shell tools are not directory-isolated, so the model could escape the confinement.
 
 2. **Custom MCP servers** — `[[mcps]]` array-of-tables entries, each with `mcp = "<name>"` (matching a configured MCP server), plus `tools`/`auto_allow`/`auto_allow_all`.
 
@@ -148,6 +148,7 @@ A chat's working directory is permanent, like its role: it is set exactly once �
 1. Referencing a connection, prompt, or MCP server that doesn't exist (`connection`, `prompt`, or a `[[mcps]]` entry with no matching config on disk). A broken-but-present config still counts as existing — it surfaces its own error instead.
 2. Setting `working_directory` without selecting at least one workdir-capable group (Filesystem, Code, or Shell). Nothing would consume the directory, so the setting is meaningless.
 3. Setting `directory_isolation = true` on any group other than Filesystem and Code. Isolation always needs a directory to isolate to — but it doesn't have to come from the role: when `working_directory` is omitted, the user is forced to pick one (Filesystem/Code can't run without a directory), so `directory_isolation` without `working_directory` is valid.
+4. Setting `directory_isolation = true` (on Filesystem and/or Code) while also selecting the `[shell]` group. Shell tools are not directory-isolated, so the model could escape the confinement — remove either the isolation or the Shell group.
 
 When fixing a role that errored on a missing reference, first check whether the entity was simply renamed: `list_connections`/`list_prompts`/`list_mcps` and look for a similarly named or same-purpose entry, then point the role at it. If nothing relevant exists, ask the user what to do — recreate the missing entity, change the role to reference something else or remove the reference (in case of MCPs). Don't silently drop the reference.
 

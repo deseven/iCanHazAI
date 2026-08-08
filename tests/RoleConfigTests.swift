@@ -311,6 +311,75 @@ extension AllAppTests {
             #expect(config.code?.directoryIsolation == true)
         }
 
+        // MARK: - Validation: directory_isolation combined with the Shell group
+
+        @Test("Role validation rejects directory_isolation on Filesystem when Shell is enabled")
+        func validationRejectsIsolationWithShellFilesystem() throws {
+            let toml = """
+            prompt = "Developer"
+
+            [filesystem]
+            directory_isolation = true
+
+            [shell]
+            """
+            let data = Data(toml.utf8)
+            #expect(throws: ConfigValidationError.self) {
+                try ConfigValidation.decodeRole(data)
+            }
+        }
+
+        @Test("Role validation rejects directory_isolation on Code when Shell is enabled")
+        func validationRejectsIsolationWithShellCode() throws {
+            let toml = """
+            prompt = "Developer"
+
+            [code]
+            directory_isolation = true
+
+            [shell]
+            """
+            let data = Data(toml.utf8)
+            #expect(throws: ConfigValidationError.self) {
+                try ConfigValidation.decodeRole(data)
+            }
+        }
+
+        @Test("directory_isolation + Shell error explains the escape risk")
+        func validationIsolationWithShellMessage() throws {
+            let toml = """
+            prompt = "Developer"
+
+            [filesystem]
+            directory_isolation = true
+
+            [shell]
+            """
+            let data = Data(toml.utf8)
+            do {
+                _ = try ConfigValidation.decodeRole(data)
+                Issue.record("expected validation to reject directory_isolation combined with Shell")
+            } catch let error as ConfigValidationError {
+                #expect(error.message.contains("Shell"))
+                #expect(error.message.contains("NOT directory-isolated"))
+                #expect(error.message.contains("escape"))
+            }
+        }
+
+        @Test("Role validation accepts the Shell group without directory_isolation")
+        func validationAcceptsShellWithoutIsolation() throws {
+            let toml = """
+            prompt = "Developer"
+
+            [filesystem]
+
+            [shell]
+            """
+            let data = Data(toml.utf8)
+            let config = try ConfigValidation.decodeRole(data)
+            #expect(config.shell != nil)
+        }
+
         // MARK: - Validation: bundled role (Configurator) goes through validation
 
         @Test("bundledRole returns nil for an invalid protected built-in")
@@ -595,6 +664,81 @@ extension AllAppTests {
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
             #expect(!AppViewModel.workdirPickerEnabled(role: role, chatWorkingDirectory: nil))
+        }
+
+        // MARK: - workdirPickerVisible (toolbar control)
+
+        /// A Filesystem role with a pre-set working directory.
+        private func presetRole(_ dir: String) throws -> Role {
+            let toml = """
+            prompt = "Developer"
+            working_directory = "\(dir)"
+
+            [filesystem]
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            return Role(name: "Developer", config: config)
+        }
+
+        @Test("workdirPickerVisible is true for a pre-set non-home directory")
+        func pickerVisibleForPresetDir() throws {
+            #expect(AppViewModel.workdirPickerVisible(role: try presetRole("/tmp/proj")))
+            #expect(AppViewModel.workdirPickerVisible(role: try presetRole("~/projects")))
+            #expect(AppViewModel.workdirPickerVisible(role: try presetRole("nas:/var/www")))
+        }
+
+        @Test("workdirPickerVisible is false when the role pre-sets the home directory")
+        func pickerHiddenForHomePreset() throws {
+            #expect(!AppViewModel.workdirPickerVisible(role: try presetRole("~")))
+            #expect(!AppViewModel.workdirPickerVisible(role: try presetRole("~/")))
+            #expect(!AppViewModel.workdirPickerVisible(role: try presetRole(NSHomeDirectory())))
+        }
+
+        @Test("workdirPickerVisible is true with directory-relevant tools and no pre-set dir")
+        func pickerVisibleForPickerRole() throws {
+            #expect(AppViewModel.workdirPickerVisible(role: try pickerRole()))
+        }
+
+        @Test("workdirPickerVisible is false without directory-relevant tools and no pre-set dir")
+        func pickerVisibleForShellOnly() throws {
+            let toml = """
+            prompt = "Developer"
+
+            [shell]
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let role = Role(name: "Developer", config: config)
+            #expect(!AppViewModel.workdirPickerVisible(role: role))
+        }
+
+        @Test("isHomeWorkdir recognizes home in tilde and expanded forms only")
+        func isHomeWorkdirForms() {
+            #expect(AppViewModel.isHomeWorkdir("~"))
+            #expect(AppViewModel.isHomeWorkdir("~/"))
+            #expect(AppViewModel.isHomeWorkdir(NSHomeDirectory()))
+            #expect(!AppViewModel.isHomeWorkdir("/tmp"))
+            #expect(!AppViewModel.isHomeWorkdir("~/projects"))
+            #expect(!AppViewModel.isHomeWorkdir("nas:/var/www"))
+        }
+
+        // MARK: - workdirIcon (toolbar symbol)
+
+        @Test("workdirIcon is questionmark.folder when no directory is picked")
+        func workdirIconNoDirectory() {
+            #expect(AppViewModel.workdirIcon(directory: nil, isolated: false) == "questionmark.folder")
+            #expect(AppViewModel.workdirIcon(directory: "", isolated: false) == "questionmark.folder")
+            // Isolation doesn't matter until a directory is picked.
+            #expect(AppViewModel.workdirIcon(directory: nil, isolated: true) == "questionmark.folder")
+        }
+
+        @Test("workdirIcon is folder.circle for an isolated directory")
+        func workdirIconIsolated() {
+            #expect(AppViewModel.workdirIcon(directory: "/tmp/proj", isolated: true) == "folder.circle")
+        }
+
+        @Test("workdirIcon is folder for a non-isolated directory")
+        func workdirIconPlain() {
+            #expect(AppViewModel.workdirIcon(directory: "/tmp/proj", isolated: false) == "folder")
         }
     }
 }

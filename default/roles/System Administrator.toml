@@ -1,5 +1,5 @@
 description = "System administration agent for editing configs and troubleshooting issues."
-prompt = "Administrator"
+prompt = "System Administrator"
 icon = "terminal"
 accent = "green"
 connection_override_allowed = true

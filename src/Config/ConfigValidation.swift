@@ -83,6 +83,9 @@ enum ConfigValidation {
     ///   have to come from the role: Filesystem/Code can't run without a
     ///   directory, so when `working_directory` is omitted the user is forced
     ///   to pick one per chat.
+    /// - `directory_isolation` (on any group) combined with the Shell group is
+    ///   an error: Shell commands are not directory-isolated, so the model
+    ///   could escape the confinement and the isolation promise would be void.
     static func validateRole(_ config: RoleConfig, references: RoleReferences? = nil) throws {
         if let references {
             if let connection = config.connection, !connection.isEmpty, !references.connectionIDs.contains(connection) {
@@ -141,6 +144,7 @@ enum ConfigValidation {
             (BuiltinTools.utilsGroup, config.utils),
             (BuiltinTools.webGroup, config.web),
         ]
+        var isolationEnabled = false
         for (group, groupConfig) in groupConfigs {
             guard let groupConfig, groupConfig.directoryIsolation == true else { continue }
             if !BuiltinTools.isolationCapableGroups.contains(group) {
@@ -149,6 +153,14 @@ enum ConfigValidation {
                     + "but it is only supported on Filesystem and Code"
                 )
             }
+            isolationEnabled = true
+        }
+
+        if isolationEnabled && config.shell != nil {
+            throw ConfigValidationError(
+                "role config enables directory_isolation but also selects the Shell group; "
+                + "shell tools are NOT directory-isolated, so the model could escape the confinement"
+            )
         }
     }
 

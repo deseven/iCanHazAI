@@ -761,8 +761,33 @@ final class AppViewModel: ObservableObject {
     /// requires a directory (Shell alone defaults to the user's home).
     var selectedChatWorkdirPickerVisible: Bool {
         guard let role = selectedRole else { return false }
-        if role.workingDirectory?.isEmpty == false { return true }
+        return Self.workdirPickerVisible(role: role)
+    }
+
+    /// Pure decision logic behind `selectedChatWorkdirPickerVisible`
+    /// (testable without an app instance). A role pre-set to the home
+    /// directory hides the control: home is the default directory and it
+    /// can't be changed, so there's nothing to show.
+    nonisolated static func workdirPickerVisible(role: Role) -> Bool {
+        if let dir = role.workingDirectory, !dir.isEmpty {
+            return !isHomeWorkdir(dir)
+        }
         return role.hasDirectoryRelevantTools
+    }
+
+    /// Whether the chat info sidebar shows the working-directory section:
+    /// the role selects at least one workdir-capable tool group (Filesystem,
+    /// Code, or Shell), so the chat has a directory worth reporting.
+    var selectedChatWorkdirInfoVisible: Bool {
+        selectedRole?.hasWorkdirCapableMCP ?? false
+    }
+
+    /// Whether the given working directory is the user's home. SSH specs are
+    /// never considered home: a remote spec is always informative.
+    nonisolated static func isHomeWorkdir(_ path: String) -> Bool {
+        guard !SSHSpec.isSSH(path) else { return false }
+        let expanded = ((path as NSString).expandingTildeInPath as NSString).standardizingPath
+        return expanded == (NSHomeDirectory() as NSString).standardizingPath
     }
 
     /// Whether the user can pick a working directory for the selected chat
@@ -791,6 +816,23 @@ final class AppViewModel: ObservableObject {
     var selectedChatWorkdirRequired: Bool {
         guard let role = selectedRole, role.hasDirectoryRelevantTools else { return false }
         return selectedChatWorkingDirectory?.isEmpty ?? true
+    }
+
+    /// Whether the selected chat's working directory is directory-isolated:
+    /// the role enables `directory_isolation` on Filesystem/Code and a
+    /// directory is actually set (picked or pre-set). Drives the ISOLATED
+    /// tag in the chat info sidebar and the toolbar folder icon.
+    var selectedChatWorkdirIsolated: Bool {
+        guard let role = selectedRole, role.hasDirectoryIsolation else { return false }
+        return selectedChatWorkingDirectory?.isEmpty == false
+    }
+
+    /// The toolbar icon for the workdir control: a question-marked folder
+    /// while no directory is picked yet, a circled folder for an isolated
+    /// directory, a plain folder otherwise.
+    nonisolated static func workdirIcon(directory: String?, isolated: Bool) -> String {
+        guard let directory, !directory.isEmpty else { return "questionmark.folder" }
+        return isolated ? "folder.circle" : "folder"
     }
 
     /// Names of the custom MCP servers active for the selected chat: the

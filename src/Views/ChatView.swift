@@ -329,7 +329,10 @@ struct ChatView: View {
                         store.showWorkdirPicker = true
                     } label: {
                         HStack(spacing: 4) {
-                            Image(systemName: "folder")
+                            Image(systemName: AppViewModel.workdirIcon(
+                                directory: store.selectedChatWorkingDirectory,
+                                isolated: store.selectedChatWorkdirIsolated
+                            ))
                             toolbarTag(workdirLabel)
                         }
                         .font(.callout)

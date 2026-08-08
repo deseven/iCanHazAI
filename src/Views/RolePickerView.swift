@@ -83,7 +83,7 @@ struct RolePickerView: View {
 }
 
 /// Inner content of a role picker row: icon, name (with a star when it's the
-/// default role), and a 2-line description. Padding and the selection
+/// default role), and a description. Padding and the selection
 /// highlight are applied by [`PickerDialog`](src/Views/PickerDialog.swift:14).
 private struct RolePickerRowContent: View {
     let role: Role
@@ -109,7 +109,6 @@ private struct RolePickerRowContent: View {
                 Text(role.description)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
             }
             Spacer()
         }

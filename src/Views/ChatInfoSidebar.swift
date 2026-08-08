@@ -31,6 +31,15 @@ struct ChatInfoSidebar: View {
                     Section("Chat") {
                         InfoCell(label: "Name", value: displayName(for: item))
                     }
+                    if store.selectedChatWorkdirInfoVisible {
+                        Section("Working Directory") {
+                            InfoCell(
+                                label: "Path",
+                                value: store.selectedChatWorkingDirectory.map(WorkdirItem.display) ?? "N/A",
+                                tag: store.selectedChatWorkdirIsolated ? "ISOLATED" : nil
+                            )
+                        }
+                    }
                     Section("Timestamps") {
                         InfoCell(label: "Created", value: formatted(createdDate(for: item)))
                         InfoCell(label: "Updated", value: formatted(updatedDate(for: item)))
@@ -129,19 +138,31 @@ struct ChatInfoSidebar: View {
 }
 
 /// A stacked label+value cell: label on the first line, value (possibly multiline)
-/// below it. Never breaks the layout regardless of value length.
+/// below it, optionally followed by a grey-capsule tag. Never breaks the
+/// layout regardless of value length.
 private struct InfoCell: View {
     let label: String
     let value: String
+    var tag: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text(value)
-                .font(.body)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 6) {
+                Text(value)
+                    .font(.body)
+                if let tag {
+                    Text(tag)
+                        .font(.caption)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Color.secondary.opacity(0.15))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 2)
     }
