@@ -221,20 +221,18 @@ actor ChatEngine {
         Task { await MCPManager.shared.setStatusHandler { [weak self] state in
             Task { await self?.handleMCPConfigurationState(state) }
         } }
-        loadFromCache()
-        let rolesResult = env.loadAllRolesReportingErrors()
-        roles = rolesResult.loaded
-        replaceConfigErrors(kind: .role, with: rolesResult.errors)
-        let promptsResult = env.loadAllPromptsReportingErrors()
-        prompts = promptsResult.loaded
-        replaceConfigErrors(kind: .prompt, with: promptsResult.errors)
-        let connsResult = env.loadConnectionsReportingErrors()
-        connections = connsResult.loaded
-        replaceConfigErrors(kind: .connection, with: connsResult.errors)
-        let mcpsResult = env.loadMCPsReportingErrors()
-        customMcps = mcpsResult.loaded
+        // Load in dependency order: connections / MCPs / prompts first, then
+        // roles (validated against them), then chats from the cache.
+        let snapshot = env.loadEnvironment()
+        connections = snapshot.connections
+        customMcps = snapshot.mcps
         rebuildMcpList()
-        replaceConfigErrors(kind: .mcpConfig, with: mcpsResult.errors)
+        prompts = snapshot.prompts
+        roles = snapshot.roles
+        for kind in [ConfigError.Kind.connection, .mcpConfig, .prompt, .role] {
+            replaceConfigErrors(kind: kind, with: snapshot.errors.filter { $0.kind == kind })
+        }
+        loadFromCache()
         startWatching()
         debugLog("Engine", "start complete — \(records.count) chats, \(connections.count) connections, \(mcps.count) MCP servers, \(roles.count) roles, \(prompts.count) prompts")
         emit(.chatsChanged(records))
@@ -699,7 +697,7 @@ actor ChatEngine {
         switch event {
         case .itemCreated, .itemClonedAtPath, .itemDataModified, .itemRenamed:
             // Reload the single role and merge into the in-memory list.
-            let (role, error) = env.loadSingleRoleReportingError(name: name)
+            let (role, error) = env.loadSingleRoleReportingError(name: name, references: knownRoleReferences())
             if let role {
                 if let idx = roles.firstIndex(where: { $0.name == name }) {
                     roles[idx] = role
@@ -753,10 +751,12 @@ actor ChatEngine {
                 }
             }
             emit(.promptsChanged(prompts))
+            revalidateRoles()
         case .itemRemoved:
             prompts.removeAll(where: { $0.name == name })
             clearConfigError(kind: .prompt, name: name)
             emit(.promptsChanged(prompts))
+            revalidateRoles()
         default:
             break
         }
@@ -774,6 +774,7 @@ actor ChatEngine {
             connections = result.loaded
             replaceConfigErrors(kind: .connection, with: result.errors)
             emit(.connectionsChanged(connections))
+            revalidateRoles()
         default:
             break
         }
@@ -782,7 +783,8 @@ actor ChatEngine {
     /// Handles an FSEvent for an MCP config file. On create/modify/rename, the
     /// server config is (re)loaded into memory and a single-flight reconfigure
     /// is scheduled for that server in `MCPManager`. On remove, the server is
-    /// forgotten (disconnected + caches cleared).
+    /// forgotten (disconnected + caches cleared). Every change revalidates
+    /// roles, since they may reference the added/removed server.
     private func handleMCPFileEvent(_ event: FSEvent, url: URL) {
         let name = url.deletingPathExtension().lastPathComponent
         switch event {
@@ -815,15 +817,43 @@ actor ChatEngine {
                 }
                 scheduleForget(name)
             }
+            revalidateRoles()
         case .itemRemoved:
             customMcps.removeAll(where: { $0.name == name })
             rebuildMcpList()
             clearConfigError(kind: .mcpConfig, name: name)
             clearConfigError(kind: .mcpFailure, name: name)
             scheduleForget(name)
+            revalidateRoles()
         default:
             break
         }
+    }
+
+    /// The reference sets roles are validated against, built from in-memory
+    /// state: loaded entities plus configs that failed to decode (a broken
+    /// config still exists on disk and reports its own error, so roles
+    /// referencing it are not flagged for a missing entity).
+    private func knownRoleReferences() -> RoleReferences {
+        func errorNames(_ kind: ConfigError.Kind) -> Set<String> {
+            Set(configErrorMap.values.filter { $0.kind == kind }.map(\.entityName))
+        }
+        return RoleReferences(
+            connectionIDs: Set(connections.map(\.id)).union(errorNames(.connection)),
+            promptNames: Set(prompts.map(\.name)).union(errorNames(.prompt)),
+            mcpNames: Set(customMcps.map(\.name)).union(errorNames(.mcpConfig))
+        )
+    }
+
+    /// Reloads all roles against the current reference sets. Called when a
+    /// connection, prompt, or MCP config appears/disappears so roles
+    /// referencing it flip between valid and invalid without waiting for a
+    /// role-file event.
+    private func revalidateRoles() {
+        let result = env.loadAllRolesReportingErrors(references: knownRoleReferences())
+        roles = result.loaded
+        replaceConfigErrors(kind: .role, with: result.errors)
+        emit(.rolesChanged(roles))
     }
 
     /// Handles an FSEvent for `config.toml`. Reloads the config and emits
@@ -857,20 +887,18 @@ actor ChatEngine {
             .prompts: env.promptCount(),
             .roles: env.roleCount(),
         ])))
-        fullRescanChats()
-        let rolesResult = env.loadAllRolesReportingErrors()
-        roles = rolesResult.loaded
-        replaceConfigErrors(kind: .role, with: rolesResult.errors)
-        let promptsResult = env.loadAllPromptsReportingErrors()
-        prompts = promptsResult.loaded
-        replaceConfigErrors(kind: .prompt, with: promptsResult.errors)
-        let connsResult = env.loadConnectionsReportingErrors()
-        connections = connsResult.loaded
-        replaceConfigErrors(kind: .connection, with: connsResult.errors)
-        let mcpsResult = env.loadMCPsReportingErrors()
-        customMcps = mcpsResult.loaded
+        // Load in dependency order: connections / MCPs / prompts first, then
+        // roles (validated against them), then chats.
+        let snapshot = env.loadEnvironment()
+        connections = snapshot.connections
+        customMcps = snapshot.mcps
         rebuildMcpList()
-        replaceConfigErrors(kind: .mcpConfig, with: mcpsResult.errors)
+        prompts = snapshot.prompts
+        roles = snapshot.roles
+        for kind in [ConfigError.Kind.connection, .mcpConfig, .prompt, .role] {
+            replaceConfigErrors(kind: kind, with: snapshot.errors.filter { $0.kind == kind })
+        }
+        fullRescanChats()
         emit(.rolesChanged(roles))
         emit(.promptsChanged(prompts))
         emit(.connectionsChanged(connections))

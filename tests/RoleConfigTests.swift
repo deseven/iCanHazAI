@@ -356,6 +356,9 @@ extension AllAppTests {
             """
             try Data(roleTOML.utf8).write(to: env.env.rolesURL.appendingPathComponent("Tester.toml"))
             try Data("# You are a tester".utf8).write(to: env.env.promptsURL.appendingPathComponent("Tester.md"))
+            // Role reference validation requires the MCP config to exist.
+            try Data("transport = \"stdio\"\ncommand = \"echo hi\"\n".utf8)
+                .write(to: env.env.mcpsURL.appendingPathComponent("Tavily.toml"))
 
             let roles = env.env.loadAllRoles()
             // The protected built-in configurator is always present from the

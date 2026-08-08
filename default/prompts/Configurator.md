@@ -145,8 +145,11 @@ A chat's working directory is permanent, like its role: it is set exactly once �
 - `directory_isolation` (per group) — isolate Filesystem/Code to the working directory.
 
 **Validation errors** (the role fails to load and surfaces a config error):
-1. Setting `working_directory` without selecting at least one workdir-capable group (Filesystem, Code, or Shell). Nothing would consume the directory, so the setting is meaningless.
-2. Setting `directory_isolation = true` on any group other than Filesystem and Code. Isolation always needs a directory to isolate to — but it doesn't have to come from the role: when `working_directory` is omitted, the user is forced to pick one (Filesystem/Code can't run without a directory), so `directory_isolation` without `working_directory` is valid.
+1. Referencing a connection, prompt, or MCP server that doesn't exist (`connection`, `prompt`, or a `[[mcps]]` entry with no matching config on disk). A broken-but-present config still counts as existing — it surfaces its own error instead.
+2. Setting `working_directory` without selecting at least one workdir-capable group (Filesystem, Code, or Shell). Nothing would consume the directory, so the setting is meaningless.
+3. Setting `directory_isolation = true` on any group other than Filesystem and Code. Isolation always needs a directory to isolate to — but it doesn't have to come from the role: when `working_directory` is omitted, the user is forced to pick one (Filesystem/Code can't run without a directory), so `directory_isolation` without `working_directory` is valid.
+
+When fixing a role that errored on a missing reference, first check whether the entity was simply renamed: `list_connections`/`list_prompts`/`list_mcps` and look for a similarly named or same-purpose entry, then point the role at it. If nothing relevant exists, ask the user what to do — recreate the missing entity, change the role to reference something else or remove the reference (in case of MCPs). Don't silently drop the reference.
 
 **Toolbar behavior**:
 - `working_directory` set → directory shown, fixed (picker disabled).

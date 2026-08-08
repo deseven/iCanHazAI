@@ -84,12 +84,33 @@ extension AllAppTests {
 
         // MARK: - Roles
 
+        @Test("write_role rejects references to entities that don't exist")
+        func writeRoleRejectsUnknownReferences() async throws {
+            let env = try TempEnv().env
+            let badMCP = await call("write_role", env, ["name": "x", "content": "[[mcps]]\nmcp = \"Ghost\"\n"])
+            #expect(badMCP.isError)
+            #expect(badMCP.content.contains("Ghost"))
+            let badPrompt = await call("write_role", env, ["name": "x", "content": "prompt = \"Ghost\"\n"])
+            #expect(badPrompt.isError)
+            #expect(badPrompt.content.contains("Ghost"))
+            let badConn = await call("write_role", env, ["name": "x", "content": "connection = \"openai/Ghost\"\n"])
+            #expect(badConn.isError)
+            #expect(badConn.content.contains("Ghost"))
+
+            // Once the referenced MCP exists, the same write succeeds.
+            _ = await call("write_mcp", env, ["name": "Real", "content": "transport = \"stdio\"\ncommand = \"echo hi\"\n"])
+            let ok = await call("write_role", env, ["name": "x", "content": "[[mcps]]\nmcp = \"Real\"\n"])
+            #expect(!ok.isError)
+        }
+
         @Test("write_role validates TOML and persists; protected role refused")
         func roleRoundTrip() async throws {
             let env = try TempEnv().env
             let invalid = await call("write_role", env, ["name": "bad", "content": "[[broken"])
             #expect(invalid.isError)
 
+            // The referenced prompt must exist — role reference validation.
+            _ = await call("write_prompt", env, ["name": "Assistant", "content": "hi"])
             let valid = await call("write_role", env, ["name": "Coder", "content": "prompt = \"Assistant\"\n"])
             #expect(!valid.isError)
 
@@ -367,6 +388,7 @@ extension AllAppTests {
         func deleteFlow() async throws {
             let env = try TempEnv().env
             _ = await call("write_mcp", env, ["name": "Temp", "content": "transport = \"stdio\"\n"])
+            _ = await call("write_prompt", env, ["name": "Assistant", "content": "hi"])
             _ = await call("write_role", env, ["name": "Temp", "content": "prompt = \"Assistant\"\n"])
             _ = await call("write_prompt", env, ["name": "Temp", "content": "hi"])
             _ = await call("write_connection", env, ["id": "openai/Temp", "content": "{\"model\":\"m\"}"])

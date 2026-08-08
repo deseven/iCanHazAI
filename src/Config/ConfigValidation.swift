@@ -54,10 +54,12 @@ enum ConfigValidation {
 
     /// Validates and decodes a role (TOML). Beyond TOML decoding, enforces the
     /// cross-field rules documented in [`validateRole`](src/Config/ConfigValidation.swift).
-    static func decodeRole(_ data: Data) throws -> RoleConfig {
+    /// `references` carries the entities a role may point at; when nil the
+    /// reference checks are skipped (used for trusted bundled content).
+    static func decodeRole(_ data: Data, references: RoleReferences? = nil) throws -> RoleConfig {
         do {
             let config = try TOMLDecoder().decode(RoleConfig.self, from: data)
-            try validateRole(config)
+            try validateRole(config, references: references)
             return config
         } catch let error as ConfigValidationError {
             throw error
@@ -68,6 +70,10 @@ enum ConfigValidation {
 
     /// Cross-field validation for a decoded [`RoleConfig`](src/Chat/Models.swift).
     ///
+    /// - `connection`, `prompt`, and every `[[mcps]]` entry must reference an
+    ///   existing entity. Checked only when `references` is provided; a name
+    ///   counts as existing when its config file is on disk, even if that
+    ///   config failed to decode (the broken config reports its own error).
     /// - `working_directory` requires at least one workdir-capable built-in
     ///   group (Filesystem, Code, or Shell). Without one, the directory
     ///   setting is meaningless because nothing consumes it.
@@ -77,7 +83,34 @@ enum ConfigValidation {
     ///   have to come from the role: Filesystem/Code can't run without a
     ///   directory, so when `working_directory` is omitted the user is forced
     ///   to pick one per chat.
-    static func validateRole(_ config: RoleConfig) throws {
+    static func validateRole(_ config: RoleConfig, references: RoleReferences? = nil) throws {
+        if let references {
+            if let connection = config.connection, !connection.isEmpty, !references.connectionIDs.contains(connection) {
+                throw ConfigValidationError(
+                    "role config references unknown connection \"\(connection)\" "
+                    + "(no matching config in the Connections directory)"
+                )
+            }
+            if let prompt = config.prompt, !prompt.isEmpty, !references.promptNames.contains(prompt) {
+                throw ConfigValidationError(
+                    "role config references unknown prompt \"\(prompt)\" "
+                    + "(no matching file in the Prompts directory)"
+                )
+            }
+            if let mcps = config.mcps {
+                var unknown: [String] = []
+                for entry in mcps where !references.mcpNames.contains(entry.mcp) && !unknown.contains(entry.mcp) {
+                    unknown.append(entry.mcp)
+                }
+                if !unknown.isEmpty {
+                    throw ConfigValidationError(
+                        "role config references unknown MCP server(s): \(unknown.map { "\"\($0)\"" }.joined(separator: ", ")) "
+                        + "(no matching config in the MCPs directory)"
+                    )
+                }
+            }
+        }
+
         let enabledGroups = BuiltinTools.groupOrder.filter { group in
             switch group {
             case BuiltinTools.utilsGroup: return config.utils != nil
@@ -127,6 +160,18 @@ enum ConfigValidation {
             throw ConfigValidationError("app config is invalid: \(error)")
         }
     }
+}
+
+/// The entities a role may reference, used by
+/// [`validateRole`](src/Config/ConfigValidation.swift) to check `connection`,
+/// `prompt`, and `[[mcps]]` entries. Built by the loaders from the configs
+/// present on disk; a config that exists but failed to decode still counts as
+/// existing (it reports its own error separately).
+struct RoleReferences: Sendable {
+    /// Connection IDs in `provider/name` form (matches `Connection.id`).
+    var connectionIDs: Set<String>
+    var promptNames: Set<String>
+    var mcpNames: Set<String>
 }
 
 /// A config validation failure with a human-readable reason. Conforms to both

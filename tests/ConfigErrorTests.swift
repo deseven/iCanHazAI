@@ -9,6 +9,10 @@ extension AllAppTests {
     @Suite("Config errors")
     struct ConfigErrorTests {
 
+        /// Reference set matching the `prompt = "Assistant"` fixtures used by
+        /// the reporting-loader tests (the temp env has no seeded prompts).
+        static let assistantRefs = RoleReferences(connectionIDs: [], promptNames: ["Assistant"], mcpNames: [])
+
         // MARK: - Model
 
         @Test("ConfigError id is stable from kind + entity name")
@@ -79,7 +83,7 @@ extension AllAppTests {
             try Data("description = \"broken\n".utf8)
                 .write(to: env.env.rolesURL.appendingPathComponent("Broken.toml"))
 
-            let result = env.env.loadAllRolesReportingErrors()
+            let result = env.env.loadAllRolesReportingErrors(references: Self.assistantRefs)
             let userRoles = result.loaded.filter { !$0.isBuiltin }
             #expect(userRoles.count == 1)
             #expect(userRoles.first?.name == "Good")
@@ -93,22 +97,89 @@ extension AllAppTests {
         func singleRoleReporting() throws {
             let env = try TempEnv()
             // Missing file → (nil, nil).
-            let missing = env.env.loadSingleRoleReportingError(name: "Nope")
+            let missing = env.env.loadSingleRoleReportingError(name: "Nope", references: Self.assistantRefs)
             #expect(missing.role == nil)
             #expect(missing.error == nil)
             // Broken file → (nil, error).
             try Data("description = \"broken\n".utf8)
                 .write(to: env.env.rolesURL.appendingPathComponent("Broken.toml"))
-            let broken = env.env.loadSingleRoleReportingError(name: "Broken")
+            let broken = env.env.loadSingleRoleReportingError(name: "Broken", references: Self.assistantRefs)
             #expect(broken.role == nil)
             #expect(broken.error?.kind == .role)
             #expect(broken.error?.entityName == "Broken")
             // Valid file → (role, nil).
             try Data("description = \"ok\"\nprompt = \"Assistant\"\n".utf8)
                 .write(to: env.env.rolesURL.appendingPathComponent("Good.toml"))
-            let good = env.env.loadSingleRoleReportingError(name: "Good")
+            let good = env.env.loadSingleRoleReportingError(name: "Good", references: Self.assistantRefs)
             #expect(good.role?.name == "Good")
             #expect(good.error == nil)
+        }
+
+        // MARK: - Role reference validation
+
+        @Test("role referencing an unknown MCP server is invalid")
+        func roleWithUnknownMCP() throws {
+            let env = try TempEnv()
+            try Data("description = \"x\"\n[[mcps]]\nmcp = \"Ghost\"\n".utf8)
+                .write(to: env.env.rolesURL.appendingPathComponent("Haunted.toml"))
+
+            let result = env.env.loadAllRolesReportingErrors(references: Self.assistantRefs)
+            #expect(result.loaded.allSatisfy { $0.isBuiltin })
+            let err = try #require(result.errors.first { $0.entityName == "Haunted" })
+            #expect(err.kind == .role)
+            #expect(err.message.contains(#"unknown MCP server(s): "Ghost""#))
+        }
+
+        @Test("role referencing an existing MCP server loads, even when its config is broken")
+        func roleWithExistingMCP() throws {
+            let env = try TempEnv()
+            try Data("description = \"x\"\n[[mcps]]\nmcp = \"Good\"\n[[mcps]]\nmcp = \"Broken\"\n".utf8)
+                .write(to: env.env.rolesURL.appendingPathComponent("Using.toml"))
+            try Data("transport = \"stdio\"\ncommand = \"echo hi\"\n".utf8)
+                .write(to: env.env.mcpsURL.appendingPathComponent("Good.toml"))
+            // Broken config — exists on disk, so the role is still valid; the
+            // MCP reports its own error.
+            try Data("transport = broken\n".utf8)
+                .write(to: env.env.mcpsURL.appendingPathComponent("Broken.toml"))
+
+            let result = env.env.loadAllRolesReportingErrors(references: env.env.knownRoleReferences())
+            let role = try #require(result.loaded.first { $0.name == "Using" })
+            #expect(role.mcpCount == 2)
+            #expect(result.errors.allSatisfy { $0.kind != .role })
+        }
+
+        @Test("role referencing an unknown connection or prompt is invalid")
+        func roleWithUnknownConnectionOrPrompt() throws {
+            let env = try TempEnv()
+            try Data("description = \"x\"\nconnection = \"openai/Ghost\"\n".utf8)
+                .write(to: env.env.rolesURL.appendingPathComponent("NoConn.toml"))
+            try Data("description = \"x\"\nprompt = \"Ghost\"\n".utf8)
+                .write(to: env.env.rolesURL.appendingPathComponent("NoPrompt.toml"))
+
+            let result = env.env.loadAllRolesReportingErrors(references: Self.assistantRefs)
+            #expect(result.loaded.allSatisfy { $0.isBuiltin })
+            let connErr = try #require(result.errors.first { $0.entityName == "NoConn" })
+            #expect(connErr.message.contains(#"unknown connection "openai/Ghost""#))
+            let promptErr = try #require(result.errors.first { $0.entityName == "NoPrompt" })
+            #expect(promptErr.message.contains(#"unknown prompt "Ghost""#))
+        }
+
+        @Test("loadEnvironment validates roles against the loaded entities")
+        func environmentSnapshotValidatesRoles() throws {
+            let env = try TempEnv()
+            try Data("description = \"x\"\n[[mcps]]\nmcp = \"Later\"\n".utf8)
+                .write(to: env.env.rolesURL.appendingPathComponent("Needy.toml"))
+
+            var snapshot = env.env.loadEnvironment()
+            #expect(snapshot.roles.allSatisfy { $0.isBuiltin })
+            #expect(snapshot.errors.contains { $0.kind == .role && $0.entityName == "Needy" })
+
+            // Once the referenced MCP appears on disk, the role becomes valid.
+            try Data("transport = \"stdio\"\ncommand = \"echo hi\"\n".utf8)
+                .write(to: env.env.mcpsURL.appendingPathComponent("Later.toml"))
+            snapshot = env.env.loadEnvironment()
+            #expect(snapshot.roles.contains { $0.name == "Needy" })
+            #expect(snapshot.errors.allSatisfy { $0.kind != .role })
         }
 
         @Test("loadMCPsReportingErrors surfaces undecodable MCP configs")

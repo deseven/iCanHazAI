@@ -303,7 +303,7 @@ enum ConfiguratorTools {
     }
 
     private static func writeRole(name: String, content: String, env: EnvironmentManager) throws -> String {
-        _ = try ConfigValidation.decodeRole(Data(content.utf8))
+        _ = try ConfigValidation.decodeRole(Data(content.utf8), references: env.knownRoleReferences())
         let url = env.rolesURL.appendingPathComponent("\(name).toml")
         try write(url: url, content: content, env: env)
         return "Role \"\(name)\" saved. It will be applied automatically in a second."

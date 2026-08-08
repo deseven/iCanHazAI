@@ -369,20 +369,98 @@ final class EnvironmentManager: @unchecked Sendable {
         return (Prompt(name: name, content: content), nil)
     }
 
+    // MARK: - Hierarchical snapshot
+
+    /// A point-in-time load of every environment entity, produced by
+    /// [`loadEnvironment()`](src/Environment/EnvironmentManager.swift).
+    struct EnvironmentSnapshot {
+        var connections: [Connection]
+        var mcps: [MCPServer]
+        var prompts: [Prompt]
+        var roles: [Role]
+        /// All per-entity errors (connection, MCP config, prompt, role).
+        var errors: [ConfigError]
+    }
+
+    /// Loads all environment entities in dependency order: connections, MCP
+    /// configs, and prompts first (in parallel — none of them reference each
+    /// other), then roles, which are validated against the entities found on
+    /// disk. Chats are intentionally not part of the snapshot (they're cached
+    /// by `ChatStore`). Per-entity errors are returned alongside loaded values.
+    func loadEnvironment() -> EnvironmentSnapshot {
+        // Boxed results so the @Sendable worker closures don't capture and
+        // mutate local vars; the dispatch group join makes the writes safe.
+        final class Box: @unchecked Sendable {
+            var connections: (loaded: [Connection], errors: [ConfigError])?
+            var mcps: (loaded: [MCPServer], errors: [ConfigError])?
+            var prompts: (loaded: [Prompt], errors: [ConfigError])?
+        }
+        let box = Box()
+        let group = DispatchGroup()
+        group.enter()
+        DispatchQueue.global().async { box.connections = self.loadConnectionsReportingErrors(); group.leave() }
+        group.enter()
+        DispatchQueue.global().async { box.mcps = self.loadMCPsReportingErrors(); group.leave() }
+        group.enter()
+        DispatchQueue.global().async { box.prompts = self.loadAllPromptsReportingErrors(); group.leave() }
+        group.wait()
+        let conns = box.connections ?? ([], [])
+        let mcps = box.mcps ?? ([], [])
+        let prompts = box.prompts ?? ([], [])
+        let rolesResult = loadAllRolesReportingErrors(
+            references: Self.roleReferences(connections: conns, mcps: mcps, prompts: prompts)
+        )
+        return EnvironmentSnapshot(
+            connections: conns.loaded,
+            mcps: mcps.loaded,
+            prompts: prompts.loaded,
+            roles: rolesResult.loaded,
+            errors: conns.errors + mcps.errors + prompts.errors + rolesResult.errors
+        )
+    }
+
+    /// The reference sets roles are validated against, built from the current
+    /// on-disk state: loaded configs plus broken ones (a broken config still
+    /// exists and reports its own error, so roles referencing it are not
+    /// flagged for a missing entity).
+    func knownRoleReferences() -> RoleReferences {
+        Self.roleReferences(
+            connections: loadConnectionsReportingErrors(),
+            mcps: loadMCPsReportingErrors(),
+            prompts: loadAllPromptsReportingErrors()
+        )
+    }
+
+    static func roleReferences(
+        connections: (loaded: [Connection], errors: [ConfigError]),
+        mcps: (loaded: [MCPServer], errors: [ConfigError]),
+        prompts: (loaded: [Prompt], errors: [ConfigError])
+    ) -> RoleReferences {
+        RoleReferences(
+            // Connection error entity names are already in `provider/name`
+            // form, matching `Connection.id`.
+            connectionIDs: Set(connections.loaded.map(\.id)).union(connections.errors.map(\.entityName)),
+            promptNames: Set(prompts.loaded.map(\.name)).union(prompts.errors.map(\.entityName)),
+            mcpNames: Set(mcps.loaded.map(\.name)).union(mcps.errors.map(\.entityName))
+        )
+    }
+
     // MARK: - Roles
 
     /// Loads all role TOML files from the roles directory, sorted by name.
     /// Protected built-in roles are always appended from the app bundle; a user
     /// file that shadows a protected name is ignored in favor of the bundled
-    /// version.
+    /// version. Roles are validated against the entities currently on disk.
     func loadAllRoles() -> [Role] {
-        loadAllRolesReportingErrors().loaded
+        loadAllRolesReportingErrors(references: knownRoleReferences()).loaded
     }
 
     /// Same as [`loadAllRoles()`](src/Environment/EnvironmentManager.swift) but also returns
     /// a [`ConfigError`](src/Chat/Models.swift) per role file that failed to read or
     /// decode. Used by `ChatEngine` to populate the configuration-error registry.
-    func loadAllRolesReportingErrors() -> (loaded: [Role], errors: [ConfigError]) {
+    /// `references` carries the entities on disk (loaded or broken) that role
+    /// `connection` / `prompt` / `[[mcps]]` entries are validated against.
+    func loadAllRolesReportingErrors(references: RoleReferences) -> (loaded: [Role], errors: [ConfigError]) {
         let fm = FileManager.default
         var loaded: [Role] = []
         var errors: [ConfigError] = []
@@ -397,7 +475,7 @@ final class EnvironmentManager: @unchecked Sendable {
                     continue
                 }
                 do {
-                    let config = try ConfigValidation.decodeRole(data)
+                    let config = try ConfigValidation.decodeRole(data, references: references)
                     loaded.append(Role(name: name, config: config))
                 } catch {
                     debugLog("Env", "⚠️ failed to decode role \"\(name)\" — \(error)")
@@ -415,15 +493,18 @@ final class EnvironmentManager: @unchecked Sendable {
 
     /// Loads one role by name. Returns nil if not found or undecodable.
     /// Protected built-in names are always resolved from the app bundle.
+    /// The role is validated against the entities currently on disk.
     func loadSingleRole(name: String) -> Role? {
-        loadSingleRoleReportingError(name: name).role
+        loadSingleRoleReportingError(name: name, references: knownRoleReferences()).role
     }
 
     /// Same as [`loadSingleRole(name:)`](src/Environment/EnvironmentManager.swift) but also
     /// returns a [`ConfigError`](src/Chat/Models.swift) when the file exists but
     /// fails to decode. A missing file returns `(nil, nil)` — the caller treats
     /// that as a removal (no error). Protected built-ins never error.
-    func loadSingleRoleReportingError(name: String) -> (role: Role?, error: ConfigError?) {
+    /// `references` carries the entities on disk (loaded or broken) that role
+    /// `connection` / `prompt` / `[[mcps]]` entries are validated against.
+    func loadSingleRoleReportingError(name: String, references: RoleReferences) -> (role: Role?, error: ConfigError?) {
         if Self.protectedBundleNames.contains(name) {
             return (Self.bundledRole(name: name), nil)
         }
@@ -434,7 +515,7 @@ final class EnvironmentManager: @unchecked Sendable {
             return (nil, nil)
         }
         do {
-            let config = try ConfigValidation.decodeRole(data)
+            let config = try ConfigValidation.decodeRole(data, references: references)
             return (Role(name: name, config: config), nil)
         } catch {
             debugLog("Env", "⚠️ failed to decode role \"\(name)\" — \(error)")
