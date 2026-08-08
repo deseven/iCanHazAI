@@ -84,6 +84,7 @@ enum ConfigValidation {
             case BuiltinTools.filesystemGroup: return config.filesystem != nil
             case BuiltinTools.codeGroup: return config.code != nil
             case BuiltinTools.shellGroup: return config.shell != nil
+            case BuiltinTools.webGroup: return config.web != nil
             default: return false
             }
         }
@@ -105,6 +106,7 @@ enum ConfigValidation {
             (BuiltinTools.codeGroup, config.code),
             (BuiltinTools.shellGroup, config.shell),
             (BuiltinTools.utilsGroup, config.utils),
+            (BuiltinTools.webGroup, config.web),
         ]
         for (group, groupConfig) in groupConfigs {
             guard let groupConfig, groupConfig.directoryIsolation == true else { continue }

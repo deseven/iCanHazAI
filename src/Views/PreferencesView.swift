@@ -16,6 +16,7 @@ struct PreferencesView: View {
         case general
         case chatBehaviour
         case chatFeatures
+        case webSearch
         case debug
 
         var id: String { rawValue }
@@ -25,6 +26,7 @@ struct PreferencesView: View {
             case .general: return "General"
             case .chatBehaviour: return "Chat Behaviour"
             case .chatFeatures: return "Chat Features"
+            case .webSearch: return "Web Search"
             case .debug: return "Debug"
             }
         }
@@ -34,6 +36,7 @@ struct PreferencesView: View {
             case .general: return "gearshape"
             case .chatBehaviour: return "rectangle.expand.vertical"
             case .chatFeatures: return "text.bubble"
+            case .webSearch: return "globe"
             case .debug: return "ladybug"
             }
         }
@@ -79,6 +82,8 @@ struct PreferencesView: View {
                     ChatBehaviourTab()
                 case .chatFeatures:
                     ChatFeaturesTab()
+                case .webSearch:
+                    WebSearchTab()
                 case .debug:
                     DebugTab()
                 }
@@ -254,6 +259,68 @@ private struct ChatFeaturesTab: View {
                         .frame(width: 44, alignment: .trailing)
                 }
                 .frame(width: 360)
+            }
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 8)
+    }
+}
+
+// MARK: - Web search tab
+
+private struct WebSearchTab: View {
+    @EnvironmentObject var store: AppViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            PrefRow(
+                title: "Provider",
+                description: "The backend used by the web_search and web_extract tools. Without a provider only the raw web_fetch tool is available."
+            ) {
+                Picker("", selection: store.bindingWebSearchProvider) {
+                    Text("None").tag("none")
+                    Text("Exa").tag("exa")
+                    Text("Linkup").tag("linkup")
+                    Text("Tavily").tag("tavily")
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .fixedSize()
+            }
+
+            if store.preferencesWebSearchProvider != "none" {
+                PrefRow(
+                    title: "Token",
+                    description: "API key for the selected provider."
+                ) {
+                    TextField("", text: store.bindingWebSearchToken)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 360)
+                }
+            }
+
+            if store.preferencesWebSearchProvider == "linkup" {
+                PrefRow(
+                    title: "Render JS for Extraction",
+                    description: "Render the page's JavaScript before extracting its content."
+                ) {
+                    Toggle("", isOn: store.bindingLinkupRenderJS)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+            }
+
+            if store.preferencesWebSearchProvider == "tavily" {
+                PrefRow(
+                    title: "Advanced Extraction",
+                    description: "Retrieve more data, including tables and embedded content, at higher latency and cost."
+                ) {
+                    Toggle("", isOn: store.bindingTavilyAdvancedExtraction)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
             }
 
             Spacer()

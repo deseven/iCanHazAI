@@ -747,6 +747,7 @@ struct RoleConfig: Codable, Equatable, Hashable {
     var filesystem: RoleToolGroup?
     var code: RoleToolGroup?
     var shell: RoleToolGroup?
+    var web: RoleToolGroup?
     /// Custom MCP servers selected by this role.
     var mcps: [RoleMCP]?
     /// When true, chats with this role may add/remove custom MCP servers via
@@ -772,6 +773,7 @@ struct RoleConfig: Codable, Equatable, Hashable {
         case filesystem
         case code
         case shell
+        case web
         case mcps
         case mcpsOverrideAllowed = "mcps_override_allowed"
         case icon
@@ -815,6 +817,7 @@ struct Role: Identifiable, Equatable, Hashable {
             case BuiltinTools.filesystemGroup: return config.filesystem != nil
             case BuiltinTools.codeGroup: return config.code != nil
             case BuiltinTools.shellGroup: return config.shell != nil
+            case BuiltinTools.webGroup: return config.web != nil
             default: return false
             }
         }
@@ -828,6 +831,7 @@ struct Role: Identifiable, Equatable, Hashable {
         case BuiltinTools.filesystemGroup: return config.filesystem
         case BuiltinTools.codeGroup: return config.code
         case BuiltinTools.shellGroup: return config.shell
+        case BuiltinTools.webGroup: return config.web
         default: return nil
         }
     }

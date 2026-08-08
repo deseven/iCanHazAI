@@ -17,7 +17,8 @@ To address the elephant in the room: there are many AI chat apps and agentic har
 - native macOS app: Swift backend, heavily optimized web-based chat rendering (Markdown, code, Mermaid, KaTeX), low resource usage
 - extensive BYOK support: Anthropic, OpenAI, or any OpenAI-compatible API (OpenRouter, Together, DeepSeek, local servers like Ollama/LM Studio, and countless others)
 - roles: clearly defined templates bundling a prompt, a connection, tools, and a working directory — several bundled, easy to create your own
-- agentic toolset: built-in filesystem/code/shell/utils tool groups with per-tool approval and optional directory isolation
+- agentic toolset: built-in filesystem/code/shell/utils/web tool groups with per-tool approval and optional directory isolation
+- integrated web access: web search and page extraction via Exa, Linkup, or Tavily (unified interface, your choice of provider), plus raw URL fetching
 - MCP: stdio and streamable HTTP servers with tool filtering, name prefixing, and run policies
 - remote work: seamless SSH working directories for agentic sessions on remote machines
 - CLI: one-shot and interactive modes, piping, unlimited concurrency — run ten chats in the CLI, ten more in the GUI, continue any of them anywhere
@@ -82,7 +83,7 @@ A `{name}.md` file in `Prompts/` — the entire file content is the system promp
 
 ### Role
 
-A `{name}.toml` file in `Roles/` — a template for new chats combining a prompt, a connection, a working directory, and tools. Tools come from the built-in groups (utils, filesystem, code, shell) and/or configured MCP servers, each with optional allowlists and auto-approve rules. The working directory can be pre-set, picked once per chat, or a remote SSH location (`host:/path`), and filesystem/code tools can be isolated to it. A chat's role and working directory are fixed at creation.
+A `{name}.toml` file in `Roles/` — a template for new chats combining a prompt, a connection, a working directory, and tools. Tools come from the built-in groups (utils, filesystem, code, shell, web) and/or configured MCP servers, each with optional allowlists and auto-approve rules. The working directory can be pre-set, picked once per chat, or a remote SSH location (`host:/path`), and filesystem/code tools can be isolated to it. A chat's role and working directory are fixed at creation.
 
 ### Chat
 

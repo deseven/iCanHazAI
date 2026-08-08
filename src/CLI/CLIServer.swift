@@ -358,6 +358,6 @@ final class CLIServer: @unchecked Sendable {
     }
 
     private static var appVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "dev"
+        AppInfo.version
     }
 }

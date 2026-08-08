@@ -127,7 +127,7 @@ Only `{identifier}`-shaped references are variables — braces around non-identi
 
 Bundles a prompt, connection, working directory, and tools. Tools come from two sources:
 
-1. **Built-in tool groups** — `[utils]`, `[filesystem]`, `[code]`, `[shell]`. These run in-process (no subprocess). A group is enabled simply by mentioning it; an empty group (e.g. `[utils]` with no keys) enables all its tools with defaults. Each group accepts:
+1. **Built-in tool groups** — `[utils]`, `[filesystem]`, `[code]`, `[shell]`, `[web]`. These run in-process (no subprocess). A group is enabled simply by mentioning it; an empty group (e.g. `[utils]` with no keys) enables all its tools with defaults. Each group accepts:
    - `tools` — allowlist (empty/missing = all). `auto_allow` — tools to auto-approve (empty/missing = none). `auto_allow_all = true` — auto-approve everything.
    - `directory_isolation = true` (Filesystem/Code only) — isolate to the working directory (chroot-like). Only supported on these two groups; setting it on any other group (including Shell) is a validation error.
 
@@ -208,6 +208,12 @@ mermaid_enabled = false                    # render Mermaid diagrams in chats
 katex_enabled = false                      # render math (KaTeX) in chats
 interface_scale = 100.0                    # chat interface scale percentage (70–200, default 100)
 
+[web_search]
+provider = "none"                          # none (default) | exa | linkup | tavily; backend for the built-in web_search/web_extract tools
+token = ""                                 # API key for the selected provider; removed from disk when provider is "none"
+linkup_render_js = false                   # Linkup only: render page JS during web_extract; only saved while provider is "linkup"
+tavily_advanced_extraction = false         # Tavily only: use the advanced extract depth for web_extract; only saved while provider is "tavily"
+
 [debug]
 app_debug_enabled = false                  # app-level debug logging (log + stdout)
 chat_renderer_debug_enabled = false        # chat renderer debug overlay
@@ -253,12 +259,13 @@ Canonical workflows. Adapt as needed, but keep the shape: **gather what's missin
 
 ## Built-in tool groups
 
-The app ships with four built-in tool groups, always available (no config file needed) and enabled in roles via their `[group]` table:
+The app ships with five built-in tool groups, always available (no MCP needed) and enabled in roles via their `[group]` table:
 
 - **Utils** (`[utils]`) — small utilities: `calc`, `datetime`, `uuid`, `hash`, `base64_encode`, `base64_decode`, `sleep`.
 - **Filesystem** (`[filesystem]`) — file operations: `ls`, `read_file`, `write_file`, `find_file`, `find_text`, `mkdir`, `mv`, `rm`, `stat`, `pwd`.
 - **Code** (`[code]`) — code-aware tools: `apply_patch`.
 - **Shell** (`[shell]`) — shell execution: `shell`, `applescript`.
+- **Web** (`[web]`) — web access: `web_search`, `web_extract`, `web_fetch`. `web_fetch` (raw curl-like download, 256KB text cap) always works; `web_search` and `web_extract` are only advertised to the model when a provider is configured in `[web_search]` (they share one unified interface regardless of provider). The group needs no working directory and supports no `directory_isolation`.
 
 These run in-process (no subprocess), so there's no `check_mcp_bundled` tool — the tool list above is authoritative. To build a `tools` allowlist for a role, pick from the names listed above.
 

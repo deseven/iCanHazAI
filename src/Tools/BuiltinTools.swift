@@ -208,9 +208,10 @@ enum BuiltinTools {
     static let filesystemGroup = "Filesystem"
     static let codeGroup = "Code"
     static let shellGroup = "Shell"
+    static let webGroup = "Web"
 
-    static let allGroups: Set<String> = [utilsGroup, filesystemGroup, codeGroup, shellGroup]
-    static let groupOrder: [String] = [utilsGroup, filesystemGroup, codeGroup, shellGroup]
+    static let allGroups: Set<String> = [utilsGroup, filesystemGroup, codeGroup, shellGroup, webGroup]
+    static let groupOrder: [String] = [utilsGroup, filesystemGroup, codeGroup, shellGroup, webGroup]
     static let workdirCapableGroups: Set<String> = [filesystemGroup, codeGroup, shellGroup]
     static let isolationCapableGroups: Set<String> = [filesystemGroup, codeGroup]
     /// Groups whose tools operate on files and therefore require a working
@@ -356,6 +357,7 @@ enum BuiltinTools {
         case filesystemGroup: return filesystemToolDefs
         case codeGroup: return codeToolDefs
         case shellGroup: return shellToolDefs
+        case webGroup: return BuiltinToolsWeb.toolDefs
         default: return []
         }
     }
@@ -455,6 +457,10 @@ enum BuiltinTools {
         // Shell
         case (shellGroup, "shell"): return try await shell(args, workdir: workdir)
         case (shellGroup, "applescript"): return try await applescript(args)
+        // Web
+        case (webGroup, "web_search"): return try await BuiltinToolsWeb.search(args)
+        case (webGroup, "web_extract"): return try await BuiltinToolsWeb.extract(args)
+        case (webGroup, "web_fetch"): return try await BuiltinToolsWeb.fetch(args)
         default:
             throw BuiltinToolError("Unknown tool \"\(name)\" in group \"\(group)\".")
         }

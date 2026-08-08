@@ -27,6 +27,7 @@ struct OpenAIProvider: LLMProvider {
         var headers = [
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
+            "User-Agent": AppInfo.userAgent,
         ]
         if let apiKey = connection.apiKey, !apiKey.isEmpty {
             headers["Authorization"] = "Bearer \(apiKey)"

@@ -60,8 +60,13 @@ struct ChatInputTextViewTests {
         tv.string = "a\nb\nc\nd"
         tv.reportContentHeight()
         #expect(oneLine > 0)
-        // Four line fragments + insets vs one line fragment + insets.
-        #expect(fourLines > oneLine * 3)
+        // The growth must be exactly three line fragments (the insets are
+        // counted once in both measurements). ±1 tolerance for the ceil
+        // rounding of the fractional line height.
+        let font = tv.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let lineHeight = tv.layoutManager?.defaultLineHeight(for: font) ?? 0
+        #expect(lineHeight > 0)
+        #expect(abs((fourLines - oneLine) - 3 * lineHeight) <= 1)
     }
 
     /// The self-heal path in `ChatInputEditor.updateNSView` relies on

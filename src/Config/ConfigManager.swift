@@ -18,6 +18,8 @@ struct AppConfig: Codable, Equatable {
     var chatBehaviour: ChatBehaviourConfig = ChatBehaviourConfig()
     /// Chat feature toggles: Mermaid and KaTeX rendering.
     var chatFeatures: ChatFeaturesConfig = ChatFeaturesConfig()
+    /// Web search provider settings for the built-in `web` tool group.
+    var webSearch: WebSearchConfig = WebSearchConfig()
     /// Debug preferences: chat renderer debug overlay.
     var debug: DebugConfig = DebugConfig()
     /// Window position and size for the UI layer.
@@ -27,6 +29,7 @@ struct AppConfig: Codable, Equatable {
         case general
         case chatBehaviour = "chat_behaviour"
         case chatFeatures = "chat_features"
+        case webSearch = "web_search"
         case debug
         case window
     }
@@ -41,6 +44,7 @@ struct AppConfig: Codable, Equatable {
         general = try c.decodeIfPresent(GeneralConfig.self, forKey: .general) ?? GeneralConfig()
         chatBehaviour = try c.decodeIfPresent(ChatBehaviourConfig.self, forKey: .chatBehaviour) ?? ChatBehaviourConfig()
         chatFeatures = try c.decodeIfPresent(ChatFeaturesConfig.self, forKey: .chatFeatures) ?? ChatFeaturesConfig()
+        webSearch = try c.decodeIfPresent(WebSearchConfig.self, forKey: .webSearch) ?? WebSearchConfig()
         debug = try c.decodeIfPresent(DebugConfig.self, forKey: .debug) ?? DebugConfig()
         window = try c.decodeIfPresent(WindowConfig.self, forKey: .window)
     }
@@ -107,6 +111,66 @@ struct ChatFeaturesConfig: Codable, Equatable {
         case mermaidEnabled = "mermaid_enabled"
         case katexEnabled = "katex_enabled"
         case interfaceScale = "interface_scale"
+    }
+}
+
+/// The web search backends supported by the built-in `web` tool group.
+enum WebSearchProviderKind: String, CaseIterable, Sendable {
+    case none
+    case exa
+    case linkup
+    case tavily
+}
+
+/// `[web_search]` group — provider selection and credentials for the built-in
+/// `web` tool group's `web_search` / `web_extract` tools. `provider` is stored
+/// as a raw string so an unknown value (hand-edited config) degrades to
+/// `none` instead of failing the whole config decode.
+struct WebSearchConfig: Codable, Equatable, Sendable {
+    /// One of "none" (default), "exa", "linkup", "tavily".
+    var provider: String?
+    /// API token for the selected provider.
+    var token: String?
+    /// Linkup-only: pass `renderJs` to the fetch endpoint.
+    var linkupRenderJS: Bool?
+    /// Tavily-only: use `advanced` extract depth instead of `basic`.
+    var tavilyAdvancedExtraction: Bool?
+
+    var resolvedProvider: WebSearchProviderKind {
+        WebSearchProviderKind(rawValue: provider ?? "none") ?? .none
+    }
+
+    /// True when `web_search` / `web_extract` can run: a provider is selected
+    /// and a token is set.
+    var isConfigured: Bool {
+        resolvedProvider != .none && !(token ?? "").isEmpty
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case token
+        case linkupRenderJS = "linkup_render_js"
+        case tavilyAdvancedExtraction = "tavily_advanced_extraction"
+    }
+
+    /// Provider-specific keys are only persisted while their provider is
+    /// selected — `linkup_render_js` is never saved under another provider,
+    /// and likewise for `tavily_advanced_extraction`. The token is dropped
+    /// entirely when no provider is selected, so an unused credential never
+    /// lingers on disk.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        let provider = resolvedProvider
+        try c.encodeIfPresent(self.provider, forKey: .provider)
+        if provider != .none {
+            try c.encodeIfPresent(token, forKey: .token)
+        }
+        if provider == .linkup {
+            try c.encodeIfPresent(linkupRenderJS, forKey: .linkupRenderJS)
+        }
+        if provider == .tavily {
+            try c.encodeIfPresent(tavilyAdvancedExtraction, forKey: .tavilyAdvancedExtraction)
+        }
     }
 }
 
@@ -480,6 +544,10 @@ actor ConfigManager {
         config.debug.chatRendererDebugEnabled ?? false
     }
 
+    func getWebSearchConfig() -> WebSearchConfig {
+        config.webSearch
+    }
+
     func getChatInfoSidebarVisible() -> Bool? {
         config.window?.chatInfoSidebarVisible
     }
@@ -539,6 +607,26 @@ actor ConfigManager {
 
     func setChatRendererDebugEnabled(_ enabled: Bool) {
         config.debug.chatRendererDebugEnabled = enabled
+        persist()
+    }
+
+    func setWebSearchProvider(_ provider: String) {
+        config.webSearch.provider = provider
+        persist()
+    }
+
+    func setWebSearchToken(_ token: String) {
+        config.webSearch.token = token
+        persist()
+    }
+
+    func setLinkupRenderJS(_ enabled: Bool) {
+        config.webSearch.linkupRenderJS = enabled
+        persist()
+    }
+
+    func setTavilyAdvancedExtraction(_ enabled: Bool) {
+        config.webSearch.tavilyAdvancedExtraction = enabled
         persist()
     }
 

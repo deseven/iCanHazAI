@@ -33,6 +33,7 @@ struct AnthropicProvider: LLMProvider {
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
             "anthropic-version": Self.apiVersion,
+            "User-Agent": AppInfo.userAgent,
         ]
         if let apiKey = connection.apiKey, !apiKey.isEmpty {
             headers["x-api-key"] = apiKey

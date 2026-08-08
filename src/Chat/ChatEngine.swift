@@ -2014,10 +2014,19 @@ actor ChatEngine {
         // Local-only tools (macOS automation) are meaningless against an SSH
         // working directory and are not advertised at all.
         let sshWorkdir = effectiveWorkingDirectory(for: chat).map { SSHSpec.isSSH($0) } ?? false
+        // Provider-backed web tools (web_search/web_extract) are only
+        // advertised when a provider is configured; web_fetch always is.
+        var webProviderConfigured = false
+        if resolved.contains(where: { $0.isBuiltinGroup && $0.name == BuiltinTools.webGroup }) {
+            webProviderConfigured = await ConfigManager.shared.getWebSearchConfig().isConfigured
+        }
         for r in resolved {
             if r.isBuiltinGroup {
                 // Built-in groups: tools are always available (in-process).
-                let groupTools = BuiltinTools.tools(for: r.name)
+                var groupTools = BuiltinTools.tools(for: r.name)
+                if r.name == BuiltinTools.webGroup, !webProviderConfigured {
+                    groupTools = groupTools.filter { !BuiltinToolsWeb.providerToolNames.contains($0.name) }
+                }
                 let roleAllow = Set(r.toolsFilter)
                 let filtered = groupTools.filter { t in
                     if sshWorkdir, BuiltinTools.sshUnavailableToolNames.contains(t.name) { return false }
@@ -2875,11 +2884,16 @@ actor ChatEngine {
         let sshWorkdir = effectiveWorkingDirectory(for: chat).map { SSHSpec.isSSH($0) } ?? false
         var builtin: [ChatToolEntry] = []
         var external: [ChatToolEntry] = []
+        // Mirror the request-time gating: provider-backed web tools only
+        // exist when a provider is configured.
+        let webProviderConfigured = await ConfigManager.shared.getWebSearchConfig().isConfigured
         for r in resolved {
             if r.isBuiltinGroup {
                 let roleAllow = Set(r.toolsFilter)
                 for tool in BuiltinTools.tools(for: r.name) {
                     if sshWorkdir, BuiltinTools.sshUnavailableToolNames.contains(tool.name) { continue }
+                    if r.name == BuiltinTools.webGroup, !webProviderConfigured,
+                       BuiltinToolsWeb.providerToolNames.contains(tool.name) { continue }
                     if !roleAllow.isEmpty && !roleAllow.contains(tool.name) { continue }
                     builtin.append(ChatToolEntry(
                         name: tool.name,

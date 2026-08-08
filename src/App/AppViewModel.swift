@@ -133,6 +133,10 @@ final class AppViewModel: ObservableObject {
     @Published var preferencesChatRendererDebugEnabled: Bool = false
     @Published var preferencesExpandThinking: Bool = false
     @Published var preferencesExpandToolUse: Bool = false
+    @Published var preferencesWebSearchProvider: String = "none"
+    @Published var preferencesWebSearchToken: String = ""
+    @Published var preferencesLinkupRenderJS: Bool = false
+    @Published var preferencesTavilyAdvancedExtraction: Bool = false
     /// User-managed list of working directories offered in the per-chat
     /// directory picker. Mirrored from `config.toml` `[general].working_directories`.
     @Published var workingDirectories: [String] = []
@@ -218,6 +222,7 @@ final class AppViewModel: ObservableObject {
             let cd = await config.getChatRendererDebugEnabled()
             let et = await config.getExpandThinking()
             let eu = await config.getExpandToolUse()
+            let ws = await config.getWebSearchConfig()
             preferencesDefaultConnection = dc
             preferencesDefaultRole = dr
             preferencesUtilityConnection = uc
@@ -229,6 +234,10 @@ final class AppViewModel: ObservableObject {
             preferencesChatRendererDebugEnabled = cd
             preferencesExpandThinking = et
             preferencesExpandToolUse = eu
+            preferencesWebSearchProvider = ws.provider ?? "none"
+            preferencesWebSearchToken = ws.token ?? ""
+            preferencesLinkupRenderJS = ws.linkupRenderJS ?? false
+            preferencesTavilyAdvancedExtraction = ws.tavilyAdvancedExtraction ?? false
             DebugLogger.setEnabled(ad)
             if let rs { chatInfoSidebarVisible = rs }
             // Clamp restored widths into the allowed ranges so a hand-edited
@@ -358,6 +367,46 @@ final class AppViewModel: ObservableObject {
             set: { newValue in
                 self.preferencesExpandToolUse = newValue
                 Task { await self.config.setExpandToolUse(newValue) }
+            }
+        )
+    }
+
+    var bindingWebSearchProvider: Binding<String> {
+        Binding(
+            get: { self.preferencesWebSearchProvider },
+            set: { newValue in
+                self.preferencesWebSearchProvider = newValue
+                Task { await self.config.setWebSearchProvider(newValue) }
+            }
+        )
+    }
+
+    var bindingWebSearchToken: Binding<String> {
+        Binding(
+            get: { self.preferencesWebSearchToken },
+            set: { newValue in
+                self.preferencesWebSearchToken = newValue
+                Task { await self.config.setWebSearchToken(newValue) }
+            }
+        )
+    }
+
+    var bindingLinkupRenderJS: Binding<Bool> {
+        Binding(
+            get: { self.preferencesLinkupRenderJS },
+            set: { newValue in
+                self.preferencesLinkupRenderJS = newValue
+                Task { await self.config.setLinkupRenderJS(newValue) }
+            }
+        )
+    }
+
+    var bindingTavilyAdvancedExtraction: Binding<Bool> {
+        Binding(
+            get: { self.preferencesTavilyAdvancedExtraction },
+            set: { newValue in
+                self.preferencesTavilyAdvancedExtraction = newValue
+                Task { await self.config.setTavilyAdvancedExtraction(newValue) }
             }
         )
     }

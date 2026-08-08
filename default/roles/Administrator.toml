@@ -14,3 +14,6 @@ auto_allow = ["ls", "read_file", "stat", "find_file", "find_text", "pwd"]
 
 [shell]
 tools = ["shell"]
+
+[web]
+auto_allow = ["web_search", "web_fetch"]

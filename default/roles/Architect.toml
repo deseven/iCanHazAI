@@ -10,3 +10,7 @@ auto_allow_all = true
 
 [filesystem]
 auto_allow = ["ls", "read_file", "stat", "find_file", "find_text", "pwd"]
+
+[web]
+tools = ["web_search", "web_extract"]
+auto_allow = ["web_search"]

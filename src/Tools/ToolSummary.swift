@@ -279,6 +279,10 @@ private extension ToolSummary {
         "sleep": KnownToolSpec(primary: ["seconds"]),
         "datetime": KnownToolSpec(primary: []),
         "uuid": KnownToolSpec(primary: []),
+        // Built-in: Web
+        "web_search": KnownToolSpec(primary: ["query"], secondary: ["num_results", "date_start", "date_end"]),
+        "web_extract": KnownToolSpec(primary: ["url"]),
+        "web_fetch": KnownToolSpec(primary: ["url"]),
         // Configurator
         "read_connection": KnownToolSpec(primary: ["id"]),
         "write_connection": KnownToolSpec(primary: ["id"]),
@@ -487,6 +491,22 @@ private extension ToolSummary {
         case "shell":
             // Output ends with the "[exit code: N]" line — that's the useful part.
             return lastLine(content)
+        case "web_search":
+            // The header carries the hit count ("results: N").
+            for line in content.split(separator: "\n", omittingEmptySubsequences: false) where line.hasPrefix("results: ") {
+                let n = line.dropFirst("results: ".count)
+                return "\(n) \(n == "1" ? "result" : "results")."
+            }
+            return firstLine(content)
+        case "web_extract":
+            // The extracted content starts after the header's blank line.
+            let body: Substring
+            if let range = content.range(of: "\n\n") {
+                body = content[range.upperBound...]
+            } else {
+                body = Substring(content)
+            }
+            return "Extracted \(body.count) \(body.count == 1 ? "character" : "characters")."
         // Configurator: bullet lists ("- name" per entry, or "(none)").
         case "list_connections", "list_mcps", "list_roles", "list_prompts":
             let n = countBulletLines(content)
