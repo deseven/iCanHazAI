@@ -356,6 +356,17 @@ body {
   }
 }
 
+/* Run spinner animations on the compositor. On an otherwise idle page (e.g.
+   while waiting for the first response token) WebKit schedules no repaints
+   for a main-thread animation, so the spinner appears frozen until a style
+   recalc — like row hover — forces a repaint. */
+.spinner,
+.msg-pending-spinner,
+.thinking-spinner,
+.tool-spinner {
+  will-change: transform;
+}
+
 /* ── Message row ───────────────────────────────────────────────────── */
 
 .msg {
@@ -373,6 +384,16 @@ body {
 
 .msg:hover {
   background: var(--bg-surface);
+}
+
+/* Rows with an active spinner must render normally: content-visibility:auto
+   lets the browser skip the subtree's rendering, which also suppresses the
+   spinner's animation frames. Such a row is the active streaming row, so the
+   skip optimization buys nothing there anyway. */
+.msg:has(.msg-pending-spinner),
+.msg:has(.thinking-spinner),
+.msg:has(.tool-spinner) {
+  content-visibility: visible;
 }
 
 .msg-avatar {

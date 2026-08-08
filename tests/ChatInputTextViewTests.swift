@@ -46,5 +46,58 @@ struct ChatInputTextViewTests {
         tv.setFrameSize(NSSize(width: 300, height: 25))
         #expect(tv.textContainer?.size.height == CGFloat.greatestFiniteMagnitude)
     }
+
+    @Test("reported height grows with line count")
+    func reportedHeightGrowsWithLines() {
+        let tv = makeView()
+        tv.setFrameSize(NSSize(width: 300, height: 25))
+        var oneLine: CGFloat = 0
+        tv.contentHeightChanged = { oneLine = $0 }
+        tv.string = "a"
+        tv.reportContentHeight()
+        var fourLines: CGFloat = 0
+        tv.contentHeightChanged = { fourLines = $0 }
+        tv.string = "a\nb\nc\nd"
+        tv.reportContentHeight()
+        #expect(oneLine > 0)
+        // Four line fragments + insets vs one line fragment + insets.
+        #expect(fourLines > oneLine * 3)
+    }
+
+    /// The self-heal path in `ChatInputEditor.updateNSView` relies on
+    /// `reportContentHeight` returning the full content height even when no
+    /// text change happened — e.g. after the SwiftUI-side editor height was
+    /// reset to one line while multi-line text stayed.
+    @Test("re-reporting without a text change still measures full content")
+    func reReportWithoutTextChange() {
+        let tv = makeView()
+        tv.setFrameSize(NSSize(width: 300, height: 25))
+        tv.string = "a\nb\nc\nd"
+        var reported: [CGFloat] = []
+        tv.contentHeightChanged = { reported.append($0) }
+        tv.reportContentHeight()
+        // Simulate the collapsed-editor state: the view shows one line while
+        // the text holds four. A re-report must produce the same full height.
+        tv.setFrameSize(NSSize(width: 300, height: reported[0] / 4))
+        tv.reportContentHeight()
+        #expect(reported.count == 2)
+        #expect(reported[0] == reported[1])
+        #expect(tv.frame.height == reported[1])
+    }
+
+    @Test("width change schedules a content height re-report")
+    func widthChangeSchedulesReReport() async {
+        let tv = makeView()
+        tv.setFrameSize(NSSize(width: 900, height: 25))
+        tv.string = String(repeating: "w", count: 200)
+        // Flush the async re-report scheduled by the width sync above.
+        try? await Task.sleep(for: .milliseconds(100))
+        await confirmation("height re-reported after width change") { confirm in
+            tv.contentHeightChanged = { _ in confirm() }
+            tv.setFrameSize(NSSize(width: 100, height: 25))
+            // The re-report is dispatched asynchronously from setFrameSize.
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+    }
 }
 }

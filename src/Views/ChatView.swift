@@ -633,6 +633,18 @@ private struct ChatInputEditor: NSViewRepresentable {
         if tv.string != text {
             tv.string = text
             tv.reportContentHeight()
+        } else {
+            // Self-heal: the SwiftUI-side editor height can desync from the
+            // text view's content height without any text change (e.g. the
+            // height state being reset to one line while multi-line text
+            // stays). Text changes are otherwise the only re-sync path, so a
+            // stale collapsed editor would persist until the next keystroke.
+            // Re-reporting on every update pass recovers it immediately.
+            let before = tv.frame.height
+            tv.reportContentHeight()
+            if tv.frame.height != before {
+                debugLog("Chat", "input editor height desync healed: \(before) → \(tv.frame.height)")
+            }
         }
         // A focus request is "pending" from the moment the focus token changes
         // (onAppear / chat switch) until we actually become first responder.
@@ -777,6 +789,12 @@ final class ChatInputTextView: NSTextView {
         let width = max(0, newSize.width - textContainerInset.width * 2)
         if tc.size.width != width {
             tc.size = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+            // A width change re-wraps the text, which can change the natural
+            // height without any text change. Re-report asynchronously to
+            // avoid re-entrant layout while the scroll view is mid-resize.
+            DispatchQueue.main.async { [weak self] in
+                self?.reportContentHeight()
+            }
         }
     }
 
