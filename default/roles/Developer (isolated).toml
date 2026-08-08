@@ -1,7 +1,7 @@
 description = "Directory-isolated coding agent equipped with all essential tools for code generation."
 prompt = "Developer"
 icon = "hammer.circle"
-accent = "blue"
+accent = "indigo"
 connection_override_allowed = true
 mcps_override_allowed = true
 

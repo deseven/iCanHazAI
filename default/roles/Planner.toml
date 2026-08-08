@@ -1,0 +1,13 @@
+description = "General-purpose planner for any task. Gathers context through questions and web research, and produces an actionable plan. No disk access."
+prompt = "Planner"
+icon = "map"
+accent = "teal"
+connection_override_allowed = true
+mcps_override_allowed = true
+
+[utils]
+auto_allow_all = true
+
+[web]
+tools = ["web_search", "web_extract"]
+auto_allow = ["web_search"]

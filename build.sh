@@ -29,6 +29,7 @@ case "${1:-}" in
     release)     mode="release" ;;
     clean)       mode="clean" ;;
     test)        mode="test" ;;
+    apply-roles) mode="apply-roles" ;;
     *)           mode="dev" ;;
 esac
 
@@ -260,6 +261,27 @@ if [ "$mode" = "clean" ]; then
     swift package clean
     do_clean_app_cache
     echo -e "  ${greenColor}${bold}Clean complete.${noColor}"
+    exit 0
+fi
+
+# ── Apply roles ──────────────────────────────────────────────────────
+
+# Dev helper: force-copy the repo's default roles and prompts over the seeded
+# ones in ~/iCanHazAI (the app's own seeding never overwrites). Protected
+# built-ins (Configurator) are skipped — they live in the bundle only.
+if [ "$mode" = "apply-roles" ]; then
+    for sub in roles prompts; do
+        case "$sub" in
+            roles)   ext="toml"; dest="$HOME/iCanHazAI/Roles" ;;
+            prompts) ext="md";   dest="$HOME/iCanHazAI/Prompts" ;;
+        esac
+        mkdir -p "$dest"
+        for f in "$loc/default/$sub/"*."$ext"; do
+            [ "$(basename "$f" ".$ext")" = "Configurator" ] && continue
+            cp -f "$f" "$dest/"
+        done
+    done
+    echo -e "  ${greenColor}${bold}Default roles and prompts applied to ~/iCanHazAI.${noColor}"
     exit 0
 fi
 

@@ -1525,8 +1525,16 @@ actor ChatEngine {
             ),
         ]
         let cache = loadFirstAvailableCache
-        let content = PromptVariables.substitute(text: promptContent, values: values) { args in
+        var content = PromptVariables.substitute(text: promptContent, values: values) { args in
             cache.resolve(args: args, baseDirectory: workdir)
+        }
+        // Provider-backed web tools are advertised even without a configured
+        // provider; tell the model about it so it can nudge the user.
+        let webFilter = resolvedToolSources(for: chat)
+            .first(where: { $0.isBuiltinGroup && $0.name == BuiltinTools.webGroup })?.toolsFilter
+        let webConfigured = await ConfigManager.shared.getWebSearchConfig().isConfigured
+        if let notice = BuiltinToolsWeb.providerMissingNotice(webGroupToolsFilter: webFilter, isConfigured: webConfigured) {
+            content += "\n\n" + notice
         }
         return ChatMessage(role: .system, content: content)
     }
@@ -2042,19 +2050,13 @@ actor ChatEngine {
         // Local-only tools (macOS automation) are meaningless against an SSH
         // working directory and are not advertised at all.
         let sshWorkdir = effectiveWorkingDirectory(for: chat).map { SSHSpec.isSSH($0) } ?? false
-        // Provider-backed web tools (web_search/web_extract) are only
-        // advertised when a provider is configured; web_fetch always is.
-        var webProviderConfigured = false
-        if resolved.contains(where: { $0.isBuiltinGroup && $0.name == BuiltinTools.webGroup }) {
-            webProviderConfigured = await ConfigManager.shared.getWebSearchConfig().isConfigured
-        }
         for r in resolved {
             if r.isBuiltinGroup {
                 // Built-in groups: tools are always available (in-process).
-                var groupTools = BuiltinTools.tools(for: r.name)
-                if r.name == BuiltinTools.webGroup, !webProviderConfigured {
-                    groupTools = groupTools.filter { !BuiltinToolsWeb.providerToolNames.contains($0.name) }
-                }
+                // Provider-backed web tools (web_search/web_extract) are
+                // advertised even without a configured provider — the system
+                // prompt carries a notice and calls fail with a clear error.
+                let groupTools = BuiltinTools.tools(for: r.name)
                 let roleAllow = Set(r.toolsFilter)
                 let filtered = groupTools.filter { t in
                     if sshWorkdir, BuiltinTools.sshUnavailableToolNames.contains(t.name) { return false }

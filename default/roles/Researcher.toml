@@ -1,0 +1,14 @@
+description = "A web research agent — searches and extracts, then synthesizes a fully-cited report."
+prompt = "Researcher"
+icon = "magnifyingglass"
+accent = "pink"
+
+connection_override_allowed = true
+mcps_override_allowed = true
+
+[utils]
+auto_allow_all = true
+
+[web]
+tools = ["web_search", "web_extract"]
+auto_allow = ["web_search", "web_extract"]

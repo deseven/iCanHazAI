@@ -277,7 +277,7 @@ private struct WebSearchTab: View {
         VStack(alignment: .leading, spacing: 20) {
             PrefRow(
                 title: "Provider",
-                description: "The backend used by the web_search and web_extract tools. Without a provider only the raw web_fetch tool is available."
+                description: "The backend used by the web_search and web_extract tools. Without a provider those tools fail when called; only the raw web_fetch tool works."
             ) {
                 Picker("", selection: store.bindingWebSearchProvider) {
                     Text("None").tag("none")

@@ -345,6 +345,33 @@ extension AllAppTests {
             #expect(!role.hasDirectoryRelevantTools)
         }
 
+        // MARK: - Provider-missing system prompt notice
+
+        @Test("Notice is present when provider tools are advertised without a provider")
+        func providerMissingNoticePresent() {
+            let notice = BuiltinToolsWeb.providerMissingNotice(webGroupToolsFilter: [], isConfigured: false)
+            #expect(notice?.contains("[SYSTEM NOTICE]") == true)
+            #expect(notice?.contains("`web_search` and `web_extract`") == true)
+            #expect(notice?.contains("Preferences > Web Search") == true)
+            // web_fetch is advertised too, so it's mentioned as working.
+            #expect(notice?.contains("`web_fetch`") == true)
+        }
+
+        @Test("Notice is absent when the web group is off, the provider is set, or only web_fetch is allowed")
+        func providerMissingNoticeAbsent() {
+            #expect(BuiltinToolsWeb.providerMissingNotice(webGroupToolsFilter: nil, isConfigured: false) == nil)
+            #expect(BuiltinToolsWeb.providerMissingNotice(webGroupToolsFilter: [], isConfigured: true) == nil)
+            #expect(BuiltinToolsWeb.providerMissingNotice(webGroupToolsFilter: ["web_fetch"], isConfigured: false) == nil)
+        }
+
+        @Test("Notice reflects the role's tool allowlist")
+        func providerMissingNoticeFiltered() {
+            let notice = BuiltinToolsWeb.providerMissingNotice(webGroupToolsFilter: ["web_search"], isConfigured: false)
+            #expect(notice?.contains("`web_search`") == true)
+            #expect(notice?.contains("`web_extract`") == false)
+            #expect(notice?.contains("`web_fetch`") == false)
+        }
+
         @Test("directory_isolation on the web group is a validation error")
         func webGroupIsolationRejected() throws {
             let toml = """

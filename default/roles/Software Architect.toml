@@ -1,5 +1,5 @@
-description = "High-level planner for any task. Gathers context, asks the right questions, and produces an actionable plan."
-prompt = "Architect"
+description = "Software planner for designing systems, features, and refactors. Inspects the codebase, asks the right questions, and produces an actionable plan."
+prompt = "Software Architect"
 icon = "ruler"
 accent = "orange"
 connection_override_allowed = true

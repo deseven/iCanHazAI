@@ -268,7 +268,7 @@ The app ships with five built-in tool groups, always available (no MCP needed) a
 - **Filesystem** (`[filesystem]`) — file operations: `ls`, `read_file`, `write_file`, `find_file`, `find_text`, `mkdir`, `mv`, `rm`, `stat`, `pwd`.
 - **Code** (`[code]`) — code-aware tools: `apply_patch`.
 - **Shell** (`[shell]`) — shell execution: `shell`, `applescript`.
-- **Web** (`[web]`) — web access: `web_search`, `web_extract`, `web_fetch`. `web_fetch` (raw curl-like download, 256KB text cap) always works; `web_search` and `web_extract` are only advertised to the model when a provider is configured in `[web_search]` (they share one unified interface regardless of provider). The group needs no working directory and supports no `directory_isolation`.
+- **Web** (`[web]`) — web access: `web_search`, `web_extract`, `web_fetch`. `web_fetch` (raw curl-like download, 256KB text cap) always works; `web_search` and `web_extract` share one unified interface regardless of provider and are always advertised to the model — without a configured provider in `[web_search]` they fail at call time. The group needs no working directory and supports no `directory_isolation`.
 
 These run in-process (no subprocess), so there's no `check_mcp_bundled` tool — the tool list above is authoritative. To build a `tools` allowlist for a role, pick from the names listed above.
 
