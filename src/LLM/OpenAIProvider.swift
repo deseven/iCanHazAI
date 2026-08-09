@@ -44,7 +44,7 @@ struct OpenAIProvider: LLMProvider {
     ) -> [String: Any] {
         var body: [String: Any] = [
             "model": connection.model,
-            "messages": messages.map { openAIMessage($0, chatFilename: chatFilename) },
+            "messages": messages.map { openAIMessage($0, chatFilename: chatFilename, imageInput: connection.imageInput) },
         ]
 
         if let tools, !tools.isEmpty {
@@ -80,9 +80,9 @@ struct OpenAIProvider: LLMProvider {
     // MARK: - Message mapping
 
     /// Maps a [`ChatMessage`](src/Chat/Models.swift) to the OpenAI message JSON shape.
-    private func openAIMessage(_ msg: ChatMessage, chatFilename: String) -> [String: Any] {
+    private func openAIMessage(_ msg: ChatMessage, chatFilename: String, imageInput: Bool) -> [String: Any] {
         if msg.role == .user, let attachments = msg.attachments, !attachments.isEmpty {
-            return openAIAttachmentMessage(msg, attachments: attachments, chatFilename: chatFilename)
+            return openAIAttachmentMessage(msg, attachments: attachments, chatFilename: chatFilename, imageInput: imageInput)
         }
         if msg.role == .assistant, let calls = msg.toolCalls, !calls.isEmpty {
             var dict: [String: Any] = ["role": "assistant"]
@@ -118,12 +118,15 @@ struct OpenAIProvider: LLMProvider {
     }
 
     /// Builds an OpenAI user message dict with multipart content: text parts,
-    /// image_url parts (base64 data URLs) for image attachments, and text
-    /// parts wrapping extracted content for text/document attachments.
+    /// image_url parts (base64 data URLs) for image attachments on
+    /// vision-capable connections, the synthesized text fallback for images on
+    /// vision-incapable connections, and text parts wrapping extracted content
+    /// for text/document attachments.
     private func openAIAttachmentMessage(
         _ msg: ChatMessage,
         attachments: [Attachment],
-        chatFilename: String
+        chatFilename: String,
+        imageInput: Bool
     ) -> [String: Any] {
         var parts: [[String: Any]] = []
         if !msg.content.isEmpty {
@@ -132,12 +135,16 @@ struct OpenAIProvider: LLMProvider {
         for attachment in attachments {
             switch attachment.kind {
             case .image:
-                guard let data = EnvironmentManager.shared.loadAttachmentData(attachment, chatFilename: chatFilename) else { continue }
-                let url = "data:\(attachment.mimeType);base64,\(data.base64EncodedString())"
-                parts.append([
-                    "type": "image_url",
-                    "image_url": ["url": url, "detail": "auto"] as [String: Any],
-                ])
+                if imageInput {
+                    guard let data = EnvironmentManager.shared.loadAttachmentData(attachment, chatFilename: chatFilename) else { continue }
+                    let url = "data:\(attachment.mimeType);base64,\(data.base64EncodedString())"
+                    parts.append([
+                        "type": "image_url",
+                        "image_url": ["url": url, "detail": "auto"] as [String: Any],
+                    ])
+                } else if let fallback = attachment.text, !fallback.isEmpty {
+                    parts.append(["type": "text", "text": fallback])
+                }
             case .text, .document:
                 if let text = attachment.text, !text.isEmpty,
                    let block = AttachmentRequestBuilder.block(for: attachment) {

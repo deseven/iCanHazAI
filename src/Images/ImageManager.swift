@@ -80,13 +80,17 @@ enum AttachmentManager {
         }
     }
 
-    /// Resizes/re-encodes an image and saves it.
+    /// Resizes/re-encodes an image, saves it, and generates the text fallback
+    /// (classification labels + OCR) stored on the record. The fallback lives
+    /// in `Attachment.text` so a vision-incapable connection can send it as a
+    /// text block instead of the image block.
     private static func commitImage(_ pending: PendingAttachment, chatFilename: String) -> Attachment? {
         guard let processed = ImageProcessor.process(pending.data) else { return nil }
         let id = UUID()
         let filename = "\(id.uuidString).\(processed.ext)"
         _ = EnvironmentManager.shared.saveAttachment(data: processed.data, filename: filename, chatFilename: chatFilename)
-        return Attachment(id: id, kind: .image, ext: processed.ext, originalName: pending.originalName)
+        let fallback = ImageFallbackSynthesizer.fallback(for: pending.data)
+        return Attachment(id: id, kind: .image, ext: processed.ext, originalName: pending.originalName, text: fallback, status: .ok)
     }
 
     /// Copies a plain-text file as-is; the text is embedded on the record.

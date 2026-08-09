@@ -6,14 +6,22 @@ import Vision
 import ImageIO
 import CoreGraphics
 
-/// Stateless Vision OCR helper. Uses `VNRecognizeTextRequest` (not the
-/// macOS 26-only `RecognizeDocumentsRequest`, which silently drops code-like
-/// lines) at `.accurate` recognition level with language correction and
-/// automatic language detection.
+/// A classification label from `VNClassifyImageRequest` — the built-in
+/// ~1000-category multi-label image classifier.
+struct ImageLabel: Sendable, Equatable {
+    /// The Vision category identifier (e.g. "animal_bird", "landscape_garden").
+    let identifier: String
+    /// Confidence in [0, 1].
+    let confidence: Float
+}
+
+/// Stateless Vision helpers for OCR and image classification. Uses
+/// `VNRecognizeTextRequest` (not the macOS 26-only `RecognizeDocumentsRequest`,
+/// which silently drops code-like lines) at `.accurate` recognition level with
+/// language correction and automatic language detection.
 ///
-/// Each recognition is wrapped in an `autoreleasepool` because repeated
-/// `VNRecognizeTextRequest` calls on macOS 26 have been reported to leak
-/// memory aggressively.
+/// Each request is wrapped in an `autoreleasepool` because repeated Vision
+/// calls on macOS 26 have been reported to leak memory aggressively.
 enum TextRecognizer {
 
     /// Recognizes text in a `CGImage`. Returns the candidate strings joined
@@ -57,5 +65,38 @@ enum TextRecognizer {
             return nil
         }
         return recognize(cgImage: cgImage)
+    }
+
+    // MARK: - Image classification
+
+    /// Classifies an image using the built-in ~1000-category classifier.
+    /// Returns the top labels filtered to a precision/recall threshold that
+    /// keeps useful labels while cutting noise. The caller (the fallback
+    /// synthesizer) applies an additional confidence floor.
+    static func classifyImage(cgImage: CGImage) -> [ImageLabel] {
+        var out: [ImageLabel] = []
+        autoreleasepool {
+            let request = VNClassifyImageRequest()
+            let handler = VNImageRequestHandler(cgImage: cgImage, orientation: .up)
+            do {
+                try handler.perform([request])
+            } catch {
+                return
+            }
+            let results = (request.results ?? [])
+                .filter { $0.hasMinimumPrecision(0.1, forRecall: 0.7) }
+            out = results.prefix(8).map { ImageLabel(identifier: $0.identifier, confidence: $0.confidence) }
+        }
+        return out
+    }
+
+    /// Classifies raw image `Data` (any ImageIO-decodable format). Returns
+    /// an empty array if the data can't be decoded.
+    static func classifyImage(data: Data) -> [ImageLabel] {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            return []
+        }
+        return classifyImage(cgImage: cgImage)
     }
 }

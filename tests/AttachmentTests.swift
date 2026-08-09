@@ -78,7 +78,7 @@ struct AttachmentTests {
         #expect(committed.ext == "rtf")
     }
 
-    @Test("Committing an image attachment produces an image record with no text")
+    @Test("Committing an image attachment produces an image record with a text fallback")
     @MainActor
     func commitImageRecord() throws {
         let png = makePNG(text: "IMG")
@@ -88,7 +88,10 @@ struct AttachmentTests {
         guard let committed else { return }
         #expect(committed.kind == .image)
         #expect(committed.status == .ok)
-        #expect(committed.text == nil)
+        // The fallback is synthesized from classification + OCR and stored on
+        // the record so a vision-incapable connection can send it as text.
+        #expect(committed.text != nil)
+        #expect(committed.text?.contains("can't be processed visually here") == true)
     }
 
     @Test("Committing an unsupported binary returns nil")

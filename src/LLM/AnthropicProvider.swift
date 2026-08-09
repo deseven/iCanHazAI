@@ -63,7 +63,7 @@ struct AnthropicProvider: LLMProvider {
 
         var body: [String: Any] = [
             "model": connection.model,
-            "messages": conversationMessages.map { anthropicMessage($0, chatFilename: chatFilename) },
+            "messages": conversationMessages.map { anthropicMessage($0, chatFilename: chatFilename, imageInput: connection.imageInput) },
         ]
         if let systemText { body["system"] = systemText }
 
@@ -100,11 +100,11 @@ struct AnthropicProvider: LLMProvider {
     // MARK: - Message mapping
 
     /// Maps a [`ChatMessage`](src/Chat/Models.swift) to the Anthropic message JSON shape.
-    private func anthropicMessage(_ msg: ChatMessage, chatFilename: String) -> [String: Any] {
+    private func anthropicMessage(_ msg: ChatMessage, chatFilename: String, imageInput: Bool) -> [String: Any] {
         let role = (msg.role == .user || msg.role == .tool) ? "user" : "assistant"
 
         if msg.role == .user, let attachments = msg.attachments, !attachments.isEmpty {
-            return anthropicAttachmentMessage(msg, attachments: attachments, role: role, chatFilename: chatFilename)
+            return anthropicAttachmentMessage(msg, attachments: attachments, role: role, chatFilename: chatFilename, imageInput: imageInput)
         }
         if msg.role == .assistant, let calls = msg.toolCalls, !calls.isEmpty {
             var blocks: [[String: Any]] = []
@@ -141,13 +141,16 @@ struct AnthropicProvider: LLMProvider {
     }
 
     /// Builds an Anthropic message dict with multipart content: text blocks,
-    /// image blocks (base64 sources) for image attachments, and text blocks
-    /// wrapping extracted content for text/document attachments.
+    /// image blocks (base64 sources) for image attachments on vision-capable
+    /// connections, the synthesized text fallback for images on
+    /// vision-incapable connections, and text blocks wrapping extracted content
+    /// for text/document attachments.
     private func anthropicAttachmentMessage(
         _ msg: ChatMessage,
         attachments: [Attachment],
         role: String,
-        chatFilename: String
+        chatFilename: String,
+        imageInput: Bool
     ) -> [String: Any] {
         var blocks: [[String: Any]] = []
         if !msg.content.isEmpty {
@@ -156,15 +159,19 @@ struct AnthropicProvider: LLMProvider {
         for attachment in attachments {
             switch attachment.kind {
             case .image:
-                guard let data = EnvironmentManager.shared.loadAttachmentData(attachment, chatFilename: chatFilename) else { continue }
-                blocks.append([
-                    "type": "image",
-                    "source": [
-                        "type": "base64",
-                        "media_type": attachment.mimeType,
-                        "data": data.base64EncodedString(),
-                    ] as [String: Any],
-                ])
+                if imageInput {
+                    guard let data = EnvironmentManager.shared.loadAttachmentData(attachment, chatFilename: chatFilename) else { continue }
+                    blocks.append([
+                        "type": "image",
+                        "source": [
+                            "type": "base64",
+                            "media_type": attachment.mimeType,
+                            "data": data.base64EncodedString(),
+                        ] as [String: Any],
+                    ])
+                } else if let fallback = attachment.text, !fallback.isEmpty {
+                    blocks.append(["type": "text", "text": fallback])
+                }
             case .text, .document:
                 if let text = attachment.text, !text.isEmpty,
                    let block = AttachmentRequestBuilder.block(for: attachment) {
