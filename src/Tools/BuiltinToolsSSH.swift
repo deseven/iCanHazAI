@@ -21,6 +21,11 @@ enum BuiltinToolsSSH {
     /// its own timeout policy (explicit timeout, or an idle watchdog).
     private static let fileOpTimeout: TimeInterval = 30
 
+    /// Maximum remote file size pulled over SSH for read_file before
+    /// extraction. Matches the extractor's input ceiling so a remote binary
+    /// document can't flood the SSH channel or local memory.
+    static let readFileSizeLimit: Int = 256 * 1024 * 1024
+
     /// Idle watchdog for the shell tool when the caller didn't pass an
     /// explicit timeout: killed after this long without stdout/stderr output.
     static let shellIdleTimeout: TimeInterval = 120
@@ -158,9 +163,15 @@ enum BuiltinToolsSSH {
         let limit = BuiltinTools.optionalInt(args, "limit") ?? 2000
         let resolved = try workdir.resolve(path)
 
+        // Stat the remote file first and refuse oversized files before
+        // pulling bytes for extraction. GNU stat uses -c, BSD stat uses -f;
+        // the first that succeeds wins. The size is printed to stdout on a
+        // marker line, then cat follows on the same stream.
         let script = """
         if [ ! -e \(qp(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
         if [ -d \(qp(resolved)) ]; then printf 'is a directory: %s\\n' \(q(path)) >&2; exit 1; fi
+        sz=$(stat -c '%s' \(qp(resolved)) 2>/dev/null || stat -f '%z' \(qp(resolved)) 2>/dev/null || echo 0)
+        if [ "$sz" -gt \(readFileSizeLimit) ]; then printf 'file is %s bytes; exceeds the %s byte read limit\\n' "$sz" "\(readFileSizeLimit)" >&2; exit 1; fi
         cat \(qp(resolved))
         """
         let r = try await run(ssh, script: script)

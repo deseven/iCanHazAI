@@ -258,8 +258,8 @@ enum BuiltinTools {
             description: "List files and directories at a path. Returns one entry per line, directories suffixed with '/'.",
             schema: #"{"type":"object","properties":{"path":{"type":"string","description":"Directory path to list. \#(Workdir.pathDescription)"},"recursive":{"type":"boolean","description":"If true, list recursively to a fixed depth of 1 (direct children plus one level into subdirectories) with a cap of 1000 entries. Default false."},"include_hidden":{"type":"boolean","description":"Include hidden files and directories (names starting with '.'). Default false."}},"required":["path"]}"#),
         BuiltinToolDef(name: "read_file",
-            description: "Read a file. Text files support offset/limit line ranges and are returned with line numbers in the format 'N | content' (right-aligned line number, a pipe separator, then the raw line). The 'N | ' prefix is NOT part of the file — never include it when quoting file content, e.g. in apply_patch context lines. From binary files only images are supported.",
-            schema: #"{"type":"object","properties":{"path":{"type":"string","description":"File path to read. \#(Workdir.pathDescription)"},"offset":{"type":"integer","description":"1-based starting line number for text files. Defaults to 1."},"limit":{"type":"integer","description":"Maximum number of lines to read for text files. Defaults to 2000."}},"required":["path"]}"#),
+            description: "Read a file and return its contents in a format that you can process. Use this as a main tool for reading inidividual files. Supports plain text and any other textual formats, document binaries (docx, doc, odt, rtf, pdf and similar) and image files. When relevant, the output is line-numbered in the format 'N | content' (right-aligned line number, a pipe separator, then the raw line) — the 'N | ' prefix is NOT part of the file, so never include it when quoting file content.",
+            schema: #"{"type":"object","properties":{"path":{"type":"string","description":"File path to read. \#(Workdir.pathDescription)"},"offset":{"type":"integer","description":"1-based starting line number. Defaults to 1."},"limit":{"type":"integer","description":"Maximum number of lines to read. Defaults to 2000."}},"required":["path"]}"#),
         BuiltinToolDef(name: "write_file",
             description: "Write text content to a file (creates or overwrites). Parent directories are created as needed. ALWAYS provide the COMPLETE intended content of the file — partial updates or placeholders like '// rest unchanged' are forbidden. Do NOT include line numbers in the content. For targeted edits to existing files, prefer apply_patch.",
             schema: #"{"type":"object","properties":{"path":{"type":"string","description":"File path to write. \#(Workdir.pathDescription)"},"content":{"type":"string","description":"The complete text content to write, without line numbers or truncation."}},"required":["path","content"]}"#),
@@ -839,22 +839,53 @@ enum BuiltinTools {
         return try formatFileContent(data, path: path, offset: offset, limit: limit)
     }
 
-    /// Shared read_file formatting pipeline (image detection, text slicing
-    /// with line numbers, truncation), used by both the local and the
-    /// SSH-backed implementations once the raw bytes are in hand.
+    /// Shared read_file formatting pipeline (classification, document/image
+    /// extraction, text slicing with line numbers, truncation), used by both
+    /// the local and the SSH-backed implementations once the raw bytes are in
+    /// hand. Text files are returned with line numbers; document binaries
+    /// (docx/odt/rtf/pdf) are extracted to text first; images are OCR'd to
+    /// text; both extractions get the same offset/limit slicing as plain text.
     static func formatFileContent(_ data: Data, path: String, offset: Int, limit: Int) throws -> ToolOutput {
-        if ImageProcessor.isSupported(data) {
-            let mimeType = imageMimeType(for: data) ?? "image"
-            return ("[image: \(mimeType)]", false)
-        }
+        let hint = DocumentTypeHint(filename: path)
+        let kind = DocumentClassifier.classify(data: data, hint: hint)
 
-        if !isText(data) {
-            return ("Binary file \(path) is not a supported format. Only text and image files can be read.", false)
-        }
+        switch kind {
+        case .text:
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw BuiltinToolError("invalid argument 'path': file is not valid UTF-8: \(path)")
+            }
+            return formatTextLines(text, offset: offset, limit: limit)
 
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw BuiltinToolError("invalid argument 'path': file is not valid UTF-8: \(path)")
+        case .document(let format):
+            switch DocumentExtractor.extract(data: data, format: format) {
+            case .success(let extraction):
+                return formatTextLines(extraction.text, offset: offset, limit: limit)
+            case .unsupported(_, let reason):
+                return ("Could not extract \(path): \(reason)", false)
+            case .failed(let reason):
+                return ("Failed to extract \(path): \(reason)", false)
+            }
+
+        case .image:
+            switch DocumentExtractor.ocrImage(data) {
+            case .success(let extraction):
+                return formatTextLines(extraction.text, offset: offset, limit: limit)
+            case .unsupported(_, let reason):
+                return ("Could not OCR \(path): \(reason)", false)
+            case .failed(let reason):
+                return ("Failed to OCR \(path): \(reason)", false)
+            }
+
+        case .unsupportedBinary:
+            return ("Binary file \(path) is not a supported format. Only text, document (docx/doc/odt/rtf/pdf), and image files can be read.", false)
         }
+    }
+
+    /// Formats text as line-numbered output with offset/limit slicing,
+    /// matching the read_file 'N | content' gutter format. The pipe separator
+    /// makes the boundary between gutter and code indentation unambiguous for
+    /// models copying context into patches.
+    private static func formatTextLines(_ text: String, offset: Int, limit: Int) -> ToolOutput {
         let lines = text.components(separatedBy: "\n")
         let cleaned: [String] = lines.last?.isEmpty ?? false ? Array(lines.dropLast()) : lines
 
@@ -867,9 +898,6 @@ enum BuiltinTools {
         let endIdx = min(startIdx + effectiveLimit, cleaned.count)
         let slice = cleaned[startIdx..<endIdx]
 
-        // 'N | content' gutter: right-aligned number + visible pipe separator.
-        // The pipe (not a tab) makes the boundary between gutter and code
-        // indentation unambiguous for models copying context into patches.
         let gutterWidth = String(cleaned.count).count
         var out: [String] = []
         out.reserveCapacity(slice.count)

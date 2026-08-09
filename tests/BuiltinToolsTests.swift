@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import AppKit
 @testable import iCanHazAI
 
 /// In-process tests for the built-in tool groups (Utils, Filesystem, Code,
@@ -1218,6 +1219,177 @@ extension AllAppTests {
         func noBackgroundTools() {
             #expect(!BuiltinTools.allToolNames.contains("shell_background"))
             #expect(!BuiltinTools.allToolNames.contains("shell_read_output"))
+        }
+    }
+
+    // MARK: - Document-aware read_file
+
+    @Suite("Builtin tools: document-aware read_file")
+    struct BuiltinDocumentReadFileTests {
+        private static let fs = BuiltinTools.filesystemGroup
+
+        /// Generates document fixtures on disk for read_file tests. MainActor
+        /// because it builds AppKit views/images to synthesize PDF/PNG fixtures.
+        @MainActor
+        private final class DocFixtures {
+            let dir: String
+
+            let rtfPath: String
+            let docxPath: String
+            let pdfPath: String
+            let pngPath: String
+            let binaryPath: String
+
+            init() throws {
+                let base = NSTemporaryDirectory()
+                let name = "ichai-readfile-doc-\(UUID().uuidString)"
+                let d = (base as NSString).appendingPathComponent(name)
+                try FileManager.default.createDirectory(atPath: d, withIntermediateDirectories: true)
+                self.dir = d
+
+                // RTF via AppKit.
+                let attr = NSAttributedString(string: "Hello RTF\nSecond line of RTF text.")
+                let rtfData = try attr.data(
+                    from: NSRange(location: 0, length: attr.length),
+                    documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+                )
+                self.rtfPath = (d as NSString).appendingPathComponent("doc.rtf")
+                try rtfData.write(to: URL(fileURLWithPath: rtfPath))
+
+                // DOCX via textutil (from the RTF).
+                let rtfURL = URL(fileURLWithPath: rtfPath)
+                let docxData = try Self.textutil(["-convert", "docx", "-stdout", rtfURL.path])
+                self.docxPath = (d as NSString).appendingPathComponent("doc.docx")
+                try docxData.write(to: URL(fileURLWithPath: docxPath))
+
+                // PDF with a text layer via NSTextView.dataWithPDF(inside:).
+                let tv = NSTextView(frame: NSRect(x: 0, y: 0, width: 612, height: 792))
+                tv.string = "Page one text content.\nAnother paragraph on page one."
+                let pdfData = tv.dataWithPDF(inside: tv.bounds)
+                self.pdfPath = (d as NSString).appendingPathComponent("doc.pdf")
+                try pdfData.write(to: URL(fileURLWithPath: pdfPath))
+
+                // PNG with rendered text (for image OCR).
+                let pngData = try Self.makePNG(text: "IMAGE OCR TEXT")
+                self.pngPath = (d as NSString).appendingPathComponent("shot.png")
+                try pngData.write(to: URL(fileURLWithPath: pngPath))
+
+                // Arbitrary binary (zip magic bytes) — must be rejected.
+                let binData = Data([0x50, 0x4B, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00])
+                self.binaryPath = (d as NSString).appendingPathComponent("archive.zip")
+                try binData.write(to: URL(fileURLWithPath: binaryPath))
+            }
+
+            deinit { try? FileManager.default.removeItem(atPath: dir) }
+
+            private static func textutil(_ args: [String]) throws -> Data {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/textutil")
+                p.arguments = args
+                let pipe = Pipe()
+                p.standardOutput = pipe
+                p.standardError = Pipe()
+                try p.run()
+                p.waitUntilExit()
+                guard p.terminationStatus == 0 else {
+                    throw NSError(domain: "DocFixtures", code: Int(p.terminationStatus),
+                                  userInfo: [NSLocalizedDescriptionKey: "textutil failed"])
+                }
+                return pipe.fileHandleForReading.readDataToEndOfFile()
+            }
+
+            private static func makePNG(text: String) throws -> Data {
+                let size = NSSize(width: 400, height: 100)
+                let image = NSImage(size: size)
+                image.lockFocus()
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 32),
+                    .foregroundColor: NSColor.black,
+                ]
+                (text as NSString).draw(at: NSPoint(x: 20, y: 30), withAttributes: attrs)
+                image.unlockFocus()
+                guard let tiff = image.tiffRepresentation,
+                      let rep = NSBitmapImageRep(data: tiff),
+                      let png = rep.representation(using: .png, properties: [:]) else {
+                    throw NSError(domain: "DocFixtures", code: 1,
+                                  userInfo: [NSLocalizedDescriptionKey: "PNG render failed"])
+                }
+                return png
+            }
+        }
+
+        @Test("read_file extracts RTF to line-numbered text")
+        @MainActor
+        func readRTF() async throws {
+            let f = try DocFixtures()
+            let (text, err) = await Self.call("read_file", Self.fs, ["path": f.rtfPath])
+            #expect(!err, "read_file failed: \(text)")
+            #expect(text.contains("Hello RTF"))
+            #expect(text.contains("Second line of RTF text."))
+            // Line-numbered gutter is present.
+            #expect(text.contains(" | Hello RTF"))
+        }
+
+        @Test("read_file extracts DOCX to line-numbered text")
+        @MainActor
+        func readDOCX() async throws {
+            let f = try DocFixtures()
+            let (text, err) = await Self.call("read_file", Self.fs, ["path": f.docxPath])
+            #expect(!err, "read_file failed: \(text)")
+            #expect(text.contains("Hello RTF"))
+            #expect(text.contains(" | "))
+        }
+
+        @Test("read_file extracts PDF with page markers")
+        @MainActor
+        func readPDF() async throws {
+            let f = try DocFixtures()
+            let (text, err) = await Self.call("read_file", Self.fs, ["path": f.pdfPath])
+            #expect(!err, "read_file failed: \(text)")
+            #expect(text.contains("Page one text content."))
+            // PDF page markers survive into the line-numbered output.
+            #expect(text.contains("--- Page 1 ---"))
+        }
+
+        @Test("read_file offset/limit slices extracted document text")
+        @MainActor
+        func readDocOffsetLimit() async throws {
+            let f = try DocFixtures()
+            // The RTF has two lines: "Hello RTF" and "Second line of RTF text."
+            let (text, err) = await Self.call("read_file", Self.fs, ["path": f.rtfPath, "offset": 2, "limit": 1])
+            #expect(!err, "read_file failed: \(text)")
+            #expect(text.contains("Second line of RTF text."))
+            #expect(!text.contains("Hello RTF"))
+        }
+
+        @Test("read_file OCRs an image to text")
+        @MainActor
+        func readImageOCR() async throws {
+            let f = try DocFixtures()
+            let (text, err) = await Self.call("read_file", Self.fs, ["path": f.pngPath])
+            #expect(!err, "read_file failed: \(text)")
+            // Vision recognizes the rendered text when available. In the
+            // `swift test` runner Vision can return empty (no GUI session),
+            // so the "(no text recognized in image)" fallback is acceptable
+            // there; when Vision produces output it must contain the words.
+            if !text.contains("(no text recognized in image)") {
+                #expect(text.contains("IMAGE") || text.contains("OCR") || text.contains("TEXT"))
+            }
+        }
+
+        @Test("read_file rejects unsupported binary formats")
+        @MainActor
+        func readBinaryRejected() async throws {
+            let f = try DocFixtures()
+            let (text, err) = await Self.call("read_file", Self.fs, ["path": f.binaryPath])
+            #expect(!err)
+            #expect(text.contains("not a supported format"))
+        }
+
+        static func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir = .none) async -> (text: String, isError: Bool) {
+            let arguments = (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
+            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir)
+            return (result.content, result.isError)
         }
     }
 }
