@@ -7,8 +7,7 @@
 .swiftpm/
 Package.resolved
 .env
-lib-docs/*
-plans/*
+TODO/*
 dist/*
 chatrenderer/dist/*
 chatrenderer/node_modules/

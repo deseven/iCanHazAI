@@ -244,7 +244,7 @@ Canonical workflows. Adapt as needed, but keep the shape: **gather what's missin
 ## Built-in tool groups
 The app ships with five built-in tool groups, always available (no MCP needed) and enabled in roles via their `[group]` table:
 - **Utils** (`[utils]`) — small utilities: `calc`, `datetime`, `uuid`, `hash`, `base64_encode`, `base64_decode`, `sleep`.
-- **Filesystem** (`[filesystem]`) — file operations: `ls`, `read_file`, `write_file`, `find_file`, `find_text`, `mkdir`, `mv`, `rm`, `stat`, `pwd`.
+- **Filesystem** (`[filesystem]`) — file operations: `ls`, `read_file`, `write_file`, `find_file`, `find_text`, `mkdir`, `mv`, `rm`, `stat`, `pwd`. `read_file` extracts text from document binaries (docx, doc, odt, rtf, rtfd, wordml, webarchive, pdf — including OCR fallback for scanned PDF pages and image files) via the bundled document extraction engine; plain text (html, json, xml, source, proprietary-but-textual) passes through raw.
 - **Code** (`[code]`) — code-aware tools: `apply_patch`.
 - **Shell** (`[shell]`) — shell execution: `shell`, `applescript`.
 - **Web** (`[web]`) — web access: `web_search`, `web_extract`, `web_fetch`. `web_fetch` (raw curl-like download, 256KB text cap) always works; `web_search` and `web_extract` share one unified interface regardless of provider and are always advertised to the model — without a configured provider in `[web_search]` they fail at call time. The group needs no working directory.
