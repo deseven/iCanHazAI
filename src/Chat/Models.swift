@@ -724,8 +724,7 @@ struct RoleMCP: Codable, Equatable, Hashable, Sendable {
 
 /// Configuration for a single built-in tool group (`[utils]`, `[filesystem]`,
 /// `[code]`, `[shell]`). An empty group (just `[utils]` with no keys) enables
-/// the group with all defaults: all tools allowed, none auto-approved, no
-/// directory isolation.
+/// the group with all defaults: all tools allowed, none auto-approved.
 struct RoleToolGroup: Codable, Equatable, Hashable, Sendable {
     /// Tool selection from this group. Empty/nil means all available tools.
     var tools: [String]?
@@ -733,16 +732,11 @@ struct RoleToolGroup: Codable, Equatable, Hashable, Sendable {
     var autoAllow: [String]?
     /// When true, all tools from this group are auto-approved.
     var autoAllowAll: Bool?
-    /// When true, the group runs isolated to the working directory (chroot-like).
-    /// Only meaningful for Filesystem and Code; setting it on any other group is
-    /// a validation error.
-    var directoryIsolation: Bool?
 
     enum CodingKeys: String, CodingKey {
         case tools
         case autoAllow = "auto_allow"
         case autoAllowAll = "auto_allow_all"
-        case directoryIsolation = "directory_isolation"
     }
 }
 
@@ -754,6 +748,10 @@ struct RoleConfig: Codable, Equatable, Hashable {
     var workingDirectory: String?
     var connection: String?
     var connectionOverrideAllowed: Bool?
+    /// When true, Filesystem and Code tools run isolated to the working
+    /// directory (chroot-like). A role-level switch: either the whole role is
+    /// isolated or it isn't — partial isolation would be escapable.
+    var directoryIsolation: Bool?
     /// Built-in tool groups. A group key is present (non-nil) when its `[group]`
     /// table appears in the TOML — even an empty table enables the group with
     /// defaults. Nil means the group is disabled.
@@ -783,6 +781,7 @@ struct RoleConfig: Codable, Equatable, Hashable {
         case workingDirectory = "working_directory"
         case connection
         case connectionOverrideAllowed = "connection_override_allowed"
+        case directoryIsolation = "directory_isolation"
         case utils
         case filesystem
         case code
@@ -872,17 +871,12 @@ struct Role: Identifiable, Equatable, Hashable {
         enabledGroups.contains { BuiltinTools.directoryRelevantGroups.contains($0) }
     }
 
-    /// Whether this role enables `directory_isolation` on at least one
-    /// isolation-capable built-in group (Filesystem or Code). When true, a
-    /// working directory is required for the chat: either pre-set by the role
-    /// or picked by the user. Drives the red "No directory" placeholder and
-    /// the send gate when no directory is set.
-    var hasDirectoryIsolation: Bool {
-        for group in enabledGroups where BuiltinTools.isolationCapableGroups.contains(group) {
-            if groupConfig(group)?.directoryIsolation == true { return true }
-        }
-        return false
-    }
+    /// Whether this role enables `directory_isolation`: Filesystem and Code
+    /// tools run confined to the working directory. When true, a working
+    /// directory is required for the chat: either pre-set by the role or
+    /// picked by the user. Drives the red "No directory" placeholder and the
+    /// send gate when no directory is set.
+    var hasDirectoryIsolation: Bool { config.directoryIsolation ?? false }
 }
 
 // MARK: - Connection

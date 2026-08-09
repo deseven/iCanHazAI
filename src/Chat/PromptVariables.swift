@@ -235,19 +235,21 @@ enum PromptVariables {
     }
 
     /// The `{current_directory}` value: the chat's effective working directory
-    /// as the model should see it.
+    /// as the model should see it — the bare path with no descriptive prefix.
+    /// The prompt is responsible for adding any label (e.g.
+    /// `Current directory: {current_directory}`).
     ///
     /// - Empty string when the role selects no workdir-capable built-in group
     ///   (Filesystem, Code, or Shell) — nothing consumes a directory, so the
     ///   variable says nothing.
-    /// - `Current directory: /` when directory isolation is enabled — the
-    ///   working directory is the root of the model's world.
-    /// - `Current directory: ~` when no directory is set.
-    /// - `Current directory: /some/path` otherwise.
+    /// - `/` when directory isolation is enabled — the working directory is
+    ///   the root of the model's world.
+    /// - `~` when no directory is set.
+    /// - `/some/path` otherwise.
     static func currentDirectory(workdirCapable: Bool, isolated: Bool, directory: String?) -> String {
         guard workdirCapable else { return "" }
-        if isolated { return "Current directory: /" }
-        guard let directory, !directory.isEmpty else { return "Current directory: ~" }
-        return "Current directory: \(directory)"
+        if isolated { return "/" }
+        guard let directory, !directory.isEmpty else { return "~" }
+        return directory
     }
 }

@@ -1,4 +1,4 @@
-description = "General-purpose planner for any task. Gathers context through questions and web research, and produces an actionable plan. No disk access."
+description = "General-purpose planner for any task. Gathers context through questions and web research, and produces an actionable plan."
 prompt = "Planner"
 icon = "map"
 accent = "teal"

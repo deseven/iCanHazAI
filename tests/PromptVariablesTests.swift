@@ -182,19 +182,19 @@ extension AllAppTests {
 
         @Test("currentDirectory is / when isolated")
         func currentDirectoryIsolated() {
-            #expect(PromptVariables.currentDirectory(workdirCapable: true, isolated: true, directory: nil) == "Current directory: /")
-            #expect(PromptVariables.currentDirectory(workdirCapable: true, isolated: true, directory: "/some/path") == "Current directory: /")
+            #expect(PromptVariables.currentDirectory(workdirCapable: true, isolated: true, directory: nil) == "/")
+            #expect(PromptVariables.currentDirectory(workdirCapable: true, isolated: true, directory: "/some/path") == "/")
         }
 
         @Test("currentDirectory is ~ when no directory is set")
         func currentDirectoryUnset() {
-            #expect(PromptVariables.currentDirectory(workdirCapable: true, isolated: false, directory: nil) == "Current directory: ~")
-            #expect(PromptVariables.currentDirectory(workdirCapable: true, isolated: false, directory: "") == "Current directory: ~")
+            #expect(PromptVariables.currentDirectory(workdirCapable: true, isolated: false, directory: nil) == "~")
+            #expect(PromptVariables.currentDirectory(workdirCapable: true, isolated: false, directory: "") == "~")
         }
 
         @Test("currentDirectory is the path when set")
         func currentDirectorySet() {
-            #expect(PromptVariables.currentDirectory(workdirCapable: true, isolated: false, directory: "/some/path") == "Current directory: /some/path")
+            #expect(PromptVariables.currentDirectory(workdirCapable: true, isolated: false, directory: "/some/path") == "/some/path")
         }
 
         @Test("current_directory is a known variable")

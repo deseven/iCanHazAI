@@ -18,6 +18,7 @@ extension AllAppTests {
             connection = "openai/DeepSeek"
             connection_override_allowed = true
             mcps_override_allowed = true
+            directory_isolation = true
 
             [utils]
             tools = []
@@ -25,7 +26,6 @@ extension AllAppTests {
 
             [filesystem]
             auto_allow = ["ls", "read_file", "stat"]
-            directory_isolation = true
 
             [[mcps]]
             mcp = "Tavily"
@@ -44,7 +44,7 @@ extension AllAppTests {
             // Built-in groups
             #expect(config.utils?.autoAllowAll == true)
             #expect(config.filesystem?.autoAllow == ["ls", "read_file", "stat"])
-            #expect(config.filesystem?.directoryIsolation == true)
+            #expect(config.directoryIsolation == true)
             // Custom MCPs
             let mcps = try #require(config.mcps)
             #expect(mcps.count == 1)
@@ -101,7 +101,6 @@ extension AllAppTests {
             auto_allow_all = true
 
             [filesystem]
-            directory_isolation = true
             """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
@@ -162,27 +161,14 @@ extension AllAppTests {
 
         // MARK: - hasDirectoryIsolation
 
-        @Test("Role.hasDirectoryIsolation is true when Filesystem has directory_isolation")
-        func hasDirectoryIsolationFilesystem() throws {
+        @Test("Role.hasDirectoryIsolation is true when directory_isolation is set at the top level")
+        func hasDirectoryIsolationTrue() throws {
             let toml = """
             prompt = "Developer"
             working_directory = "~/projects"
+            directory_isolation = true
 
             [filesystem]
-            directory_isolation = true
-            """
-            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
-            let role = Role(name: "Developer", config: config)
-            #expect(role.hasDirectoryIsolation)
-        }
-
-        @Test("Role.hasDirectoryIsolation is true when Code has directory_isolation")
-        func hasDirectoryIsolationCode() throws {
-            let toml = """
-            prompt = "Developer"
-
-            [code]
-            directory_isolation = true
             """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
@@ -202,18 +188,17 @@ extension AllAppTests {
             #expect(!role.hasDirectoryIsolation)
         }
 
-        @Test("Role.hasDirectoryIsolation is false for Shell (not isolation-capable)")
-        func hasDirectoryIsolationFalseForShell() throws {
+        @Test("A group-level directory_isolation key is ignored (isolation is role-level)")
+        func groupLevelIsolationKeyIgnored() throws {
+            // Legacy placement: the key no longer exists on RoleToolGroup, so
+            // the decoder simply skips it and the role stays non-isolated.
             let toml = """
             prompt = "Developer"
             working_directory = "~/projects"
 
-            [shell]
+            [filesystem]
             directory_isolation = true
             """
-            // Note: this TOML decodes fine (validation is in ConfigValidation,
-            // not in the TOML decoder). hasDirectoryIsolation checks the
-            // isolation-capable set, so Shell's flag is ignored.
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
             #expect(!role.hasDirectoryIsolation)
@@ -249,35 +234,36 @@ extension AllAppTests {
             #expect(config.workingDirectory == "~/projects")
         }
 
-        // MARK: - Validation: directory_isolation on wrong group
+        // MARK: - Validation: directory_isolation requires Filesystem or Code
 
-        @Test("Role validation rejects directory_isolation on Shell")
-        func validationRejectsIsolationOnShell() throws {
-            let toml = """
-            prompt = "Developer"
-            working_directory = "~/projects"
+        @Test("Role validation rejects directory_isolation without an isolation-capable group")
+        func validationRejectsIsolationWithoutCapableGroup() throws {
+            for group in ["shell", "utils", "web"] {
+                let toml = """
+                prompt = "Developer"
+                directory_isolation = true
 
-            [shell]
-            directory_isolation = true
-            """
-            let data = Data(toml.utf8)
-            #expect(throws: ConfigValidationError.self) {
-                try ConfigValidation.decodeRole(data)
+                [\(group)]
+                """
+                let data = Data(toml.utf8)
+                #expect(throws: ConfigValidationError.self, "expected rejection for [\(group)]-only role") {
+                    try ConfigValidation.decodeRole(data)
+                }
             }
         }
 
-        @Test("Role validation accepts directory_isolation on Filesystem with workdir")
+        @Test("Role validation accepts directory_isolation with Filesystem and a pre-set workdir")
         func validationAcceptsIsolationOnFilesystem() throws {
             let toml = """
             prompt = "Developer"
             working_directory = "~/projects"
+            directory_isolation = true
 
             [filesystem]
-            directory_isolation = true
             """
             let data = Data(toml.utf8)
             let config = try ConfigValidation.decodeRole(data)
-            #expect(config.filesystem?.directoryIsolation == true)
+            #expect(config.directoryIsolation == true)
         }
 
         // MARK: - Validation: directory_isolation without a pre-set directory
@@ -289,59 +275,45 @@ extension AllAppTests {
             // without working_directory is fine.
             let toml = """
             prompt = "Developer"
+            directory_isolation = true
 
             [filesystem]
-            directory_isolation = true
             """
             let data = Data(toml.utf8)
             let config = try ConfigValidation.decodeRole(data)
-            #expect(config.filesystem?.directoryIsolation == true)
+            #expect(config.directoryIsolation == true)
         }
 
-        @Test("Role validation accepts directory_isolation on Code without working_directory")
+        @Test("Role validation accepts directory_isolation with Code and without working_directory")
         func validationAcceptsIsolationOnCodeWithoutWorkdir() throws {
             let toml = """
             prompt = "Developer"
+            directory_isolation = true
 
             [code]
-            directory_isolation = true
             """
             let data = Data(toml.utf8)
             let config = try ConfigValidation.decodeRole(data)
-            #expect(config.code?.directoryIsolation == true)
+            #expect(config.directoryIsolation == true)
         }
 
         // MARK: - Validation: directory_isolation combined with the Shell group
 
-        @Test("Role validation rejects directory_isolation on Filesystem when Shell is enabled")
-        func validationRejectsIsolationWithShellFilesystem() throws {
-            let toml = """
-            prompt = "Developer"
+        @Test("Role validation rejects directory_isolation when Shell is enabled")
+        func validationRejectsIsolationWithShell() throws {
+            for group in ["filesystem", "code"] {
+                let toml = """
+                prompt = "Developer"
+                directory_isolation = true
 
-            [filesystem]
-            directory_isolation = true
+                [\(group)]
 
-            [shell]
-            """
-            let data = Data(toml.utf8)
-            #expect(throws: ConfigValidationError.self) {
-                try ConfigValidation.decodeRole(data)
-            }
-        }
-
-        @Test("Role validation rejects directory_isolation on Code when Shell is enabled")
-        func validationRejectsIsolationWithShellCode() throws {
-            let toml = """
-            prompt = "Developer"
-
-            [code]
-            directory_isolation = true
-
-            [shell]
-            """
-            let data = Data(toml.utf8)
-            #expect(throws: ConfigValidationError.self) {
-                try ConfigValidation.decodeRole(data)
+                [shell]
+                """
+                let data = Data(toml.utf8)
+                #expect(throws: ConfigValidationError.self, "expected rejection for [\(group)] + [shell]") {
+                    try ConfigValidation.decodeRole(data)
+                }
             }
         }
 
@@ -349,9 +321,9 @@ extension AllAppTests {
         func validationIsolationWithShellMessage() throws {
             let toml = """
             prompt = "Developer"
+            directory_isolation = true
 
             [filesystem]
-            directory_isolation = true
 
             [shell]
             """
@@ -553,7 +525,6 @@ extension AllAppTests {
             working_directory = "~/projects"
 
             [filesystem]
-            directory_isolation = true
             """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)

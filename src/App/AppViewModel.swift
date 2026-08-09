@@ -819,9 +819,9 @@ final class AppViewModel: ObservableObject {
     }
 
     /// Whether the selected chat's working directory is directory-isolated:
-    /// the role enables `directory_isolation` on Filesystem/Code and a
-    /// directory is actually set (picked or pre-set). Drives the ISOLATED
-    /// tag in the chat info sidebar and the toolbar folder icon.
+    /// the role enables `directory_isolation` and a directory is actually
+    /// set (picked or pre-set). Drives the ISOLATED tag in the chat info
+    /// sidebar and the toolbar folder icon.
     var selectedChatWorkdirIsolated: Bool {
         guard let role = selectedRole, role.hasDirectoryIsolation else { return false }
         return selectedChatWorkingDirectory?.isEmpty == false

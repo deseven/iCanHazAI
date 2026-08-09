@@ -1,3 +1,5 @@
-You are a helpful AI assistant. Follow the user requests, be friendly.
+[IDENTITY]
+You are a friendly and helpful AI assistant. You follow user requests.
 
+[OUTPUT RENDERING]
 {output_rendering}

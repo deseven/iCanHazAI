@@ -372,13 +372,15 @@ extension AllAppTests {
             #expect(notice?.contains("`web_fetch`") == false)
         }
 
-        @Test("directory_isolation on the web group is a validation error")
-        func webGroupIsolationRejected() throws {
+        @Test("directory_isolation with only the web group is a validation error")
+        func webOnlyIsolationRejected() throws {
+            // Isolation is role-level but only Filesystem/Code consume it;
+            // a web-only role has nothing to isolate.
             let toml = """
             prompt = "Assistant"
+            directory_isolation = true
 
             [web]
-            directory_isolation = true
             """
             #expect(throws: ConfigValidationError.self) {
                 _ = try ConfigValidation.decodeRole(Data(toml.utf8))

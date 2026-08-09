@@ -77,15 +77,16 @@ enum ConfigValidation {
     /// - `working_directory` requires at least one workdir-capable built-in
     ///   group (Filesystem, Code, or Shell). Without one, the directory
     ///   setting is meaningless because nothing consumes it.
-    /// - `directory_isolation` is only meaningful on the Filesystem and Code
-    ///   groups. Setting it on any other group (including Shell) is an error.
-    ///   Isolation always needs a directory to isolate to, but it doesn't
-    ///   have to come from the role: Filesystem/Code can't run without a
-    ///   directory, so when `working_directory` is omitted the user is forced
-    ///   to pick one per chat.
-    /// - `directory_isolation` (on any group) combined with the Shell group is
-    ///   an error: Shell commands are not directory-isolated, so the model
-    ///   could escape the confinement and the isolation promise would be void.
+    /// - `directory_isolation` (top level) isolates the Filesystem and Code
+    ///   groups to the working directory. It requires at least one of them to
+    ///   be enabled — otherwise there is nothing to isolate. Isolation always
+    ///   needs a directory to isolate to, but it doesn't have to come from
+    ///   the role: Filesystem/Code can't run without a directory, so when
+    ///   `working_directory` is omitted the user is forced to pick one per
+    ///   chat.
+    /// - `directory_isolation` combined with the Shell group is an error:
+    ///   Shell commands are not directory-isolated, so the model could escape
+    ///   the confinement and the isolation promise would be void.
     static func validateRole(_ config: RoleConfig, references: RoleReferences? = nil) throws {
         if let references {
             if let connection = config.connection, !connection.isEmpty, !references.connectionIDs.contains(connection) {
@@ -136,31 +137,24 @@ enum ConfigValidation {
             )
         }
 
-        // Check directory_isolation on each enabled group.
-        let groupConfigs: [(String, RoleToolGroup?)] = [
-            (BuiltinTools.filesystemGroup, config.filesystem),
-            (BuiltinTools.codeGroup, config.code),
-            (BuiltinTools.shellGroup, config.shell),
-            (BuiltinTools.utilsGroup, config.utils),
-            (BuiltinTools.webGroup, config.web),
-        ]
-        var isolationEnabled = false
-        for (group, groupConfig) in groupConfigs {
-            guard let groupConfig, groupConfig.directoryIsolation == true else { continue }
-            if !BuiltinTools.isolationCapableGroups.contains(group) {
+        if config.directoryIsolation == true {
+            // Isolation applies to Filesystem and Code; with neither enabled
+            // there is nothing to isolate, so the setting is meaningless.
+            let hasIsolationCapableGroup = enabledGroups.contains {
+                BuiltinTools.isolationCapableGroups.contains($0)
+            }
+            if !hasIsolationCapableGroup {
                 throw ConfigValidationError(
-                    "role config sets directory_isolation on group \"\(group)\", "
-                    + "but it is only supported on Filesystem and Code"
+                    "role config enables directory_isolation "
+                    + "but selects no isolation-capable built-in group (Filesystem or Code)"
                 )
             }
-            isolationEnabled = true
-        }
-
-        if isolationEnabled && config.shell != nil {
-            throw ConfigValidationError(
-                "role config enables directory_isolation but also selects the Shell group; "
-                + "shell tools are NOT directory-isolated, so the model could escape the confinement"
-            )
+            if config.shell != nil {
+                throw ConfigValidationError(
+                    "role config enables directory_isolation but also selects the Shell group; "
+                    + "shell tools are NOT directory-isolated, so the model could escape the confinement"
+                )
+            }
         }
     }
 

@@ -1441,7 +1441,8 @@ actor ChatEngine {
     /// A resolved tool source: either a built-in group (Utils/Filesystem/Code/
     /// Shell, running in-process) or a custom MCP server (running as a
     /// subprocess). Carries the tool selection filter, the auto-allow set, and
-    /// (for built-in groups) the directory-isolation flag.
+    /// (for isolation-capable built-in groups) the role's directory-isolation
+    /// flag.
     struct ResolvedToolSource: Equatable {
         let name: String
         let isBuiltinGroup: Bool
@@ -1555,7 +1556,10 @@ actor ChatEngine {
                 toolsFilter: cfg.tools ?? [],
                 autoAllow: Set(cfg.autoAllow ?? []),
                 autoAllowAll: cfg.autoAllowAll ?? false,
-                directoryIsolation: cfg.directoryIsolation ?? false
+                // Isolation is a role-level switch applied to the
+                // isolation-capable groups (Filesystem/Code).
+                directoryIsolation: role.hasDirectoryIsolation
+                    && BuiltinTools.isolationCapableGroups.contains(group)
             ))
         }
         // Custom MCP servers: the chat's own selection (seeded from the role,
