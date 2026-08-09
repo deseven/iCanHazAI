@@ -873,12 +873,20 @@ final class AppViewModel: ObservableObject {
         return item.chat?.messages.last?.role == .user
     }
 
-    /// Whether the selected chat's connection supports image input. Used to
-    /// gate the attach button and drag-and-drop in the input area.
+    /// Whether the selected chat's connection supports image input. Kept for
+    /// compatibility with the connection wizard; no longer gates attachment
+    /// availability — every connection accepts every attachment kind now.
     var selectedChatSupportsImageInput: Bool {
         guard let id = selectedChatConnectionID,
               let conn = connections.first(where: { $0.id == id }) else { return false }
         return conn.imageInput
+    }
+
+    /// Whether attachments are enabled for the selected chat. Currently always
+    /// true — every chat accepts every attachment kind on every connection.
+    /// Reserved for a future role-level gate.
+    var selectedChatSupportsAttachments: Bool {
+        true
     }
 
     /// Token usage for the currently selected chat, as reported by the
@@ -890,12 +898,12 @@ final class AppViewModel: ObservableObject {
 
     // MARK: - Actions (forwarders to the engine)
 
-    func sendMessage(_ text: String, pendingImages: [PendingImageAttachment] = []) {
+    func sendMessage(_ text: String, pendingAttachments: [PendingAttachment] = []) {
         guard let filename = selectedChatID else { return }
         // Pin to the bottom regardless of where the user had scrolled, so the
         // outgoing message and the streaming reply stay in view.
         chatWebViewModel?.scrollToBottom()
-        Task { await engine.sendMessage(filename: filename, text: text, pendingImages: pendingImages) }
+        Task { await engine.sendMessage(filename: filename, text: text, pendingAttachments: pendingAttachments) }
     }
 
     func retryLastMessage() {

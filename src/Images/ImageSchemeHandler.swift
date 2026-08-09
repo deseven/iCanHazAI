@@ -4,11 +4,11 @@
 import Foundation
 import WebKit
 
-/// A `WKURLSchemeHandler` that serves chat image files via the custom
-/// `ichai://` scheme. The renderer references images as
+/// A `WKURLSchemeHandler` that serves chat attachment files via the custom
+/// `ichai://` scheme. The renderer references attachments as
 /// `<img src="ichai://{UUID}.{ext}">`; this handler resolves the UUID+ext
-/// against the currently selected chat's image folder and streams the bytes
-/// back without ever putting base64 into the DOM.
+/// against the currently selected chat's attachment folder and streams the
+/// bytes back without ever putting base64 into the DOM.
 ///
 /// The handler is registered for the `"ichai"` scheme. It is main-actor
 /// isolated because it reads the current chat filename from the shared view
@@ -36,7 +36,7 @@ final class ImageSchemeHandler: NSObject, WKURLSchemeHandler {
         }
 
         let chatFilename = ImageSchemeHandler.currentChatFilename ?? ""
-        let dir = EnvironmentManager.shared.imagesDirectory(for: chatFilename)
+        let dir = EnvironmentManager.shared.attachmentsDirectory(for: chatFilename)
         let fileURL = dir.appendingPathComponent(resource)
 
         guard FileManager.default.fileExists(atPath: fileURL.path),

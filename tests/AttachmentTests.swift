@@ -1,0 +1,232 @@
+import Foundation
+import Testing
+import AppKit
+import PDFKit
+@testable import iCanHazAI
+
+// `Attachment` collides with `Testing.Attachment`; alias the app type so the
+// tests can refer to it unambiguously.
+typealias AppAttachment = iCanHazAI.Attachment
+
+/// Tests for the generalized attachment pipeline: intake classification,
+/// commit-on-send (copy original + extract text), persistence in the chat
+/// JSON, and the request-builder text block (with 64 KB truncation).
+extension AllAppTests {
+
+@Suite("Attachments")
+struct AttachmentTests {
+
+    // MARK: - Intake classification
+
+    @Test("Intake routes bytes through the classifier and rejects unsupported binaries")
+    func intakeClassification() throws {
+        // Plain text → .text
+        let text = Data("hello world".utf8)
+        let textAtt = AttachmentManager.intake(data: text, originalName: "note.txt", hint: .init(filename: "note.txt"))
+        #expect(textAtt?.kind == .text)
+
+        // RTF → .document(.rtf)
+        let rtfAttr = NSAttributedString(string: "Hello RTF")
+        let rtfData = try rtfAttr.data(
+            from: NSRange(location: 0, length: rtfAttr.length),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+        )
+        let rtfAtt = AttachmentManager.intake(data: rtfData, originalName: "doc.rtf", hint: .init(filename: "doc.rtf"))
+        #expect(rtfAtt?.kind == .document(.rtf))
+
+        // PNG → .image
+        let png = makePNG(text: "IMG")
+        let imgAtt = AttachmentManager.intake(data: png, originalName: "shot.png", hint: .init(filename: "shot.png"))
+        #expect(imgAtt?.kind == .image)
+
+        // Unknown binary → nil
+        let zip = Data([0x50, 0x4B, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00])
+        let unsupported = AttachmentManager.intake(data: zip, originalName: "a.zip", hint: .init(filename: "a.zip"))
+        #expect(unsupported == nil)
+    }
+
+    // MARK: - Commit-on-send logic
+
+    @Test("Committing a text attachment embeds the text and sets status ok")
+    func commitTextEmbedsText() throws {
+        let text = Data("plain text content".utf8)
+        let pending = PendingAttachment(data: text, kind: .text, originalName: "note.txt")
+        let committed = AttachmentManager.commit(pending, chatFilename: "test.json")
+        #expect(committed != nil)
+        guard let committed else { return }
+        #expect(committed.kind == .text)
+        #expect(committed.status == .ok)
+        #expect(committed.text == "plain text content")
+        #expect(committed.ext == "txt")
+    }
+
+    @Test("Committing a document attachment extracts text and sets status ok")
+    @MainActor
+    func commitDocumentExtractsText() throws {
+        let rtfAttr = NSAttributedString(string: "Hello RTF\nSecond line.")
+        let rtfData = try rtfAttr.data(
+            from: NSRange(location: 0, length: rtfAttr.length),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+        )
+        let pending = PendingAttachment(data: rtfData, kind: .document(.rtf), originalName: "doc.rtf")
+        let committed = AttachmentManager.commit(pending, chatFilename: "test.json")
+        #expect(committed != nil)
+        guard let committed else { return }
+        #expect(committed.kind == .document)
+        #expect(committed.status == .ok)
+        #expect(committed.text?.contains("Hello RTF") == true)
+        #expect(committed.ext == "rtf")
+    }
+
+    @Test("Committing an image attachment produces an image record with no text")
+    @MainActor
+    func commitImageRecord() throws {
+        let png = makePNG(text: "IMG")
+        let pending = PendingAttachment(data: png, kind: .image, originalName: "shot.png")
+        let committed = AttachmentManager.commit(pending, chatFilename: "test.json")
+        #expect(committed != nil)
+        guard let committed else { return }
+        #expect(committed.kind == .image)
+        #expect(committed.status == .ok)
+        #expect(committed.text == nil)
+    }
+
+    @Test("Committing an unsupported binary returns nil")
+    func commitUnsupportedReturnsNil() {
+        let pending = PendingAttachment(data: Data([0x00]), kind: .unsupportedBinary, originalName: "x.bin")
+        #expect(AttachmentManager.commit(pending, chatFilename: "test.json") == nil)
+    }
+
+    // MARK: - Persistence
+
+    @Test("An attachment round-trips through the chat JSON")
+    func attachmentCodableRoundTrip() throws {
+        let attachment = AppAttachment(
+            id: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
+            kind: .document,
+            ext: "docx",
+            originalName: "report.docx",
+            text: "extracted text here",
+            status: .ok
+        )
+        let msg = ChatMessage(role: .user, content: "see attached", attachments: [attachment])
+        let data = try JSONEncoder().encode(msg)
+        let decoded = try JSONDecoder().decode(ChatMessage.self, from: data)
+        #expect(decoded == msg)
+        #expect(decoded.attachments?.first?.text == "extracted text here")
+        #expect(decoded.attachments?.first?.kind == .document)
+    }
+
+    @Test("A failed extraction is preserved through the chat JSON")
+    func failedExtractionCodableRoundTrip() throws {
+        let attachment = AppAttachment(
+            kind: .document, ext: "docx",
+            originalName: "bad.docx",
+            text: nil, status: .failed, failureReason: "corrupt file"
+        )
+        let msg = ChatMessage(role: .user, content: "see attached", attachments: [attachment])
+        let data = try JSONEncoder().encode(msg)
+        let decoded = try JSONDecoder().decode(ChatMessage.self, from: data)
+        #expect(decoded.attachments?.first?.status == .failed)
+        #expect(decoded.attachments?.first?.failureReason == "corrupt file")
+        #expect(decoded.attachments?.first?.text == nil)
+    }
+
+    @Test("A chat with mixed attachments reloads correctly")
+    func mixedAttachmentReload() throws {
+        let temp = try TempEnv()
+        let chatFilename = "2026-08-09 12-00-03.json"
+        let attachment = AppAttachment(
+            kind: .text, ext: "txt",
+            originalName: "note.txt",
+            text: "text file body",
+            status: .ok
+        )
+        var chat = Chat()
+        chat.messages.append(ChatMessage(role: .user, content: "hi", attachments: [attachment]))
+        temp.env.saveChat(chat, filename: chatFilename)
+
+        let loaded = temp.env.loadSingleChat(filename: chatFilename)
+        #expect(loaded != nil)
+        let reloaded = loaded!.messages.first?.attachments?.first
+        #expect(reloaded?.text == "text file body")
+        #expect(reloaded?.kind == .text)
+    }
+
+    // MARK: - Request builder
+
+    @Test("The request builder wraps text in a fenced block with a filename header")
+    func requestBuilderBlock() {
+        let attachment = AppAttachment(
+            kind: .document, ext: "docx",
+            originalName: "report.docx",
+            text: "extracted content",
+            status: .ok
+        )
+        let block = AttachmentRequestBuilder.block(for: attachment)
+        #expect(block != nil)
+        #expect(block!.contains("Attached file: report.docx"))
+        #expect(block!.contains("```"))
+        #expect(block!.contains("extracted content"))
+    }
+
+    @Test("The request builder returns nil for attachments with no text")
+    func requestBuilderNoText() {
+        let image = AppAttachment(kind: .image, ext: "png", originalName: "shot.png")
+        #expect(AttachmentRequestBuilder.block(for: image) == nil)
+
+        let failed = AppAttachment(kind: .document, ext: "docx", originalName: "bad.docx", text: nil, status: .failed, failureReason: "corrupt")
+        #expect(AttachmentRequestBuilder.block(for: failed) == nil)
+    }
+
+    @Test("The request builder truncates content over 64 KB")
+    func requestBuilderTruncation() {
+        // Build a string just over 64 KB.
+        let chunk = String(repeating: "x", count: 1024)
+        let big = (0..<70).map { _ in chunk }.joined() // 70 KB
+        let attachment = AppAttachment(
+            kind: .text, ext: "txt",
+            originalName: "big.txt",
+            text: big,
+            status: .ok
+        )
+        let block = AttachmentRequestBuilder.block(for: attachment)
+        #expect(block != nil)
+        #expect(block!.contains("truncated"))
+        // The block must be under 64 KB + overhead.
+        #expect(block!.utf8.count < 70_000)
+    }
+
+    @Test("The request builder leaves small content intact")
+    func requestBuilderSmallContent() {
+        let attachment = AppAttachment(
+            kind: .text, ext: "txt",
+            originalName: "small.txt",
+            text: "tiny",
+            status: .ok
+        )
+        let block = AttachmentRequestBuilder.block(for: attachment)
+        #expect(block != nil)
+        #expect(!block!.contains("truncated"))
+        #expect(block!.contains("tiny"))
+    }
+
+    // MARK: - Helpers
+
+    /// Renders `text` into an NSImage and returns PNG bytes.
+    private func makePNG(text: String) -> Data {
+        let size = NSSize(width: 400, height: 100)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 32),
+            .foregroundColor: NSColor.black,
+        ]
+        (text as NSString).draw(at: NSPoint(x: 20, y: 30), withAttributes: attrs)
+        image.unlockFocus()
+        let tiff = image.tiffRepresentation!
+        let rep = NSBitmapImageRep(data: tiff)!
+        return rep.representation(using: .png, properties: [:])!
+    }
+}
+}

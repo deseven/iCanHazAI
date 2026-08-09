@@ -5,24 +5,56 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-/// A reference to a processed image file stored on disk alongside a chat.
-/// Persisted as part of a `ChatMessage` so the renderer and the request
-/// builder can both reach the image by UUID + extension.
-struct ImageAttachment: Codable, Identifiable, Equatable, Hashable, Sendable {
+/// The kind of an attachment, mirroring the classifier buckets. Images are
+/// processed to base64; text and documents are extracted to plain text.
+enum AttachmentKind: String, Codable, Sendable, Equatable, Hashable {
+    case image
+    case text
+    case document
+}
+
+/// The outcome of extracting text from a text/document attachment. Carried on
+/// the persisted record so the UI can surface notices (truncation, failure)
+/// without re-running extraction.
+enum AttachmentStatus: String, Codable, Sendable, Equatable, Hashable {
+    case ok
+    case truncated
+    case failed
+}
+
+/// A reference to an attachment stored on disk alongside a chat. Persisted as
+/// part of a `ChatMessage` so the renderer and the request builder can both
+/// reach the file by UUID + extension. For text/document kinds the extracted
+/// text is embedded directly on the record so the chat JSON is self-sufficient;
+/// the on-disk file is a user-facing backup.
+struct Attachment: Codable, Identifiable, Equatable, Hashable, Sendable {
     /// Stable unique identifier (also used as the on-disk filename stem).
     let id: UUID
-    /// File extension of the processed image, e.g. "png" or "jpg".
+    /// The kind bucket: `.image` (processed to base64), `.text` (plain-text
+    /// passthrough), or `.document` (docx/odt/rtf/pdf… extracted to text).
+    let kind: AttachmentKind
+    /// File extension of the stored file, e.g. "png", "docx", "txt".
     let ext: String
     /// Original filename the user supplied (for display only). May be nil
     /// for pasted images.
     var originalName: String?
+    /// For text/document kinds: the extracted text content (or the raw text
+    /// for `.text`). Nil for images and when extraction failed.
+    var text: String?
+    /// Extraction status for text/document kinds. `.ok` for images (not
+    /// applicable) and successful text extractions; `.failed` when extraction
+    /// produced no usable text.
+    var status: AttachmentStatus
+    /// Short human-readable reason when `status == .failed`. Nil otherwise.
+    var failureReason: String?
 
     var id_uuid: UUID { id }
 
     /// The filename on disk, e.g. "A1B2...-....png".
     var filename: String { "\(id.uuidString).\(ext)" }
 
-    /// The media type used when sending to the model, e.g. "image/png".
+    /// The media type used when sending an image to the model, e.g.
+    /// "image/png". Only meaningful for `.image` kinds.
     var mimeType: String {
         switch ext.lowercased() {
         case "png": return "image/png"
@@ -31,8 +63,62 @@ struct ImageAttachment: Codable, Identifiable, Equatable, Hashable, Sendable {
         }
     }
 
-    /// Whether this attachment is a lossless (PNG) image.
+    /// Whether this attachment is a lossless (PNG) image. Only meaningful for
+    /// `.image` kinds.
     var isLossless: Bool { ext.lowercased() == "png" }
+
+    init(id: UUID = UUID(), kind: AttachmentKind, ext: String, originalName: String?, text: String? = nil, status: AttachmentStatus = .ok, failureReason: String? = nil) {
+        self.id = id
+        self.kind = kind
+        self.ext = ext
+        self.originalName = originalName
+        self.text = text
+        self.status = status
+        self.failureReason = failureReason
+    }
+}
+
+/// Builds the text block injected into outbound requests for text/document
+/// attachments. The extracted content is wrapped with a filename header and a
+/// fenced code block so the model can tell it apart from the user's message
+/// text. Truncation (64 KB cap) is applied here at request-build time, not at
+/// extraction — the stored chat data keeps the full extraction.
+enum AttachmentRequestBuilder {
+
+    /// Per-extracted-document UTF-8 byte cap applied at request-build time.
+    static let maxBytes: Int = 64 * 1024
+
+    /// Wraps an attachment's extracted text into a request-ready text block.
+    /// Returns nil when the attachment has no text (e.g. a failed extraction
+    /// or an image).
+    static func block(for attachment: Attachment) -> String? {
+        guard let text = attachment.text, !text.isEmpty else { return nil }
+        let name = attachment.originalName ?? attachment.filename
+        let truncated = truncate(text)
+        var header = "Attached file: \(name)"
+        if truncated.byteCount != text.utf8.count {
+            header += " (truncated to \(maxBytes) bytes)"
+        }
+        return "\(header)\n```\n\(truncated.text)\n```"
+    }
+
+    /// Truncates `text` to at most `maxBytes` UTF-8 bytes, ending on a
+    /// character boundary.
+    private static func truncate(_ text: String) -> (text: String, byteCount: Int) {
+        let bytes = text.utf8
+        if bytes.count <= maxBytes { return (text, bytes.count) }
+        // Find the String.CharacterView index whose UTF-8 encoding fits within
+        // the cap, so the cut lands on a character boundary.
+        var cut = text.startIndex
+        var consumed = 0
+        for ch in text {
+            let size = ch.utf8.count
+            if consumed + size > maxBytes { break }
+            consumed += size
+            cut = text.index(after: cut)
+        }
+        return (String(text[..<cut]), consumed)
+    }
 }
 
 /// Stateless image processing utilities built on ImageIO.

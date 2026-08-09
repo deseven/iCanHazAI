@@ -3,13 +3,13 @@
 
 import Foundation
 
-/// An unsent chat input draft: the composed text plus any pending image
+/// An unsent chat input draft: the composed text plus any pending
 /// attachments. Runtime-only — never persisted to disk.
 struct ChatInputDraft: Equatable {
     var text: String = ""
-    var images: [PendingImageAttachment] = []
+    var attachments: [PendingAttachment] = []
 
-    var isEmpty: Bool { text.isEmpty && images.isEmpty }
+    var isEmpty: Bool { text.isEmpty && attachments.isEmpty }
 }
 
 /// Runtime-only store for per-chat input drafts, keyed by chat filename.

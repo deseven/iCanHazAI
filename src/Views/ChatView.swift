@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 struct ChatView: View {
     @EnvironmentObject var store: AppViewModel
     @State private var inputText: String = ""
-    @State private var pendingImages: [PendingImageAttachment] = []
+    @State private var pendingAttachments: [PendingAttachment] = []
     @State private var isDropTargeted: Bool = false
     @State private var filePicker: Bool = false
     /// Natural content height of the editor, clamped to [1, 5] lines.
@@ -49,7 +49,7 @@ struct ChatView: View {
             Divider()
 
             HStack(alignment: .top, spacing: 0) {
-                if store.selectedChatSupportsImageInput {
+                if store.selectedChatSupportsAttachments {
                     Button(action: { filePicker = true }) {
                         Image(systemName: "paperclip")
                             .font(.system(size: 14, weight: .medium))
@@ -57,20 +57,20 @@ struct ChatView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.borderless)
-                    .help("Attach images")
+                    .help("Attach files")
                     .disabled(store.isStreaming || inputDisabled)
                     .padding(.leading, 2)
                     .padding(.top, 6)
                 }
 
                 VStack(spacing: 4) {
-                    if !pendingImages.isEmpty {
+                    if !pendingAttachments.isEmpty {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 6) {
-                                ForEach(pendingImages) { img in
-                                    ImageChip(
-                                        name: img.originalName ?? "image",
-                                        onRemove: { removeImage(img.id) }
+                                ForEach(pendingAttachments) { attachment in
+                                    AttachmentChip(
+                                        name: attachment.originalName ?? defaultName(for: attachment),
+                                        onRemove: { removeAttachment(attachment.id) }
                                     )
                                 }
                             }
@@ -167,7 +167,7 @@ struct ChatView: View {
         }
         .fileImporter(
             isPresented: $filePicker,
-            allowedContentTypes: ImagePickerTypes.supported,
+            allowedContentTypes: AttachmentPickerTypes.supported,
             allowsMultipleSelection: true
         ) { result in
             switch result {
@@ -175,8 +175,8 @@ struct ChatView: View {
                 for url in urls {
                     if url.startAccessingSecurityScopedResource() {
                         defer { url.stopAccessingSecurityScopedResource() }
-                        if let img = ImageManager.intake(fileURL: url) {
-                            pendingImages.append(img)
+                        if let attachment = AttachmentManager.intake(fileURL: url) {
+                            pendingAttachments.append(attachment)
                         }
                     }
                 }
@@ -260,7 +260,7 @@ struct ChatView: View {
         // Directory-relevant tools (Filesystem/Code) require a working
         // directory before requests can be sent.
         if store.selectedChatWorkdirRequired { return true }
-        if !pendingImages.isEmpty { return false }
+        if !pendingAttachments.isEmpty { return false }
         let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { return false }
         // Empty input is allowed when the last message is from the user —
@@ -436,11 +436,11 @@ struct ChatView: View {
 
     // MARK: - Input drafts
 
-    /// Saves the current input (text + pending images) as the runtime-only
+    /// Saves the current input (text + pending attachments) as the runtime-only
     /// draft for the given chat, so it survives switching to another chat.
     private func saveDraft(for chatID: String?) {
         guard let chatID else { return }
-        store.inputDrafts.set(ChatInputDraft(text: inputText, images: pendingImages), for: chatID)
+        store.inputDrafts.set(ChatInputDraft(text: inputText, attachments: pendingAttachments), for: chatID)
     }
 
     /// Restores the saved draft for the given chat, or clears the input when
@@ -449,7 +449,7 @@ struct ChatView: View {
     private func restoreDraft(for chatID: String?) {
         let draft = chatID.flatMap { store.inputDrafts.draft(for: $0) }
         inputText = draft?.text ?? ""
-        pendingImages = draft?.images ?? []
+        pendingAttachments = draft?.attachments ?? []
         editorHeight = ChatView.lineHeight
     }
 
@@ -472,19 +472,19 @@ struct ChatView: View {
     private func send() {
         guard store.selectedChatHasConnection else { return }
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let images = pendingImages
+        let attachments = pendingAttachments
         guard !store.isStreaming else { return }
-        // Empty input with no images: if the last message is from the user,
-        // trigger a regenerate of the assistant reply on that message.
-        if text.isEmpty && images.isEmpty {
+        // Empty input with no attachments: if the last message is from the
+        // user, trigger a regenerate of the assistant reply on that message.
+        if text.isEmpty && attachments.isEmpty {
             guard store.selectedChatLastMessageIsFromUser else { return }
             store.retryLastMessage()
             return
         }
         inputText = ""
-        pendingImages = []
+        pendingAttachments = []
         editorHeight = ChatView.lineHeight
-        store.sendMessage(text, pendingImages: images)
+        store.sendMessage(text, pendingAttachments: attachments)
     }
 
     // MARK: - Key handling
@@ -496,35 +496,42 @@ struct ChatView: View {
         return true
     }
 
-    // MARK: - Image attachment handling
+    // MARK: - Attachment handling
 
-    private func removeImage(_ id: UUID) {
-        pendingImages.removeAll(where: { $0.id == id })
+    private func removeAttachment(_ id: UUID) {
+        pendingAttachments.removeAll(where: { $0.id == id })
     }
 
-    /// Checks the system pasteboard for image content and, if found, attaches
-    /// it as a pending image. Returns true if an image was consumed (so the
-    /// caller can swallow the paste event), false to let normal text paste
-    /// proceed.
+    /// A display name for a pending attachment that has no original filename.
+    private func defaultName(for attachment: PendingAttachment) -> String {
+        switch attachment.kind {
+        case .image: return "image"
+        case .text: return "text"
+        case .document: return "document"
+        case .unsupportedBinary: return "file"
+        }
+    }
+
+    /// Checks the system pasteboard for attachment content and, if found,
+    /// attaches it as a pending attachment. Returns true if an attachment was
+    /// consumed (so the caller can swallow the paste event), false to let
+    /// normal text paste proceed.
     private func handleClipboardPaste() -> Bool {
-        guard store.selectedChatSupportsImageInput else { return false }
         let pb = NSPasteboard.general
 
-        // 1. File URLs first (e.g. an image file copied in Finder). We prefer
-        //    the actual file content over any TIFF/PNG representation on the
+        // 1. File URLs first (e.g. a file copied in Finder). We prefer the
+        //    actual file content over any TIFF/PNG representation on the
         //    pasteboard, because Finder also places the file's *icon* as TIFF
-        //    data — reading that would attach the icon, not the real image.
+        //    data — reading that would attach the icon, not the real file.
         //    A copied screenshot carries no file URL, so it falls through to
         //    the direct-image-data path below.
         if let urls = pb.readObjects(forClasses: [NSURL.self], options: nil) as? [URL], !urls.isEmpty {
             var added = false
             for url in urls {
-                guard ImageProcessor.isSupportedFile(url) else { continue }
                 let didStart = url.startAccessingSecurityScopedResource()
                 defer { if didStart { url.stopAccessingSecurityScopedResource() } }
-                if let data = try? Data(contentsOf: url),
-                   let img = ImageManager.intake(data: data, originalName: url.lastPathComponent) {
-                    pendingImages.append(img)
+                if let attachment = AttachmentManager.intake(fileURL: url) {
+                    pendingAttachments.append(attachment)
                     added = true
                 }
             }
@@ -532,20 +539,20 @@ struct ChatView: View {
         }
 
         if let tiff = pb.data(forType: .tiff),
-           let img = ImageManager.intake(data: tiff, originalName: nil) {
-            pendingImages.append(img)
+           let attachment = AttachmentManager.intake(data: tiff, originalName: nil) {
+            pendingAttachments.append(attachment)
             return true
         }
         if let png = pb.data(forType: .png),
-           let img = ImageManager.intake(data: png, originalName: nil) {
-            pendingImages.append(img)
+           let attachment = AttachmentManager.intake(data: png, originalName: nil) {
+            pendingAttachments.append(attachment)
             return true
         }
 
         if let images = pb.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage] {
             for image in images {
-                if let img = ImageManager.intake(nsImage: image, originalName: nil) {
-                    pendingImages.append(img)
+                if let attachment = AttachmentManager.intake(nsImage: image, originalName: nil) {
+                    pendingAttachments.append(attachment)
                     return true
                 }
             }
@@ -553,9 +560,8 @@ struct ChatView: View {
         return false
     }
 
-    /// Handles drag-and-dropped image files onto the input area.
+    /// Handles drag-and-dropped files onto the input area.
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
-        guard store.selectedChatSupportsImageInput else { return false }
         var accepted = false
         for provider in providers {
             guard provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) else { continue }
@@ -564,12 +570,9 @@ struct ChatView: View {
                 DispatchQueue.main.async {
                     let didStart = url.startAccessingSecurityScopedResource()
                     defer { if didStart { url.stopAccessingSecurityScopedResource() } }
-                    guard ImageProcessor.isSupportedFile(url),
-                          let data = try? Data(contentsOf: url),
-                          let img = ImageManager.intake(data: data, originalName: url.lastPathComponent) else {
-                        return
+                    if let attachment = AttachmentManager.intake(fileURL: url) {
+                        pendingAttachments.append(attachment)
                     }
-                    pendingImages.append(img)
                 }
             }
             accepted = true
@@ -832,16 +835,16 @@ final class ChatInputTextView: NSTextView {
     }
 }
 
-// MARK: - ImageChip
+// MARK: - AttachmentChip
 
-/// A compact chip showing an attached image's filename with a remove button.
-private struct ImageChip: View {
+/// A compact chip showing an attached file's name with a remove button.
+private struct AttachmentChip: View {
     let name: String
     let onRemove: () -> Void
 
     var body: some View {
         HStack(spacing: 4) {
-            Image(systemName: "photo")
+            Image(systemName: "doc")
                 .font(.caption2)
             Text(name)
                 .font(.caption)
@@ -851,7 +854,7 @@ private struct ImageChip: View {
                     .font(.caption)
             }
             .buttonStyle(.borderless)
-            .help("Remove image")
+            .help("Remove attachment")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
@@ -866,19 +869,39 @@ private struct ImageChip: View {
 
 // MARK: - Helpers
 
-/// Uniform type identifiers accepted by the image file picker.
-enum ImagePickerTypes {
+/// Uniform type identifiers accepted by the attachment file picker. Includes
+/// image formats plus common document and plain-text types so the picker
+/// accepts anything the classifier can route.
+enum AttachmentPickerTypes {
     static var supported: [UTType] {
         var types: [UTType] = []
+        // Image formats.
         for uti in ImageProcessor.supportedTypeIdentifiers {
             if let t = UTType(uti) {
                 types.append(t)
             }
         }
-        if types.isEmpty {
-            types = [.image]
-        }
-        return types
+        // Document formats.
+        let docUTIs: [UTType?] = [
+            UTType("com.adobe.pdf"),
+            UTType("org.openxmlformats.wordprocessingml.document"),
+            UTType("com.microsoft.word.doc"),
+            UTType("org.oasis.opendocument.text"),
+            UTType("public.rtf"),
+            UTType("com.apple.rtfd"),
+            UTType("com.apple.webarchive"),
+        ]
+        for t in docUTIs { if let t { types.append(t) } }
+        // Plain text and source code.
+        types.append(.plainText)
+        types.append(.html)
+        types.append(.json)
+        types.append(.xml)
+        types.append(.sourceCode)
+        types.append(.yaml)
+        // Deduplicate while preserving order.
+        var seen = Set<UTType>()
+        return types.filter { seen.insert($0).inserted }
     }
 }
 

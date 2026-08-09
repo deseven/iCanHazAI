@@ -1013,10 +1013,11 @@ struct ChatMessageData: Codable, Equatable, Sendable {
     let error: String?
     let timestamp: String
     let connectionName: String?
-    /// Images attached to the message, as `ichai://` URLs the renderer can
-    /// load via the custom scheme handler. Nil/empty for messages without
-    /// images.
-    let images: [ImageData]?
+    /// Attachments on the message. Images are `ichai://` URLs the renderer
+    /// loads via the custom scheme handler; documents carry metadata only
+    /// (name, kind, status) — the extracted text body is never sent to the
+    /// WebView. Nil/empty for messages without attachments.
+    let attachments: [AttachmentData]?
     /// For assistant messages: tool calls issued by the model. Nil otherwise.
     let toolCalls: [ToolCallData]?
     /// For `tool`-role messages: the result of a tool call. Nil otherwise.
@@ -1024,12 +1025,20 @@ struct ChatMessageData: Codable, Equatable, Sendable {
     /// `tool`-role messages onto the preceding assistant message.
     var toolResults: [ToolResultData]?
 
-    /// A single image reference for the wire protocol.
-    struct ImageData: Codable, Equatable, Sendable {
-        /// The `ichai://` URL the renderer uses as the `src`.
-        let url: String
+    /// A single attachment reference for the wire protocol.
+    struct AttachmentData: Codable, Equatable, Sendable {
+        /// The kind: "image", "text", or "document".
+        let kind: String
+        /// For images: the `ichai://` URL the renderer uses as the `src`.
+        /// For text/documents: nil (the body is never sent to the renderer).
+        let url: String?
         /// Original filename for display/alt text.
         let name: String?
+        /// Extraction status for text/document attachments: "ok",
+        /// "truncated", or "failed". Nil for images.
+        let status: String?
+        /// Short failure reason when status is "failed". Nil otherwise.
+        let failureReason: String?
     }
 
     /// A tool call issued by the assistant.
@@ -1109,10 +1118,15 @@ private let webDataTimestampStyle = Date.ISO8601FormatStyle(includingFractionalS
 extension ChatMessage {
     /// Converts a `ChatMessage` to its JSON wire representation.
     var webData: ChatMessageData {
-        let images = images?.map {
-            ChatMessageData.ImageData(
-                url: "\(ImageSchemeHandler.scheme)://\($0.filename)",
-                name: $0.originalName
+        let attachments = attachments?.map { attachment in
+            ChatMessageData.AttachmentData(
+                kind: attachment.kind.rawValue,
+                url: attachment.kind == .image
+                    ? "\(ImageSchemeHandler.scheme)://\(attachment.filename)"
+                    : nil,
+                name: attachment.originalName,
+                status: attachment.kind == .image ? nil : attachment.status.rawValue,
+                failureReason: attachment.failureReason
             )
         }
         let toolCalls = toolCalls?.map {
@@ -1129,7 +1143,7 @@ extension ChatMessage {
             error: error,
             timestamp: timestamp.formatted(webDataTimestampStyle),
             connectionName: connectionName,
-            images: images,
+            attachments: attachments,
             toolCalls: toolCalls,
             toolResults: toolResults
         )

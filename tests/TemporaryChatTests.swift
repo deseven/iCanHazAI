@@ -40,46 +40,46 @@ struct TemporaryChatTests {
         #expect(!EnvironmentManager.isTemporaryChatFilename(""))
     }
 
-    // MARK: - Image directory routing
+    // MARK: - Attachment directory routing
 
-    @Test("Temp chat images live under the system temp dir, regular ones under the chats dir")
-    func imageDirectoryRouting() throws {
+    @Test("Temp chat attachments live under the system temp dir, regular ones under the chats dir")
+    func attachmentDirectoryRouting() throws {
         let temp = try TempEnv()
-        let regularDir = temp.env.imagesDirectory(for: "2026-08-05 20-00-00.json")
-        let tempDir = temp.env.imagesDirectory(for: "temp-\(UUID().uuidString).json")
+        let regularDir = temp.env.attachmentsDirectory(for: "2026-08-05 20-00-00.json")
+        let tempDir = temp.env.attachmentsDirectory(for: "temp-\(UUID().uuidString).json")
 
         #expect(regularDir.path.hasPrefix(temp.env.chatsURL.path))
         #expect(!tempDir.path.hasPrefix(temp.env.chatsURL.path))
         #expect(tempDir.path.hasPrefix(URL(fileURLWithPath: NSTemporaryDirectory()).path))
     }
 
-    @Test("Temp chat image save/load/delete round-trips through the temp dir")
-    func tempImageRoundTrip() throws {
+    @Test("Temp chat attachment save/load/delete round-trips through the temp dir")
+    func tempAttachmentRoundTrip() throws {
         let temp = try TempEnv()
         let chatFilename = temp.env.newTemporaryChatFilename()
-        let attachment = ImageAttachment(id: UUID(), ext: "png", originalName: "cat.png")
+        let attachment = Attachment(id: UUID(), kind: .image, ext: "png", originalName: "cat.png")
         let bytes = Data([0x89, 0x50, 0x4E, 0x47])
 
-        _ = temp.env.saveImage(data: bytes, filename: attachment.filename, chatFilename: chatFilename)
+        _ = temp.env.saveAttachment(data: bytes, filename: attachment.filename, chatFilename: chatFilename)
         // Nothing may appear in the chats directory.
         #expect(temp.diskFilenames().isEmpty)
-        #expect(temp.env.loadImageData(attachment, chatFilename: chatFilename) == bytes)
+        #expect(temp.env.loadAttachmentData(attachment, chatFilename: chatFilename) == bytes)
 
-        temp.env.deleteAllImages(for: chatFilename)
-        #expect(temp.env.loadImageData(attachment, chatFilename: chatFilename) == nil)
+        temp.env.deleteAllAttachments(for: chatFilename)
+        #expect(temp.env.loadAttachmentData(attachment, chatFilename: chatFilename) == nil)
     }
 
-    @Test("deleteAllTemporaryImages wipes the whole temp image root")
-    func wipeTemporaryImages() throws {
+    @Test("deleteAllTemporaryAttachments wipes the whole temp attachment root")
+    func wipeTemporaryAttachments() throws {
         let temp = try TempEnv()
         let chatFilename = temp.env.newTemporaryChatFilename()
-        let attachment = ImageAttachment(id: UUID(), ext: "png", originalName: nil)
-        _ = temp.env.saveImage(data: Data([0x01]), filename: attachment.filename, chatFilename: chatFilename)
-        #expect(temp.env.loadImageData(attachment, chatFilename: chatFilename) != nil)
+        let attachment = Attachment(id: UUID(), kind: .image, ext: "png", originalName: nil)
+        _ = temp.env.saveAttachment(data: Data([0x01]), filename: attachment.filename, chatFilename: chatFilename)
+        #expect(temp.env.loadAttachmentData(attachment, chatFilename: chatFilename) != nil)
 
-        temp.env.deleteAllTemporaryImages()
-        // loadImageData recreates the directory on demand, but the file is gone.
-        #expect(temp.env.loadImageData(attachment, chatFilename: chatFilename) == nil)
+        temp.env.deleteAllTemporaryAttachments()
+        // loadAttachmentData recreates the directory on demand, but the file is gone.
+        #expect(temp.env.loadAttachmentData(attachment, chatFilename: chatFilename) == nil)
     }
 
     // MARK: - Model projections

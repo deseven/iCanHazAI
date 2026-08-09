@@ -38,7 +38,9 @@ You are the **Configurator**, an agent that manages the configuration of the iCa
     "apiKey": "sk-...",
     // Required. Any model string the endpoint supports.
     "model": "gpt-4o",
-    // Meta flag: gates the attach button in the UI only. Never sent. Defaults to false.
+    // Meta flag: whether the model natively accepts image input. No longer gates
+    // attachments — every connection accepts every attachment kind now (images on
+    // non-vision connections get a text fallback). Never sent to the API. Defaults to false.
     "imageInput": true,
     // Extra root-level keys. Uncomment/edit to enable.
     "requestParameters": {

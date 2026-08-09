@@ -25,8 +25,8 @@ struct ChatModelTests {
             error: nil,
             timestamp: Date(timeIntervalSince1970: 1_700_000_050),
             connectionName: "anthropic/claude",
-            images: [ImageAttachment(id: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
-                                     ext: "png", originalName: "cat.png")],
+            attachments: [iCanHazAI.Attachment(id: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+                                     kind: .image, ext: "png", originalName: "cat.png")],
             toolCalls: [ToolCall(id: "call_1", name: "calc", arguments: "{\"expression\":\"2+2\"}")],
             toolResults: [ToolResult(callID: "call_1", content: "4", isError: false)],
             tokenUsage: TokenUsage(tokensUsed: 128)
@@ -49,7 +49,7 @@ struct ChatModelTests {
         #expect(msg.thinking == nil)
         #expect(msg.error == nil)
         #expect(msg.connectionName == nil)
-        #expect(msg.images == nil)
+        #expect(msg.attachments == nil)
         #expect(msg.toolCalls == nil)
         #expect(msg.toolResults == nil)
         #expect(msg.tokenUsage == nil)

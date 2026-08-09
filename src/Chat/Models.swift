@@ -31,10 +31,11 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     /// this response. Persisted so it survives reloads. Nil for non-assistant
     /// messages or messages produced before this field existed.
     var connectionName: String?
-    /// Images attached to this message (user messages only). Each entry is a
-    /// reference to a processed image file stored in the chat's image folder.
-    /// Nil/empty for messages without images.
-    var images: [ImageAttachment]?
+    /// Attachments on this message (user messages only). Each entry is a
+    /// reference to a file stored in the chat's attachment directory: images
+    /// (processed to base64), text, or documents (extracted to text). Nil/empty
+    /// for messages without attachments.
+    var attachments: [Attachment]?
     /// For assistant messages: tool calls issued by the model. Nil for messages
     /// without tool calls.
     var toolCalls: [ToolCall]?
@@ -45,7 +46,7 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     /// the UI) or for non-assistant messages.
     var tokenUsage: TokenUsage?
 
-    init(id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil, error: String? = nil, timestamp: Date = Date(), connectionName: String? = nil, images: [ImageAttachment]? = nil, toolCalls: [ToolCall]? = nil, toolResults: [ToolResult]? = nil, tokenUsage: TokenUsage? = nil) {
+    init(id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil, error: String? = nil, timestamp: Date = Date(), connectionName: String? = nil, attachments: [Attachment]? = nil, toolCalls: [ToolCall]? = nil, toolResults: [ToolResult]? = nil, tokenUsage: TokenUsage? = nil) {
         self.id = id
         self.role = role
         self.content = content
@@ -53,7 +54,7 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         self.error = error
         self.timestamp = timestamp
         self.connectionName = connectionName
-        self.images = images
+        self.attachments = attachments
         self.toolCalls = toolCalls
         self.toolResults = toolResults
         self.tokenUsage = tokenUsage
@@ -61,7 +62,7 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case id, role, content, thinking, error, timestamp, connectionName
-        case images, toolCalls, toolResults, tokenUsage
+        case attachments, toolCalls, toolResults, tokenUsage
     }
 
     /// Tolerant decode: every field is optional at the JSON level. A missing or
@@ -78,7 +79,7 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         error = try? c.decode(String.self, forKey: .error)
         timestamp = (try? c.decode(Date.self, forKey: .timestamp)) ?? Date()
         connectionName = try? c.decode(String.self, forKey: .connectionName)
-        images = try? c.decode([ImageAttachment].self, forKey: .images)
+        attachments = try? c.decode([Attachment].self, forKey: .attachments)
         toolCalls = try? c.decode([ToolCall].self, forKey: .toolCalls)
         toolResults = try? c.decode([ToolResult].self, forKey: .toolResults)
         tokenUsage = try? c.decode(TokenUsage.self, forKey: .tokenUsage)

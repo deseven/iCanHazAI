@@ -81,8 +81,8 @@ struct OpenAIProvider: LLMProvider {
 
     /// Maps a [`ChatMessage`](src/Chat/Models.swift) to the OpenAI message JSON shape.
     private func openAIMessage(_ msg: ChatMessage, chatFilename: String) -> [String: Any] {
-        if msg.role == .user, let images = msg.images, !images.isEmpty {
-            return openAIImageMessage(msg, images: images, chatFilename: chatFilename)
+        if msg.role == .user, let attachments = msg.attachments, !attachments.isEmpty {
+            return openAIAttachmentMessage(msg, attachments: attachments, chatFilename: chatFilename)
         }
         if msg.role == .assistant, let calls = msg.toolCalls, !calls.isEmpty {
             var dict: [String: Any] = ["role": "assistant"]
@@ -117,24 +117,33 @@ struct OpenAIProvider: LLMProvider {
         ] as [String: Any]
     }
 
-    /// Builds an OpenAI user message dict with multipart content
-    /// (text + image_url parts). Images are base64-encoded data URLs.
-    private func openAIImageMessage(
+    /// Builds an OpenAI user message dict with multipart content: text parts,
+    /// image_url parts (base64 data URLs) for image attachments, and text
+    /// parts wrapping extracted content for text/document attachments.
+    private func openAIAttachmentMessage(
         _ msg: ChatMessage,
-        images: [ImageAttachment],
+        attachments: [Attachment],
         chatFilename: String
     ) -> [String: Any] {
         var parts: [[String: Any]] = []
         if !msg.content.isEmpty {
             parts.append(["type": "text", "text": msg.content])
         }
-        for img in images {
-            guard let data = EnvironmentManager.shared.loadImageData(img, chatFilename: chatFilename) else { continue }
-            let url = "data:\(img.mimeType);base64,\(data.base64EncodedString())"
-            parts.append([
-                "type": "image_url",
-                "image_url": ["url": url, "detail": "auto"] as [String: Any],
-            ])
+        for attachment in attachments {
+            switch attachment.kind {
+            case .image:
+                guard let data = EnvironmentManager.shared.loadAttachmentData(attachment, chatFilename: chatFilename) else { continue }
+                let url = "data:\(attachment.mimeType);base64,\(data.base64EncodedString())"
+                parts.append([
+                    "type": "image_url",
+                    "image_url": ["url": url, "detail": "auto"] as [String: Any],
+                ])
+            case .text, .document:
+                if let text = attachment.text, !text.isEmpty,
+                   let block = AttachmentRequestBuilder.block(for: attachment) {
+                    parts.append(["type": "text", "text": block])
+                }
+            }
         }
         return ["role": "user", "content": parts] as [String: Any]
     }

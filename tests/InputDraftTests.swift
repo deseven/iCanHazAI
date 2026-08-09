@@ -5,21 +5,21 @@ import Testing
 extension AllAppTests {
     @Suite struct InputDraftTests {
 
-        private func makeImage() -> PendingImageAttachment {
+        private func makeAttachment() -> PendingAttachment {
             // 1x1 PNG; the bytes only need to be non-empty for draft storage.
-            PendingImageAttachment(data: Data([0x89, 0x50, 0x4E, 0x47]), originalName: "dot.png")
+            PendingAttachment(data: Data([0x89, 0x50, 0x4E, 0x47]), kind: .image, originalName: "dot.png")
         }
 
-        @Test("A draft with no text and no images is empty")
+        @Test("A draft with no text and no attachments is empty")
         func emptyDraft() {
             #expect(ChatInputDraft().isEmpty)
-            #expect(ChatInputDraft(text: "", images: []).isEmpty)
+            #expect(ChatInputDraft(text: "", attachments: []).isEmpty)
         }
 
-        @Test("Text or images alone make a draft non-empty")
+        @Test("Text or attachments alone make a draft non-empty")
         func nonEmptyDraft() {
             #expect(!ChatInputDraft(text: "hi").isEmpty)
-            #expect(!ChatInputDraft(images: [makeImage()]).isEmpty)
+            #expect(!ChatInputDraft(attachments: [makeAttachment()]).isEmpty)
         }
 
         @Test("Setting a draft stores it per chat, independently")

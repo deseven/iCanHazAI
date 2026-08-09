@@ -102,7 +102,7 @@ struct DocumentTypeHint: Sendable {
 /// text-bytes formats that are really documents (RTF, WordML, WebArchive) get
 /// extracted instead of passed through raw; plain text (HTML, JSON, XML,
 /// source, proprietary-but-textual) is accepted as-is.
-enum DocumentKind: Sendable, Equatable {
+enum DocumentKind: Sendable, Equatable, Hashable {
     case text
     case document(DocumentFormat)
     case image

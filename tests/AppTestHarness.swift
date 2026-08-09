@@ -198,14 +198,14 @@ enum Fixtures {
         error: String? = nil,
         timestamp: Date = Date(timeIntervalSince1970: 1_700_000_000),
         connectionName: String? = nil,
-        images: [ImageAttachment]? = nil,
+        attachments: [iCanHazAI.Attachment]? = nil,
         toolCalls: [ToolCall]? = nil,
         toolResults: [ToolResult]? = nil,
         tokenUsage: TokenUsage? = nil
     ) -> ChatMessage {
         ChatMessage(
             role: role, content: content, thinking: thinking, error: error,
-            timestamp: timestamp, connectionName: connectionName, images: images,
+            timestamp: timestamp, connectionName: connectionName, attachments: attachments,
             toolCalls: toolCalls, toolResults: toolResults, tokenUsage: tokenUsage
         )
     }

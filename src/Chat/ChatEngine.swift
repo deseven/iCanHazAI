@@ -185,8 +185,8 @@ actor ChatEngine {
         debugLog("Engine", "start — ensuring directories and wiring MCP handlers")
         env.ensureDirectories()
         // Leftover attachments of temporary chats from a previous run — those
-        // chats are gone for good, so wipe their image storage.
-        env.deleteAllTemporaryImages()
+        // chats are gone for good, so wipe their attachment storage.
+        env.deleteAllTemporaryAttachments()
         // Seed bundled default prompts/roles into the user directory (copies
         // only missing files, so user edits are preserved). Done before the
         // FSEvents watcher starts so the copies don't trigger reload bursts.
@@ -678,7 +678,7 @@ actor ChatEngine {
             store.handleExternalDeletion(filename: filename)
             streamTasks[filename]?.cancel()
             streamTasks[filename] = nil
-            env.deleteAllImages(for: filename)
+            env.deleteAllAttachments(for: filename)
             records.removeAll(where: { $0.filename == filename })
             if selectedFilename == filename { selectedFilename = nil }
             emit(.chatsChanged(records))
@@ -1223,13 +1223,13 @@ actor ChatEngine {
     }
 
     /// Irreversibly destroys a temporary chat: cancels any in-flight stream,
-    /// deletes its temporary image folder, and removes the record. No chat
+    /// deletes its temporary attachment folder, and removes the record. No chat
     /// file cleanup is needed — temporary chats never touch the chats dir.
     private func destroyTemporaryChat(filename: String) {
         guard records.first(where: { $0.filename == filename })?.isTemporary == true else { return }
         streamTasks[filename]?.cancel()
         streamTasks[filename] = nil
-        env.deleteAllImages(for: filename)
+        env.deleteAllAttachments(for: filename)
         records.removeAll(where: { $0.filename == filename })
         if selectedFilename == filename { selectedFilename = nil }
         cliDriven.remove(filename)
@@ -1246,9 +1246,9 @@ actor ChatEngine {
         }
     }
 
-    /// Deletes a chat file and removes it from memory, including its image
-    /// folder on disk. Safe to call for chats that were never persisted (the
-    /// store handles missing files gracefully).
+    /// Deletes a chat file and removes it from memory, including its
+    /// attachment folder on disk. Safe to call for chats that were never
+    /// persisted (the store handles missing files gracefully).
     func deleteChat(filename: String) {
         streamTasks[filename]?.cancel()
         streamTasks[filename] = nil
@@ -1258,7 +1258,7 @@ actor ChatEngine {
         // Suppress the FSEvent for the file we're about to remove.
         markSelfWrite(path: env.chatsURL.appendingPathComponent(filename).path)
         store.deleteChat(filename: filename)
-        env.deleteAllImages(for: filename)
+        env.deleteAllAttachments(for: filename)
         records.removeAll(where: { $0.filename == filename })
         if selectedFilename == filename { selectedFilename = nil }
         emit(.chatsChanged(records))
@@ -1604,12 +1604,14 @@ actor ChatEngine {
     /// Sends a user message and streams the assistant response for the given chat.
     /// Returns false (and emits an error) if no valid connection is selected.
     ///
-    /// `pendingImages` are in-memory attachments that are committed to disk
-    /// (resized + re-encoded + saved) only at this point — i.e. when the user
-    /// actually sends the message. If the user cancels, nothing is written.
+    /// `pendingAttachments` are in-memory attachments that are committed to
+    /// disk only at this point — i.e. when the user actually sends the
+    /// message. Images are resized/re-encoded; text/documents have their
+    /// original copied and text extracted. If the user cancels, nothing is
+    /// written.
     @discardableResult
-    func sendMessage(filename: String, text: String, pendingImages: [PendingImageAttachment] = []) async -> Bool {
-        debugLog("Chat", "sendMessage — chat=\(filename), text length=\(text.count), images=\(pendingImages.count)")
+    func sendMessage(filename: String, text: String, pendingAttachments: [PendingAttachment] = []) async -> Bool {
+        debugLog("Chat", "sendMessage — chat=\(filename), text length=\(text.count), attachments=\(pendingAttachments.count)")
         // Ensure the chat is loaded before sending.
         await ensureChatLoaded(filename: filename)
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return false }
@@ -1637,12 +1639,13 @@ actor ChatEngine {
             records[idx].chat = baseChat
         }
 
-        // Commit pending images to disk now that the user has actually sent.
-        // Each attachment is resized/re-encoded and saved into the chat's
-        // image folder; the returned ImageAttachment refs are persisted on
-        // the user message and used to build the request payload.
-        let committed: [ImageAttachment] = pendingImages.compactMap {
-            ImageManager.commit($0, chatFilename: filename)
+        // Commit pending attachments to disk now that the user has actually
+        // sent. Images are resized/re-encoded; text/documents have their
+        // original copied and (for documents) text extracted. The returned
+        // Attachment refs are persisted on the user message and used to build
+        // the request payload.
+        let committed: [Attachment] = pendingAttachments.compactMap {
+            AttachmentManager.commit($0, chatFilename: filename)
         }
 
         // Build the message list including the system prompt from the role's
@@ -1653,7 +1656,7 @@ actor ChatEngine {
             messages.append(systemMsg)
         }
         messages.append(contentsOf: baseChat.messages)
-        let userMessage = ChatMessage(role: .user, content: text, images: committed.isEmpty ? nil : committed)
+        let userMessage = ChatMessage(role: .user, content: text, attachments: committed.isEmpty ? nil : committed)
         messages.append(userMessage)
 
         // Add the user message immediately and create a placeholder assistant message.
@@ -2860,10 +2863,10 @@ actor ChatEngine {
         // Collect the callIDs of tool calls issued by the deleted assistant
         // message so we can also remove their result messages.
         let callIDs: Set<String> = Set(chat.messages[msgIdx].toolCalls?.map(\.id) ?? [])
-        // Clean up image files owned by the deleted message.
-        if let images = chat.messages[msgIdx].images {
-            for img in images {
-                env.deleteImage(img, chatFilename: filename)
+        // Clean up attachment files owned by the deleted message.
+        if let attachments = chat.messages[msgIdx].attachments {
+            for attachment in attachments {
+                env.deleteAttachment(attachment, chatFilename: filename)
             }
         }
         chat.messages.remove(at: msgIdx)

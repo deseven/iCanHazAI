@@ -153,11 +153,11 @@ final class EnvironmentManager: @unchecked Sendable {
         }
     }
 
-    // MARK: - Chat images
+    // MARK: - Chat attachments
 
     /// Filename prefix marking a chat as temporary. Temporary chats live only
-    /// in memory (never written to the chats directory), and their images are
-    /// kept under the system temp directory instead of the chats directory.
+    /// in memory (never written to the chats directory), and their attachments
+    /// are kept under the system temp directory instead of the chats directory.
     nonisolated static let temporaryChatPrefix = "temp-"
 
     /// Whether the given chat filename belongs to a temporary chat.
@@ -172,60 +172,61 @@ final class EnvironmentManager: @unchecked Sendable {
         "\(Self.temporaryChatPrefix)\(UUID().uuidString).json"
     }
 
-    /// Root directory for temporary-chat images, under the system temp dir.
-    /// Wiped on every app start (temporary chats don't survive a restart) and
-    /// per chat when the temporary chat is destroyed.
-    private var temporaryImagesRoot: URL {
+    /// Root directory for temporary-chat attachments, under the system temp
+    /// dir. Wiped on every app start (temporary chats don't survive a
+    /// restart) and per chat when the temporary chat is destroyed.
+    private var temporaryAttachmentsRoot: URL {
         URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("iCanHazAI", isDirectory: true)
     }
 
-    /// Returns the directory holding image files for the given chat filename.
-    /// Temporary chats are routed to the system temp directory so no
+    /// Returns the directory holding attachment files for the given chat
+    /// filename. Temporary chats are routed to the system temp directory so no
     /// attachments ever touch the chats folder. Created on demand.
-    func imagesDirectory(for chatFilename: String) -> URL {
+    func attachmentsDirectory(for chatFilename: String) -> URL {
         let name = (chatFilename as NSString).deletingPathExtension
-        let base = Self.isTemporaryChatFilename(chatFilename) ? temporaryImagesRoot : chatsURL
+        let base = Self.isTemporaryChatFilename(chatFilename) ? temporaryAttachmentsRoot : chatsURL
         let dir = base.appendingPathComponent(name, isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }
 
-    /// Saves processed image data for a chat, returning the on-disk URL.
-    func saveImage(data: Data, filename: String, chatFilename: String) -> URL {
-        let dir = imagesDirectory(for: chatFilename)
+    /// Saves attachment data for a chat, returning the on-disk URL.
+    func saveAttachment(data: Data, filename: String, chatFilename: String) -> URL {
+        let dir = attachmentsDirectory(for: chatFilename)
         let url = dir.appendingPathComponent(filename)
         try? data.write(to: url, options: .atomic)
         return url
     }
 
-    /// Loads the raw bytes of an image attachment for a chat.
-    func loadImageData(_ attachment: ImageAttachment, chatFilename: String) -> Data? {
-        let dir = imagesDirectory(for: chatFilename)
+    /// Loads the raw bytes of an attachment for a chat.
+    func loadAttachmentData(_ attachment: Attachment, chatFilename: String) -> Data? {
+        let dir = attachmentsDirectory(for: chatFilename)
         let url = dir.appendingPathComponent(attachment.filename)
         return try? Data(contentsOf: url)
     }
 
-    /// Deletes a single image file for a chat.
-    func deleteImage(_ attachment: ImageAttachment, chatFilename: String) {
-        let dir = imagesDirectory(for: chatFilename)
+    /// Deletes a single attachment file for a chat.
+    func deleteAttachment(_ attachment: Attachment, chatFilename: String) {
+        let dir = attachmentsDirectory(for: chatFilename)
         let url = dir.appendingPathComponent(attachment.filename)
         try? FileManager.default.removeItem(at: url)
     }
 
-    /// Deletes the entire image folder for a chat (used when a chat is deleted
-    /// or a temporary chat is destroyed).
-    func deleteAllImages(for chatFilename: String) {
+    /// Deletes the entire attachment folder for a chat (used when a chat is
+    /// deleted or a temporary chat is destroyed).
+    func deleteAllAttachments(for chatFilename: String) {
         let name = (chatFilename as NSString).deletingPathExtension
-        let base = Self.isTemporaryChatFilename(chatFilename) ? temporaryImagesRoot : chatsURL
+        let base = Self.isTemporaryChatFilename(chatFilename) ? temporaryAttachmentsRoot : chatsURL
         let dir = base.appendingPathComponent(name, isDirectory: true)
         try? FileManager.default.removeItem(at: dir)
     }
 
-    /// Wipes the whole temporary-chat image root. Called once at engine start,
-    /// since temporary chats (and their attachments) never survive a restart.
-    func deleteAllTemporaryImages() {
-        try? FileManager.default.removeItem(at: temporaryImagesRoot)
+    /// Wipes the whole temporary-chat attachment root. Called once at engine
+    /// start, since temporary chats (and their attachments) never survive a
+    /// restart.
+    func deleteAllTemporaryAttachments() {
+        try? FileManager.default.removeItem(at: temporaryAttachmentsRoot)
     }
 
     // MARK: - Chats

@@ -103,8 +103,8 @@ struct AnthropicProvider: LLMProvider {
     private func anthropicMessage(_ msg: ChatMessage, chatFilename: String) -> [String: Any] {
         let role = (msg.role == .user || msg.role == .tool) ? "user" : "assistant"
 
-        if msg.role == .user, let images = msg.images, !images.isEmpty {
-            return anthropicImageMessage(msg, images: images, role: role, chatFilename: chatFilename)
+        if msg.role == .user, let attachments = msg.attachments, !attachments.isEmpty {
+            return anthropicAttachmentMessage(msg, attachments: attachments, role: role, chatFilename: chatFilename)
         }
         if msg.role == .assistant, let calls = msg.toolCalls, !calls.isEmpty {
             var blocks: [[String: Any]] = []
@@ -140,11 +140,12 @@ struct AnthropicProvider: LLMProvider {
         return ["role": role, "content": msg.content] as [String: Any]
     }
 
-    /// Builds an Anthropic message dict with multipart content
-    /// (text + image blocks). Images are base64-encoded sources.
-    private func anthropicImageMessage(
+    /// Builds an Anthropic message dict with multipart content: text blocks,
+    /// image blocks (base64 sources) for image attachments, and text blocks
+    /// wrapping extracted content for text/document attachments.
+    private func anthropicAttachmentMessage(
         _ msg: ChatMessage,
-        images: [ImageAttachment],
+        attachments: [Attachment],
         role: String,
         chatFilename: String
     ) -> [String: Any] {
@@ -152,16 +153,24 @@ struct AnthropicProvider: LLMProvider {
         if !msg.content.isEmpty {
             blocks.append(["type": "text", "text": msg.content])
         }
-        for img in images {
-            guard let data = EnvironmentManager.shared.loadImageData(img, chatFilename: chatFilename) else { continue }
-            blocks.append([
-                "type": "image",
-                "source": [
-                    "type": "base64",
-                    "media_type": img.mimeType,
-                    "data": data.base64EncodedString(),
-                ] as [String: Any],
-            ])
+        for attachment in attachments {
+            switch attachment.kind {
+            case .image:
+                guard let data = EnvironmentManager.shared.loadAttachmentData(attachment, chatFilename: chatFilename) else { continue }
+                blocks.append([
+                    "type": "image",
+                    "source": [
+                        "type": "base64",
+                        "media_type": attachment.mimeType,
+                        "data": data.base64EncodedString(),
+                    ] as [String: Any],
+                ])
+            case .text, .document:
+                if let text = attachment.text, !text.isEmpty,
+                   let block = AttachmentRequestBuilder.block(for: attachment) {
+                    blocks.append(["type": "text", "text": block])
+                }
+            }
         }
         return ["role": role, "content": blocks] as [String: Any]
     }
