@@ -69,6 +69,7 @@ struct ChatView: View {
                             HStack(spacing: 6) {
                                 ForEach(pendingAttachments) { attachment in
                                     AttachmentChip(
+                                        kind: attachment.kind,
                                         name: attachment.originalName ?? defaultName(for: attachment),
                                         onRemove: { removeAttachment(attachment.id) }
                                     )
@@ -837,14 +838,16 @@ final class ChatInputTextView: NSTextView {
 
 // MARK: - AttachmentChip
 
-/// A compact chip showing an attached file's name with a remove button.
+/// A compact chip showing an attached file's name with a remove button. The
+/// icon reflects the attachment kind (image vs. text/document).
 private struct AttachmentChip: View {
+    let kind: DocumentKind
     let name: String
     let onRemove: () -> Void
 
     var body: some View {
         HStack(spacing: 4) {
-            Image(systemName: "doc")
+            Image(systemName: kind == .image ? "photo" : "doc")
                 .font(.caption2)
             Text(name)
                 .font(.caption)

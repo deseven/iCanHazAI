@@ -604,6 +604,59 @@ body {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
 }
 
+/* ── Document/text attachment chips ─────────────────────────────────── */
+
+.msg-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.msg-attachment-chip {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.msg-attachment-chip:hover {
+  border-color: var(--accent);
+  background: var(--bg-surface-hover);
+}
+
+.msg-attachment-chip-icon {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+}
+
+.msg-attachment-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-attachment-chip-status {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.msg-attachment-chip-status-failed {
+  color: var(--error-text);
+}
+
 .msg-content {
   display: block;
 }

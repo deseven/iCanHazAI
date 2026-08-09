@@ -11,7 +11,7 @@ import { useMemo, useState, useRef, useEffect, useLayoutEffect, useCallback } fr
 import type { RefObject } from "preact";
 import { memo } from "preact/compat";
 import { createPortal } from "preact/compat";
-import type { ChatMessage, MessageImage } from "../types";
+import type { ChatMessage, AttachmentData } from "../types";
 import { renderMarkdown, renderInline, renderMermaidIn, restoreCachedMermaid, endsWithUnclosedMermaid, renderDiff, highlightCode } from "../markdown";
 import { sendToHost } from "../bridge";
 import { observeVisibility } from "../visibility";
@@ -20,7 +20,7 @@ import { parseToolArgs, isEmptyArgs } from "../toolArgs";
 import type { ToolArgEntry } from "../toolArgs";
 import { toolArgLang, toolResultLang } from "../toolHighlight";
 import { transientToolStatus, localToolStatus } from "../toolSummary";
-import { Copy, SquarePen, Trash2, Brain, User, Bot, Settings, AlertTriangle, RotateCcw, ChevronRight, ChevronDown, Wrench, Terminal } from "lucide-preact";
+import { Copy, SquarePen, Trash2, Brain, User, Bot, Settings, AlertTriangle, RotateCcw, ChevronRight, ChevronDown, Wrench, Terminal, FileText } from "lucide-preact";
 import type { ToolCallData, ToolResultData } from "../types";
 
 interface Props {
@@ -478,10 +478,10 @@ function splitStreaming(content: string): { block: string; partial: string } {
 }
 
 /** A gallery of image squares with click-to-zoom. Images are displayed as
- *  fixed 512×512 squares with the image centered (object-fit: cover). Clicking
+ *  fixed 256×256 squares with the image centered (object-fit: cover). Clicking
  *  a square opens a full-image overlay; clicking outside closes it. */
-function ImageGallery({ images }: { images: MessageImage[] }) {
-  const [zoomed, setZoomed] = useState<MessageImage | null>(null);
+function ImageGallery({ images }: { images: AttachmentData[] }) {
+  const [zoomed, setZoomed] = useState<AttachmentData | null>(null);
 
   const closeZoom = useCallback(() => setZoomed(null), []);
 
@@ -505,7 +505,7 @@ function ImageGallery({ images }: { images: MessageImage[] }) {
           title={img.name ?? "image"}
           onClick={() => setZoomed(img)}
         >
-          <img src={img.url} alt={img.name ?? "image"} loading="lazy" />
+          <img src={img.url!} alt={img.name ?? "image"} loading="lazy" />
         </button>
       ))}
       {zoomed &&
@@ -513,7 +513,7 @@ function ImageGallery({ images }: { images: MessageImage[] }) {
           <div class="msg-image-zoom-overlay" onClick={closeZoom}>
             <img
               class="msg-image-zoomed"
-              src={zoomed.url}
+              src={zoomed.url!}
               alt={zoomed.name ?? "image"}
               onClick={(e) => e.stopPropagation()}
             />
@@ -521,6 +521,59 @@ function ImageGallery({ images }: { images: MessageImage[] }) {
           document.body,
         )}
     </div>
+  );
+}
+
+/** A clickable chip for a text/document attachment. Shows the filename and a
+ *  small inline notice for truncation/extraction-failure status. Clicking sends
+ *  an `openAttachment` bridge message so the host opens the original in the
+ *  system default app. */
+function DocumentChip({ attachment }: { attachment: AttachmentData }) {
+  const statusText =
+    attachment.status === "truncated"
+      ? "truncated to 64 KB"
+      : attachment.status === "failed"
+        ? `extraction failed${attachment.failureReason ? `: ${attachment.failureReason}` : ""}`
+        : null;
+  return (
+    <button
+      class="msg-attachment-chip"
+      type="button"
+      title={attachment.url ? `Open ${attachment.name ?? "file"}` : attachment.name ?? "file"}
+      onClick={() => {
+        if (attachment.url) {
+          sendToHost({ type: "openAttachment", url: attachment.url });
+        }
+      }}
+    >
+      <FileText size={14} class="msg-attachment-chip-icon" />
+      <span class="msg-attachment-chip-name">{attachment.name ?? "document"}</span>
+      {statusText && (
+        <span class={`msg-attachment-chip-status${attachment.status === "failed" ? " msg-attachment-chip-status-failed" : ""}`}>
+          {statusText}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** Renders a message's attachments: images inline (click-to-zoom), text and
+ *  document attachments as clickable chips with status notices. The extracted
+ *  text body is never sent to the renderer — only metadata crosses the bridge. */
+function AttachmentGallery({ attachments }: { attachments: AttachmentData[] }) {
+  const images = attachments.filter((a) => a.kind === "image" && a.url);
+  const docs = attachments.filter((a) => a.kind !== "image");
+  return (
+    <>
+      {images.length > 0 && <ImageGallery images={images} />}
+      {docs.length > 0 && (
+        <div class="msg-attachments">
+          {docs.map((a) => (
+            <DocumentChip key={a.url ?? a.name} attachment={a} />
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -591,7 +644,7 @@ export const MessageItem = memo(function MessageItem({
   const hasThinking = !!message.thinking && message.thinking.trim().length > 0;
   const hasError = !!message.error && message.error.trim().length > 0;
   const hasContent = !!message.content && message.content.trim().length > 0;
-  const hasImages = !!message.images && message.images.length > 0;
+  const hasAttachments = !!message.attachments && message.attachments.length > 0;
   const hasToolCalls = !!message.toolCalls && message.toolCalls.length > 0;
   // The request was sent but nothing (thinking, content, tool calls) has
   // arrived yet — show a spinner instead of a blank message.
@@ -696,8 +749,8 @@ export const MessageItem = memo(function MessageItem({
           </div>
         )}
 
-        {hasImages && (
-          <ImageGallery images={message.images!} />
+        {hasAttachments && (
+          <AttachmentGallery attachments={message.attachments!} />
         )}
 
         {hasContent && (

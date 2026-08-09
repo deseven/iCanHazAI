@@ -22,7 +22,7 @@ To address the elephant in the room: there are many AI chat apps and agentic har
 - MCP: stdio and streamable HTTP servers with tool filtering, name prefixing, and run policies
 - remote work: seamless SSH working directories for agentic sessions on remote machines
 - CLI: one-shot and interactive modes, piping, unlimited concurrency — run ten chats in the CLI, ten more in the GUI, continue any of them anywhere
-- image input for capable models
+- attachments: attach images, plain text, and documents (docx/doc/odt/rtf/pdf) to any chat on any connection — images on non-vision connections get a local text fallback
 - clean configuration/data structure in a single directory (`~/iCanHazAI`), all plain text, hot-reloaded on external edits and errors gracefully handled
 - bundled Configurator role that edits the configuration for you
 
@@ -37,7 +37,6 @@ To address the elephant in the room: there are many AI chat apps and agentic har
 - Skills support
 - Global hotkey trigger / quick access
 - Chat trees / response regeneration
-- Extensive attachment support
 
 
 ## Quick Start
@@ -93,7 +92,7 @@ A `{name}.toml` file in `Roles/` — a template for new chats combining a prompt
 
 ### Chat
 
-A `YYYY-MM-DD HH-mm-ss.json` file in `Chats/`, with attachments in a same-named directory next to it. Chats created via the CLI are regular chats — visible and continuable in the GUI, and vice versa.
+A `YYYY-MM-DD HH-mm-ss.json` file in `Chats/`, with attachments in a same-named directory next to it. Attached documents are extracted to text at send time and embedded in the chat JSON; the originals are kept on disk as a user-facing backup. Chats created via the CLI are regular chats — visible and continuable in the GUI, and vice versa.
 
 
 ## Building

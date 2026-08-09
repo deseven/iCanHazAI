@@ -712,7 +712,24 @@ final class ChatWebViewModel: ObservableObject {
             store.allowToolCallForChat(callID: callId)
         case .denyToolCall(let callId):
             store.pendingDenyToolCallID = callId
+        case .openAttachment(let url):
+            openAttachment(url: url)
         }
+    }
+
+    /// Resolves an `ichai://{UUID}.{ext}` reference to the file in the
+    /// currently selected chat's attachment directory and opens it in the
+    /// system default app.
+    private func openAttachment(url: String) {
+        guard let url = URL(string: url) else { return }
+        let resource = url.host ?? url.path
+        let filename = resource.hasPrefix("/") ? String(resource.dropFirst()) : resource
+        guard !filename.isEmpty else { return }
+        let chatFilename = ImageSchemeHandler.currentChatFilename ?? ""
+        let dir = EnvironmentManager.shared.attachmentsDirectory(for: chatFilename)
+        let fileURL = dir.appendingPathComponent(filename)
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+        NSWorkspace.shared.open(fileURL)
     }
 
     private func copyMessage(_ messageId: String) {
@@ -910,6 +927,10 @@ enum BridgeMessageData: Codable, Sendable {
     /// User requested to deny a pending tool call (Deny button); the host
     /// presents a reason sheet before resolving.
     case denyToolCall(callId: String)
+    /// User clicked a text/document attachment chip; the host opens the
+    /// original file in the system default app. `url` is the `ichai://`
+    /// reference the host resolves to the file in the chat's attachment dir.
+    case openAttachment(url: String)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -917,6 +938,7 @@ enum BridgeMessageData: Codable, Sendable {
         case atBottom
         case chatId
         case callId
+        case url
     }
 
     func encode(to encoder: Encoder) throws {
@@ -953,6 +975,9 @@ enum BridgeMessageData: Codable, Sendable {
         case .denyToolCall(let callId):
             try c.encode("denyToolCall", forKey: .type)
             try c.encode(callId, forKey: .callId)
+        case .openAttachment(let url):
+            try c.encode("openAttachment", forKey: .type)
+            try c.encode(url, forKey: .url)
         }
     }
 
@@ -982,6 +1007,8 @@ enum BridgeMessageData: Codable, Sendable {
             self = .allowToolCallForChat(callId: try c.decode(String.self, forKey: .callId))
         case "denyToolCall":
             self = .denyToolCall(callId: try c.decode(String.self, forKey: .callId))
+        case "openAttachment":
+            self = .openAttachment(url: try c.decode(String.self, forKey: .url))
         default:
             throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown type")
         }
@@ -1029,8 +1056,10 @@ struct ChatMessageData: Codable, Equatable, Sendable {
     struct AttachmentData: Codable, Equatable, Sendable {
         /// The kind: "image", "text", or "document".
         let kind: String
-        /// For images: the `ichai://` URL the renderer uses as the `src`.
-        /// For text/documents: nil (the body is never sent to the renderer).
+        /// The `ichai://{UUID}.{ext}` URL. For images the renderer uses it as
+        /// the `src`; for text/documents it's sent back via `openAttachment`
+        /// so the host can open the original in the system default app. The
+        /// extracted text body is never sent to the renderer.
         let url: String?
         /// Original filename for display/alt text.
         let name: String?
@@ -1121,9 +1150,7 @@ extension ChatMessage {
         let attachments = attachments?.map { attachment in
             ChatMessageData.AttachmentData(
                 kind: attachment.kind.rawValue,
-                url: attachment.kind == .image
-                    ? "\(ImageSchemeHandler.scheme)://\(attachment.filename)"
-                    : nil,
+                url: "\(ImageSchemeHandler.scheme)://\(attachment.filename)",
                 name: attachment.originalName,
                 status: attachment.kind == .image ? nil : attachment.status.rawValue,
                 failureReason: attachment.failureReason

@@ -5,14 +5,6 @@ import type { ToolStatusSummary } from "./toolSummary";
 
 export type MessageRole = "system" | "user" | "assistant" | "tool";
 
-/** An image attached to a message, loaded via the custom `ichai://` scheme. */
-export interface MessageImage {
-  /** The `ichai://{UUID}.{ext}` URL to use as the `src`. */
-  url: string;
-  /** Original filename for alt text / display. */
-  name?: string | null;
-}
-
 /** A tool call issued by the assistant. */
 export interface ToolCallData {
   id: string;
@@ -72,12 +64,32 @@ export interface ChatMessage {
   timestamp: string;
   /** Display name of the connection that produced an assistant response. */
   connectionName?: string | null;
-  /** Images attached to the message (user messages only). */
-  images?: MessageImage[] | null;
+  /** Attachments on the message (user messages only). Images carry an
+   *  `ichai://` URL the renderer loads via the custom scheme handler;
+   *  text/documents carry metadata only (name, kind, status) — the extracted
+   *  text body is never sent to the WebView. */
+  attachments?: AttachmentData[] | null;
   /** For assistant messages: tool calls issued by the model. */
   toolCalls?: ToolCallData[] | null;
   /** For `tool`-role messages: the result of a tool call. */
   toolResults?: ToolResultData[] | null;
+}
+
+/** A single attachment reference mirroring the Swift `AttachmentData`. */
+export interface AttachmentData {
+  /** The kind: "image", "text", or "document". */
+  kind: string;
+  /** For images: the `ichai://` URL the renderer uses as the `src`. For
+   *  text/documents: an `ichai://` reference to the original file, used to
+   *  open it in the system app on click. */
+  url?: string | null;
+  /** Original filename for display/alt text. */
+  name?: string | null;
+  /** Extraction status for text/document attachments: "ok", "truncated", or
+   *  "failed". Nil for images. */
+  status?: string | null;
+  /** Short failure reason when status is "failed". Nil otherwise. */
+  failureReason?: string | null;
 }
 
 export interface ChatSnapshot {
@@ -136,4 +148,7 @@ export type BridgeMessage =
   | { type: "requestOlder"; chatId: string }
   | { type: "allowToolCall"; callId: string }
   | { type: "allowToolCallForChat"; callId: string }
-  | { type: "denyToolCall"; callId: string };
+  | { type: "denyToolCall"; callId: string }
+  /** Open a document/text attachment's original file in the system default
+   *  app. `url` is the `ichai://` reference the host resolves to the file. */
+  | { type: "openAttachment"; url: string };
