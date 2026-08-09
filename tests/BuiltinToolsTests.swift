@@ -1410,7 +1410,7 @@ extension AllAppTests {
             #expect(result.image != nil)
             #expect(result.image?.mimeType.hasPrefix("image/") == true)
             // The content is the classification+OCR fallback text.
-            #expect(result.content.contains("can't be processed visually here."))
+            #expect(result.content.contains("lacking the capabilities to digest images"))
             // Vision recognizes the rendered text when available. In the
             // `swift test` runner Vision can return empty (no GUI session),
             // so the "no readable text" fallback is acceptable there; when

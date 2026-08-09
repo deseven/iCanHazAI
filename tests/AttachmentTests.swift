@@ -91,7 +91,7 @@ struct AttachmentTests {
         // The fallback is synthesized from classification + OCR and stored on
         // the record so a vision-incapable connection can send it as text.
         #expect(committed.text != nil)
-        #expect(committed.text?.contains("can't be processed visually here") == true)
+        #expect(committed.text?.contains("lacking the capabilities to digest images") == true)
     }
 
     @Test("Committing an unsupported binary returns nil")

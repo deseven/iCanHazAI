@@ -129,7 +129,7 @@ struct ImageFallbackTests {
         let body = AnthropicProvider().buildRequestBody(connection: connection, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
         let blocks = contentBlocks(of: body)
         #expect(hasBlockType(blocks, "image"))
-        #expect(!hasTextBlock(containing: "can't be processed visually", in: blocks))
+        #expect(!hasTextBlock(containing: "lacking the capabilities to digest images", in: blocks))
     }
 
     @Test("Anthropic sends the fallback text block on a vision-incapable connection")
@@ -141,7 +141,7 @@ struct ImageFallbackTests {
         let body = AnthropicProvider().buildRequestBody(connection: connection, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
         let blocks = contentBlocks(of: body)
         #expect(!hasBlockType(blocks, "image"))
-        #expect(hasTextBlock(containing: "can't be processed visually", in: blocks))
+        #expect(hasTextBlock(containing: "lacking the capabilities to digest images", in: blocks))
     }
 
     @Test("OpenAI sends an image_url part on a vision-capable connection")
@@ -153,7 +153,7 @@ struct ImageFallbackTests {
         let body = OpenAIProvider().buildRequestBody(connection: connection, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
         let blocks = contentBlocks(of: body)
         #expect(hasBlockType(blocks, "image_url"))
-        #expect(!hasTextBlock(containing: "can't be processed visually", in: blocks))
+        #expect(!hasTextBlock(containing: "lacking the capabilities to digest images", in: blocks))
     }
 
     @Test("OpenAI sends the fallback text part on a vision-incapable connection")
@@ -165,7 +165,7 @@ struct ImageFallbackTests {
         let body = OpenAIProvider().buildRequestBody(connection: connection, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
         let blocks = contentBlocks(of: body)
         #expect(!hasBlockType(blocks, "image_url"))
-        #expect(hasTextBlock(containing: "can't be processed visually", in: blocks))
+        #expect(hasTextBlock(containing: "lacking the capabilities to digest images", in: blocks))
     }
 
     @Test("An image + a document coexist correctly on both providers")
@@ -187,7 +187,7 @@ struct ImageFallbackTests {
         let textBody = AnthropicProvider().buildRequestBody(connection: textConn, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
         let textBlocks = contentBlocks(of: textBody)
         #expect(!hasBlockType(textBlocks, "image"))
-        #expect(hasTextBlock(containing: "can't be processed visually", in: textBlocks))
+        #expect(hasTextBlock(containing: "lacking the capabilities to digest images", in: textBlocks))
         #expect(hasTextBlock(containing: "doc body", in: textBlocks))
     }
 

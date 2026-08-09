@@ -458,8 +458,12 @@ extension AllAppTests {
             }
             let approvals = await recorder.approvals
             #expect(approvals.count == 2)
-            #expect(approvals[0].callID == "call-1" && approvals[0].decision == "deny" && approvals[0].reason == "nope")
-            #expect(approvals[1].callID == "call-2" && approvals[1].decision == "allow_chat" && approvals[1].reason == nil)
+            // The two tool.approve requests are dispatched as concurrent tasks,
+            // so their handler invocations aren't order-guaranteed — verify the
+            // set of (callID, decision, reason) tuples instead of assuming
+            // send order.
+            #expect(approvals.contains { $0.callID == "call-1" && $0.decision == "deny" && $0.reason == "nope" })
+            #expect(approvals.contains { $0.callID == "call-2" && $0.decision == "allow_chat" && $0.reason == nil })
             let stops = await recorder.stops
             #expect(stops.count == 2)
             // The two chat.stop requests are dispatched as concurrent tasks,
