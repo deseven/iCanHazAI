@@ -48,8 +48,6 @@ struct Attachment: Codable, Identifiable, Equatable, Hashable, Sendable {
     /// Short human-readable reason when `status == .failed`. Nil otherwise.
     var failureReason: String?
 
-    var id_uuid: UUID { id }
-
     /// The filename on disk, e.g. "A1B2...-....png".
     var filename: String { "\(id.uuidString).\(ext)" }
 

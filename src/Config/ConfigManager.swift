@@ -36,7 +36,7 @@ struct AppConfig: Codable, Equatable {
 
     /// Every group is optional: a missing table (or a totally empty file)
     /// falls back to the struct's own defaults instead of throwing
-    /// `keyNotFound`. This keeps partial/legacy configs loadable — every
+    /// `keyNotFound`. This keeps partial configs loadable — every
     /// field in every sub-struct is itself optional, so once a table is
     /// present its keys are all tolerated too.
     init(from decoder: Decoder) throws {

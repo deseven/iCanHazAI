@@ -66,10 +66,10 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     }
 
     /// Tolerant decode: every field is optional at the JSON level. A missing or
-    /// wrong-typed field falls back to a default instead of throwing, so older
-    /// chat files (written before a field existed, or with a since-changed shape)
-    /// stay loadable. Only a structurally invalid object (not a JSON object at
-    /// all) throws, which lets `Chat` skip the individual message.
+    /// wrong-typed field falls back to a default instead of throwing, so
+    /// externally-edited chat files stay loadable. Only a structurally invalid
+    /// object (not a JSON object at all) throws, which lets `Chat` skip the
+    /// individual message.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
@@ -209,14 +209,14 @@ struct Chat: Codable, Identifiable, Equatable {
     /// role's `[[mcps]]` entries when the chat is created (or the role is
     /// assigned); editable per chat only when the role's
     /// `mcps_override_allowed` is true. Nil for chats that predate the field —
-    /// they fall back to the role's MCP selection.
+    /// they use the role's MCP selection.
     var mcps: [String]?
     /// Optional user-defined display title. When nil the UI derives a title
     /// from the first user message (or "New chat").
     var title: String?
     /// When true, the chat is archived: hidden from the chat list and excluded
     /// from the default sidebar view. Completely optional in the JSON — older
-    /// chat files without this key decode as non-archived.
+    /// hand-edited or externally-written chat files without this key decode as non-archived.
     var archive: Bool?
     /// Tool call names (namespaced, as advertised to the model) the user chose
     /// to auto-approve for this chat only, via the "Allow for this chat"
@@ -230,8 +230,8 @@ struct Chat: Codable, Identifiable, Equatable {
     var autoDeny: [String]?
     /// The rendering target this chat was created from. Nil (and `.rich`)
     /// means the full chat-renderer capabilities; `.plain` means terminal
-    /// plain text (CLI-created chats). Completely optional — older chat files
-    /// without this key decode as rich.
+    /// plain text (CLI-created chats). Completely optional — a chat file
+    /// without this key decodes as rich.
     var outputRendering: ChatOutputRendering?
     init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, prompt: String? = nil, workingDirectory: String? = nil, mcps: [String]? = nil, title: String? = nil, archive: Bool? = nil, autoAllow: [String]? = nil, autoDeny: [String]? = nil, outputRendering: ChatOutputRendering? = nil) {
         self.id = id
@@ -258,8 +258,8 @@ struct Chat: Codable, Identifiable, Equatable {
     /// Tolerant decode: all scalar fields are optional at the JSON level (a
     /// missing/wrong-typed field falls back to a default), and messages are
     /// recovered one-by-one so a single malformed message is dropped instead of
-    /// failing the whole chat. This keeps older chat files loadable after the
-    /// schema gains new fields. Only a structurally invalid JSON document (not an
+    /// failing the whole chat. This keeps externally-edited chat files loadable
+    /// even when a field's shape is off. Only a structurally invalid JSON document (not an
     /// object, or `messages` not an array) throws, which the loader reports.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -911,8 +911,10 @@ struct Connection: Identifiable, Equatable, @unchecked Sendable {
     let apiKey: String?
     /// Model identifier.
     let model: String
-    /// Meta flag: whether the model supports image input. Used by the UI to
-    /// gate the image attach button — NOT sent to the API. Defaults to false.
+    /// Meta flag: whether the model accepts image input. Decides how image
+    /// attachments are sent — as a native image block when true, or as a
+    /// synthesized text fallback when false. NOT sent to the API. Defaults
+    /// to false.
     let imageInput: Bool
     /// Extra parameters inserted into every request body's root. Fully optional.
     let requestParameters: [String: LLMJSONValue]?

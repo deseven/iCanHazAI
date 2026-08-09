@@ -873,15 +873,6 @@ final class AppViewModel: ObservableObject {
         return item.chat?.messages.last?.role == .user
     }
 
-    /// Whether the selected chat's connection supports image input. Kept for
-    /// compatibility with the connection wizard; no longer gates attachment
-    /// availability — every connection accepts every attachment kind now.
-    var selectedChatSupportsImageInput: Bool {
-        guard let id = selectedChatConnectionID,
-              let conn = connections.first(where: { $0.id == id }) else { return false }
-        return conn.imageInput
-    }
-
     /// Whether attachments are enabled for the selected chat. Currently always
     /// true — every chat accepts every attachment kind on every connection.
     /// Reserved for a future role-level gate.

@@ -96,16 +96,13 @@ final class EnvironmentManager: @unchecked Sendable {
 
     /// Locates a bundled default resource directory for `<sub>` (e.g. "roles",
     /// "prompts"). Checks the app bundle's `Contents/Resources/Default/<sub>`
-    /// first (the production layout), then the flat `Contents/Resources/<sub>`
-    /// (legacy), then walks up from the main bundle (or CWD) to find a
+    /// first (the production layout), then walks up from the main bundle (or
+    /// CWD) to find a
     /// `default/<sub>` directory (for `swift run` / `swift test`). Returns nil
     /// if none exists.
     nonisolated static func defaultResourceDir(_ sub: String) -> URL? {
         let fm = FileManager.default
         if let url = Bundle.main.url(forResource: sub, withExtension: nil, subdirectory: "Default") {
-            return url
-        }
-        if let url = Bundle.main.url(forResource: sub, withExtension: nil) {
             return url
         }
         // Walk up from the bundle's parent dir and the current working dir

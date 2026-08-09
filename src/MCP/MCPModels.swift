@@ -42,8 +42,7 @@ struct MCPServer: Identifiable, Equatable, Hashable, Sendable {
     let transport: MCPTransport
     /// When the server process is started/stopped. Only meaningful for stdio
     /// servers (where we own the subprocess); nil for http servers. Defaults
-    /// to `alwaysOn` for backwards compatibility with stdio configs that
-    /// predate the field.
+    /// to `alwaysOn` when unset.
     var runPolicy: MCPRunPolicy?
     /// stdio: the full command line to launch the server, including arguments
     /// (e.g. "node /path/to/index.js"). It is sent to the user's login shell
@@ -146,32 +145,32 @@ struct ToolCall: Codable, Identifiable, Equatable, Sendable {
     /// True while the engine is waiting for the user to approve this call.
     /// Transient UI state: the streaming loop only persists on `finishStream`,
     /// by which point this is false, so it never reaches disk in a `true`
-    /// state. Decoded defensively (defaults to false) for old chat files.
+    /// state. Decoded defensively (defaults to false) so a hand-edited or
+    /// externally-written chat file can't fail the whole message.
     var pendingApproval: Bool = false
     /// Optional pre-rendered unified diff for `write_file`/`apply_patch` calls.
     /// Built by [`DiffBuilder`](src/Tools/DiffBuilder.swift) from the file's before/
     /// after content so the renderer can show a colorized diff instead of raw
     /// JSON arguments. Nil for tools that don't produce diffs, or when the
     /// arguments are invalid. Cleared on denial since the changes were never
-    /// applied. Decoded defensively (defaults to nil) for old chat files.
+    /// applied. Decoded defensively (defaults to nil).
     var diff: String?
     /// The tool schema's required argument names, stamped by the engine when
     /// the call is finalized. Display-only: the renderer uses it to order the
     /// collapsed tool header's argument summary (required first) for tools it
-    /// has no built-in knowledge of. Nil for calls from before this field
-    /// existed and while the call is still streaming.
+    /// has no built-in knowledge of. Nil while the call is still streaming.
     var requiredArgs: [String]?
     /// True when the call targets an in-process internal tool (the bundled
     /// Configurator's toolset), stamped by the engine when the call is
     /// finalized. Display-only: the renderer uses it as a guard so its
     /// per-tool syntax-highlighting hints can't misfire on an external MCP
     /// tool that happens to share a name. Decoded defensively (defaults to
-    /// false) for old chat files.
+    /// false).
     var internalTool: Bool = false
     /// The collapsed one-line argument summary ("src/main.swift · offset: 10"),
     /// computed by the engine via [`ToolSummary`](src/Tools/ToolSummary.swift)
     /// when the call is finalized. Persisted so every surface (chat renderer,
-    /// CLI) shows the same text. Nil for calls from before this field existed.
+    /// CLI) shows the same text.
     var summary: String?
 
     enum CodingKeys: String, CodingKey {
@@ -252,18 +251,17 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
     /// True when this result represents a user denial (not a tool failure).
     /// `isError` stays true so the provider treats it as a tool error, but the
     /// renderer shows a "denied" badge instead of "error". Decoded
-    /// defensively (defaults to false) for old chat files.
+    /// defensively (defaults to false).
     var isDenied: Bool = false
     /// True when this result was synthesized on stop for a call that never
     /// executed. `isError` stays true so the provider treats it as a tool
     /// error, but the renderer shows a "cancelled" badge instead of "error".
-    /// Decoded defensively (defaults to false) for old chat files.
+    /// Decoded defensively (defaults to false).
     var isCancelled: Bool = false
     /// The one-line status summary (the `tool_call_result_summary`), computed
     /// by the engine via [`ToolSummary`](src/Tools/ToolSummary.swift) when the
     /// final result lands. Persisted so every surface (chat renderer, CLI)
-    /// shows the same status text. Nil for results from before this field
-    /// existed and for transient streaming placeholders.
+    /// shows the same status text. Nil for transient streaming placeholders.
     var summary: ToolSummary.Status?
 
     enum CodingKeys: String, CodingKey {
@@ -283,8 +281,9 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        // All fields are tolerant: a missing or wrong-typed value falls back to
-        // a default so an older tool-result shape can't fail the whole message.
+        // All fields are tolerant: a missing or wrong-typed value falls back
+        // to a default so a hand-edited or externally-written chat file can't
+        // fail the whole message.
         callID = (try? c.decode(String.self, forKey: .callID)) ?? ""
         content = (try? c.decode(String.self, forKey: .content)) ?? ""
         isError = (try? c.decode(Bool.self, forKey: .isError)) ?? false
