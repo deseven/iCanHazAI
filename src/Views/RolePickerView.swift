@@ -105,12 +105,40 @@ private struct RolePickerRowContent: View {
                             .font(.caption2)
                             .foregroundStyle(.yellow)
                     }
+                    Spacer()
+                    RoleFeatureBadges(role: role)
                 }
                 Text(role.description)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Spacer()
         }
+    }
+}
+
+/// Small trailing badges summarizing a role's capabilities at a glance, shown
+/// opposite the role title in a picker row. Each badge is an SF Symbol drawn
+/// at the caption size in the secondary label color, with a hover tooltip.
+/// Order is fixed: directory binding, shell access, web access.
+private struct RoleFeatureBadges: View {
+    let role: Role
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if role.bindsToDirectory {
+                Image(systemName: "folder")
+                    .help("Has disk access tools")
+            }
+            if role.hasShellTools {
+                Image(systemName: "apple.terminal")
+                    .help("Has shell tools")
+            }
+            if role.hasWebTools {
+                Image(systemName: "globe")
+                    .help("Has web tools")
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
 }

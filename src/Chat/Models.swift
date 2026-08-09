@@ -877,6 +877,20 @@ struct Role: Identifiable, Equatable, Hashable {
     /// picked by the user. Drives the red "No directory" placeholder and the
     /// send gate when no directory is set.
     var hasDirectoryIsolation: Bool { config.directoryIsolation ?? false }
+
+    /// Whether this role binds to a working directory: it selects at least one
+    /// workdir-capable tool group (Filesystem, Code, or Shell). Drives the
+    /// folder badge in the role picker. A pre-set `working_directory` without
+    /// such a group is a validation error, so the badge is purely tool-based.
+    var bindsToDirectory: Bool { hasWorkdirCapableMCP }
+
+    /// Whether this role enables the Shell built-in tool group. Drives the
+    /// terminal badge in the role picker.
+    var hasShellTools: Bool { config.shell != nil }
+
+    /// Whether this role enables the Web built-in tool group. Drives the
+    /// globe badge in the role picker.
+    var hasWebTools: Bool { config.web != nil }
 }
 
 // MARK: - Connection

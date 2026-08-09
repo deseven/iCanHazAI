@@ -25,13 +25,19 @@ To address the elephant in the room: there are many AI chat apps and agentic har
 - image input for capable models
 - clean configuration/data structure in a single directory (`~/iCanHazAI`), all plain text, hot-reloaded on external edits and errors gracefully handled
 - bundled Configurator role that edits the configuration for you
-- configurable notifications when chat needs your attention
 
 
 ## Roadmap
 
-- chat trees / response regeneration
-- extensive attachment support
+- Role creation wizard
+- Prompt creation wizard
+- Notifications
+- App update system
+- Memory system
+- Skills support
+- Global hotkey trigger / quick access
+- Chat trees / response regeneration
+- Extensive attachment support
 
 
 ## Quick Start

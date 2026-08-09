@@ -585,6 +585,80 @@ extension AllAppTests {
             }
         }
 
+        // MARK: - Role picker feature badges (bindsToDirectory / hasShellTools / hasWebTools)
+
+        @Test("Role.bindsToDirectory is true for workdir-capable groups (Filesystem, Code, Shell)")
+        func bindsToDirectoryTrue() throws {
+            for group in ["filesystem", "code", "shell"] {
+                let toml = """
+                prompt = "Developer"
+
+                [\(group)]
+                """
+                let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+                let role = Role(name: "Developer", config: config)
+                #expect(role.bindsToDirectory, "expected bindsToDirectory for [\(group)]")
+            }
+        }
+
+        @Test("Role.bindsToDirectory is false for non-workdir groups (Utils, Web) and no groups")
+        func bindsToDirectoryFalse() throws {
+            for group in ["utils", "web"] {
+                let toml = """
+                prompt = "Developer"
+
+                [\(group)]
+                """
+                let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+                let role = Role(name: "Developer", config: config)
+                #expect(!role.bindsToDirectory, "expected not bindsToDirectory for [\(group)]")
+            }
+            let toml = """
+            prompt = "Developer"
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let role = Role(name: "Developer", config: config)
+            #expect(!role.bindsToDirectory)
+        }
+
+        @Test("Role.hasShellTools is true only when the Shell group is enabled")
+        func hasShellTools() throws {
+            let withShell = """
+            prompt = "Developer"
+
+            [shell]
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(withShell.utf8))
+            #expect(Role(name: "Developer", config: config).hasShellTools)
+
+            let withoutShell = """
+            prompt = "Developer"
+
+            [filesystem]
+            """
+            let config2 = try TOMLDecoder().decode(RoleConfig.self, from: Data(withoutShell.utf8))
+            #expect(!Role(name: "Developer", config: config2).hasShellTools)
+        }
+
+        @Test("Role.hasWebTools is true only when the Web group is enabled")
+        func hasWebTools() throws {
+            let withWeb = """
+            prompt = "Developer"
+
+            [web]
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(withWeb.utf8))
+            #expect(Role(name: "Developer", config: config).hasWebTools)
+
+            let withoutWeb = """
+            prompt = "Developer"
+
+            [utils]
+            """
+            let config2 = try TOMLDecoder().decode(RoleConfig.self, from: Data(withoutWeb.utf8))
+            #expect(!Role(name: "Developer", config: config2).hasWebTools)
+        }
+
         // MARK: - workdirPickerEnabled (pick permanence)
 
         /// A role with directory-relevant tools and no pre-set directory.
