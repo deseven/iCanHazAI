@@ -86,18 +86,45 @@ enum AttachmentRequestBuilder {
     /// Per-extracted-document UTF-8 byte cap applied at request-build time.
     static let maxBytes: Int = 64 * 1024
 
+    /// Size information about an attachment's extracted text, computable
+    /// without building the full block. Lets the UI surface truncation notices
+    /// and byte/char counts without ever sending the body to the renderer.
+    struct SizeInfo: Equatable, Sendable {
+        /// UTF-8 byte length of the full extracted text.
+        let byteCount: Int
+        /// Character count of the full extracted text.
+        let charCount: Int
+        /// True when the 64 KB cap would truncate the text at request time.
+        let truncated: Bool
+    }
+
+    /// Computes size info for an attachment's extracted text. Returns nil when
+    /// the attachment has no text (e.g. a failed extraction or an image).
+    static func sizeInfo(for attachment: Attachment) -> SizeInfo? {
+        guard let text = attachment.text, !text.isEmpty else { return nil }
+        let bytes = text.utf8.count
+        return SizeInfo(byteCount: bytes, charCount: text.count, truncated: bytes > maxBytes)
+    }
+
     /// Wraps an attachment's extracted text into a request-ready text block.
     /// Returns nil when the attachment has no text (e.g. a failed extraction
-    /// or an image).
+    /// or an image). When the text exceeds the 64 KB cap it is truncated on a
+    /// character boundary and the body ends with a visible marker so the model
+    /// knows it isn't seeing the whole file.
     static func block(for attachment: Attachment) -> String? {
         guard let text = attachment.text, !text.isEmpty else { return nil }
         let name = attachment.originalName ?? attachment.filename
         let truncated = truncate(text)
+        let wasTruncated = truncated.byteCount != text.utf8.count
         var header = "Attached file: \(name)"
-        if truncated.byteCount != text.utf8.count {
+        if wasTruncated {
             header += " (truncated to \(maxBytes) bytes)"
         }
-        return "\(header)\n```\n\(truncated.text)\n```"
+        var body = truncated.text
+        if wasTruncated {
+            body += "\n[… truncated — full file attached as \(name)]"
+        }
+        return "\(header)\n```\n\(body)\n```"
     }
 
     /// Truncates `text` to at most `maxBytes` UTF-8 bytes, ending on a

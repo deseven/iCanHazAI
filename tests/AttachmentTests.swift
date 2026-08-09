@@ -182,7 +182,7 @@ struct AttachmentTests {
         #expect(AttachmentRequestBuilder.block(for: failed) == nil)
     }
 
-    @Test("The request builder truncates content over 64 KB")
+    @Test("The request builder truncates content over 64 KB and ends with a visible marker")
     func requestBuilderTruncation() {
         // Build a string just over 64 KB.
         let chunk = String(repeating: "x", count: 1024)
@@ -196,8 +196,56 @@ struct AttachmentTests {
         let block = AttachmentRequestBuilder.block(for: attachment)
         #expect(block != nil)
         #expect(block!.contains("truncated"))
+        // The body ends with a model-visible marker naming the file.
+        #expect(block!.contains("[… truncated — full file attached as big.txt]"))
         // The block must be under 64 KB + overhead.
         #expect(block!.utf8.count < 70_000)
+    }
+
+    @Test("The truncation marker uses the stored filename when no original name is set")
+    func requestBuilderTruncationFallbackName() {
+        let chunk = String(repeating: "x", count: 1024)
+        let big = (0..<70).map { _ in chunk }.joined()
+        let attachment = AppAttachment(
+            kind: .text, ext: "txt",
+            originalName: nil,
+            text: big,
+            status: .ok
+        )
+        let block = AttachmentRequestBuilder.block(for: attachment)
+        #expect(block != nil)
+        // The marker falls back to the on-disk filename stem.
+        #expect(block!.contains("[… truncated — full file attached as \(attachment.filename)]"))
+    }
+
+    @Test("sizeInfo reports byte/char counts and the truncated flag")
+    func sizeInfoReportsCounts() {
+        // Small content: not truncated.
+        let small = AppAttachment(kind: .text, ext: "txt", originalName: "s.txt", text: "tiny", status: .ok)
+        let smallInfo = AttachmentRequestBuilder.sizeInfo(for: small)
+        #expect(smallInfo != nil)
+        #expect(smallInfo?.byteCount == 4)
+        #expect(smallInfo?.charCount == 4)
+        #expect(smallInfo?.truncated == false)
+
+        // Large content: truncated, byte/char counts reflect the full text.
+        let chunk = String(repeating: "x", count: 1024)
+        let big = (0..<70).map { _ in chunk }.joined() // 70 KB
+        let bigAtt = AppAttachment(kind: .text, ext: "txt", originalName: "big.txt", text: big, status: .ok)
+        let bigInfo = AttachmentRequestBuilder.sizeInfo(for: bigAtt)
+        #expect(bigInfo != nil)
+        #expect(bigInfo?.byteCount == big.utf8.count)
+        #expect(bigInfo?.charCount == big.count)
+        #expect(bigInfo?.truncated == true)
+    }
+
+    @Test("sizeInfo returns nil for attachments with no text")
+    func sizeInfoNoText() {
+        let image = AppAttachment(kind: .image, ext: "png", originalName: "shot.png")
+        #expect(AttachmentRequestBuilder.sizeInfo(for: image) == nil)
+
+        let failed = AppAttachment(kind: .document, ext: "docx", originalName: "bad.docx", text: nil, status: .failed, failureReason: "corrupt")
+        #expect(AttachmentRequestBuilder.sizeInfo(for: failed) == nil)
     }
 
     @Test("The request builder leaves small content intact")

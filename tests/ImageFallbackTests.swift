@@ -191,6 +191,52 @@ struct ImageFallbackTests {
         #expect(hasTextBlock(containing: "doc body", in: textBlocks))
     }
 
+    // MARK: - Document truncation through providers
+
+    @Test("A >64 KB document extraction is truncated and marked in the request body")
+    @MainActor
+    func documentTruncationThroughProvider() throws {
+        // Build a document extraction just over 64 KB.
+        let chunk = String(repeating: "x", count: 1024)
+        let big = (0..<70).map { _ in chunk }.joined() // 70 KB
+        let docAtt = AppAttachment(kind: .document, ext: "docx", originalName: "big.docx", text: big, status: .ok)
+        let msg = ChatMessage(role: .user, content: "see doc", attachments: [docAtt])
+
+        // Anthropic: the text block carries the truncation header + marker.
+        let anthropicConn = Connection(provider: .anthropic, name: "t", baseUrl: nil, apiKey: "k", model: "m", imageInput: false, requestParameters: nil)
+        let anthropicBody = AnthropicProvider().buildRequestBody(connection: anthropicConn, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+        let anthropicBlocks = contentBlocks(of: anthropicBody)
+        #expect(hasTextBlock(containing: "truncated to", in: anthropicBlocks))
+        #expect(hasTextBlock(containing: "[… truncated — full file attached as big.docx]", in: anthropicBlocks))
+
+        // OpenAI: same truncation header + marker.
+        let openaiConn = Connection(provider: .openai, name: "t", baseUrl: nil, apiKey: "k", model: "m", imageInput: false, requestParameters: nil)
+        let openaiBody = OpenAIProvider().buildRequestBody(connection: openaiConn, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+        let openaiBlocks = contentBlocks(of: openaiBody)
+        #expect(hasTextBlock(containing: "truncated to", in: openaiBlocks))
+        #expect(hasTextBlock(containing: "[… truncated — full file attached as big.docx]", in: openaiBlocks))
+    }
+
+    @Test("A small document passes through intact on both providers")
+    @MainActor
+    func smallDocumentIntactThroughProvider() throws {
+        let docAtt = AppAttachment(kind: .document, ext: "docx", originalName: "small.docx", text: "tiny doc body", status: .ok)
+        let msg = ChatMessage(role: .user, content: "see doc", attachments: [docAtt])
+
+        let anthropicConn = Connection(provider: .anthropic, name: "t", baseUrl: nil, apiKey: "k", model: "m", imageInput: false, requestParameters: nil)
+        let anthropicBody = AnthropicProvider().buildRequestBody(connection: anthropicConn, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+        let anthropicBlocks = contentBlocks(of: anthropicBody)
+        #expect(hasTextBlock(containing: "tiny doc body", in: anthropicBlocks))
+        #expect(!hasTextBlock(containing: "truncated", in: anthropicBlocks))
+        #expect(!hasTextBlock(containing: "[… truncated", in: anthropicBlocks))
+
+        let openaiConn = Connection(provider: .openai, name: "t", baseUrl: nil, apiKey: "k", model: "m", imageInput: false, requestParameters: nil)
+        let openaiBody = OpenAIProvider().buildRequestBody(connection: openaiConn, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+        let openaiBlocks = contentBlocks(of: openaiBody)
+        #expect(hasTextBlock(containing: "tiny doc body", in: openaiBlocks))
+        #expect(!hasTextBlock(containing: "truncated", in: openaiBlocks))
+    }
+
     // MARK: - Helpers
 
     /// Renders `text` into an NSImage and returns PNG bytes.
