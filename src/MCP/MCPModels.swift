@@ -215,6 +215,30 @@ struct ToolCall: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
+extension Array where Element == ToolCall {
+    /// Returns the calls with IDs unique against `existingIDs` (all call IDs
+    /// already present in the chat) and within the batch itself. Providers
+    /// only guarantee per-response ID uniqueness — Kimi-style `name:index`
+    /// IDs repeat every turn, and some providers omit IDs entirely — but
+    /// result correlation, approvals, and renderer folding key off `callID`
+    /// across the whole chat. Providers treat these IDs as opaque pairing
+    /// tokens (a tool result just has to echo the call's ID within one
+    /// request), so rewriting a colliding/empty ID is transparent to them.
+    func ensuringUniqueCallIDs(existingIDs: Set<String>) -> [ToolCall] {
+        var seen = existingIDs
+        return map { call in
+            var call = call
+            if call.id.isEmpty || !seen.insert(call.id).inserted {
+                var id: String
+                repeat { id = "call_\(UUID().uuidString.prefix(8).lowercased())" } while seen.contains(id)
+                seen.insert(id)
+                call.id = id
+            }
+            return call
+        }
+    }
+}
+
 /// The result of executing a tool call. Carried on a `tool`-role message.
 struct ToolResult: Codable, Identifiable, Equatable, Sendable {
     var id: String { callID }

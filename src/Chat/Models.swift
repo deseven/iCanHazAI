@@ -157,6 +157,20 @@ extension Array where Element == ChatMessage {
         }
         self[aIdx].toolCalls = calls
     }
+
+    /// Index of the most recent `tool`-role message carrying a result for
+    /// `callID`, bounded to the current turn (messages after the last
+    /// assistant message). Older turns are excluded on purpose: provider-issued
+    /// call IDs are only unique per response, so a previous turn may carry the
+    /// same ID, and touching its message would corrupt persisted history.
+    func lastToolResultIndex(callID: String) -> Int? {
+        let turnStart = indices.reversed().first(where: { self[$0].role == .assistant }).map { $0 + 1 } ?? 0
+        return indices.reversed().first(where: {
+            $0 >= turnStart
+                && self[$0].role == .tool
+                && self[$0].toolResults?.contains(where: { $0.callID == callID }) ?? false
+        })
+    }
 }
 
 // MARK: - Chat

@@ -1939,7 +1939,9 @@ actor ChatEngine {
                     stamped.summary = ToolSummary.callLine(name: call.name, arguments: call.arguments, requiredArgs: stamped.requiredArgs)
                     return stamped
                 }
-                applyToolCalls(stampedCalls, filename: filename)
+                // `applyToolCalls` may rewrite colliding provider IDs — the
+                // returned calls are the ones execution and results must use.
+                let executedCalls = applyToolCalls(stampedCalls, filename: filename)
                 // Flush immediately so the tool-call block appears in the UI
                 // before we begin (potentially slow) tool execution.
                 flushCoalescedEmit()
@@ -1963,8 +1965,8 @@ actor ChatEngine {
                 // computed against the pre-execution state — for not
                 // re-prompting the user after each (potentially slow) call.
                 var preparedCalls: [PreparedToolCall] = []
-                preparedCalls.reserveCapacity(stampedCalls.count)
-                for call in stampedCalls {
+                preparedCalls.reserveCapacity(executedCalls.count)
+                for call in executedCalls {
                     // `prepareToolCall` awaits user approval, which can be
                     // cancelled (stop). Throws `CancellationError` in that case.
                     preparedCalls.append(try await prepareToolCall(call, filename: filename, tools: toolDefs))
@@ -2125,11 +2127,22 @@ actor ChatEngine {
     }
 
     /// Records tool calls onto the last assistant message of the chat so the
-    /// renderer can display them (and show a "running" state until results arrive).
-    private func applyToolCalls(_ calls: [ToolCall], filename: String) {
-        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
-        guard var chat = records[idx].chat else { return }
+    /// renderer can display them (and show a "running" state until results
+    /// arrive). Returns the calls with chat-wide-unique IDs: providers only
+    /// guarantee per-response ID uniqueness (e.g. Kimi-style `name:index` IDs
+    /// repeat every turn), but result correlation, approvals, and renderer
+    /// folding key off `callID` across the whole chat. Providers treat these
+    /// IDs as opaque pairing tokens, so rewriting them is transparent.
+    @discardableResult
+    private func applyToolCalls(_ calls: [ToolCall], filename: String) -> [ToolCall] {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return calls }
+        guard var chat = records[idx].chat else { return calls }
+        var calls = calls
         if let lastIdx = chat.messages.indices.last, chat.messages[lastIdx].role == .assistant {
+            // The last assistant message carries this turn's own (not yet
+            // uniqued) streamed calls — exclude it from the collision set.
+            let existingIDs = Set(chat.messages[..<lastIdx].flatMap { $0.toolCalls ?? [] }.map(\.id))
+            calls = calls.ensuringUniqueCallIDs(existingIDs: existingIDs)
             chat.messages[lastIdx].toolCalls = calls
         }
         records[idx].chat = chat
@@ -2139,6 +2152,7 @@ actor ChatEngine {
             notifyOneShot(filename: filename, .toolCall(name: call.name, summary: summary))
         }
         scheduleCoalescedEmit()
+        return calls
     }
 
     /// Phase 1 of tool-call handling: resolves everything short of running the
@@ -2490,10 +2504,7 @@ actor ChatEngine {
         }
         // If a streaming placeholder `tool`-role message exists for this
         // callID, replace it in place with the final result.
-        if let tIdx = chat.messages.indices.reversed().first(where: {
-            chat.messages[$0].role == .tool
-                && chat.messages[$0].toolResults?.contains(where: { $0.callID == result.callID }) ?? false
-        }) {
+        if let tIdx = chat.messages.lastToolResultIndex(callID: result.callID) {
             chat.messages[tIdx] = ChatMessage(role: .tool, content: "", toolResults: [result])
         } else {
             // No placeholder yet — append a new `tool`-role message.
@@ -2518,11 +2529,9 @@ actor ChatEngine {
         guard records[idx].isStreaming else { return }
         guard var chat = records[idx].chat else { return }
         // Find the `tool`-role message carrying an in-flight result for this
-        // callID and append to its streaming content.
-        if let tIdx = chat.messages.indices.reversed().first(where: {
-            chat.messages[$0].role == .tool
-                && chat.messages[$0].toolResults?.contains(where: { $0.callID == callID }) ?? false
-        }), var results = chat.messages[tIdx].toolResults, let rIdx = results.firstIndex(where: { $0.callID == callID }) {
+        // callID (current turn only) and append to its streaming content.
+        if let tIdx = chat.messages.lastToolResultIndex(callID: callID),
+           var results = chat.messages[tIdx].toolResults, let rIdx = results.firstIndex(where: { $0.callID == callID }) {
             results[rIdx].content += partial + "\n"
             results[rIdx].isStreaming = true
             chat.messages[tIdx].toolResults = results
