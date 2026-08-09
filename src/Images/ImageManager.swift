@@ -9,8 +9,9 @@ import AppKit
 /// written to disk until the message is actually sent (see `commit`).
 ///
 /// `id` is a stable in-memory UUID used for UI list identity and removal; it
-/// is *not* the final on-disk filename (a fresh UUID is assigned at commit
-/// time so re-adding the same file never collides).
+/// is *not* the final on-disk filename (the original name is used at commit
+/// time, sanitized and de-duplicated against existing files in the chat's
+/// attachment directory).
 struct PendingAttachment: Identifiable, Equatable, Hashable {
     let id: UUID
     /// Raw source bytes.
@@ -33,6 +34,57 @@ struct PendingAttachment: Identifiable, Equatable, Hashable {
 /// only when a message is actually sent. Images are resized/re-encoded; text
 /// and documents have their original copied and text extracted.
 enum AttachmentManager {
+
+    // MARK: - Filename helpers
+
+    /// Characters that are illegal or problematic in macOS filenames. We strip
+    /// these (rather than replacing with a placeholder) so the name stays
+    /// readable. The null byte and the path separator are the only truly
+    /// illegal ones on macOS, but we also drop control characters and leading
+    /// dots (which make files invisible).
+    private static let illegalFilenameChars: Set<Character> = [
+        "\0", "/", ":", "\n", "\r", "\t"
+    ]
+
+    /// Sanitizes a filename for filesystem use: strips illegal characters,
+    /// trims whitespace/dots, and falls back to a UUID stem when the result
+    /// is empty. The extension is preserved as-is (lowercased).
+    static func sanitize(filename: String) -> String {
+        let nsName = filename as NSString
+        let ext = nsName.pathExtension.lowercased()
+        var stem = nsName.deletingPathExtension
+
+        // Strip illegal characters.
+        stem = String(stem.filter { !illegalFilenameChars.contains($0) })
+        // Trim leading/trailing whitespace and dots (leading dots hide files).
+        stem = stem.trimmingCharacters(in: .whitespaces)
+        while stem.hasPrefix(".") { stem.removeFirst() }
+        stem = stem.trimmingCharacters(in: .whitespaces)
+
+        if stem.isEmpty { stem = UUID().uuidString }
+        return ext.isEmpty ? stem : "\(stem).\(ext)"
+    }
+
+    /// Resolves a collision-free filename inside the chat's attachment
+    /// directory. If `proposed` already exists, appends `(1)`, `(2)`, …
+    /// before the extension until a free name is found.
+    static func deduplicatedFilename(proposed: String, chatFilename: String) -> String {
+        let dir = EnvironmentManager.shared.attachmentsDirectory(for: chatFilename)
+        let nsName = proposed as NSString
+        let ext = nsName.pathExtension
+        let stem = nsName.deletingPathExtension
+
+        func candidate(_ n: Int) -> String {
+            if n == 0 { return proposed }
+            return ext.isEmpty ? "\(stem) (\(n))" : "\(stem) (\(n)).\(ext)"
+        }
+
+        var n = 0
+        while FileManager.default.fileExists(atPath: dir.appendingPathComponent(candidate(n)).path) {
+            n += 1
+        }
+        return candidate(n)
+    }
 
     // MARK: - Intake (no disk I/O)
 
@@ -87,41 +139,48 @@ enum AttachmentManager {
     private static func commitImage(_ pending: PendingAttachment, chatFilename: String) -> Attachment? {
         guard let processed = ImageProcessor.process(pending.data) else { return nil }
         let id = UUID()
-        let filename = "\(id.uuidString).\(processed.ext)"
+        let baseName = pending.originalName ?? "\(id.uuidString).\(processed.ext)"
+        let proposed = sanitize(filename: baseName)
+        let ext = (proposed as NSString).pathExtension.lowercased()
+        let filename = deduplicatedFilename(proposed: proposed, chatFilename: chatFilename)
         _ = EnvironmentManager.shared.saveAttachment(data: processed.data, filename: filename, chatFilename: chatFilename)
         let fallback = ImageFallbackSynthesizer.fallback(for: pending.data)
-        return Attachment(id: id, kind: .image, ext: processed.ext, originalName: pending.originalName, text: fallback, status: .ok)
+        return Attachment(id: id, kind: .image, ext: ext, filename: filename, originalName: pending.originalName, text: fallback, status: .ok)
     }
 
     /// Copies a plain-text file as-is; the text is embedded on the record.
     private static func commitText(_ pending: PendingAttachment, chatFilename: String) -> Attachment? {
         let id = UUID()
-        let ext = pending.originalName.map { ($0 as NSString).pathExtension.lowercased() } ?? "txt"
+        let baseName = pending.originalName ?? "\(id.uuidString).txt"
+        let proposed = sanitize(filename: baseName)
+        let ext = (proposed as NSString).pathExtension.lowercased()
         let safeExt = ext.isEmpty ? "txt" : ext
-        let filename = "\(id.uuidString).\(safeExt)"
+        let filename = deduplicatedFilename(proposed: proposed, chatFilename: chatFilename)
         _ = EnvironmentManager.shared.saveAttachment(data: pending.data, filename: filename, chatFilename: chatFilename)
         let text = String(data: pending.data, encoding: .utf8) ?? ""
-        return Attachment(id: id, kind: .text, ext: safeExt, originalName: pending.originalName, text: text, status: .ok)
+        return Attachment(id: id, kind: .text, ext: safeExt, filename: filename, originalName: pending.originalName, text: text, status: .ok)
     }
 
     /// Copies a document's original bytes and extracts its text.
     private static func commitDocument(_ pending: PendingAttachment, chatFilename: String, format: DocumentFormat) -> Attachment? {
         let id = UUID()
         let ext = format.fileExtensions.first ?? "bin"
-        let filename = "\(id.uuidString).\(ext)"
+        let baseName = pending.originalName ?? "\(id.uuidString).\(ext)"
+        let proposed = sanitize(filename: baseName)
+        let filename = deduplicatedFilename(proposed: proposed, chatFilename: chatFilename)
         _ = EnvironmentManager.shared.saveAttachment(data: pending.data, filename: filename, chatFilename: chatFilename)
         let result = DocumentExtractor.extract(data: pending.data, format: format)
         switch result {
         case .success(let extraction):
             return Attachment(
-                id: id, kind: .document, ext: ext,
+                id: id, kind: .document, ext: ext, filename: filename,
                 originalName: pending.originalName,
                 text: extraction.text,
                 status: extraction.truncated ? .truncated : .ok
             )
         case .unsupported(_, let reason), .failed(let reason):
             return Attachment(
-                id: id, kind: .document, ext: ext,
+                id: id, kind: .document, ext: ext, filename: filename,
                 originalName: pending.originalName,
                 text: nil, status: .failed, failureReason: reason
             )

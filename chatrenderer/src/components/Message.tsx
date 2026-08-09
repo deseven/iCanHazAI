@@ -21,7 +21,7 @@ import type { ToolArgEntry } from "../toolArgs";
 import { toolArgLang, toolResultLang } from "../toolHighlight";
 import { transientToolStatus, localToolStatus } from "../toolSummary";
 import { Copy, SquarePen, Trash2, Brain, User, Bot, Settings, AlertTriangle, RotateCcw, ChevronRight, ChevronDown, Wrench, Terminal, FileText } from "lucide-preact";
-import type { ToolCallData, ToolResultData } from "../types";
+import type { ToolCallData, ToolResultData, ToolResultImageData } from "../types";
 
 interface Props {
   message: ChatMessage;
@@ -126,8 +126,14 @@ function ToolArgsView({ args, tool }: { args: string; tool?: string }) {
  *  is syntax-highlighted as one block. Otherwise a result that is a JSON
  *  object gets the same key/value treatment as call arguments; anything else
  *  stays a raw <pre>. The leading-"{" precondition avoids running JSON.parse
- *  over plainly-textual output. */
-function ToolResultContent({ content, lang }: { content: string; lang?: string | null }) {
+ *  over plainly-textual output.
+ *
+ *  When the result carries a processed image (from `read_file` on an image),
+ *  the output is split into two labeled sections: the image itself (sent to
+ *  vision-capable models) and the classification+OCR fallback text (sent to
+ *  vision-incapable models), so the user can see exactly what each kind of
+ *  model receives. */
+function ToolResultContent({ content, lang, image, callID }: { content: string; lang?: string | null; image?: ToolResultImageData | null; callID: string }) {
   const highlighted = useMemo(
     () => (lang ? highlightCode(content, lang) : null),
     [content, lang],
@@ -137,18 +143,49 @@ function ToolResultContent({ content, lang }: { content: string; lang?: string |
     if (!content.trimStart().startsWith("{")) return null;
     return parseToolArgs(content);
   }, [content, lang]);
-  if (highlighted !== null) {
+  const imageUrl = image ? `ichai://toolresult/${callID}` : null;
+
+  // Image result: split into two labeled sections so the user can tell what
+  // each kind of model receives — the image (vision-capable) and the fallback
+  // text (vision-incapable). The `content` is the fallback text (same as
+  // `image.fallback`); it's always plain text, never JSON or highlighted.
+  if (imageUrl && image) {
     return (
-      <pre
-        class="hljs tool-call-args"
-        dangerouslySetInnerHTML={{ __html: highlighted }}
-      />
+      <>
+        <div class="tool-result-section">
+          <div class="tool-call-label">
+            Image
+            <span class="tool-result-label-hint">vision-capable models</span>
+          </div>
+          <div class="tool-result-image">
+            <img src={imageUrl} alt={image.fallback ?? "tool result image"} loading="lazy" />
+          </div>
+        </div>
+        <div class="tool-result-section">
+          <div class="tool-call-label">
+            Fallback
+            <span class="tool-result-label-hint">vision-incapable models</span>
+          </div>
+          <pre class="tool-call-args">{content}</pre>
+        </div>
+      </>
     );
   }
-  if (entries === null) {
-    return <pre class="tool-call-args">{content}</pre>;
-  }
-  return <ToolArgEntries entries={entries} />;
+
+  return (
+    <>
+      {highlighted !== null ? (
+        <pre
+          class="hljs tool-call-args"
+          dangerouslySetInnerHTML={{ __html: highlighted }}
+        />
+      ) : entries === null ? (
+        <pre class="tool-call-args">{content}</pre>
+      ) : (
+        <ToolArgEntries entries={entries} />
+      )}
+    </>
+  );
 }
 
 /** Renderer for the internal `shell` tool: the `command` argument gets its
@@ -415,7 +452,7 @@ function ToolBlock({
               <div class="tool-call-label">
                 {result.isStreaming ? "Result (streaming…)" : "Result"}
               </div>
-              <ToolResultContent content={result.content} lang={resultLang} />
+              <ToolResultContent content={result.content} lang={resultLang} image={result.image} callID={result.callID} />
             </div>
           )}
           {pending && (
@@ -479,7 +516,7 @@ function splitStreaming(content: string): { block: string; partial: string } {
 
 /** A gallery of image squares with click-to-zoom. Images are displayed as
  *  fixed 256×256 squares with the image centered (object-fit: cover). Clicking
- *  a square opens a full-image overlay; clicking outside closes it. */
+ *  a square opens a full-image overlay; clicking the image or outside closes it. */
 function ImageGallery({ images }: { images: AttachmentData[] }) {
   const [zoomed, setZoomed] = useState<AttachmentData | null>(null);
 
@@ -515,7 +552,6 @@ function ImageGallery({ images }: { images: AttachmentData[] }) {
               class="msg-image-zoomed"
               src={zoomed.url!}
               alt={zoomed.name ?? "image"}
-              onClick={(e) => e.stopPropagation()}
             />
           </div>,
           document.body,

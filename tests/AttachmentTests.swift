@@ -262,6 +262,189 @@ struct AttachmentTests {
         #expect(block!.contains("tiny"))
     }
 
+    // MARK: - Filename sanitization
+
+    @Test("Sanitize strips illegal characters but keeps the name readable")
+    func sanitizeStripsIllegalChars() {
+        // Slashes, colons, control chars are stripped.
+        #expect(AttachmentManager.sanitize(filename: "a/b/c.txt") == "abc.txt")
+        #expect(AttachmentManager.sanitize(filename: "report:final.docx") == "reportfinal.docx")
+        #expect(AttachmentManager.sanitize(filename: "name\nwith\r\tnewlines.txt") == "namewithnewlines.txt")
+        // Spaces and unicode are preserved.
+        #expect(AttachmentManager.sanitize(filename: "my report.docx") == "my report.docx")
+        #expect(AttachmentManager.sanitize(filename: "café résumé.pdf") == "café résumé.pdf")
+    }
+
+    @Test("Sanitize trims leading dots and whitespace")
+    func sanitizeTrimsLeadingDots() {
+        #expect(AttachmentManager.sanitize(filename: "  .hidden.txt") == "hidden.txt")
+        #expect(AttachmentManager.sanitize(filename: "...secret.txt") == "secret.txt")
+        #expect(AttachmentManager.sanitize(filename: "  spaced.txt  ") == "spaced.txt")
+    }
+
+    @Test("Sanitize falls back to a UUID stem when the name is empty")
+    func sanitizeEmptyFallback() {
+        let result = AttachmentManager.sanitize(filename: "")
+        #expect(!result.isEmpty)
+        // No extension when none was provided.
+        #expect(!result.contains("."))
+        let result2 = AttachmentManager.sanitize(filename: "///:::")
+        #expect(!result2.isEmpty)
+    }
+
+    @Test("Sanitize lowercases the extension")
+    func sanitizeLowercasesExt() {
+        #expect(AttachmentManager.sanitize(filename: "photo.PNG") == "photo.png")
+        #expect(AttachmentManager.sanitize(filename: "doc.DOCX") == "doc.docx")
+    }
+
+    // MARK: - Filename deduplication
+
+    /// A throwaway temp chat filename so attachment data lands in the system
+    /// temp dir (via `EnvironmentManager.shared`) and never touches the user's
+    /// chats folder.
+    private let dedupChatFilename = EnvironmentManager.shared.newTemporaryChatFilename()
+
+    @Test("Dedup returns the proposed name when no collision exists")
+    func dedupNoCollision() {
+        let result = AttachmentManager.deduplicatedFilename(proposed: "report.docx", chatFilename: dedupChatFilename)
+        #expect(result == "report.docx")
+    }
+
+    @Test("Dedup appends (1), (2) on collision")
+    func dedupAppendsSuffix() throws {
+        let dir = EnvironmentManager.shared.attachmentsDirectory(for: dedupChatFilename)
+        // Pre-create the first file.
+        try Data("first".utf8).write(to: dir.appendingPathComponent("report.docx"))
+        let r1 = AttachmentManager.deduplicatedFilename(proposed: "report.docx", chatFilename: dedupChatFilename)
+        #expect(r1 == "report (1).docx")
+        // Pre-create the (1) file too.
+        try Data("second".utf8).write(to: dir.appendingPathComponent("report (1).docx"))
+        let r2 = AttachmentManager.deduplicatedFilename(proposed: "report.docx", chatFilename: dedupChatFilename)
+        #expect(r2 == "report (2).docx")
+    }
+
+    @Test("Dedup handles names without extension")
+    func dedupNoExtension() throws {
+        let dir = EnvironmentManager.shared.attachmentsDirectory(for: dedupChatFilename)
+        try Data("first".utf8).write(to: dir.appendingPathComponent("README"))
+        let r = AttachmentManager.deduplicatedFilename(proposed: "README", chatFilename: dedupChatFilename)
+        #expect(r == "README (1)")
+    }
+
+    // MARK: - Commit uses original names
+
+    @Test("Committing a text attachment keeps the original filename on disk")
+    func commitTextKeepsOriginalName() {
+        let chatFilename = EnvironmentManager.shared.newTemporaryChatFilename()
+        let text = Data("hello".utf8)
+        let pending = PendingAttachment(data: text, kind: .text, originalName: "notes.txt")
+        let committed = AttachmentManager.commit(pending, chatFilename: chatFilename)
+        #expect(committed != nil)
+        guard let committed else { return }
+        #expect(committed.filename == "notes.txt")
+        // The file exists on disk under the original name.
+        let dir = EnvironmentManager.shared.attachmentsDirectory(for: chatFilename)
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("notes.txt").path))
+    }
+
+    @Test("Committing two attachments with the same name deduplicates")
+    func commitDeduplicatesSameName() {
+        let chatFilename = EnvironmentManager.shared.newTemporaryChatFilename()
+        let text = Data("hello".utf8)
+        let p1 = PendingAttachment(data: text, kind: .text, originalName: "notes.txt")
+        let c1 = AttachmentManager.commit(p1, chatFilename: chatFilename)
+        let p2 = PendingAttachment(data: text, kind: .text, originalName: "notes.txt")
+        let c2 = AttachmentManager.commit(p2, chatFilename: chatFilename)
+        #expect(c1?.filename == "notes.txt")
+        #expect(c2?.filename == "notes (1).txt")
+        let dir = EnvironmentManager.shared.attachmentsDirectory(for: chatFilename)
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("notes.txt").path))
+        #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("notes (1).txt").path))
+    }
+
+    @Test("Committing sanitizes illegal characters in the original name")
+    func commitSanitizesName() {
+        let chatFilename = EnvironmentManager.shared.newTemporaryChatFilename()
+        let text = Data("hello".utf8)
+        let pending = PendingAttachment(data: text, kind: .text, originalName: "a/b:notes.txt")
+        let committed = AttachmentManager.commit(pending, chatFilename: chatFilename)
+        #expect(committed?.filename == "abnotes.txt")
+    }
+
+    @Test("Committing a pasted image with no original name uses a UUID stem")
+    func commitImageNoOriginalName() {
+        let chatFilename = EnvironmentManager.shared.newTemporaryChatFilename()
+        let png = makePNG(text: "IMG")
+        let pending = PendingAttachment(data: png, kind: .image, originalName: nil)
+        let committed = AttachmentManager.commit(pending, chatFilename: chatFilename)
+        #expect(committed != nil)
+        guard let committed else { return }
+        // No original name → UUID stem + .png extension.
+        #expect(committed.filename.hasSuffix(".png"))
+        #expect(!committed.filename.contains(" "))
+    }
+
+    // MARK: - URL encoding round-trip
+
+    @Test("URL encode/decode round-trips filenames with special characters")
+    func urlEncodingRoundTrip() {
+        let names = [
+            "report.docx",
+            "my report.docx",
+            "café résumé.pdf",
+            "100%done.png",
+            "weird:name.txt",
+        ]
+        for name in names {
+            let encoded = ImageSchemeHandler.encodeResource(name)
+            let decoded = ImageSchemeHandler.decodeResource(encoded)
+            #expect(decoded == name, "round-trip failed for \(name): encoded=\(encoded) decoded=\(decoded)")
+            // The encoded form must produce a valid URL.
+            let url = URL(string: "ichai://\(encoded)")
+            #expect(url != nil, "encoded form did not produce a valid URL for \(name)")
+        }
+    }
+
+    @Test("An attachment with spaces in the name produces a valid ichai URL")
+    func attachmentProducesValidURL() {
+        let attachment = AppAttachment(
+            kind: .image, ext: "png", filename: "my screenshot.png",
+            originalName: "my screenshot.png"
+        )
+        let encoded = ImageSchemeHandler.encodeResource(attachment.filename)
+        let urlStr = "ichai://\(encoded)"
+        let url = URL(string: urlStr)
+        #expect(url != nil)
+        // URL.host returns the decoded form; verify it round-trips.
+        #expect(url?.host == "my screenshot.png")
+        #expect(ImageSchemeHandler.decodeResource(encoded) == "my screenshot.png")
+    }
+
+    // MARK: - Backward compatibility
+
+    @Test("An old attachment without a filename field decodes with a UUID fallback")
+    func oldAttachmentWithoutFilenameDecodes() throws {
+        // Simulate a chat JSON written before the `filename` field existed:
+        // only id, kind, ext, originalName, text, status.
+        let oldJSON = """
+        {
+            "id": "33333333-3333-3333-3333-333333333333",
+            "kind": "text",
+            "ext": "txt",
+            "originalName": "old.txt",
+            "text": "legacy",
+            "status": "ok"
+        }
+        """
+        let data = Data(oldJSON.utf8)
+        let decoded = try JSONDecoder().decode(AppAttachment.self, from: data)
+        #expect(decoded.id == UUID(uuidString: "33333333-3333-3333-3333-333333333333"))
+        #expect(decoded.ext == "txt")
+        // Falls back to the UUID + ext pattern.
+        #expect(decoded.filename == "33333333-3333-3333-3333-333333333333.txt")
+    }
+
     // MARK: - Helpers
 
     /// Renders `text` into an NSImage and returns PNG bytes.

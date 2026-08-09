@@ -49,7 +49,7 @@ extension AllAppTests {
     /// Calls a builtin tool and returns `(text, isError)`.
     private func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir = .none) async -> (text: String, isError: Bool) {
         let arguments = (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
-        let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir)
+        let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir, chatFilename: "test.json")
         return (result.content, result.isError)
     }
 
@@ -145,7 +145,7 @@ extension AllAppTests {
         // Static wrapper so nested struct can call the helper.
         static func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir = .none) async -> (text: String, isError: Bool) {
             let arguments = (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
-            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir)
+            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir, chatFilename: "test.json")
             return (result.content, result.isError)
         }
     }
@@ -548,7 +548,7 @@ extension AllAppTests {
 
         static func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir = .none) async -> (text: String, isError: Bool) {
             let arguments = (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
-            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir)
+            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir, chatFilename: "test.json")
             return (result.content, result.isError)
         }
     }
@@ -717,7 +717,7 @@ extension AllAppTests {
 
         static func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir = .none) async -> (text: String, isError: Bool) {
             let arguments = (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
-            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir)
+            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir, chatFilename: "test.json")
             return (result.content, result.isError)
         }
     }
@@ -893,6 +893,43 @@ extension AllAppTests {
             #expect(text.contains("@@"), "expected a hint about the @@ marker: \(text)")
         }
 
+        @Test("apply_patch rejects a context-only no-op hunk")
+        func patchNoOpContextOnlyHunk() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("noop.md")
+            try tmp.write("noop.md", content: "- [x] done\n- [ ] todo\n")
+            let patch = """
+            *** Begin Patch
+            *** Update File: \(path)
+            @@
+             - [x] done
+            *** End Patch
+            """
+            let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
+            #expect(err)
+            #expect(text.contains("makes no changes"), "unexpected message: \(text)")
+            #expect(try tmp.read("noop.md") == "- [x] done\n- [ ] todo\n")
+        }
+
+        @Test("apply_patch rejects a hunk whose removed and added lines are identical")
+        func patchNoOpIdenticalReplaceHunk() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("noop2.txt")
+            try tmp.write("noop2.txt", content: "same\n")
+            let patch = """
+            *** Begin Patch
+            *** Update File: \(path)
+            @@
+            -same
+            +same
+            *** End Patch
+            """
+            let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
+            #expect(err)
+            #expect(text.contains("makes no changes"), "unexpected message: \(text)")
+            #expect(try tmp.read("noop2.txt") == "same\n")
+        }
+
         @Test("apply_patch unprefixed hunk line explains the prefix rule")
         func patchUnprefixedLineHint() async throws {
             let tmp = try TestDir()
@@ -1051,7 +1088,7 @@ extension AllAppTests {
 
         static func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir = .none) async -> (text: String, isError: Bool) {
             let arguments = (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
-            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir)
+            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir, chatFilename: "test.json")
             return (result.content, result.isError)
         }
     }
@@ -1122,7 +1159,7 @@ extension AllAppTests {
 
         static func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir = .none) async -> (text: String, isError: Bool) {
             let arguments = (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
-            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir)
+            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir, chatFilename: "test.json")
             return (result.content, result.isError)
         }
     }
@@ -1173,7 +1210,7 @@ extension AllAppTests {
 
         static func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir = .none) async -> (text: String, isError: Bool) {
             let arguments = (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
-            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir)
+            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir, chatFilename: "test.json")
             return (result.content, result.isError)
         }
     }
@@ -1362,18 +1399,24 @@ extension AllAppTests {
             #expect(!text.contains("Hello RTF"))
         }
 
-        @Test("read_file OCRs an image to text")
+        @Test("read_file on an image produces a processed image and fallback text")
         @MainActor
-        func readImageOCR() async throws {
+        func readImageProducesImageAndFallback() async throws {
             let f = try DocFixtures()
-            let (text, err) = await Self.call("read_file", Self.fs, ["path": f.pngPath])
-            #expect(!err, "read_file failed: \(text)")
+            let arguments = try String(data: JSONSerialization.data(withJSONObject: ["path": f.pngPath]), encoding: .utf8) ?? "{}"
+            let result = await BuiltinTools.call(name: "read_file", arguments: arguments, callID: "test", group: Self.fs, workdir: .none, chatFilename: "test.json")
+            #expect(!result.isError, "read_file failed: \(result.content)")
+            // The result carries a processed image (no disk file written).
+            #expect(result.image != nil)
+            #expect(result.image?.mimeType.hasPrefix("image/") == true)
+            // The content is the classification+OCR fallback text.
+            #expect(result.content.contains("can't be processed visually here."))
             // Vision recognizes the rendered text when available. In the
             // `swift test` runner Vision can return empty (no GUI session),
-            // so the "(no text recognized in image)" fallback is acceptable
-            // there; when Vision produces output it must contain the words.
-            if !text.contains("(no text recognized in image)") {
-                #expect(text.contains("IMAGE") || text.contains("OCR") || text.contains("TEXT"))
+            // so the "no readable text" fallback is acceptable there; when
+            // Vision produces output it must contain the words.
+            if !result.content.contains("no readable text") {
+                #expect(result.content.contains("IMAGE") || result.content.contains("OCR") || result.content.contains("TEXT"))
             }
         }
 
@@ -1388,7 +1431,7 @@ extension AllAppTests {
 
         static func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir = .none) async -> (text: String, isError: Bool) {
             let arguments = (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
-            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir)
+            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir, chatFilename: "test.json")
             return (result.content, result.isError)
         }
     }

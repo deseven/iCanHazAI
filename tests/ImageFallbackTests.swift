@@ -26,7 +26,7 @@ struct ImageFallbackTests {
         ]
         let ocr = "Hello World"
         let s = ImageFallbackSynthesizer.synthesize(labels: labels, ocr: ocr)
-        #expect(s.hasPrefix("This user-attached image can't be processed visually here."))
+        #expect(s.hasPrefix("You are lacking the capabilities to digest images directly."))
         #expect(s.contains("Image classification:"))
         #expect(s.contains("landscape_garden (0.90)"))
         #expect(s.contains("building_house (0.50)"))
@@ -235,6 +235,90 @@ struct ImageFallbackTests {
         let openaiBlocks = contentBlocks(of: openaiBody)
         #expect(hasTextBlock(containing: "tiny doc body", in: openaiBlocks))
         #expect(!hasTextBlock(containing: "truncated", in: openaiBlocks))
+    }
+
+    // MARK: - Tool result image substitution
+
+    @Test("Anthropic sends an image block for a tool result with an image on a vision-capable connection")
+    @MainActor
+    func anthropicToolResultImageOnVisionConnection() throws {
+        let png = makePNG(text: "X")
+        let image = ToolResultImage(data: png.base64EncodedString(), mimeType: "image/png", fallback: "fallback text")
+        let result = ToolResult(callID: "call1", content: "fallback text", isError: false, image: image)
+        let msg = ChatMessage(role: .tool, content: "", toolResults: [result])
+        let connection = Connection(provider: .anthropic, name: "vision", baseUrl: nil, apiKey: "k", model: "m", imageInput: true, requestParameters: nil)
+        let body = AnthropicProvider().buildRequestBody(connection: connection, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+        let blocks = contentBlocks(of: body)
+        #expect(hasBlockType(blocks, "tool_result"))
+        // The tool_result content is an array with an image block.
+        let toolResultBlock = blocks.first { ($0["type"] as? String) == "tool_result" }
+        let content = toolResultBlock?["content"] as? [[String: Any]]
+        #expect(content != nil)
+        #expect(content?.contains(where: { ($0["type"] as? String) == "image" }) == true)
+    }
+
+    @Test("Anthropic sends the fallback text for a tool result with an image on a vision-incapable connection")
+    @MainActor
+    func anthropicToolResultFallbackOnTextOnlyConnection() throws {
+        let png = makePNG(text: "X")
+        let image = ToolResultImage(data: png.base64EncodedString(), mimeType: "image/png", fallback: "fallback text")
+        let result = ToolResult(callID: "call1", content: "fallback text", isError: false, image: image)
+        let msg = ChatMessage(role: .tool, content: "", toolResults: [result])
+        let connection = Connection(provider: .anthropic, name: "textonly", baseUrl: nil, apiKey: "k", model: "m", imageInput: false, requestParameters: nil)
+        let body = AnthropicProvider().buildRequestBody(connection: connection, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+        let blocks = contentBlocks(of: body)
+        #expect(hasBlockType(blocks, "tool_result"))
+        // The tool_result content is a plain string (the fallback), not an image block.
+        let toolResultBlock = blocks.first { ($0["type"] as? String) == "tool_result" }
+        let content = toolResultBlock?["content"] as? String
+        #expect(content == "fallback text")
+    }
+
+    @Test("OpenAI sends an image_url part for a tool result with an image on a vision-capable connection")
+    @MainActor
+    func openaiToolResultImageOnVisionConnection() throws {
+        let png = makePNG(text: "X")
+        let image = ToolResultImage(data: png.base64EncodedString(), mimeType: "image/png", fallback: "fallback text")
+        let result = ToolResult(callID: "call1", content: "fallback text", isError: false, image: image)
+        let msg = ChatMessage(role: .tool, content: "", toolResults: [result])
+        let connection = Connection(provider: .openai, name: "vision", baseUrl: nil, apiKey: "k", model: "m", imageInput: true, requestParameters: nil)
+        let body = OpenAIProvider().buildRequestBody(connection: connection, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+        let blocks = contentBlocks(of: body)
+        #expect(hasBlockType(blocks, "image_url"))
+    }
+
+    @Test("OpenAI sends the fallback text for a tool result with an image on a vision-incapable connection")
+    @MainActor
+    func openaiToolResultFallbackOnTextOnlyConnection() throws {
+        let png = makePNG(text: "X")
+        let image = ToolResultImage(data: png.base64EncodedString(), mimeType: "image/png", fallback: "fallback text")
+        let result = ToolResult(callID: "call1", content: "fallback text", isError: false, image: image)
+        let msg = ChatMessage(role: .tool, content: "", toolResults: [result])
+        let connection = Connection(provider: .openai, name: "textonly", baseUrl: nil, apiKey: "k", model: "m", imageInput: false, requestParameters: nil)
+        let body = OpenAIProvider().buildRequestBody(connection: connection, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+        // The tool message has a plain string content (the fallback), not an
+        // image_url part.
+        guard let messages = body["messages"] as? [[String: Any]],
+              let first = messages.first else {
+            Issue.record("no messages in body")
+            return
+        }
+        #expect((first["role"] as? String) == "tool")
+        #expect((first["content"] as? String) == "fallback text")
+        #expect((first["tool_call_id"] as? String) == "call1")
+    }
+
+    @Test("A tool result image round-trips through the chat JSON")
+    func toolResultImageCodableRoundTrip() throws {
+        let image = ToolResultImage(data: "base64data", mimeType: "image/png", fallback: "fallback")
+        let result = ToolResult(callID: "call1", content: "fallback", isError: false, image: image)
+        let msg = ChatMessage(role: .tool, content: "", toolResults: [result])
+        let data = try JSONEncoder().encode(msg)
+        let decoded = try JSONDecoder().decode(ChatMessage.self, from: data)
+        #expect(decoded.toolResults?.first?.image != nil)
+        #expect(decoded.toolResults?.first?.image?.mimeType == "image/png")
+        #expect(decoded.toolResults?.first?.image?.fallback == "fallback")
+        #expect(decoded.toolResults?.first?.image?.data == "base64data")
     }
 
     // MARK: - Helpers

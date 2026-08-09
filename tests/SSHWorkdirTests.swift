@@ -93,7 +93,7 @@ extension AllAppTests {
             let wd = Workdir(root: "h:rel/path", isolated: false)
             #expect(wd.ssh == nil)
             #expect(wd.sshSpecError != nil)
-            let result = await BuiltinTools.call(name: "ls", arguments: #"{"path":"/"}"#, callID: "t", group: BuiltinTools.filesystemGroup, workdir: wd)
+            let result = await BuiltinTools.call(name: "ls", arguments: #"{"path":"/"}"#, callID: "t", group: BuiltinTools.filesystemGroup, workdir: wd, chatFilename: "test.json")
             #expect(result.isError)
             #expect(result.content.contains("invalid SSH working directory"))
         }

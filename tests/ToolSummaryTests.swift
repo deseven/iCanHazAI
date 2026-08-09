@@ -151,8 +151,13 @@ extension AllAppTests {
             #expect(r?.description == "Read 3 lines.")
             let truncated = ToolSummary.resultStatus(name: "read_file", result: ToolResult(callID: "c", content: "1 | only\n... (truncated at 2000 lines)", isError: false))
             #expect(truncated?.description == "Read 1 line.")
-            let image = ToolSummary.resultStatus(name: "read_file", result: ToolResult(callID: "c", content: "[image: image/png]", isError: false))
-            #expect(image?.description == "[image: image/png]")
+            // An image read carries the processed image on `result.image`; the
+            // collapsed description is empty (the renderer shows the image in
+            // the expanded view, so the fallback text would be confusing there).
+            let image = ToolSummary.resultStatus(name: "read_file", result: ToolResult(
+                callID: "c", content: "[image: image/png]", isError: false,
+                image: ToolResultImage(data: "iVA=", mimeType: "image/png", fallback: "[image: image/png]")))
+            #expect(image?.description == "")
         }
 
         @Test("ls/find_file/find_text count their result lines")

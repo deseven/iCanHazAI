@@ -52,6 +52,19 @@ export interface ToolResultData {
    *  transient streaming placeholders) — the renderer computes it locally
    *  then. */
   summary?: ToolStatusSummary | null;
+  /** A processed image, present when `read_file` read an image. The renderer
+   *  loads it via `ichai://toolresult/{callID}` (served from chat data, no
+   *  disk file). The `fallback` text (classification + OCR) is shown
+   *  alongside. Absent for all other results. */
+  image?: ToolResultImageData | null;
+}
+
+/** A processed image carried on a tool result (from `read_file` on an image). */
+export interface ToolResultImageData {
+  /** The media type, e.g. "image/png". */
+  mimeType: string;
+  /** The classification+OCR fallback text. */
+  fallback: string;
 }
 
 export interface ChatMessage {

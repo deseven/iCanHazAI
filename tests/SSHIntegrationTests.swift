@@ -52,7 +52,7 @@ extension AllAppTests {
 
         private static func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir) async -> (text: String, isError: Bool) {
             let arguments = (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
-            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir)
+            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir, chatFilename: "test.json")
             return (result.content, result.isError)
         }
 

@@ -1,5 +1,5 @@
 description = "Directory-isolated coding agent equipped with all essential tools for code generation."
-prompt = "Developer"
+prompt = "Developer (isolated)"
 icon = "hammer.circle"
 accent = "indigo"
 connection_override_allowed = true

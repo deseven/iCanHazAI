@@ -2330,7 +2330,7 @@ actor ChatEngine {
             } else if BuiltinTools.allGroups.contains(sourceName) {
                 // Built-in group: run in-process with the chat's workdir.
                 let wd = Workdir(root: prepared.workdir, isolated: prepared.isolation, chatID: prepared.chatID)
-                result = await BuiltinTools.call(name: toolName, arguments: call.arguments, callID: call.id, group: sourceName, workdir: wd)
+                result = await BuiltinTools.call(name: toolName, arguments: call.arguments, callID: call.id, group: sourceName, workdir: wd, chatFilename: filename)
             } else {
                 // Custom MCP server: use the shared connection pool.
                 result = await MCPManager.shared.callTool(server: sourceName, name: toolName, arguments: call.arguments, callID: call.id, chatFilename: filename)

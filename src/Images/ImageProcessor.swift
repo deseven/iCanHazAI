@@ -24,17 +24,21 @@ enum AttachmentStatus: String, Codable, Sendable, Equatable, Hashable {
 
 /// A reference to an attachment stored on disk alongside a chat. Persisted as
 /// part of a `ChatMessage` so the renderer and the request builder can both
-/// reach the file by UUID + extension. For text/document kinds the extracted
-/// text is embedded directly on the record so the chat JSON is self-sufficient;
-/// the on-disk file is a user-facing backup.
+/// reach the file. For text/document kinds the extracted text is embedded
+/// directly on the record so the chat JSON is self-sufficient; the on-disk
+/// file is a user-facing backup.
 struct Attachment: Codable, Identifiable, Equatable, Hashable, Sendable {
-    /// Stable unique identifier (also used as the on-disk filename stem).
+    /// Stable unique identifier.
     let id: UUID
     /// The kind bucket: `.image` (processed to base64), `.text` (plain-text
     /// passthrough), or `.document` (docx/odt/rtf/pdf… extracted to text).
     let kind: AttachmentKind
     /// File extension of the stored file, e.g. "png", "docx", "txt".
     let ext: String
+    /// The actual filename on disk (sanitized original name, possibly with a
+    /// dedup suffix like `(1)`). Falls back to `"\(id.uuidString).\(ext)"` for
+    /// records loaded from old chats that predate this field.
+    let filename: String
     /// Original filename the user supplied (for display only). May be nil
     /// for pasted images.
     var originalName: String?
@@ -47,9 +51,6 @@ struct Attachment: Codable, Identifiable, Equatable, Hashable, Sendable {
     var status: AttachmentStatus
     /// Short human-readable reason when `status == .failed`. Nil otherwise.
     var failureReason: String?
-
-    /// The filename on disk, e.g. "A1B2...-....png".
-    var filename: String { "\(id.uuidString).\(ext)" }
 
     /// The media type used when sending an image to the model, e.g.
     /// "image/png". Only meaningful for `.image` kinds.
@@ -65,14 +66,31 @@ struct Attachment: Codable, Identifiable, Equatable, Hashable, Sendable {
     /// `.image` kinds.
     var isLossless: Bool { ext.lowercased() == "png" }
 
-    init(id: UUID = UUID(), kind: AttachmentKind, ext: String, originalName: String?, text: String? = nil, status: AttachmentStatus = .ok, failureReason: String? = nil) {
+    init(id: UUID = UUID(), kind: AttachmentKind, ext: String, filename: String? = nil, originalName: String?, text: String? = nil, status: AttachmentStatus = .ok, failureReason: String? = nil) {
         self.id = id
         self.kind = kind
         self.ext = ext
+        self.filename = filename ?? "\(id.uuidString).\(ext)"
         self.originalName = originalName
         self.text = text
         self.status = status
         self.failureReason = failureReason
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, ext, filename, originalName, text, status, failureReason
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
+        kind = (try? c.decode(AttachmentKind.self, forKey: .kind)) ?? .image
+        ext = (try? c.decode(String.self, forKey: .ext)) ?? "bin"
+        filename = (try? c.decode(String.self, forKey: .filename)) ?? "\(id.uuidString).\(ext)"
+        originalName = try? c.decode(String.self, forKey: .originalName)
+        text = try? c.decode(String.self, forKey: .text)
+        status = (try? c.decode(AttachmentStatus.self, forKey: .status)) ?? .ok
+        failureReason = try? c.decode(String.self, forKey: .failureReason)
     }
 }
 

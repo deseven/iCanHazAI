@@ -84,6 +84,12 @@ enum ToolSummary {
         if result.isError {
             return Status(kind: .error, label: "error", description: firstLine(result.content))
         }
+        // A read_file on an image carries the processed image on `result.image`;
+        // the renderer shows it in the expanded view via the `ichai://` scheme,
+        // so the collapsed description is empty (the "done" badge says it all).
+        if result.image != nil {
+            return Status(kind: .done, label: "done", description: "")
+        }
         return Status(kind: .done, label: "done", description: doneDescription(name: name, content: result.content))
     }
 }

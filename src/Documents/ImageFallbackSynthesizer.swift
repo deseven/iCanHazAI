@@ -26,7 +26,7 @@ enum ImageFallbackSynthesizer {
     /// Builds the fallback string for a `CGImage` by running classification
     /// and OCR, then combining them into the locked shape:
     ///
-    ///   `This user-attached image can't be processed visually here. Image
+    ///   `You are lacking the capabilities to digest images directly. Image
     ///   classification: {labels}. Text on the image: {ocr}.`
     ///
     /// Variants for no-text and fully-empty cases are handled explicitly.
@@ -50,7 +50,7 @@ enum ImageFallbackSynthesizer {
     /// tests so the shape and the label floor can be asserted without running
     /// Vision.
     static func synthesize(labels: [ImageLabel], ocr: String?) -> String {
-        let prefix = "This user-attached image can't be processed visually here."
+        let prefix = "You are lacking the capabilities to digest images directly."
         let filtered = labels.filter { $0.confidence >= labelConfidenceFloor }
         let labelPart: String
         if filtered.isEmpty {

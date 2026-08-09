@@ -157,6 +157,9 @@ enum PatchParser {
                     r.chunk.isEndOfFile = true
                     eofAnchorPending = false
                 }
+                if r.chunk.oldLines == r.chunk.newLines {
+                    throw PatchParseError(message: "Update hunk for '\(path)' makes no changes — every line starts with ' ' (context). A hunk needs at least one '-' or '+' line: to change a line, repeat it with '-' followed by the new version with '+'. If the edit is already applied, drop this hunk from the patch", lineNumber: lineNumber + consumed)
+                }
                 chunks.append(r.chunk)
                 consumed += r.linesConsumed
                 i += r.linesConsumed

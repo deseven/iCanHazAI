@@ -97,10 +97,10 @@ enum BuiltinToolsSSH {
 
     // MARK: - Dispatch
 
-    static func filesystem(name: String, args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
+    static func filesystem(name: String, args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String) async throws -> ToolOutput {
         switch name {
         case "ls": return try await ls(args, workdir: workdir, ssh: ssh)
-        case "read_file": return try await readFile(args, workdir: workdir, ssh: ssh)
+        case "read_file": return try await readFile(args, workdir: workdir, ssh: ssh, chatFilename: chatFilename)
         case "write_file": return try await writeFile(args, workdir: workdir, ssh: ssh)
         case "find_file": return try await findFile(args, workdir: workdir, ssh: ssh)
         case "find_text": return try await findText(args, workdir: workdir, ssh: ssh)
@@ -114,7 +114,7 @@ enum BuiltinToolsSSH {
         }
     }
 
-    static func code(name: String, args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
+    static func code(name: String, args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String) async throws -> ToolOutput {
         switch name {
         case "apply_patch": return try await applyPatch(args, workdir: workdir, ssh: ssh)
         default:
@@ -154,10 +154,10 @@ enum BuiltinToolsSSH {
         let r = try await run(ssh, script: script)
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
         let lines = r.stdoutString.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
-        return (lines.prefix(1000).joined(separator: "\n"), false)
+        return ToolOutput(content: lines.prefix(1000).joined(separator: "\n"), isError: false)
     }
 
-    private static func readFile(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
+    private static func readFile(_ args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String) async throws -> ToolOutput {
         let path = try BuiltinTools.requireString(args, "path")
         let offset = BuiltinTools.optionalInt(args, "offset") ?? 1
         let limit = BuiltinTools.optionalInt(args, "limit") ?? 2000
@@ -176,7 +176,7 @@ enum BuiltinToolsSSH {
         """
         let r = try await run(ssh, script: script)
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
-        return try BuiltinTools.formatFileContent(r.stdout, path: path, offset: offset, limit: limit)
+        return try BuiltinTools.formatFileContent(r.stdout, path: path, offset: offset, limit: limit, chatFilename: chatFilename)
     }
 
     private static func writeFile(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
@@ -189,7 +189,7 @@ enum BuiltinToolsSSH {
         let script = "mkdir -p \(qp(posixDirname(resolved))) && cat > \(qp(resolved))"
         let r = try await run(ssh, script: script, stdin: Data(content.utf8))
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
-        return ("Wrote \(content.utf8.count) bytes to \(path)", false)
+        return ToolOutput(content: "Wrote \(content.utf8.count) bytes to \(path)", isError: false)
     }
 
     private static func findFile(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
@@ -230,7 +230,7 @@ enum BuiltinToolsSSH {
         }
         var out = matches.prefix(200).joined(separator: "\n")
         if matches.count > 200 { out += "\n... (truncated at 200 results)" }
-        return (out, false)
+        return ToolOutput(content: out, isError: false)
     }
 
     /// First `[:-]digits[:-]` run decides whether a grep -n output line is a
@@ -353,7 +353,7 @@ enum BuiltinToolsSSH {
         var result = out.joined(separator: "\n")
         if hitResultCap { result += "\n... (truncated at \(maxResults) results)" }
         else if hitByteCap { result += "\n... (truncated, output size limit)" }
-        return (result, false)
+        return ToolOutput(content: result, isError: false)
     }
 
     private static func mkdir(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
@@ -361,7 +361,7 @@ enum BuiltinToolsSSH {
         let resolved = try workdir.resolve(path)
         let r = try await run(ssh, script: "mkdir -p \(qp(resolved))")
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
-        return ("Created directory \(path)", false)
+        return ToolOutput(content: "Created directory \(path)", isError: false)
     }
 
     private static func mv(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
@@ -374,7 +374,7 @@ enum BuiltinToolsSSH {
             (resolvedSrc, workdir.displayPath(forResolved: resolvedSrc)),
             (resolvedDst, workdir.displayPath(forResolved: resolvedDst)),
         ])
-        return ("Moved \(src) to \(dst)", false)
+        return ToolOutput(content: "Moved \(src) to \(dst)", isError: false)
     }
 
     private static func rm(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
@@ -400,7 +400,7 @@ enum BuiltinToolsSSH {
         """
         let r = try await run(ssh, script: script)
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
-        return ("Deleted \(path)", false)
+        return ToolOutput(content: "Deleted \(path)", isError: false)
     }
 
     private static func stat(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
@@ -459,7 +459,7 @@ enum BuiltinToolsSSH {
 
         let sorted = json.sorted { $0.key < $1.key }
         let parts = sorted.map { "\"\($0.key)\":\"\(jsonEscape($0.value))\"" }
-        return ("{\(parts.joined(separator: ","))}", false)
+        return ToolOutput(content: "{\(parts.joined(separator: ","))}", isError: false)
     }
 
     private static func jsonEscape(_ s: String) -> String {
@@ -470,11 +470,11 @@ enum BuiltinToolsSSH {
 
     private static func pwd(workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
         // Isolated mode presents the root as the virtual "/" (local parity).
-        if workdir.isolated { return ("/", false) }
+        if workdir.isolated { return ToolOutput(content: "/", isError: false) }
         let script = workdir.root.map { "cd \(qp($0)) && pwd" } ?? "pwd"
         let r = try await run(ssh, script: script)
         try requireSuccess(r)
-        return (r.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines), false)
+        return ToolOutput(content: r.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines), isError: false)
     }
 
     // MARK: - Code tools
@@ -527,11 +527,11 @@ enum BuiltinToolsSSH {
         do {
             ops = try await planRemoteApplyPatch(args: args, workdir: workdir, ssh: ssh)
         } catch let e as PatchParseError {
-            return ("Invalid apply_patch format: \(e.description)", true)
+            return ToolOutput(content: "Invalid apply_patch format: \(e.description)", isError: true)
         } catch let e as ApplyPatchError {
-            return ("Failed to apply patch: \(e.description)", true)
+            return ToolOutput(content: "Failed to apply patch: \(e.description)", isError: true)
         } catch let e as BuiltinToolError {
-            return ("Error: \(e.description)", true)
+            return ToolOutput(content: "Error: \(e.description)", isError: true)
         }
 
         var summary: [String] = []
@@ -556,7 +556,7 @@ enum BuiltinToolsSSH {
                 }
             }
         }
-        return (summary.joined(separator: "\n"), false)
+        return ToolOutput(content: summary.joined(separator: "\n"), isError: false)
     }
 
     /// Fetches one remote file for the patch planner. The first stdout line
@@ -661,18 +661,18 @@ enum BuiltinToolsSSH {
         case .hardTimeout(let t):
             if !r.stderrString.isEmpty { text += r.stderrString }
             text += "\n[exit code: timed out after \(Int(t))s]"
-            return (text, false)
+            return ToolOutput(content: text, isError: false)
         case .idleTimeout(let t):
             if !r.stderrString.isEmpty { text += r.stderrString }
             text += "\n[exit code: killed after \(Int(t))s without output; pass an explicit timeout for long-running silent commands]"
-            return (text, false)
+            return ToolOutput(content: text, isError: false)
         case nil:
             break
         }
 
         if r.exitCode == 0 {
-            return ("\(text)\n[exit code: 0]", false)
+            return ToolOutput(content: "\(text)\n[exit code: 0]", isError: false)
         }
-        return ("\(text)\(r.stderrString)\n[exit code: \(r.exitCode)]", false)
+        return ToolOutput(content: "\(text)\(r.stderrString)\n[exit code: \(r.exitCode)]", isError: false)
     }
 }

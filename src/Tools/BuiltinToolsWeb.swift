@@ -79,7 +79,7 @@ enum BuiltinToolsWeb {
             dateEnd: try validatedDate(BuiltinTools.optionalString(args, "date_end"), key: "date_end")
         )
         let data = try await post(searchRequest(config: config, params: params))
-        return (formatSearchOutput(query: params.query, hits: try parseSearchHits(provider: config.resolvedProvider, data: data)), false)
+        return ToolOutput(content: formatSearchOutput(query: params.query, hits: try parseSearchHits(provider: config.resolvedProvider, data: data)), isError: false)
     }
 
     static func extract(_ args: [String: Any]) async throws -> ToolOutput {
@@ -87,7 +87,7 @@ enum BuiltinToolsWeb {
         let url = try BuiltinTools.requireString(args, "url")
         let data = try await post(extractRequest(config: config, url: url))
         let page = try parseExtractedPage(provider: config.resolvedProvider, data: data, url: url)
-        return (formatExtractOutput(page: page), false)
+        return ToolOutput(content: formatExtractOutput(page: page), isError: false)
     }
 
     /// Raw download. Redirects are followed by URLSession; the reported code
@@ -107,22 +107,22 @@ enum BuiltinToolsWeb {
             let (bytes, response) = try await session.bytes(for: request)
             let httpCode = (response as? HTTPURLResponse)?.statusCode ?? 0
             if response.expectedContentLength > Int64(maxFetchBytes) {
-                return (fetchOutput(httpCode: httpCode, content: "Error: content is larger than 256KB"), true)
+                return ToolOutput(content: fetchOutput(httpCode: httpCode, content: "Error: content is larger than 256KB"), isError: true)
             }
             var data = Data()
             data.reserveCapacity(min(max(Int(response.expectedContentLength), 0), maxFetchBytes))
             for try await byte in bytes {
                 data.append(byte)
                 if data.count > maxFetchBytes {
-                    return (fetchOutput(httpCode: httpCode, content: "Error: content is larger than 256KB"), true)
+                    return ToolOutput(content: fetchOutput(httpCode: httpCode, content: "Error: content is larger than 256KB"), isError: true)
                 }
             }
             guard BuiltinTools.isText(data), let text = String(data: data, encoding: .utf8) else {
-                return (fetchOutput(httpCode: httpCode, content: "Error: content is binary"), true)
+                return ToolOutput(content: fetchOutput(httpCode: httpCode, content: "Error: content is binary"), isError: true)
             }
-            return (fetchOutput(httpCode: httpCode, content: text), httpCode >= 400)
+            return ToolOutput(content: fetchOutput(httpCode: httpCode, content: text), isError: httpCode >= 400)
         } catch {
-            return (fetchOutput(httpCode: 0, content: "Error: \(error.localizedDescription)"), true)
+            return ToolOutput(content: fetchOutput(httpCode: 0, content: "Error: \(error.localizedDescription)"), isError: true)
         }
     }
 

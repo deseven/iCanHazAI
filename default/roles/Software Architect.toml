@@ -4,7 +4,6 @@ icon = "ruler"
 accent = "orange"
 connection_override_allowed = true
 mcps_override_allowed = true
-directory_isolation = true
 
 [utils]
 auto_allow_all = true
@@ -13,6 +12,9 @@ auto_allow_all = true
 auto_allow = ["ls", "read_file", "stat", "find_file", "find_text", "pwd"]
 
 [code]
+
+[shell]
+tools = ["shell"]
 
 [web]
 tools = ["web_search", "web_extract"]

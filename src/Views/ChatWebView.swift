@@ -582,6 +582,16 @@ final class ChatWebViewModel: ObservableObject {
         guard let chat = item.chat else { return }
 
         ImageSchemeHandler.currentChatFilename = item.filename
+        // Tool-result images live on the `ToolResult` in chat data (no disk
+        // file). The scheme handler calls this lookup to serve them via
+        // `ichai://toolresult/{callID}`.
+        ImageSchemeHandler.toolResultImageLookup = { callID in
+            chat.messages.lazy
+                .compactMap(\.toolResults)
+                .joined()
+                .first(where: { $0.callID == callID })?
+                .image
+        }
 
         enqueueRenderJob(.snapshot(
             chatId: item.id,
@@ -717,14 +727,15 @@ final class ChatWebViewModel: ObservableObject {
         }
     }
 
-    /// Resolves an `ichai://{UUID}.{ext}` reference to the file in the
-    /// currently selected chat's attachment directory and opens it in the
-    /// system default app.
+    /// Resolves an `ichai://{percent-encoded filename}` reference to the file
+    /// in the currently selected chat's attachment directory and opens it in
+    /// the system default app.
     private func openAttachment(url: String) {
         guard let url = URL(string: url) else { return }
         let resource = url.host ?? url.path
-        let filename = resource.hasPrefix("/") ? String(resource.dropFirst()) : resource
-        guard !filename.isEmpty else { return }
+        let encoded = resource.hasPrefix("/") ? String(resource.dropFirst()) : resource
+        guard !encoded.isEmpty else { return }
+        let filename = ImageSchemeHandler.decodeResource(encoded)
         let chatFilename = ImageSchemeHandler.currentChatFilename ?? ""
         let dir = EnvironmentManager.shared.attachmentsDirectory(for: chatFilename)
         let fileURL = dir.appendingPathComponent(filename)
@@ -1040,10 +1051,11 @@ struct ChatMessageData: Codable, Equatable, Sendable {
     let error: String?
     let timestamp: String
     let connectionName: String?
-    /// Attachments on the message. Images are `ichai://` URLs the renderer
-    /// loads via the custom scheme handler; documents carry metadata only
-    /// (name, kind, status) — the extracted text body is never sent to the
-    /// WebView. Nil/empty for messages without attachments.
+    /// Attachments on the message. Images are `ichai://` URLs (with
+    /// percent-encoded filenames) the renderer loads via the custom scheme
+    /// handler; documents carry metadata only (name, kind, status) — the
+    /// extracted text body is never sent to the WebView. Nil/empty for
+    /// messages without attachments.
     let attachments: [AttachmentData]?
     /// For assistant messages: tool calls issued by the model. Nil otherwise.
     let toolCalls: [ToolCallData]?
@@ -1056,10 +1068,11 @@ struct ChatMessageData: Codable, Equatable, Sendable {
     struct AttachmentData: Codable, Equatable, Sendable {
         /// The kind: "image", "text", or "document".
         let kind: String
-        /// The `ichai://{UUID}.{ext}` URL. For images the renderer uses it as
-        /// the `src`; for text/documents it's sent back via `openAttachment`
-        /// so the host can open the original in the system default app. The
-        /// extracted text body is never sent to the renderer.
+        /// The `ichai://{percent-encoded filename}` URL. For images the
+        /// renderer uses it as the `src`; for text/documents it's sent back
+        /// via `openAttachment` so the host can open the original in the
+        /// system default app. The extracted text body is never sent to the
+        /// renderer.
         let url: String?
         /// Original filename for display/alt text.
         let name: String?
@@ -1125,8 +1138,22 @@ struct ChatMessageData: Codable, Equatable, Sendable {
         /// results from before the field existed — the renderer computes it
         /// locally then.
         let summary: ToolSummary.Status?
+        /// A processed image, present when `read_file` read an image. The
+        /// renderer loads it via `ichai://toolresult/{callID}` (served from
+        /// chat data, no disk file). Nil for all other results.
+        let image: ToolResultImageData?
 
-        init(callID: String, content: String, isError: Bool, isStreaming: Bool, isDenied: Bool = false, isCancelled: Bool = false, summary: ToolSummary.Status? = nil) {
+        /// A processed image carried on a tool result (from `read_file` on an
+        /// image). The renderer references it via `ichai://toolresult/{callID}`;
+        /// the fallback text is shown alongside for context.
+        struct ToolResultImageData: Codable, Equatable, Sendable {
+            /// The media type, e.g. "image/png".
+            let mimeType: String
+            /// The classification+OCR fallback text.
+            let fallback: String
+        }
+
+        init(callID: String, content: String, isError: Bool, isStreaming: Bool, isDenied: Bool = false, isCancelled: Bool = false, summary: ToolSummary.Status? = nil, image: ToolResultImageData? = nil) {
             self.callID = callID
             self.content = content
             self.isError = isError
@@ -1134,6 +1161,7 @@ struct ChatMessageData: Codable, Equatable, Sendable {
             self.isDenied = isDenied
             self.isCancelled = isCancelled
             self.summary = summary
+            self.image = image
         }
     }
 }
@@ -1150,7 +1178,7 @@ extension ChatMessage {
         let attachments = attachments?.map { attachment in
             ChatMessageData.AttachmentData(
                 kind: attachment.kind.rawValue,
-                url: "\(ImageSchemeHandler.scheme)://\(attachment.filename)",
+                url: "\(ImageSchemeHandler.scheme)://\(ImageSchemeHandler.encodeResource(attachment.filename))",
                 name: attachment.originalName,
                 status: attachment.kind == .image ? nil : attachment.status.rawValue,
                 failureReason: attachment.failureReason
@@ -1160,7 +1188,8 @@ extension ChatMessage {
             ChatMessageData.ToolCallData(id: $0.id, name: $0.name, arguments: $0.arguments, pendingApproval: $0.pendingApproval, diff: $0.diff, requiredArgs: $0.requiredArgs, internalTool: $0.internalTool, summary: $0.summary)
         }
         let toolResults = toolResults?.map {
-            ChatMessageData.ToolResultData(callID: $0.callID, content: $0.content, isError: $0.isError, isStreaming: $0.isStreaming, isDenied: $0.isDenied, isCancelled: $0.isCancelled, summary: $0.summary)
+            let imageData = $0.image.map { ChatMessageData.ToolResultData.ToolResultImageData(mimeType: $0.mimeType, fallback: $0.fallback) }
+            return ChatMessageData.ToolResultData(callID: $0.callID, content: $0.content, isError: $0.isError, isStreaming: $0.isStreaming, isDenied: $0.isDenied, isCancelled: $0.isCancelled, summary: $0.summary, image: imageData)
         }
         return ChatMessageData(
             id: id.uuidString,

@@ -1314,6 +1314,36 @@ body {
   padding: 6px 8px;
 }
 
+.tool-result-section {
+  margin-bottom: 8px;
+}
+
+.tool-result-section:last-child {
+  margin-bottom: 0;
+}
+
+.tool-result-image {
+  margin-bottom: 0;
+}
+
+.tool-result-image img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+  border: 1px solid var(--border-color);
+}
+
+/* Muted hint shown after a section label (e.g. "vision-capable models"),
+   clarifying which kind of model receives that part of an image result. */
+.tool-result-label-hint {
+  margin-left: 6px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  opacity: 0.55;
+}
+
 /* "collapse" link shown at the bottom right of an expanded collapsible block
    (tool call, thinking) whose toggle has scrolled out of view — i.e. the
    block is taller than the viewport. */

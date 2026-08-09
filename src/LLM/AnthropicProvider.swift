@@ -129,11 +129,38 @@ struct AnthropicProvider: LLMProvider {
         if msg.role == .tool, let results = msg.toolResults, !results.isEmpty {
             var blocks: [[String: Any]] = []
             for r in results {
-                blocks.append([
-                    "type": "tool_result",
-                    "tool_use_id": r.callID,
-                    "content": r.content,
-                ] as [String: Any])
+                // A tool result carrying a processed image (from read_file on
+                // an image) is sent as an image block on vision-capable
+                // connections, or as the classification+OCR fallback text on
+                // vision-incapable ones — exactly like user-attached images.
+                if let image = r.image {
+                    if imageInput {
+                        blocks.append([
+                            "type": "tool_result",
+                            "tool_use_id": r.callID,
+                            "content": [[
+                                "type": "image",
+                                "source": [
+                                    "type": "base64",
+                                    "media_type": image.mimeType,
+                                    "data": image.data,
+                                ] as [String: Any],
+                            ] as [String: Any]],
+                        ] as [String: Any])
+                    } else {
+                        blocks.append([
+                            "type": "tool_result",
+                            "tool_use_id": r.callID,
+                            "content": image.fallback,
+                        ] as [String: Any])
+                    }
+                } else {
+                    blocks.append([
+                        "type": "tool_result",
+                        "tool_use_id": r.callID,
+                        "content": r.content,
+                    ] as [String: Any])
+                }
             }
             return ["role": role, "content": blocks] as [String: Any]
         }

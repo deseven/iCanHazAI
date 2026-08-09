@@ -238,6 +238,27 @@ extension Array where Element == ToolCall {
     }
 }
 
+/// A processed image carried on a `ToolResult` when `read_file` reads an
+/// image. The processed bytes (resized/re-encoded) live here — no attachment
+/// file is written to disk. The request builders send the image as an image
+/// block on vision-capable connections and `fallback` (classification + OCR)
+/// as text on vision-incapable ones, exactly like user-attached images. The
+/// renderer loads the image via the `ichai://` scheme handler, which serves
+/// the bytes from the chat data.
+struct ToolResultImage: Codable, Equatable, Sendable {
+    /// The processed image bytes (resized/re-encoded), base64-encoded for
+    /// persistence in the chat JSON.
+    let data: String
+    /// The media type for the API, e.g. "image/png".
+    let mimeType: String
+    /// The classification+OCR fallback text, used on vision-incapable
+    /// connections in place of the image block.
+    let fallback: String
+
+    /// The decoded image bytes.
+    var decoded: Data { Data(base64Encoded: data) ?? Data() }
+}
+
 /// The result of executing a tool call. Carried on a `tool`-role message.
 struct ToolResult: Codable, Identifiable, Equatable, Sendable {
     var id: String { callID }
@@ -263,13 +284,19 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
     /// final result lands. Persisted so every surface (chat renderer, CLI)
     /// shows the same status text. Nil for transient streaming placeholders.
     var summary: ToolSummary.Status?
+    /// A processed image, present when `read_file` read an image. The bytes
+    /// live here (no attachment file on disk); the request builders and the
+    /// `ichai://` scheme handler read them from the chat data. Nil for all
+    /// other results.
+    var image: ToolResultImage?
 
     enum CodingKeys: String, CodingKey {
         case callID, content, isError, isStreaming, isDenied, isCancelled
         case summary = "tool_call_result_summary"
+        case image
     }
 
-    init(callID: String, content: String, isError: Bool, isStreaming: Bool = false, isDenied: Bool = false, isCancelled: Bool = false, summary: ToolSummary.Status? = nil) {
+    init(callID: String, content: String, isError: Bool, isStreaming: Bool = false, isDenied: Bool = false, isCancelled: Bool = false, summary: ToolSummary.Status? = nil, image: ToolResultImage? = nil) {
         self.callID = callID
         self.content = content
         self.isError = isError
@@ -277,6 +304,7 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
         self.isDenied = isDenied
         self.isCancelled = isCancelled
         self.summary = summary
+        self.image = image
     }
 
     init(from decoder: Decoder) throws {
@@ -291,6 +319,7 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
         isDenied = (try? c.decode(Bool.self, forKey: .isDenied)) ?? false
         isCancelled = (try? c.decode(Bool.self, forKey: .isCancelled)) ?? false
         summary = try? c.decode(ToolSummary.Status.self, forKey: .summary)
+        image = try? c.decode(ToolResultImage.self, forKey: .image)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -302,6 +331,7 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
         try c.encode(isDenied, forKey: .isDenied)
         try c.encode(isCancelled, forKey: .isCancelled)
         try c.encodeIfPresent(summary, forKey: .summary)
+        try c.encodeIfPresent(image, forKey: .image)
     }
 }
 

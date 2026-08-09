@@ -462,8 +462,12 @@ extension AllAppTests {
             #expect(approvals[1].callID == "call-2" && approvals[1].decision == "allow_chat" && approvals[1].reason == nil)
             let stops = await recorder.stops
             #expect(stops.count == 2)
-            #expect(stops[0].chat == "cli-chat.json" && stops[0].immediate == false)
-            #expect(stops[1].chat == "cli-chat.json" && stops[1].immediate == true)
+            // The two chat.stop requests are dispatched as concurrent tasks,
+            // so their handler invocations aren't order-guaranteed — verify the
+            // set of (chat, immediate) pairs instead of assuming send order.
+            #expect(stops.allSatisfy { $0.chat == "cli-chat.json" })
+            #expect(stops.contains { $0.immediate == false })
+            #expect(stops.contains { $0.immediate == true })
         }
     }
 }

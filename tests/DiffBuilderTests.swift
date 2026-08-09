@@ -305,6 +305,23 @@ extension AllAppTests {
             #expect(message.contains("*** Begin Patch"), "expected the reason in the message: \(message)")
         }
 
+        @Test("preflight rejects a no-op patch with the parse error")
+        func preflightNoOpPatch() async throws {
+            let patch = """
+            *** Begin Patch
+            *** Update File: whatever.txt
+            @@
+             unchanged
+            *** End Patch
+            """
+            let args = Self.argsJSON(["patch": patch])
+            guard case .error(let message) = DiffBuilder.preflightApplyPatch(arguments: args, workdir: .none) else {
+                Issue.record("expected preflight to fail")
+                return
+            }
+            #expect(message.contains("makes no changes"), "unexpected message: \(message)")
+        }
+
         @Test("preflight reports context mismatches with the tool's own error")
         func preflightApplyError() async throws {
             let tmp = try TestDir()

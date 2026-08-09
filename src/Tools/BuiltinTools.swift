@@ -195,7 +195,44 @@ struct BuiltinToolDef: Sendable {
     let schema: String
 }
 
-typealias ToolOutput = (content: String, isError: Bool)
+/// The output of a builtin tool. Most tools produce only `content` + `isError`;
+/// `read_file` on an image additionally carries a processed image (resized/
+/// re-encoded) plus its classification/OCR fallback, so the request builders
+/// can send the image to vision-capable connections and the fallback text to
+/// vision-incapable ones — exactly like user-attached images.
+struct ToolOutput {
+    var content: String
+    var isError: Bool
+    /// Present when `read_file` read an image. The processed image bytes are
+    /// stored on the `ToolResult` (no attachment file is written to disk); the
+    /// renderer loads them via the `ichai://` scheme handler, which serves
+    /// from the chat data. `fallback` carries the classification+OCR text used
+    /// in place of the image on vision-incapable connections.
+    var image: ProcessedToolImage?
+
+    init(content: String, isError: Bool, image: ProcessedToolImage? = nil) {
+        self.content = content
+        self.isError = isError
+        self.image = image
+    }
+}
+
+/// A processed image produced by `read_file`: the resized/re-encoded image
+/// bytes, the media type, and the classification+OCR fallback text. The request
+/// builders pick between the image block and the fallback text based on the
+/// connection's vision capability, just like user-attached images. Unlike
+/// attachments, no file is written to disk — the bytes live on the `ToolResult`
+/// and are served to the renderer via the `ichai://` scheme handler (which
+/// looks them up from the chat data).
+struct ProcessedToolImage: Sendable {
+    /// The processed image bytes (resized/re-encoded).
+    let data: Data
+    /// The media type for the API, e.g. "image/png".
+    let mimeType: String
+    /// The classification+OCR fallback text, used on vision-incapable
+    /// connections in place of the image block.
+    let fallback: String
+}
 
 // MARK: - BuiltinTools
 
@@ -316,6 +353,7 @@ enum BuiltinTools {
     - Hunks must appear in file order and must not overlap; each hunk is searched for after the previous one. Merge adjacent changes into a single hunk.
     - To append to a file, use a hunk containing only + lines (no context, no removals) — it is inserted at end of file.
     - Context lines must match the file exactly — read the file before patching and copy context verbatim.
+    - Every hunk must change at least one line — a hunk of only context lines (no '-' or '+') is a no-op and is rejected. If the edit is already applied, drop the hunk.
 
     Example:
     *** Begin Patch
@@ -397,11 +435,15 @@ enum BuiltinTools {
 
     // MARK: - Dispatch
 
-    static func call(name: String, arguments: String, callID: String, group: String, workdir: Workdir) async -> ToolResult {
+    static func call(name: String, arguments: String, callID: String, group: String, workdir: Workdir, chatFilename: String) async -> ToolResult {
         do {
             let args = try argsDict(arguments)
-            let output = try await dispatch(name: name, group: group, args: args, workdir: workdir)
-            return ToolResult(callID: callID, content: output.content, isError: output.isError)
+            let output = try await dispatch(name: name, group: group, args: args, workdir: workdir, chatFilename: chatFilename)
+            var result = ToolResult(callID: callID, content: output.content, isError: output.isError)
+            if let image = output.image {
+                result.image = ToolResultImage(data: image.data.base64EncodedString(), mimeType: image.mimeType, fallback: image.fallback)
+            }
+            return result
         } catch let err as BuiltinToolError {
             return ToolResult(callID: callID, content: "Error: \(err.description)", isError: true)
         } catch {
@@ -415,15 +457,15 @@ enum BuiltinTools {
         }
     }
 
-    private static func dispatch(name: String, group: String, args: [String: Any], workdir: Workdir) async throws -> ToolOutput {
+    private static func dispatch(name: String, group: String, args: [String: Any], workdir: Workdir, chatFilename: String) async throws -> ToolOutput {
         // SSH workdir: route workdir-capable tools to the remote
         // implementations. Utils and applescript always run locally.
         if let ssh = workdir.ssh {
             switch (group, name) {
             case (filesystemGroup, _):
-                return try await BuiltinToolsSSH.filesystem(name: name, args: args, workdir: workdir, ssh: ssh)
+                return try await BuiltinToolsSSH.filesystem(name: name, args: args, workdir: workdir, ssh: ssh, chatFilename: chatFilename)
             case (codeGroup, _):
-                return try await BuiltinToolsSSH.code(name: name, args: args, workdir: workdir, ssh: ssh)
+                return try await BuiltinToolsSSH.code(name: name, args: args, workdir: workdir, ssh: ssh, chatFilename: chatFilename)
             case (shellGroup, "shell"):
                 return try await BuiltinToolsSSH.shell(args: args, workdir: workdir, ssh: ssh)
             default:
@@ -443,7 +485,7 @@ enum BuiltinTools {
         case (utilsGroup, "sleep"): return try await sleepTool(args)
         // Filesystem
         case (filesystemGroup, "ls"): return try ls(args, workdir: workdir)
-        case (filesystemGroup, "read_file"): return try readFile(args, workdir: workdir)
+        case (filesystemGroup, "read_file"): return try readFile(args, workdir: workdir, chatFilename: chatFilename)
         case (filesystemGroup, "write_file"): return try writeFile(args, workdir: workdir)
         case (filesystemGroup, "find_file"): return try findFile(args, workdir: workdir)
         case (filesystemGroup, "find_text"): return try await findText(args, workdir: workdir)
@@ -696,7 +738,7 @@ enum BuiltinTools {
         if trimmed.isEmpty {
             throw BuiltinToolError("invalid argument 'expression': bc returned no output")
         }
-        return (trimmed, false)
+        return ToolOutput(content: trimmed, isError: false)
     }
 
     private static func datetime() -> ToolOutput {
@@ -704,11 +746,11 @@ enum BuiltinTools {
         f.locale = Locale.current
         f.timeZone = TimeZone.current
         f.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return (f.string(from: Date()), false)
+        return ToolOutput(content: f.string(from: Date()), isError: false)
     }
 
     private static func uuid() -> ToolOutput {
-        (UUID().uuidString, false)
+        ToolOutput(content: UUID().uuidString, isError: false)
     }
 
     private static func hashTool(_ args: [String: Any]) throws -> ToolOutput {
@@ -726,7 +768,7 @@ enum BuiltinTools {
         default:
             throw BuiltinToolError("invalid argument 'algorithm': must be sha256, sha1, or md5")
         }
-        return (digest, false)
+        return ToolOutput(content: digest, isError: false)
     }
 
     private static func base64Encode(_ args: [String: Any]) throws -> ToolOutput {
@@ -734,7 +776,7 @@ enum BuiltinTools {
         guard let data = input.data(using: .utf8) else {
             throw BuiltinToolError("invalid argument 'input': could not encode as UTF-8")
         }
-        return (data.base64EncodedString(), false)
+        return ToolOutput(content: data.base64EncodedString(), isError: false)
     }
 
     private static func base64Decode(_ args: [String: Any]) throws -> ToolOutput {
@@ -745,14 +787,14 @@ enum BuiltinTools {
         guard let s = String(data: data, encoding: .utf8) else {
             throw BuiltinToolError("invalid argument 'input': decoded bytes are not valid UTF-8")
         }
-        return (s, false)
+        return ToolOutput(content: s, isError: false)
     }
 
     private static func sleepTool(_ args: [String: Any]) async throws -> ToolOutput {
         var seconds = try requireDouble(args, "seconds")
         seconds = min(max(seconds, 0), 3600)
         try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-        return ("Slept for \(seconds) seconds.", false)
+        return ToolOutput(content: "Slept for \(seconds) seconds.", isError: false)
     }
 
     // MARK: - Filesystem tools
@@ -811,10 +853,10 @@ enum BuiltinTools {
             }
             lines.sort()
         }
-        return (lines.prefix(maxEntries).joined(separator: "\n"), false)
+        return ToolOutput(content: lines.prefix(maxEntries).joined(separator: "\n"), isError: false)
     }
 
-    private static func readFile(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
+    private static func readFile(_ args: [String: Any], workdir: Workdir, chatFilename: String) throws -> ToolOutput {
         let path = try requireString(args, "path")
         let offset = optionalInt(args, "offset") ?? 1
         let limit = optionalInt(args, "limit") ?? 2000
@@ -836,16 +878,19 @@ enum BuiltinTools {
         guard let data = fm.contents(atPath: resolved) else {
             throw BuiltinToolError("invalid argument 'path': could not read: \(path)")
         }
-        return try formatFileContent(data, path: path, offset: offset, limit: limit)
+        return try formatFileContent(data, path: path, offset: offset, limit: limit, chatFilename: chatFilename)
     }
 
     /// Shared read_file formatting pipeline (classification, document/image
     /// extraction, text slicing with line numbers, truncation), used by both
     /// the local and the SSH-backed implementations once the raw bytes are in
     /// hand. Text files are returned with line numbers; document binaries
-    /// (docx/odt/rtf/pdf) are extracted to text first; images are OCR'd to
-    /// text; both extractions get the same offset/limit slicing as plain text.
-    static func formatFileContent(_ data: Data, path: String, offset: Int, limit: Int) throws -> ToolOutput {
+    /// (docx/odt/rtf/pdf) are extracted to text first; images are processed
+    /// (resized/re-encoded) and returned with a classification+OCR fallback so
+    /// the request builders can send them as image blocks on vision-capable
+    /// connections and the fallback text on vision-incapable ones — exactly
+    /// like user-attached images.
+    static func formatFileContent(_ data: Data, path: String, offset: Int, limit: Int, chatFilename: String) throws -> ToolOutput {
         let hint = DocumentTypeHint(filename: path)
         let kind = DocumentClassifier.classify(data: data, hint: hint)
 
@@ -861,24 +906,35 @@ enum BuiltinTools {
             case .success(let extraction):
                 return formatTextLines(extraction.text, offset: offset, limit: limit)
             case .unsupported(_, let reason):
-                return ("Could not extract \(path): \(reason)", false)
+                return ToolOutput(content: "Could not extract \(path): \(reason)", isError: false)
             case .failed(let reason):
-                return ("Failed to extract \(path): \(reason)", false)
+                return ToolOutput(content: "Failed to extract \(path): \(reason)", isError: false)
             }
 
         case .image:
-            switch DocumentExtractor.ocrImage(data) {
-            case .success(let extraction):
-                return formatTextLines(extraction.text, offset: offset, limit: limit)
-            case .unsupported(_, let reason):
-                return ("Could not OCR \(path): \(reason)", false)
-            case .failed(let reason):
-                return ("Failed to OCR \(path): \(reason)", false)
-            }
+            return formatImageContent(data, path: path)
 
         case .unsupportedBinary:
-            return ("Binary file \(path) is not a supported format. Only text, document (docx/doc/odt/rtf/pdf), and image files can be read.", false)
+            return ToolOutput(content: "Binary file \(path) is not a supported format. Only text, document (docx/doc/odt/rtf/pdf), and image files can be read.", isError: false)
         }
+    }
+
+    /// Processes an image read by `read_file`: resizes/re-encodes it and
+    /// generates the classification+OCR fallback. The processed image bytes
+    /// are returned on the `ToolOutput` (no attachment file is written to
+    /// disk); the request builders send them as an image block on
+    /// vision-capable connections and the fallback text on vision-incapable
+    /// ones. The `content` is the fallback text (classification + OCR), so a
+    /// vision-incapable connection gets a useful textual description directly
+    /// in the tool result.
+    private static func formatImageContent(_ data: Data, path: String) -> ToolOutput {
+        guard let processed = ImageProcessor.process(data) else {
+            return ToolOutput(content: "Could not process image \(path): unsupported or undecodable image format.", isError: false)
+        }
+        let mimeType = imageMimeType(for: processed.data) ?? "image/\(processed.ext)"
+        let fallback = ImageFallbackSynthesizer.fallback(for: data)
+        let image = ProcessedToolImage(data: processed.data, mimeType: mimeType, fallback: fallback)
+        return ToolOutput(content: fallback, isError: false, image: image)
     }
 
     /// Formats text as line-numbered output with offset/limit slicing,
@@ -893,7 +949,7 @@ enum BuiltinTools {
         let effectiveLimit = min(limit, hardLimit)
         let startIdx = offset - 1
         guard startIdx < cleaned.count else {
-            return ("", false)
+            return ToolOutput(content: "", isError: false)
         }
         let endIdx = min(startIdx + effectiveLimit, cleaned.count)
         let slice = cleaned[startIdx..<endIdx]
@@ -909,7 +965,7 @@ enum BuiltinTools {
         if endIdx - startIdx == hardLimit && cleaned.count > endIdx {
             out.append("... (truncated at \(hardLimit) lines)")
         }
-        return (out.joined(separator: "\n"), false)
+        return ToolOutput(content: out.joined(separator: "\n"), isError: false)
     }
 
     static func imageMimeType(for data: Data) -> String? {
@@ -937,7 +993,7 @@ enum BuiltinTools {
         }
         let data = Data(content.utf8)
         try data.write(to: URL(fileURLWithPath: resolved), options: .atomic)
-        return ("Wrote \(data.count) bytes to \(path)", false)
+        return ToolOutput(content: "Wrote \(data.count) bytes to \(path)", isError: false)
     }
 
     private static func findFile(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
@@ -973,7 +1029,7 @@ enum BuiltinTools {
         matches.sort()
         var out = matches.prefix(200).joined(separator: "\n")
         if matches.count > 200 { out += "\n... (truncated at 200 results)" }
-        return (out, false)
+        return ToolOutput(content: out, isError: false)
     }
 
     /// Matching lines are cut at this length (with an ellipsis) so a single
@@ -1102,14 +1158,14 @@ enum BuiltinTools {
         var result = out.joined(separator: "\n")
         if hitResultCap { result += "\n... (truncated at \(maxResults) results)" }
         else if hitByteCap { result += "\n... (truncated, output size limit)" }
-        return (result, false)
+        return ToolOutput(content: result, isError: false)
     }
 
     private static func mkdir(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
         let path = try requireString(args, "path")
         let resolved = try workdir.resolve(path)
         try FileManager.default.createDirectory(atPath: resolved, withIntermediateDirectories: true)
-        return ("Created directory \(path)", false)
+        return ToolOutput(content: "Created directory \(path)", isError: false)
     }
 
     private static func mv(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
@@ -1118,7 +1174,7 @@ enum BuiltinTools {
         let resolvedSrc = try workdir.resolve(src)
         let resolvedDst = try workdir.resolve(dst)
         try FileManager.default.moveItem(atPath: resolvedSrc, toPath: resolvedDst)
-        return ("Moved \(src) to \(dst)", false)
+        return ToolOutput(content: "Moved \(src) to \(dst)", isError: false)
     }
 
     private static func rm(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
@@ -1139,7 +1195,7 @@ enum BuiltinTools {
             }
         }
         try fm.removeItem(atPath: resolved)
-        return ("Deleted \(path)", false)
+        return ToolOutput(content: "Deleted \(path)", isError: false)
     }
 
     private static func stat(_ args: [String: Any], workdir: Workdir) async throws -> ToolOutput {
@@ -1180,11 +1236,11 @@ enum BuiltinTools {
 
         let sorted = json.sorted { $0.key < $1.key }
         let parts = sorted.map { "\"\($0.key)\":\"\($0.value)\"" }
-        return ("{\(parts.joined(separator: ","))}", false)
+        return ToolOutput(content: "{\(parts.joined(separator: ","))}", isError: false)
     }
 
     private static func pwd(_ workdir: Workdir) -> ToolOutput {
-        (workdir.currentDirectory, false)
+        ToolOutput(content: workdir.currentDirectory, isError: false)
     }
 
     // MARK: - Code tools
@@ -1220,7 +1276,7 @@ enum BuiltinTools {
         let ops: [PlannedPatchOp]
         switch planApplyPatch(args: args, workdir: workdir) {
         case .success(let planned): ops = planned
-        case .failure(let message): return (message, true)
+        case .failure(let message): return ToolOutput(content: message, isError: true)
         }
 
         let fm = FileManager.default
@@ -1262,7 +1318,7 @@ enum BuiltinTools {
             }
         }
 
-        return (summary.joined(separator: "\n"), false)
+        return ToolOutput(content: summary.joined(separator: "\n"), isError: false)
     }
 
     // MARK: - Shell tools
@@ -1316,13 +1372,13 @@ enum BuiltinTools {
             var text = stdout
             if !stderr.isEmpty { text += stderr }
             text += "\n[exit code: timed out after \(Int(timeout!))s]"
-            return (text, false)
+            return ToolOutput(content: text, isError: false)
         }
 
         if exitCode == 0 {
-            return ("\(stdout)\n[exit code: 0]", false)
+            return ToolOutput(content: "\(stdout)\n[exit code: 0]", isError: false)
         } else {
-            return ("\(stdout)\(stderr)\n[exit code: \(exitCode)]", false)
+            return ToolOutput(content: "\(stdout)\(stderr)\n[exit code: \(exitCode)]", isError: false)
         }
     }
 
@@ -1344,8 +1400,8 @@ enum BuiltinTools {
         }
         if let errorMessage = result.errorMessage {
             let number = result.errorNumber ?? -1
-            return ("AppleScript error: \(errorMessage) (number \(number))", false)
+            return ToolOutput(content: "AppleScript error: \(errorMessage) (number \(number))", isError: false)
         }
-        return (result.output ?? "", false)
+        return ToolOutput(content: result.output ?? "", isError: false)
     }
 }

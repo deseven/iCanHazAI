@@ -188,10 +188,11 @@ actor ChatRenderQueue {
                 if let aIdx = lastAssistantOutIndex {
                     var folded = out[aIdx].toolResults ?? []
                     for r in results {
+                        let imageData = r.image.map { ChatMessageData.ToolResultData.ToolResultImageData(mimeType: $0.mimeType, fallback: $0.fallback) }
                         if let i = folded.firstIndex(where: { $0.callID == r.callID }) {
-                            folded[i] = ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming, isDenied: r.isDenied, isCancelled: r.isCancelled, summary: r.summary)
+                            folded[i] = ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming, isDenied: r.isDenied, isCancelled: r.isCancelled, summary: r.summary, image: imageData)
                         } else {
-                            folded.append(ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming, isDenied: r.isDenied, isCancelled: r.isCancelled, summary: r.summary))
+                            folded.append(ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming, isDenied: r.isDenied, isCancelled: r.isCancelled, summary: r.summary, image: imageData))
                         }
                     }
                     out[aIdx].toolResults = folded

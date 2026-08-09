@@ -105,6 +105,29 @@ struct OpenAIProvider: LLMProvider {
         }
         if msg.role == .tool, let results = msg.toolResults, !results.isEmpty {
             let r = results[0]
+            // A tool result carrying a processed image (from read_file on an
+            // image) is sent as an image_url part on vision-capable
+            // connections, or as the classification+OCR fallback text on
+            // vision-incapable ones — exactly like user-attached images.
+            if let image = r.image {
+                if imageInput {
+                    let url = "data:\(image.mimeType);base64,\(image.data)"
+                    return [
+                        "role": "tool",
+                        "content": [[
+                            "type": "image_url",
+                            "image_url": ["url": url, "detail": "auto"] as [String: Any],
+                        ] as [String: Any]],
+                        "tool_call_id": r.callID,
+                    ] as [String: Any]
+                } else {
+                    return [
+                        "role": "tool",
+                        "content": image.fallback,
+                        "tool_call_id": r.callID,
+                    ] as [String: Any]
+                }
+            }
             return [
                 "role": "tool",
                 "content": r.content,
