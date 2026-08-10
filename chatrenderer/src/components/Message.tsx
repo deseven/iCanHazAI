@@ -12,6 +12,7 @@ import type { RefObject } from "preact";
 import { memo } from "preact/compat";
 import { createPortal } from "preact/compat";
 import type { ChatMessage, AttachmentData } from "../types";
+import { canRegenerate } from "../regenVisibility";
 import { renderMarkdown, renderInline, renderMermaidIn, restoreCachedMermaid, endsWithUnclosedMermaid, renderDiff, highlightCode } from "../markdown";
 import { sendToHost } from "../bridge";
 import { observeVisibility } from "../visibility";
@@ -32,6 +33,13 @@ interface Props {
   /** The role's accent color as an "#RRGGBB" hex string, used to color the
    *  assistant message title. Null when no role is set. */
   roleAccent: string | null;
+  /** Feature flags gating renderer UI capabilities (regen button, trees).
+   *  Absent when the host hasn't sent features (treated as all-false). */
+  features?: import("../types").ChatSnapshotFeatures;
+  /** Whether this message is the first in the chat. The Regen button is
+   *  hidden on the first message (empty prefix — nothing to rebuild a
+   *  request from). */
+  isFirstMessage: boolean;
   /** Whether Thinking blocks should be expanded by default (host preference). */
   defaultThinkingOpen: boolean;
   /** Whether Tool Use blocks should be expanded by default (host preference). */
@@ -618,6 +626,8 @@ export const MessageItem = memo(function MessageItem({
   isStreaming,
   roleName,
   roleAccent,
+  features,
+  isFirstMessage,
   defaultThinkingOpen,
   defaultToolOpen,
 }: Props) {
@@ -701,6 +711,8 @@ export const MessageItem = memo(function MessageItem({
     .filter(Boolean)
     .join(" · ");
 
+  const showRegen = canRegenerate(message, isFirstMessage, features, isStreaming);
+
   return (
     <div
       class={`msg msg-${message.role}`}
@@ -736,6 +748,15 @@ export const MessageItem = memo(function MessageItem({
             >
               <Copy size={14} />
             </button>
+            {showRegen && (
+              <button
+                class="msg-action-btn"
+                title="Regenerate"
+                onClick={() => sendToHost({ type: "regenerate", messageId: message.id })}
+              >
+                <RotateCcw size={14} />
+              </button>
+            )}
             <button
               class="msg-action-btn"
               title="Edit"
@@ -866,6 +887,15 @@ export const MessageItem = memo(function MessageItem({
             >
               <Copy size={14} />
             </button>
+            {showRegen && (
+              <button
+                class="msg-action-btn"
+                title="Regenerate"
+                onClick={() => sendToHost({ type: "regenerate", messageId: message.id })}
+              >
+                <RotateCcw size={14} />
+              </button>
+            )}
             <button
               class="msg-action-btn"
               title="Edit"

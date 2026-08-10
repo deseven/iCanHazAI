@@ -105,6 +105,18 @@ export interface AttachmentData {
   failureReason?: string | null;
 }
 
+/** Feature flags gating renderer UI capabilities, derived from the selected
+ *  chat's role `[features]` table. Each flag gates a UI capability; all default
+ *  to false when the role has no `[features]` table or omits the key. */
+export interface ChatSnapshotFeatures {
+  /** Whether the per-message Regen button is shown on assistant messages. */
+  responseRegen?: boolean;
+  /** Whether chat trees (non-destructive regen/edit branching) are enabled.
+   *  Declared here so the wire shape doesn't change again; the tree UI itself
+   *  arrives later. */
+  chatTrees?: boolean;
+}
+
 export interface ChatSnapshot {
   /** Stable chat identifier (filename). Changes when the user switches chats. */
   chatId: string;
@@ -120,6 +132,10 @@ export interface ChatSnapshot {
    *  Appearance-dependent — the host re-pushes a fresh snapshot on theme
    *  change so this tracks light/dark mode. */
   roleAccent?: string | null;
+  /** Feature flags gating renderer UI capabilities (regen button, trees).
+   *  Derived from the selected chat's role at snapshot time. Absent when the
+   *  host hasn't sent features (treated as all-false by the renderer). */
+  features?: ChatSnapshotFeatures;
 }
 
 /**
@@ -153,6 +169,9 @@ export type BridgeMessage =
   | { type: "edit"; messageId: string }
   | { type: "delete"; messageId: string }
   | { type: "retry" }
+  /** Regenerate the assistant response at `messageId` (an assistant message).
+   *  The host truncates everything after it and re-runs the request. */
+  | { type: "regenerate"; messageId: string }
   | { type: "scrollState"; atBottom: boolean }
   | { type: "ready" }
   /** The first snapshot of `chatId` has been committed to the DOM (and had a

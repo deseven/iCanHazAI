@@ -192,8 +192,12 @@ struct ChatView: View {
         )) { pending in
             if let item = store.selectedChatItem,
                let msg = item.chat?.messages.first(where: { $0.id == pending.id }) {
+                let followOn = Self.followOnMessageCount(for: pending.id, in: item.chat)
                 EditMessageSheet(
                     initialText: msg.content,
+                    followOnWarning: msg.role == .user && followOn > 0
+                        ? "Saving will regenerate the response; \(followOn) following message(s) will be deleted."
+                        : nil,
                     onCancel: { store.pendingEditMessageID = nil },
                     onConfirm: { newText in
                         store.editMessage(messageID: pending.id, to: newText)
@@ -206,16 +210,21 @@ struct ChatView: View {
             get: { store.pendingDeleteMessageID.map { PendingID(id: $0) } },
             set: { if $0 == nil { store.pendingDeleteMessageID = nil } }
         )) { pending in
-            ConfirmActionSheet(
-                title: "Delete this message?",
-                message: "This action cannot be undone.",
-                confirmLabel: "Delete",
-                onCancel: { store.pendingDeleteMessageID = nil },
-                onConfirm: {
-                    store.deleteMessage(messageID: pending.id)
-                    store.pendingDeleteMessageID = nil
-                }
-            )
+            if let item = store.selectedChatItem {
+                let followOn = Self.followOnMessageCount(for: pending.id, in: item.chat)
+                ConfirmActionSheet(
+                    title: "Delete this message?",
+                    message: followOn > 0
+                        ? "This action cannot be undone. This will also delete \(followOn) following message(s)."
+                        : "This action cannot be undone.",
+                    confirmLabel: "Delete",
+                    onCancel: { store.pendingDeleteMessageID = nil },
+                    onConfirm: {
+                        store.deleteMessage(messageID: pending.id)
+                        store.pendingDeleteMessageID = nil
+                    }
+                )
+            }
         }
         .sheet(item: Binding(
             get: { store.pendingDenyToolCallID.map { ToolCallIDTarget(callID: $0) } },
@@ -914,6 +923,16 @@ enum AttachmentPickerTypes {
 /// A wrapper that makes a `UUID` `Identifiable` so it can drive `.sheet(item:)`.
 private struct PendingID: Identifiable {
     let id: UUID
+}
+
+extension ChatView {
+    /// The number of messages that follow `messageID` in the chat — i.e. the
+    /// continuation that a delete or user-message edit would remove. Pure so it
+    /// can be unit-tested without a view instance.
+    nonisolated static func followOnMessageCount(for messageID: UUID, in chat: Chat?) -> Int {
+        guard let chat, let idx = chat.messages.firstIndex(where: { $0.id == messageID }) else { return 0 }
+        return max(0, chat.messages.count - idx - 1)
+    }
 }
 
 /// A wrapper that makes a tool-call id `Identifiable` so it can drive

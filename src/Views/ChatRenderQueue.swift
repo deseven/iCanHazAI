@@ -15,7 +15,7 @@ enum RenderJob: Sendable {
     /// Render the given chat state, diffed against the last rendered state.
     /// A snapshot is self-contained: it supersedes an earlier queued (not yet
     /// processed) snapshot, so only the latest one is kept.
-    case snapshot(chatId: String, messages: [ChatMessage], isStreaming: Bool, roleName: String?, roleAccent: String?)
+    case snapshot(chatId: String, messages: [ChatMessage], isStreaming: Bool, roleName: String?, roleAccent: String?, features: ChatSnapshotFeaturesData)
 }
 
 /// Serializes and off-loads the expensive part of the Swift → renderer bridge:
@@ -38,6 +38,7 @@ actor ChatRenderQueue {
     private var lastStreamingState: Bool = false
     private var lastRoleName: String? = nil
     private var lastRoleAccent: String? = nil
+    private var lastFeatures: ChatSnapshotFeaturesData? = nil
 
     private var pending: [RenderJob] = []
     private var draining = false
@@ -84,8 +85,8 @@ actor ChatRenderQueue {
             // The renderer blanks itself, so the next snapshot must be full.
             clearDiffState()
             await send(.unload)
-        case .snapshot(let chatId, let messages, let isStreaming, let roleName, let roleAccent):
-            await processSnapshot(chatId: chatId, messages: messages, isStreaming: isStreaming, roleName: roleName, roleAccent: roleAccent)
+        case .snapshot(let chatId, let messages, let isStreaming, let roleName, let roleAccent, let features):
+            await processSnapshot(chatId: chatId, messages: messages, isStreaming: isStreaming, roleName: roleName, roleAccent: roleAccent, features: features)
         }
     }
 
@@ -96,26 +97,29 @@ actor ChatRenderQueue {
         lastStreamingState = false
         lastRoleName = nil
         lastRoleAccent = nil
+        lastFeatures = nil
     }
 
     /// Diffs the given chat state against the last rendered state and sends
     /// incremental updates (updateMessage / addMessage / deleteMessage) when
     /// possible. Falls back to a full snapshot on chat switch, role/accent
-    /// change, or streaming end.
-    private func processSnapshot(chatId: String, messages: [ChatMessage], isStreaming: Bool, roleName: String?, roleAccent: String?) async {
+    /// change, feature-flag change, or streaming end.
+    private func processSnapshot(chatId: String, messages: [ChatMessage], isStreaming: Bool, roleName: String?, roleAccent: String?, features: ChatSnapshotFeaturesData) async {
         let currentMessages = Self.projectToolResults(messages)
         let currentIds = currentMessages.map(\.id)
 
-        // A role/accent change only affects the assistant message title, which
-        // the renderer derives from the snapshot — incremental message diffs
-        // wouldn't reflect it, so force a fresh full snapshot.
-        if chatId != renderedChatId || roleName != lastRoleName || roleAccent != lastRoleAccent {
+        // A role/accent/features change affects things the renderer derives
+        // from the snapshot (assistant title, regen button visibility), which
+        // incremental message diffs wouldn't reflect, so force a fresh full
+        // snapshot.
+        if chatId != renderedChatId || roleName != lastRoleName || roleAccent != lastRoleAccent || features != lastFeatures {
             renderedChatId = chatId
             lastStreamingState = isStreaming
             lastRoleName = roleName
             lastRoleAccent = roleAccent
+            lastFeatures = features
             remember(currentMessages, ids: currentIds)
-            await send(.snapshot(snapshot: ChatSnapshotData(chatId: chatId, messages: currentMessages, isStreaming: isStreaming, roleName: roleName, roleAccent: roleAccent)))
+            await send(.snapshot(snapshot: ChatSnapshotData(chatId: chatId, messages: currentMessages, isStreaming: isStreaming, roleName: roleName, roleAccent: roleAccent, features: features)))
             return
         }
 
@@ -123,7 +127,7 @@ actor ChatRenderQueue {
             lastStreamingState = isStreaming
             if !isStreaming {
                 remember(currentMessages, ids: currentIds)
-                await send(.snapshot(snapshot: ChatSnapshotData(chatId: chatId, messages: currentMessages, isStreaming: false, roleName: roleName, roleAccent: roleAccent)))
+                await send(.snapshot(snapshot: ChatSnapshotData(chatId: chatId, messages: currentMessages, isStreaming: false, roleName: roleName, roleAccent: roleAccent, features: features)))
                 return
             } else {
                 await send(.streaming(chatId: chatId, isStreaming: true))

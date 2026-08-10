@@ -78,8 +78,8 @@ struct ChatRenderQueueTests {
         ChatMessage(id: id, role: role, content: content, timestamp: Date(timeIntervalSince1970: 1_700_000_000))
     }
 
-    private func job(_ chatId: String, _ messages: [ChatMessage], streaming: Bool = false) -> RenderJob {
-        .snapshot(chatId: chatId, messages: messages, isStreaming: streaming, roleName: nil, roleAccent: nil)
+    private func job(_ chatId: String, _ messages: [ChatMessage], streaming: Bool = false, features: ChatSnapshotFeaturesData = ChatSnapshotFeaturesData()) -> RenderJob {
+        .snapshot(chatId: chatId, messages: messages, isStreaming: streaming, roleName: nil, roleAccent: nil, features: features)
     }
 
     // MARK: - Diff behavior

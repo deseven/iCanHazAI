@@ -424,6 +424,8 @@ function ChatApp() {
                 isStreaming={m.id === streamingId}
                 roleName={snapshot?.roleName ?? null}
                 roleAccent={snapshot?.roleAccent ?? null}
+                features={snapshot?.features}
+                isFirstMessage={m.id === messages[0]?.id}
                 defaultThinkingOpen={expandThinking}
                 defaultToolOpen={expandToolUse}
               />

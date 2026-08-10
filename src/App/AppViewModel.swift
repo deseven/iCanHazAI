@@ -887,6 +887,20 @@ final class AppViewModel: ObservableObject {
         role?.hasAttachments ?? false
     }
 
+    /// Whether response regeneration is enabled for the selected chat: the
+    /// role's `with_response_regen` feature flag. Off when the role has no
+    /// `[features]` table or omits the key — the per-message Regen button is
+    /// gated on this.
+    var selectedChatSupportsResponseRegen: Bool {
+        Self.supportsResponseRegen(role: selectedRole)
+    }
+
+    /// Pure decision logic behind `selectedChatSupportsResponseRegen`
+    /// (testable without an app instance).
+    nonisolated static func supportsResponseRegen(role: Role?) -> Bool {
+        role?.hasResponseRegen ?? false
+    }
+
     /// Token usage for the currently selected chat, as reported by the
     /// provider on the last assistant response. Nil until the first
     /// response with usage completes.
@@ -909,6 +923,14 @@ final class AppViewModel: ObservableObject {
         // Pin to the bottom so the regenerated reply stays in view.
         chatWebViewModel?.scrollToBottom()
         Task { await engine.retryLastMessage(filename: filename) }
+    }
+
+    /// Regenerates the assistant response at `assistantMessageID` for the
+    /// selected chat. Pins to the bottom so the new reply stays in view.
+    func regenerateMessage(assistantMessageID: UUID) {
+        guard let filename = selectedChatID else { return }
+        chatWebViewModel?.scrollToBottom()
+        Task { await engine.regenerate(filename: filename, assistantMessageID: assistantMessageID) }
     }
 
     func stopStreaming() {

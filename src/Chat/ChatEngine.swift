@@ -1828,20 +1828,80 @@ actor ChatEngine {
         }
     }
 
+    /// Regenerates the assistant response at `assistantMessageID`: truncates
+    /// the chat to everything before that message, appends a fresh empty
+    /// assistant placeholder, and re-runs the tool loop. The original response
+    /// and everything that followed it are deleted.
+    ///
+    /// Fully data-driven: works from any chat state (including chats reloaded
+    /// from disk after a restart) and does not depend on any in-memory flag.
+    /// The request is rebuilt from the chat's role + the surviving prefix
+    /// (system prompt + all messages before the target). The preceding message
+    /// can be anything (user, tool-result, or another assistant message) —
+    /// truncating right before an assistant message always yields a
+    /// provider-valid prefix, because tool results are persisted immediately
+    /// after the assistant message that issued them.
+    ///
+    /// No-ops when the chat is streaming, the message can't be found, isn't an
+    /// assistant message, or is the first message in the chat (empty prefix).
+    func regenerate(filename: String, assistantMessageID: UUID) async {
+        guard !isStreaming(filename: filename) else { return }
+        await ensureChatLoaded(filename: filename)
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        guard let chat = records[idx].chat else { return }
+        guard let connection = effectiveConnection(for: chat) else {
+            emit(.error("Please select a connection in the status bar."))
+            return
+        }
+        guard let targetIdx = chat.messages.firstIndex(where: { $0.id == assistantMessageID }) else { return }
+        // Only assistant messages can be regenerated, and never the first
+        // message (empty prefix — nothing to rebuild a request from).
+        guard chat.messages[targetIdx].role == .assistant, targetIdx > 0 else { return }
+
+        var updatedChat = chat
+        // Safety net for chats persisted with an incomplete tool-call turn
+        // (a stop before this was handled reliably): an assistant `tool_calls`
+        // message without all of its results is rejected by providers.
+        updatedChat.messages.finalizeStoppedTurn()
+        // Re-locate the target after finalize (it may have shifted if the
+        // safety net removed trailing placeholders before it).
+        guard let targetIdx2 = updatedChat.messages.firstIndex(where: { $0.id == assistantMessageID }),
+              targetIdx2 > 0 else { return }
+        // Truncate to everything before the target message.
+        updatedChat.messages = Array(updatedChat.messages[..<targetIdx2])
+        // Append a fresh placeholder assistant message for the new response.
+        updatedChat.messages.append(ChatMessage(role: .assistant, content: "", connectionName: connection.displayName))
+        records[idx].chat = updatedChat
+        emit(.chatsChanged(records))
+
+        // Rebuild the request history: system prompt (from the role's prompt,
+        // with variables substituted) followed by the surviving prefix.
+        var messages: [ChatMessage] = []
+        if let systemMsg = await systemMessage(for: updatedChat) {
+            messages.append(systemMsg)
+        }
+        messages.append(contentsOf: updatedChat.messages.dropLast())
+
+        runToolLoop(for: filename, connection: connection, messages: messages)
+    }
+
     /// Retries (regenerates) the last assistant turn for the given chat.
     ///
-    /// This is fully data-driven: it works from any chat state (including chats
-    /// reloaded from disk after an app restart) and does not depend on any
-    /// in-memory "retryable" flag. The request is rebuilt from the chat's
-    /// current role + message history: everything after the last user message
-    /// (the previous assistant response, any tool calls/results) is dropped, a
-    /// fresh placeholder assistant message is appended, and the tool loop is
-    /// re-run — equivalent to the user just re-sending their last message.
+    /// When the last message is an assistant message, this delegates to
+    /// [`regenerate`](#) on that message. When the last message is a user
+    /// message (the empty-input send shortcut), it appends a fresh placeholder
+    /// and re-runs the request from that user message — the standard
+    /// "re-send my last message" behavior.
     func retryLastMessage(filename: String) async {
         guard !isStreaming(filename: filename) else { return }
         await ensureChatLoaded(filename: filename)
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         guard let chat = records[idx].chat else { return }
+        // If the last message is an assistant message, regenerate it directly.
+        if let last = chat.messages.last, last.role == .assistant, chat.messages.count > 1 {
+            await regenerate(filename: filename, assistantMessageID: last.id)
+            return
+        }
         guard let connection = effectiveConnection(for: chat) else {
             emit(.error("Please select a connection in the status bar."))
             return
@@ -2851,8 +2911,11 @@ actor ChatEngine {
 
     // MARK: - Message editing / deletion
 
-    /// Edits the content of a message in place (plain text). Used by the
-    /// message hover "edit" action. Persists the updated chat to disk.
+    /// Edits a message's content. User-message edits restart the turn: the
+    /// edited content is applied to the same message id, everything after it
+    /// is deleted, a fresh assistant placeholder is appended, and the tool
+    /// loop re-runs (edit & resend). Assistant-message edits stay in-place
+    /// text fixes (no request re-run — nothing to regenerate from).
     func editMessage(filename: String, messageID: UUID, newText: String) async {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         await ensureChatLoaded(filename: filename)
@@ -2860,54 +2923,72 @@ actor ChatEngine {
         guard let msgIdx = chat.messages.firstIndex(where: { $0.id == messageID }) else { return }
         let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        chat.messages[msgIdx].content = trimmed
-        // Clear any stale error/thinking on edit so the message renders cleanly.
-        chat.messages[msgIdx].error = nil
-        saveChat(chat, filename: filename)
-        emit(.chatsChanged(records))
+        let target = chat.messages[msgIdx]
+        if target.role == .user {
+            // Edit & resend: apply the new content to the same message id,
+            // truncate everything after it, append a fresh assistant
+            // placeholder, and re-run the request.
+            guard let connection = effectiveConnection(for: chat) else {
+                emit(.error("Please select a connection in the status bar."))
+                return
+            }
+            chat.messages[msgIdx].content = trimmed
+            chat.messages[msgIdx].error = nil
+            // Clean up attachment files owned by every removed message.
+            for m in chat.messages[(msgIdx + 1)...] {
+                if let attachments = m.attachments {
+                    for attachment in attachments {
+                        env.deleteAttachment(attachment, chatFilename: filename)
+                    }
+                }
+            }
+            chat.messages = Array(chat.messages[0...msgIdx])
+            // Safety net on the surviving prefix (mirrors sendMessage).
+            chat.messages.finalizeStoppedTurn()
+            chat.messages.append(ChatMessage(role: .assistant, content: "", connectionName: connection.displayName))
+            records[idx].chat = chat
+            emit(.chatsChanged(records))
+            // Rebuild the request history: system prompt + surviving prefix.
+            var messages: [ChatMessage] = []
+            if let systemMsg = await systemMessage(for: chat) {
+                messages.append(systemMsg)
+            }
+            messages.append(contentsOf: chat.messages.dropLast())
+            runToolLoop(for: filename, connection: connection, messages: messages)
+        } else {
+            // Assistant-message edit: in-place text fix only.
+            chat.messages[msgIdx].content = trimmed
+            // Clear any stale error/thinking on edit so the message renders cleanly.
+            chat.messages[msgIdx].error = nil
+            saveChat(chat, filename: filename)
+            emit(.chatsChanged(records))
+        }
     }
 
-    /// Deletes a single message from the message tree by id. Persists the
-    /// updated chat to disk and removes any image files owned by the message.
-    ///
-    /// When deleting an assistant message that issued tool calls, the
-    /// following `tool`-role result messages whose `callID` matches one of the
-    /// assistant's tool calls are removed as well — they are view projections
-    /// of that assistant turn and would otherwise be orphaned (folded onto a
-    /// now-deleted message and silently dropped by the renderer).
+    /// Deletes a message and everything after it (its whole continuation).
+    /// Rationale: deleting a random middle message either confuses the model
+    /// (missing context it refers to) or breaks provider validity (orphaned
+    /// tool results). After the deletion, `finalizeStoppedTurn()` runs on
+    /// the surviving tail as a safety net. Attachment-file cleanup applies to
+    /// all removed messages.
     func deleteMessage(filename: String, messageID: UUID) async {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         await ensureChatLoaded(filename: filename)
         guard var chat = records[idx].chat else { return }
         guard let msgIdx = chat.messages.firstIndex(where: { $0.id == messageID }) else { return }
-        // Collect the callIDs of tool calls issued by the deleted assistant
-        // message so we can also remove their result messages.
-        let callIDs: Set<String> = Set(chat.messages[msgIdx].toolCalls?.map(\.id) ?? [])
-        // Clean up attachment files owned by the deleted message.
-        if let attachments = chat.messages[msgIdx].attachments {
-            for attachment in attachments {
-                env.deleteAttachment(attachment, chatFilename: filename)
-            }
-        }
-        chat.messages.remove(at: msgIdx)
-        // Remove any following tool-result messages whose callID belongs to the
-        // deleted assistant message. They are consecutive (the tool loop
-        // appends results right after the assistant message), so we scan
-        // forward from the removal point and stop at the first non-matching
-        // message.
-        if !callIDs.isEmpty {
-            let i = msgIdx
-            while i < chat.messages.count {
-                let m = chat.messages[i]
-                if m.role == .tool,
-                   let results = m.toolResults,
-                   results.contains(where: { callIDs.contains($0.callID) }) {
-                    chat.messages.remove(at: i)
-                    continue
+        // Clean up attachment files owned by every removed message (the target
+        // and its whole continuation).
+        for m in chat.messages[msgIdx...] {
+            if let attachments = m.attachments {
+                for attachment in attachments {
+                    env.deleteAttachment(attachment, chatFilename: filename)
                 }
-                break
             }
         }
+        // Truncate to everything before the target message.
+        chat.messages = Array(chat.messages[..<msgIdx])
+        // Safety net on the surviving tail.
+        chat.messages.finalizeStoppedTurn()
         saveChat(chat, filename: filename)
         emit(.chatsChanged(records))
     }

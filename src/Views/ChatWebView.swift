@@ -9,8 +9,14 @@ import CoreGraphics
 
 /// A multiline plain-text editing modal for editing a message's content.
 /// Presented by `ChatView` when the web view bridge requests an edit action.
+/// When `followOnWarning` is non-nil (editing a user message that has messages
+/// after it), a warning line explains that saving will regenerate the response
+/// and delete the following messages.
 struct EditMessageSheet: View {
     let initialText: String
+    /// Optional warning shown when saving the edit will delete follow-on
+    /// messages (user-message edit & resend). Nil for in-place assistant edits.
+    let followOnWarning: String?
     let onCancel: () -> Void
     let onConfirm: (String) -> Void
 
@@ -33,6 +39,12 @@ struct EditMessageSheet: View {
                         .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
                 )
                 .focused($isFocused)
+
+            if let followOnWarning {
+                Text(followOnWarning)
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
 
             HStack {
                 Spacer()
@@ -593,6 +605,14 @@ final class ChatWebViewModel: ObservableObject {
                 .image
         }
 
+        // Feature flags from the selected chat's role, resolved at snapshot
+        // time so toggling a role's `[features]` takes effect immediately.
+        let role = store.selectedRole
+        let features = ChatSnapshotFeaturesData(
+            responseRegen: role?.hasResponseRegen ?? false,
+            chatTrees: role?.hasChatTrees ?? false
+        )
+
         enqueueRenderJob(.snapshot(
             chatId: item.id,
             messages: chat.messages,
@@ -600,7 +620,8 @@ final class ChatWebViewModel: ObservableObject {
             roleName: item.effectiveRoleName,
             // The accent is appearance-dependent — never persisted; re-resolved
             // on theme change (see `pushTheme`).
-            roleAccent: RoleAccent.hexColor(for: store.selectedRole?.config.accent)
+            roleAccent: RoleAccent.hexColor(for: store.selectedRole?.config.accent),
+            features: features
         ))
     }
 
@@ -701,6 +722,10 @@ final class ChatWebViewModel: ObservableObject {
             store.pendingDeleteMessageID = UUID(uuidString: messageId)
         case .retry:
             store.retryLastMessage()
+        case .regenerate(let messageId):
+            if let id = UUID(uuidString: messageId) {
+                store.regenerateMessage(assistantMessageID: id)
+            }
         case .scrollState(let atBottom):
             store.selectedChatAtBottom = atBottom
         case .ready:
@@ -924,6 +949,10 @@ enum BridgeMessageData: Codable, Sendable {
     case edit(messageId: String)
     case delete(messageId: String)
     case retry
+    /// Regenerate the assistant response at `messageId` (an assistant
+    /// message). The host truncates everything after it and re-runs the
+    /// request.
+    case regenerate(messageId: String)
     case scrollState(atBottom: Bool)
     case ready
     /// The renderer finished committing the first snapshot of `chatId` to the
@@ -966,6 +995,9 @@ enum BridgeMessageData: Codable, Sendable {
             try c.encode(id, forKey: .messageId)
         case .retry:
             try c.encode("retry", forKey: .type)
+        case .regenerate(let id):
+            try c.encode("regenerate", forKey: .type)
+            try c.encode(id, forKey: .messageId)
         case .scrollState(let atBottom):
             try c.encode("scrollState", forKey: .type)
             try c.encode(atBottom, forKey: .atBottom)
@@ -1004,6 +1036,8 @@ enum BridgeMessageData: Codable, Sendable {
             self = .delete(messageId: try c.decode(String.self, forKey: .messageId))
         case "retry":
             self = .retry
+        case "regenerate":
+            self = .regenerate(messageId: try c.decode(String.self, forKey: .messageId))
         case "scrollState":
             self = .scrollState(atBottom: try c.decode(Bool.self, forKey: .atBottom))
         case "ready":
@@ -1026,6 +1060,23 @@ enum BridgeMessageData: Codable, Sendable {
     }
 }
 
+/// Feature flags sent to the renderer, derived from the selected chat's role
+/// `[features]` table. Each flag gates a UI capability. All default to false
+/// when the role has no `[features]` table or omits the key.
+struct ChatSnapshotFeaturesData: Codable, Equatable, Sendable {
+    /// Whether the per-message Regen button is shown on assistant messages.
+    let responseRegen: Bool
+    /// Whether chat trees (non-destructive regen/edit branching) are enabled.
+    /// Declared here so the wire shape doesn't change again; the tree UI
+    /// itself arrives later.
+    let chatTrees: Bool
+
+    init(responseRegen: Bool = false, chatTrees: Bool = false) {
+        self.responseRegen = responseRegen
+        self.chatTrees = chatTrees
+    }
+}
+
 /// A chat snapshot sent to the web view.
 struct ChatSnapshotData: Codable, Sendable {
     let chatId: String
@@ -1040,6 +1091,35 @@ struct ChatSnapshotData: Codable, Sendable {
     /// to color the assistant message title. Appearance-dependent — must not be
     /// persisted; re-resolved on theme change.
     let roleAccent: String?
+    /// Feature flags gating renderer UI capabilities (regen button, trees).
+    /// Derived from the selected chat's role at snapshot time. Absent in
+    /// snapshots from before the field existed — decodes as all-false.
+    let features: ChatSnapshotFeaturesData
+
+    init(chatId: String, messages: [ChatMessageData], isStreaming: Bool, roleName: String?, roleAccent: String?, features: ChatSnapshotFeaturesData = ChatSnapshotFeaturesData()) {
+        self.chatId = chatId
+        self.messages = messages
+        self.isStreaming = isStreaming
+        self.roleName = roleName
+        self.roleAccent = roleAccent
+        self.features = features
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case chatId, messages, isStreaming, roleName, roleAccent, features
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        chatId = try c.decode(String.self, forKey: .chatId)
+        messages = try c.decode([ChatMessageData].self, forKey: .messages)
+        isStreaming = try c.decode(Bool.self, forKey: .isStreaming)
+        roleName = try c.decodeIfPresent(String.self, forKey: .roleName)
+        roleAccent = try c.decodeIfPresent(String.self, forKey: .roleAccent)
+        // Tolerant: a snapshot without `features` (from an older host) decodes
+        // as all-false so the renderer hides the gated UI.
+        features = try c.decodeIfPresent(ChatSnapshotFeaturesData.self, forKey: .features) ?? ChatSnapshotFeaturesData()
+    }
 }
 
 /// The JSON representation of a `ChatMessage` sent to the web view.
