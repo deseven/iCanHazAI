@@ -326,11 +326,11 @@ final class ChatStore: @unchecked Sendable {
 
 extension Chat {
     /// Derives a display name for the cache: the user-defined title if set,
-    /// otherwise a preview of the first user message. Nil for truly empty
-    /// chats (no title, no user messages).
+    /// otherwise a preview of the first user message on the active path. Nil
+    /// for truly empty chats (no title, no user messages).
     var cacheName: String? {
         if let title = title, !title.isEmpty { return title }
-        if let firstUser = messages.first(where: { $0.role == .user }) {
+        if let firstUser = activeMessages.first(where: { $0.role == .user }) {
             let trimmed = firstUser.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty { return String(trimmed.prefix(40)) }
         }

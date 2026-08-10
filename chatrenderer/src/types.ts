@@ -67,6 +67,14 @@ export interface ToolResultImageData {
   fallback: string;
 }
 
+/** Sibling position within a fork group, for the branch switcher UI. */
+export interface SiblingsData {
+  /** 0-based index of this message within its sibling group. */
+  index: number;
+  /** Total number of siblings in the group (including this one). */
+  count: number;
+}
+
 export interface ChatMessage {
   id: string;
   role: MessageRole;
@@ -86,6 +94,10 @@ export interface ChatMessage {
   toolCalls?: ToolCallData[] | null;
   /** For `tool`-role messages: the result of a tool call. */
   toolResults?: ToolResultData[] | null;
+  /** Sibling index and count for branch switching. Present only for messages
+   *  that are fork members (siblings.count > 1). Nil for linear chats and
+   *  non-fork messages. */
+  siblings?: SiblingsData | null;
 }
 
 /** A single attachment reference mirroring the Swift `AttachmentData`. */
@@ -183,4 +195,8 @@ export type BridgeMessage =
   | { type: "denyToolCall"; callId: string }
   /** Open a document/text attachment's original file in the system default
    *  app. `url` is the `ichai://` reference the host resolves to the file. */
-  | { type: "openAttachment"; url: string };
+  | { type: "openAttachment"; url: string }
+  /** Switch the active branch at the message's fork point. `direction` is
+   *  -1 (previous sibling) or +1 (next sibling); the host resolves the
+   *  target sibling and calls `setActiveBranch`. */
+  | { type: "switchBranch"; messageId: string; direction: number };

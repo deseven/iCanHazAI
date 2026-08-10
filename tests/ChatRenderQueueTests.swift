@@ -79,7 +79,8 @@ struct ChatRenderQueueTests {
     }
 
     private func job(_ chatId: String, _ messages: [ChatMessage], streaming: Bool = false, features: ChatSnapshotFeaturesData = ChatSnapshotFeaturesData()) -> RenderJob {
-        .snapshot(chatId: chatId, messages: messages, isStreaming: streaming, roleName: nil, roleAccent: nil, features: features)
+        let chat = Chat(messages: messages)
+        return .snapshot(chatId: chatId, chat: chat, isStreaming: streaming, roleName: nil, roleAccent: nil, features: features)
     }
 
     // MARK: - Diff behavior

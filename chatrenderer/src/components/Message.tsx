@@ -11,7 +11,7 @@ import { useMemo, useState, useRef, useEffect, useLayoutEffect, useCallback } fr
 import type { RefObject } from "preact";
 import { memo } from "preact/compat";
 import { createPortal } from "preact/compat";
-import type { ChatMessage, AttachmentData } from "../types";
+import type { ChatMessage, AttachmentData, SiblingsData } from "../types";
 import { canRegenerate } from "../regenVisibility";
 import { renderMarkdown, renderInline, renderMermaidIn, restoreCachedMermaid, endsWithUnclosedMermaid, renderDiff, highlightCode } from "../markdown";
 import { sendToHost } from "../bridge";
@@ -21,7 +21,7 @@ import { parseToolArgs, isEmptyArgs } from "../toolArgs";
 import type { ToolArgEntry } from "../toolArgs";
 import { toolArgLang, toolResultLang } from "../toolHighlight";
 import { transientToolStatus, localToolStatus } from "../toolSummary";
-import { Copy, SquarePen, Trash2, Brain, User, Bot, Settings, AlertTriangle, RotateCcw, ChevronRight, ChevronDown, Wrench, Terminal, FileText } from "lucide-preact";
+import { Copy, SquarePen, Trash2, Brain, User, Bot, Settings, AlertTriangle, RotateCcw, ChevronRight, ChevronLeft, ChevronDown, Wrench, Terminal, FileText } from "lucide-preact";
 import type { ToolCallData, ToolResultData, ToolResultImageData } from "../types";
 
 interface Props {
@@ -40,6 +40,9 @@ interface Props {
    *  hidden on the first message (empty prefix — nothing to rebuild a
    *  request from). */
   isFirstMessage: boolean;
+  /** Sibling index and count for branch switching. Present only for messages
+   *  that are fork members (count > 1). */
+  siblings?: SiblingsData | null;
   /** Whether Thinking blocks should be expanded by default (host preference). */
   defaultThinkingOpen: boolean;
   /** Whether Tool Use blocks should be expanded by default (host preference). */
@@ -628,6 +631,7 @@ export const MessageItem = memo(function MessageItem({
   roleAccent,
   features,
   isFirstMessage,
+  siblings,
   defaultThinkingOpen,
   defaultToolOpen,
 }: Props) {
@@ -712,6 +716,30 @@ export const MessageItem = memo(function MessageItem({
     .join(" · ");
 
   const showRegen = canRegenerate(message, isFirstMessage, features, isStreaming);
+  const hasSiblings = !!siblings && siblings.count > 1;
+  const switchBranch = (dir: number) =>
+    sendToHost({ type: "switchBranch", messageId: message.id, direction: dir });
+  const BranchSwitcher = hasSiblings ? (
+    <span class="msg-branch-switcher">
+      <button
+        class="msg-action-btn msg-branch-btn"
+        title="Previous sibling"
+        disabled={isStreaming}
+        onClick={() => switchBranch(-1)}
+      >
+        <ChevronLeft size={14} />
+      </button>
+      <span class="msg-branch-count">{(siblings!.index + 1)}/{siblings!.count}</span>
+      <button
+        class="msg-action-btn msg-branch-btn"
+        title="Next sibling"
+        disabled={isStreaming}
+        onClick={() => switchBranch(1)}
+      >
+        <ChevronRight size={14} />
+      </button>
+    </span>
+  ) : null;
 
   return (
     <div
@@ -757,6 +785,7 @@ export const MessageItem = memo(function MessageItem({
                 <RotateCcw size={14} />
               </button>
             )}
+            {BranchSwitcher}
             <button
               class="msg-action-btn"
               title="Edit"
@@ -896,6 +925,7 @@ export const MessageItem = memo(function MessageItem({
                 <RotateCcw size={14} />
               </button>
             )}
+            {BranchSwitcher}
             <button
               class="msg-action-btn"
               title="Edit"

@@ -189,6 +189,16 @@ enum ChatOutputRendering: String, Codable, Sendable {
 struct Chat: Codable, Identifiable, Equatable {
     var id: UUID
     var messages: [ChatMessage]
+    /// Tree structure for branched chats: parent message id (UUID.uuidString)
+    /// → ordered child message ids. Nil for linear chats (no forks). When
+    /// non-nil, the full tree is stored — every parent-child relationship is
+    /// recorded, not just fork points. The visible conversation is derived
+    /// via `activeMessages`.
+    var children: [String: [String]]?
+    /// Per-fork active child selection: parent message id → active child id.
+    /// Nil for linear chats. When a parent isn't in this map, the last child
+    /// in `children` is used (the most recently added one).
+    var activeChild: [String: String]?
     /// Selected connection identifier in the form "provider/name", e.g. "openai/myconn".
     /// When the chat's role allows connection overrides this is the per-chat
     /// override; otherwise the role's connection is used and this is ignored.
@@ -233,9 +243,11 @@ struct Chat: Codable, Identifiable, Equatable {
     /// plain text (CLI-created chats). Completely optional — a chat file
     /// without this key decodes as rich.
     var outputRendering: ChatOutputRendering?
-    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, prompt: String? = nil, workingDirectory: String? = nil, mcps: [String]? = nil, title: String? = nil, archive: Bool? = nil, autoAllow: [String]? = nil, autoDeny: [String]? = nil, outputRendering: ChatOutputRendering? = nil) {
+    init(id: UUID = UUID(), messages: [ChatMessage] = [], children: [String: [String]]? = nil, activeChild: [String: String]? = nil, connection: String? = nil, role: String? = nil, prompt: String? = nil, workingDirectory: String? = nil, mcps: [String]? = nil, title: String? = nil, archive: Bool? = nil, autoAllow: [String]? = nil, autoDeny: [String]? = nil, outputRendering: ChatOutputRendering? = nil) {
         self.id = id
         self.messages = messages
+        self.children = children
+        self.activeChild = activeChild
         self.connection = connection
         self.role = role
         self.prompt = prompt
@@ -249,7 +261,7 @@ struct Chat: Codable, Identifiable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, messages, connection, role, prompt, workingDirectory, mcps, title, archive
+        case id, messages, children, activeChild, connection, role, prompt, workingDirectory, mcps, title, archive
         case autoAllow = "auto_allow"
         case autoDeny = "auto_deny"
         case outputRendering = "output_rendering"
@@ -281,6 +293,11 @@ struct Chat: Codable, Identifiable, Equatable {
             debugLog("ChatDecode", "⚠️ skipped \(dropped) undecodable message(s) in a chat")
         }
         messages = recovered
+        // Tolerant tree decode: malformed children/activeChild drop the affected
+        // entry with a debug log and fall back to linear — never fail the chat load.
+        children = (try? c.decode([String: [String]].self, forKey: .children))
+        activeChild = (try? c.decode([String: String].self, forKey: .activeChild))
+        if children != nil { sanitizeTreeMetadata() }
     }
 
     /// Decodes a single message, yielding nil if the element can't be decoded,
@@ -302,6 +319,302 @@ struct Chat: Codable, Identifiable, Equatable {
     /// `distantPast` (which would pin it to the very bottom of the list).
     func lastActivity(fallback: Date) -> Date {
         messages.last?.timestamp ?? fallback
+    }
+}
+
+// MARK: - Chat tree helpers
+
+extension Chat {
+
+    /// Whether this chat has any forks (branches). When false, the chat is a
+    /// linear chain and all tree helpers degenerate to identity on the flat
+    /// `messages` array.
+    var hasForks: Bool { children != nil }
+
+    /// The materialized active path: the visible conversation derived by walking
+    /// from the first message, following `activeChild` at each fork (defaulting
+    /// to the last child when no choice is recorded). For linear chats (no
+    /// forks), this is just `messages`.
+    var activeMessages: [ChatMessage] {
+        guard let children, !messages.isEmpty else { return messages }
+        let byID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id.uuidString, $0) })
+        guard let firstID = messages.first?.id.uuidString else { return [] }
+        var result: [ChatMessage] = []
+        var currentID = firstID
+        var visited = Set<String>()
+        while let msg = byID[currentID], visited.insert(currentID).inserted {
+            result.append(msg)
+            guard let childIDs = children[currentID], !childIDs.isEmpty else { break }
+            let activeID = activeChild?[currentID] ?? childIDs.last!
+            currentID = activeID
+        }
+        return result
+    }
+
+    /// The id of the active leaf (last message on the active path). Nil for
+    /// empty chats.
+    var activeLeafID: UUID? {
+        activeMessages.last?.id
+    }
+
+    /// Materializes the tree structure from the flat array. Called when the
+    /// first fork is about to happen. After this, `children` is non-nil and
+    /// every parent-child relationship is recorded. `activeChild` stays nil
+    /// (no forks yet — no choices to record).
+    mutating func materializeTree() {
+        guard children == nil, messages.count > 1 else { return }
+        var tree: [String: [String]] = [:]
+        for i in 0..<(messages.count - 1) {
+            let parentID = messages[i].id.uuidString
+            let childID = messages[i + 1].id.uuidString
+            tree[parentID] = [childID]
+        }
+        children = tree
+    }
+
+    /// Records a new child for a parent in the tree. Only has effect when the
+    /// tree is materialized (non-nil `children`). The active leaf always has
+    /// no children when this is called during normal streaming, so this creates
+    /// a new entry.
+    mutating func recordChild(parentID: UUID, childID: UUID) {
+        guard children != nil else { return }
+        let parentKey = parentID.uuidString
+        let childKey = childID.uuidString
+        if var existing = children?[parentKey] {
+            if !existing.contains(childKey) { existing.append(childKey) }
+            children?[parentKey] = existing
+        } else {
+            children?[parentKey] = [childKey]
+        }
+    }
+
+    /// Sets the active child for a parent fork point. Used by branch switching.
+    mutating func setActiveChild(parentID: UUID, childID: UUID) {
+        if activeChild == nil { activeChild = [:] }
+        activeChild?[parentID.uuidString] = childID.uuidString
+    }
+
+    /// Finds the parent of a message. For linear chats, the parent is the
+    /// previous message in the flat array. Returns nil for the first message.
+    func parent(of messageID: UUID) -> ChatMessage? {
+        let id = messageID.uuidString
+        guard let children else {
+            guard let idx = messages.firstIndex(where: { $0.id == messageID }), idx > 0 else { return nil }
+            return messages[idx - 1]
+        }
+        for (parentID, childIDs) in children {
+            if childIDs.contains(id) {
+                return messages.first(where: { $0.id.uuidString == parentID })
+            }
+        }
+        return nil
+    }
+
+    /// The sibling index and count for a message. For linear chats, every
+    /// message has exactly 1 sibling (itself): `(0, 1)`. The switcher UI
+    /// only appears when `count > 1`.
+    func siblings(of messageID: UUID) -> (index: Int, count: Int) {
+        let id = messageID.uuidString
+        guard let children, let parent = parent(of: messageID),
+              let childIDs = children[parent.id.uuidString] else { return (0, 1) }
+        guard let index = childIDs.firstIndex(of: id) else { return (0, 1) }
+        return (index, childIDs.count)
+    }
+
+    /// The path from the root to the given message, as an array of message ids.
+    /// Walks from the message up to the root via parent links.
+    func leafPath(to messageID: UUID) -> [UUID] {
+        var path: [UUID] = [messageID]
+        var current = messageID
+        var visited = Set<UUID>([messageID])
+        while let parent = parent(of: current), visited.insert(parent.id).inserted {
+            path.insert(parent.id, at: 0)
+            current = parent.id
+        }
+        return path
+    }
+
+    /// Collects all message ids in the subtree rooted at `messageID` (the
+    /// message and all its descendants, both active and non-active). Used by
+    /// deletion to remove a message and its entire branch.
+    func subtreeIDs(of messageID: UUID) -> Set<UUID> {
+        guard let children else { return [messageID] }
+        var result: Set<UUID> = [messageID]
+        var queue: [String] = [messageID.uuidString]
+        while let current = queue.popLast() {
+            if let childIDs = children[current] {
+                for childID in childIDs where !result.contains(UUID(uuidString: childID) ?? UUID()) {
+                    result.insert(UUID(uuidString: childID) ?? UUID())
+                    queue.append(childID)
+                }
+            }
+        }
+        return result
+    }
+
+    /// The path to the leaf with the most recent timestamp, ignoring
+    /// `activeChild` choices. Used by the CLI to determine where to append.
+    func mostRecentLeafPath() -> [ChatMessage] {
+        guard let children, !messages.isEmpty else { return messages }
+        let parentIDs = Set(children.keys)
+        let leaves = messages.filter { !parentIDs.contains($0.id.uuidString) }
+        guard let mostRecent = leaves.max(by: { $0.timestamp < $1.timestamp }) else { return messages }
+        let byID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id.uuidString, $0) })
+        var result: [ChatMessage] = []
+        var currentID = mostRecent.id.uuidString
+        var visited = Set<String>()
+        while let msg = byID[currentID], visited.insert(currentID).inserted {
+            result.insert(msg, at: 0)
+            guard let parentEntry = children.first(where: { $0.value.contains(currentID) }) else { break }
+            currentID = parentEntry.key
+        }
+        return result
+    }
+
+    /// Updates `activeChild` along the path to the most recent leaf, so the
+    /// GUI's active path includes messages appended by the CLI.
+    mutating func setActivePathToMostRecentLeaf() {
+        guard let children, !messages.isEmpty else { return }
+        let parentIDs = Set(children.keys)
+        let leaves = messages.filter { !parentIDs.contains($0.id.uuidString) }
+        guard let mostRecent = leaves.max(by: { $0.timestamp < $1.timestamp }) else { return }
+        var path: [String] = [mostRecent.id.uuidString]
+        var currentID = mostRecent.id.uuidString
+        var visited = Set<String>([currentID])
+        while let parentEntry = children.first(where: { $0.value.contains(currentID) }),
+              visited.insert(parentEntry.key).inserted {
+            path.insert(parentEntry.key, at: 0)
+            currentID = parentEntry.key
+        }
+        if activeChild == nil { activeChild = [:] }
+        for i in 0..<(path.count - 1) {
+            activeChild?[path[i]] = path[i + 1]
+        }
+    }
+
+    /// Prunes tree metadata entries whose ids no longer exist in `messages`.
+    /// Also removes deleted ids from child lists. Called after deletion and
+    /// during tolerant decode.
+    mutating func pruneTreeMetadata(deletedIDs: Set<UUID>) {
+        guard var children else { return }
+        let idStrings = Set(deletedIDs.map(\.uuidString))
+        for id in idStrings { children.removeValue(forKey: id) }
+        for (key, var childIDs) in children {
+            childIDs.removeAll(where: { idStrings.contains($0) })
+            if childIDs.isEmpty {
+                children.removeValue(forKey: key)
+            } else {
+                children[key] = childIDs
+            }
+        }
+        self.children = children.isEmpty ? nil : children
+        if var activeChild {
+            for id in idStrings { activeChild.removeValue(forKey: id) }
+            activeChild = activeChild.filter { !idStrings.contains($0.value) }
+            self.activeChild = activeChild.isEmpty ? nil : activeChild
+        }
+    }
+
+    /// After deleting a child from a parent's child list, reassigns the active
+    /// child to the most recent surviving sibling (by timestamp). If no
+    /// siblings survive, the parent's child list collapses.
+    mutating func reassignActiveChildAfterDeletion(parentID: UUID, deletedChildID: UUID) {
+        guard let children else { return }
+        let parentKey = parentID.uuidString
+        guard let surviving = children[parentKey]?.filter({ $0 != deletedChildID.uuidString }) else { return }
+        if surviving.isEmpty {
+            self.children?.removeValue(forKey: parentKey)
+            activeChild?.removeValue(forKey: parentKey)
+            if let c = self.children, c.isEmpty { self.children = nil }
+            if let a = activeChild, a.isEmpty { self.activeChild = nil }
+            return
+        }
+        self.children?[parentKey] = surviving
+        let mostRecent = surviving.compactMap { id -> (String, Date)? in
+            guard let msg = messages.first(where: { $0.id.uuidString == id }) else { return nil }
+            return (id, msg.timestamp)
+        }.max(by: { $0.1 < $1.1 })?.0
+        if let mostRecent {
+            if activeChild == nil { activeChild = [:] }
+            activeChild?[parentKey] = mostRecent
+        }
+    }
+
+    /// Validates and cleans tree metadata after decode. Drops entries with
+    /// unknown ids, detects cycles, and falls back to linear if the tree is
+    /// empty or the root is missing.
+    private mutating func sanitizeTreeMetadata() {
+        guard var children else { return }
+        let knownIDs = Set(messages.map { $0.id.uuidString })
+        // Drop entries with unknown parent ids.
+        children = children.filter { knownIDs.contains($0.key) }
+        // Drop unknown child ids from child lists.
+        for (key, var childIDs) in children {
+            childIDs.removeAll(where: { !knownIDs.contains($0) })
+            if childIDs.isEmpty {
+                children.removeValue(forKey: key)
+            } else {
+                children[key] = childIDs
+            }
+        }
+        // Drop activeChild entries with unknown parent or child ids.
+        if var activeChild {
+            activeChild = activeChild.filter { knownIDs.contains($0.key) && knownIDs.contains($0.value) }
+            if activeChild.isEmpty { self.activeChild = nil }
+            else { self.activeChild = activeChild }
+        }
+        // If the tree is empty after cleaning, fall back to linear.
+        if children.isEmpty {
+            self.children = nil
+            self.activeChild = nil
+        } else {
+            self.children = children
+        }
+    }
+
+    /// Finalizes the incomplete trailing turn on the active path. For linear
+    /// chats, operates on the flat array directly. For forked chats, operates
+    /// on the active messages and syncs changes (removed/added/modified) back
+    /// to the flat array and tree metadata.
+    mutating func finalizeActiveStoppedTurn() {
+        guard children != nil else {
+            messages.finalizeStoppedTurn()
+            return
+        }
+        var active = activeMessages
+        let beforeIDs = active.map(\.id)
+        let before = active
+        active.finalizeStoppedTurn()
+        if active.count == before.count && active == before { return }
+        // Sync removed messages (trailing placeholders removed by finalize).
+        let afterIDs = Set(active.map(\.id))
+        let removedIDs = Set(beforeIDs).subtracting(afterIDs)
+        if !removedIDs.isEmpty {
+            messages.removeAll(where: { removedIDs.contains($0.id) })
+            pruneTreeMetadata(deletedIDs: removedIDs)
+        }
+        // Sync added messages (synthesized cancelled tool results).
+        let beforeByID = Dictionary(uniqueKeysWithValues: before.map { ($0.id, $0) })
+        for msg in active where beforeByID[msg.id] == nil {
+            messages.append(msg)
+            if let parentID = activeParentID(of: msg.id, in: active) {
+                recordChild(parentID: parentID, childID: msg.id)
+            }
+        }
+        // Sync modified messages (tool calls changed on the last assistant).
+        for msg in active {
+            if let original = beforeByID[msg.id], original != msg {
+                if let idx = messages.firstIndex(where: { $0.id == msg.id }) {
+                    messages[idx] = msg
+                }
+            }
+        }
+    }
+
+    /// Finds the parent id of a message within a given active path array.
+    private func activeParentID(of messageID: UUID, in active: [ChatMessage]) -> UUID? {
+        guard let idx = active.firstIndex(where: { $0.id == messageID }), idx > 0 else { return nil }
+        return active[idx - 1].id
     }
 }
 
@@ -431,7 +744,7 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     /// response that has usage. Nil when the chat is unloaded.
     var tokenCount: Int? {
         guard let chat = chat else { return nil }
-        return chat.messages.reversed()
+        return chat.activeMessages.reversed()
             .first(where: { $0.role == .assistant && $0.tokenUsage != nil })?
             .tokenUsage?.tokensUsed
     }
@@ -444,7 +757,7 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     /// invalidation) so a file touch without new messages doesn't re-order.
     var sortKey: Date {
         if let chat = chat {
-            return chat.messages.last?.timestamp ?? createdAt
+            return chat.activeMessages.last?.timestamp ?? createdAt
         }
         return cachedLastActivity
     }
@@ -457,7 +770,7 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
             if let title = chat.title, !title.isEmpty {
                 return title
             }
-            if let firstUser = chat.messages.first(where: { $0.role == .user }) {
+            if let firstUser = chat.activeMessages.first(where: { $0.role == .user }) {
                 return String(firstUser.content.prefix(40))
             }
             return emptyTitle

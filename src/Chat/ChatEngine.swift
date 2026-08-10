@@ -1616,6 +1616,57 @@ actor ChatEngine {
 
     // MARK: - Sending messages
 
+    /// Whether the chat's role enables chat trees (non-destructive regen/edit
+    /// branching). When false, regen/edit are destructive (phase 2 behavior).
+    private func hasChatTrees(for chat: Chat) -> Bool {
+        role(for: chat)?.hasChatTrees ?? false
+    }
+
+    /// Appends a message to the flat array, recording the parent-child
+    /// relationship when the chat is forked. The parent is the current active
+    /// leaf (the last message in the flat array during streaming).
+    private func appendMessage(_ message: ChatMessage, to chat: inout Chat) {
+        if chat.hasForks, let parentID = chat.messages.last?.id {
+            chat.messages.append(message)
+            chat.recordChild(parentID: parentID, childID: message.id)
+            chat.setActiveChild(parentID: parentID, childID: message.id)
+        } else {
+            chat.messages.append(message)
+        }
+    }
+
+    /// Removes a message and its entire subtree from the chat. For forked
+    /// chats, prunes tree metadata and reassigns the active child. For linear
+    /// chats, just truncates the flat array.
+    private func removeMessageAndSubtree(messageID: UUID, from chat: inout Chat, filename: String) {
+        if chat.hasForks {
+            let toRemove = chat.subtreeIDs(of: messageID)
+            // Clean up attachment files owned by every removed message.
+            for id in toRemove {
+                if let msg = chat.messages.first(where: { $0.id == id }), let attachments = msg.attachments {
+                    for attachment in attachments {
+                        env.deleteAttachment(attachment, chatFilename: filename)
+                    }
+                }
+            }
+            chat.messages.removeAll(where: { toRemove.contains($0.id) })
+            if let parent = chat.parent(of: messageID) {
+                chat.reassignActiveChildAfterDeletion(parentID: parent.id, deletedChildID: messageID)
+            }
+            chat.pruneTreeMetadata(deletedIDs: toRemove)
+        } else {
+            guard let msgIdx = chat.messages.firstIndex(where: { $0.id == messageID }) else { return }
+            for m in chat.messages[msgIdx...] {
+                if let attachments = m.attachments {
+                    for attachment in attachments {
+                        env.deleteAttachment(attachment, chatFilename: filename)
+                    }
+                }
+            }
+            chat.messages = Array(chat.messages[..<msgIdx])
+        }
+    }
+
     /// Sends a user message and streams the assistant response for the given chat.
     /// Returns false (and emits an error) if no valid connection is selected.
     ///
@@ -1636,20 +1687,26 @@ actor ChatEngine {
             return false
         }
 
-        // If the last assistant message was a failed/error placeholder, drop it so the
-        // new user message follows the previous user message directly.
         var baseChat = chat
-        if let lastIdx = baseChat.messages.indices.last,
-           baseChat.messages[lastIdx].role == .assistant,
-           baseChat.messages[lastIdx].error != nil {
-            baseChat.messages.remove(at: lastIdx)
+        // If the active leaf is a failed/error placeholder, drop it so the
+        // new user message follows the previous message directly. An errored
+        // placeholder that never received content is not preserved as a branch.
+        if let leafID = baseChat.activeLeafID,
+           let leafIdx = baseChat.messages.firstIndex(where: { $0.id == leafID }),
+           baseChat.messages[leafIdx].role == .assistant,
+           baseChat.messages[leafIdx].error != nil {
+            if baseChat.hasForks {
+                removeMessageAndSubtree(messageID: leafID, from: &baseChat, filename: filename)
+            } else {
+                baseChat.messages.remove(at: leafIdx)
+            }
         }
 
         // Safety net for chats persisted with an incomplete tool-call turn
         // (a stop before this was handled reliably): an assistant `tool_calls`
         // message without all of its results is rejected by providers.
         // Finalize it the same way a stop would.
-        baseChat.messages.finalizeStoppedTurn()
+        baseChat.finalizeActiveStoppedTurn()
         if baseChat.messages != chat.messages, let idx = records.firstIndex(where: { $0.filename == filename }) {
             records[idx].chat = baseChat
         }
@@ -1670,12 +1727,13 @@ actor ChatEngine {
 
         // Build the message list including the system prompt from the role's
         // prompt (or the chat's per-chat prompt override when allowed), with
-        // variables substituted at request time.
+        // variables substituted at request time. The request history is built
+        // from the active path (derived for forked chats, identity for linear).
         var messages: [ChatMessage] = []
         if let systemMsg = await systemMessage(for: baseChat) {
             messages.append(systemMsg)
         }
-        messages.append(contentsOf: baseChat.messages)
+        messages.append(contentsOf: baseChat.activeMessages)
         let userMessage = ChatMessage(role: .user, content: text, attachments: committed.isEmpty ? nil : committed)
         messages.append(userMessage)
 
@@ -1684,8 +1742,9 @@ actor ChatEngine {
         // stream finishes (successfully or with an error) so no incomplete
         // content is ever written to disk during streaming.
         var updatedChat = baseChat
-        updatedChat.messages.append(userMessage)
-        updatedChat.messages.append(ChatMessage(role: .assistant, content: "", connectionName: connection.displayName))
+        let assistantPlaceholder = ChatMessage(role: .assistant, content: "", connectionName: connection.displayName)
+        appendMessage(userMessage, to: &updatedChat)
+        appendMessage(assistantPlaceholder, to: &updatedChat)
         if let idx = records.firstIndex(where: { $0.filename == filename }) {
             records[idx].chat = updatedChat
         }
@@ -1783,6 +1842,15 @@ actor ChatEngine {
             }
         }
 
+        // For branched chats continued from the CLI, resolve the path to the
+        // leaf with the most recent timestamp and make it the active path
+        // (ignoring the GUI's `activeChild` choices). The CLI appends there.
+        if let idx = records.firstIndex(where: { $0.filename == filename }),
+           var chat = records[idx].chat, chat.hasForks {
+            chat.setActivePathToMostRecentLeaf()
+            records[idx].chat = chat
+        }
+
         guard await sendMessage(filename: filename, text: message) else {
             oneShotSinks[filename]?[sinkID] = nil
             if records.contains(where: { $0.filename == filename }) {
@@ -1828,10 +1896,12 @@ actor ChatEngine {
         }
     }
 
-    /// Regenerates the assistant response at `assistantMessageID`: truncates
-    /// the chat to everything before that message, appends a fresh empty
-    /// assistant placeholder, and re-runs the tool loop. The original response
-    /// and everything that followed it are deleted.
+    /// Regenerates the assistant response at `assistantMessageID`. When the
+    /// chat's role has chat trees enabled, the discarded assistant message
+    /// stays in storage as a sibling child of the same parent; the new
+    /// placeholder is appended as another child and made active. When trees
+    /// are off, the original response and everything after it are deleted
+    /// (destructive regen).
     ///
     /// Fully data-driven: works from any chat state (including chats reloaded
     /// from disk after a restart) and does not depend on any in-memory flag.
@@ -1853,42 +1923,62 @@ actor ChatEngine {
             emit(.error("Please select a connection in the status bar."))
             return
         }
-        guard let targetIdx = chat.messages.firstIndex(where: { $0.id == assistantMessageID }) else { return }
+        guard let target = chat.messages.first(where: { $0.id == assistantMessageID }) else { return }
         // Only assistant messages can be regenerated, and never the first
         // message (empty prefix — nothing to rebuild a request from).
-        guard chat.messages[targetIdx].role == .assistant, targetIdx > 0 else { return }
+        guard target.role == .assistant else { return }
+        guard let parent = chat.parent(of: assistantMessageID) else { return }
 
         var updatedChat = chat
         // Safety net for chats persisted with an incomplete tool-call turn
         // (a stop before this was handled reliably): an assistant `tool_calls`
         // message without all of its results is rejected by providers.
-        updatedChat.messages.finalizeStoppedTurn()
+        updatedChat.finalizeActiveStoppedTurn()
         // Re-locate the target after finalize (it may have shifted if the
         // safety net removed trailing placeholders before it).
-        guard let targetIdx2 = updatedChat.messages.firstIndex(where: { $0.id == assistantMessageID }),
-              targetIdx2 > 0 else { return }
-        // Truncate to everything before the target message.
-        updatedChat.messages = Array(updatedChat.messages[..<targetIdx2])
-        // Append a fresh placeholder assistant message for the new response.
-        updatedChat.messages.append(ChatMessage(role: .assistant, content: "", connectionName: connection.displayName))
+        guard updatedChat.messages.contains(where: { $0.id == assistantMessageID }) else { return }
+
+        let treesEnabled = hasChatTrees(for: updatedChat)
+        // An errored placeholder that never received content is NOT preserved
+        // as a branch — there's nothing worth keeping. Replace it in place.
+        let isNeverStreamedError = target.error != nil
+            && target.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (target.thinking?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            && (target.toolCalls?.isEmpty ?? true)
+
+        if treesEnabled && !isNeverStreamedError {
+            // Branching regen: materialize the tree if needed, then add the
+            // new placeholder as a sibling child of the same parent.
+            updatedChat.materializeTree()
+            let placeholder = ChatMessage(role: .assistant, content: "", connectionName: connection.displayName)
+            updatedChat.messages.append(placeholder)
+            updatedChat.recordChild(parentID: parent.id, childID: placeholder.id)
+            updatedChat.setActiveChild(parentID: parent.id, childID: placeholder.id)
+        } else {
+            // Destructive regen: remove the target and its whole continuation.
+            removeMessageAndSubtree(messageID: assistantMessageID, from: &updatedChat, filename: filename)
+            let placeholder = ChatMessage(role: .assistant, content: "", connectionName: connection.displayName)
+            appendMessage(placeholder, to: &updatedChat)
+        }
         records[idx].chat = updatedChat
         emit(.chatsChanged(records))
 
         // Rebuild the request history: system prompt (from the role's prompt,
-        // with variables substituted) followed by the surviving prefix.
+        // with variables substituted) followed by the surviving prefix (the
+        // active path up to but not including the new placeholder).
         var messages: [ChatMessage] = []
         if let systemMsg = await systemMessage(for: updatedChat) {
             messages.append(systemMsg)
         }
-        messages.append(contentsOf: updatedChat.messages.dropLast())
+        messages.append(contentsOf: updatedChat.activeMessages.dropLast())
 
         runToolLoop(for: filename, connection: connection, messages: messages)
     }
 
     /// Retries (regenerates) the last assistant turn for the given chat.
     ///
-    /// When the last message is an assistant message, this delegates to
-    /// [`regenerate`](#) on that message. When the last message is a user
+    /// When the active leaf is an assistant message, this delegates to
+    /// [`regenerate`](#) on that message. When the active leaf is a user
     /// message (the empty-input send shortcut), it appends a fresh placeholder
     /// and re-runs the request from that user message — the standard
     /// "re-send my last message" behavior.
@@ -1897,25 +1987,43 @@ actor ChatEngine {
         await ensureChatLoaded(filename: filename)
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         guard let chat = records[idx].chat else { return }
-        // If the last message is an assistant message, regenerate it directly.
-        if let last = chat.messages.last, last.role == .assistant, chat.messages.count > 1 {
-            await regenerate(filename: filename, assistantMessageID: last.id)
+        // If the active leaf is an assistant message, regenerate it directly.
+        if let leafID = chat.activeLeafID,
+           let leaf = chat.messages.first(where: { $0.id == leafID }),
+           leaf.role == .assistant,
+           chat.activeMessages.count > 1 {
+            await regenerate(filename: filename, assistantMessageID: leaf.id)
             return
         }
         guard let connection = effectiveConnection(for: chat) else {
             emit(.error("Please select a connection in the status bar."))
             return
         }
-        // Find the last user message. Everything after it is the assistant's
-        // previous turn (response, tool calls, tool results) and is discarded
-        // so we regenerate from the last user message forward.
-        guard let lastUserIdx = chat.messages.lastIndex(where: { $0.role == .user }) else { return }
+        // Find the last user message on the active path. Everything after it
+        // is the assistant's previous turn (response, tool calls, tool
+        // results) and is discarded so we regenerate from the last user
+        // message forward.
+        let active = chat.activeMessages
+        guard let lastUserIdx = active.lastIndex(where: { $0.role == .user }) else { return }
+        let lastUser = active[lastUserIdx]
 
         var updatedChat = chat
-        // Truncate back to (and including) the last user message.
-        updatedChat.messages = Array(chat.messages[0...lastUserIdx])
+        // Truncate the active path back to (and including) the last user
+        // message. For forked chats this removes the continuation along the
+        // active path only; sibling branches are untouched.
+        if updatedChat.hasForks {
+            // Remove everything after the last user message on the active path.
+            let toRemove = Array(active[(lastUserIdx + 1)...])
+            for msg in toRemove {
+                removeMessageAndSubtree(messageID: msg.id, from: &updatedChat, filename: filename)
+            }
+        } else {
+            guard let flatIdx = updatedChat.messages.firstIndex(where: { $0.id == lastUser.id }) else { return }
+            updatedChat.messages = Array(updatedChat.messages[0...flatIdx])
+        }
         // Append a fresh placeholder assistant message for the new response.
-        updatedChat.messages.append(ChatMessage(role: .assistant, content: "", connectionName: connection.displayName))
+        let placeholder = ChatMessage(role: .assistant, content: "", connectionName: connection.displayName)
+        appendMessage(placeholder, to: &updatedChat)
         records[idx].chat = updatedChat
         emit(.chatsChanged(records))
 
@@ -1926,7 +2034,7 @@ actor ChatEngine {
         if let systemMsg = await systemMessage(for: updatedChat) {
             messages.append(systemMsg)
         }
-        messages.append(contentsOf: updatedChat.messages.dropLast())
+        messages.append(contentsOf: updatedChat.activeMessages.dropLast())
 
         runToolLoop(for: filename, connection: connection, messages: messages)
     }
@@ -2038,7 +2146,7 @@ actor ChatEngine {
                 // We read the finalized assistant message from the record so
                 // its content/thinking/toolCalls match what was streamed.
                 if let idx = records.firstIndex(where: { $0.filename == filename }) {
-                    let assistantMsg = records[idx].chat?.messages.last(where: { $0.role == .assistant })
+                    let assistantMsg = records[idx].chat?.activeMessages.last(where: { $0.role == .assistant })
                     if let assistantMsg {
                         history.append(assistantMsg)
                     }
@@ -2594,8 +2702,9 @@ actor ChatEngine {
         if let tIdx = chat.messages.lastToolResultIndex(callID: result.callID) {
             chat.messages[tIdx] = ChatMessage(role: .tool, content: "", toolResults: [result])
         } else {
-            // No placeholder yet — append a new `tool`-role message.
-            chat.messages.append(ChatMessage(role: .tool, content: "", toolResults: [result]))
+            // No placeholder yet — append a new `tool`-role message to the
+            // active leaf (records tree structure for forked chats).
+            appendMessage(ChatMessage(role: .tool, content: "", toolResults: [result]), to: &chat)
         }
         records[idx].chat = chat
         // In-memory only during streaming; persisted once by `finishStream`.
@@ -2647,25 +2756,31 @@ actor ChatEngine {
     /// will fill with the model's follow-up response. After a tool call, the
     /// conversation has three distinct blocks: the user message, the assistant
     /// message carrying the tool call + result, and this new assistant message
-    /// with the final answer. Persists and emits immediately so the new row
-    /// appears right away.
+    /// with the final answer. Appends to the active leaf (records tree
+    /// structure for forked chats). Persists and emits immediately so the new
+    /// row appears right away.
     private func appendAssistantMessage(filename: String, connection: Connection) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         guard var chat = records[idx].chat else { return }
-        chat.messages.append(ChatMessage(role: .assistant, content: "", connectionName: connection.displayName))
+        appendMessage(ChatMessage(role: .assistant, content: "", connectionName: connection.displayName), to: &chat)
         records[idx].chat = chat
         // In-memory only during streaming; persisted once by `finishStream`.
         flushCoalescedEmit()
         emit(.chatsChanged(records))
     }
 
-    /// Applies a streamed chunk to the last assistant message of the given chat.
+    /// Applies a streamed chunk to the active leaf assistant message of the
+    /// given chat.
     private func applyChunk(_ chunk: StreamChunk, filename: String) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         guard var chat = records[idx].chat else { return }
         // Late chunks can arrive after a stop trimmed the placeholder; only
         // ever write to an assistant message, never to a user/tool message.
-        guard let lastIdx = chat.messages.indices.last, chat.messages[lastIdx].role == .assistant else { return }
+        // For forked chats, the active leaf is the last message on the active
+        // path; for linear chats it's the last message in the flat array.
+        guard let leafID = chat.activeLeafID,
+              let lastIdx = chat.messages.firstIndex(where: { $0.id == leafID }),
+              chat.messages[lastIdx].role == .assistant else { return }
         switch chunk {
         case .thinking(let text):
             let existing = chat.messages[lastIdx].thinking ?? ""
@@ -2762,12 +2877,15 @@ actor ChatEngine {
         emit(.chatsChanged(records))
     }
 
-    /// Records an error onto the last assistant message of the given chat and persists it.
+    /// Records an error onto the active leaf assistant message of the given
+    /// chat and persists it.
     private func recordError(_ text: String, filename: String) {
         emit(.error(text))
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         guard var chat = records[idx].chat else { return }
-        if let lastIdx = chat.messages.indices.last, chat.messages[lastIdx].role == .assistant {
+        if let leafID = chat.activeLeafID,
+           let lastIdx = chat.messages.firstIndex(where: { $0.id == leafID }),
+           chat.messages[lastIdx].role == .assistant {
             chat.messages[lastIdx].error = text
         }
         records[idx].chat = chat
@@ -2808,14 +2926,14 @@ actor ChatEngine {
         streamTasks[filename]?.cancel()
         if let idx = records.firstIndex(where: { $0.filename == filename }) {
             records[idx].stopAfterIteration = false
-            // Finalize the incomplete trailing turn: empty placeholder
-            // assistant messages are removed, and tool calls that never got a
-            // result receive a synthesized "cancelled" result — a state
-            // providers accept, which also tells the model exactly which
+            // Finalize the incomplete trailing turn on the active path: empty
+            // placeholder assistant messages are removed, and tool calls that
+            // never got a result receive a synthesized "cancelled" result — a
+            // state providers accept, which also tells the model exactly which
             // actions did and didn't happen. Only the last (incomplete) turn
             // is touched; earlier completed tool-call loops are kept.
             if var chat = records[idx].chat {
-                chat.messages.finalizeStoppedTurn()
+                chat.finalizeActiveStoppedTurn()
                 records[idx].chat = chat
             }
             records[idx].isStreaming = false
@@ -2837,7 +2955,7 @@ actor ChatEngine {
               records[idx].chat?.title == nil,
               !namingInProgress.contains(filename) else { return }
 
-        guard let firstUserMsg = records[idx].chat?.messages.first(where: { $0.role == .user }) else { return }
+        guard let firstUserMsg = records[idx].chat?.activeMessages.first(where: { $0.role == .user }) else { return }
         let firstUserText = firstUserMsg.content
 
         namingInProgress.insert(filename)
@@ -2912,10 +3030,12 @@ actor ChatEngine {
     // MARK: - Message editing / deletion
 
     /// Edits a message's content. User-message edits restart the turn: the
-    /// edited content is applied to the same message id, everything after it
-    /// is deleted, a fresh assistant placeholder is appended, and the tool
-    /// loop re-runs (edit & resend). Assistant-message edits stay in-place
-    /// text fixes (no request re-run — nothing to regenerate from).
+    /// edited content is applied to the same message id, the continuation is
+    /// handled per the chat's tree setting (preserved as a sibling branch
+    /// when trees are on, deleted when off), a fresh assistant placeholder is
+    /// appended, and the tool loop re-runs (edit & resend). Assistant-message
+    /// edits stay in-place text fixes (no request re-run — nothing to
+    /// regenerate from).
     func editMessage(filename: String, messageID: UUID, newText: String) async {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         await ensureChatLoaded(filename: filename)
@@ -2926,71 +3046,120 @@ actor ChatEngine {
         let target = chat.messages[msgIdx]
         if target.role == .user {
             // Edit & resend: apply the new content to the same message id,
-            // truncate everything after it, append a fresh assistant
-            // placeholder, and re-run the request.
+            // then handle the continuation per the tree setting.
             guard let connection = effectiveConnection(for: chat) else {
                 emit(.error("Please select a connection in the status bar."))
                 return
             }
             chat.messages[msgIdx].content = trimmed
             chat.messages[msgIdx].error = nil
-            // Clean up attachment files owned by every removed message.
-            for m in chat.messages[(msgIdx + 1)...] {
-                if let attachments = m.attachments {
-                    for attachment in attachments {
-                        env.deleteAttachment(attachment, chatFilename: filename)
+            let treesEnabled = hasChatTrees(for: chat)
+            if treesEnabled {
+                // Branching edit: the edited message is the fork point. The
+                // old continuation's first message is already a child of it;
+                // the new assistant placeholder is added as a sibling child
+                // and made active. No deletion warning needed — nothing is lost.
+                chat.materializeTree()
+                let placeholder = ChatMessage(role: .assistant, content: "", connectionName: connection.displayName)
+                chat.messages.append(placeholder)
+                chat.recordChild(parentID: messageID, childID: placeholder.id)
+                chat.setActiveChild(parentID: messageID, childID: placeholder.id)
+            } else {
+                // Destructive: remove everything after the edited message.
+                if chat.hasForks {
+                    let active = chat.activeMessages
+                    if let activeIdx = active.firstIndex(where: { $0.id == messageID }) {
+                        let toRemove = Array(active[(activeIdx + 1)...])
+                        for msg in toRemove {
+                            removeMessageAndSubtree(messageID: msg.id, from: &chat, filename: filename)
+                        }
                     }
+                } else {
+                    for m in chat.messages[(msgIdx + 1)...] {
+                        if let attachments = m.attachments {
+                            for attachment in attachments {
+                                env.deleteAttachment(attachment, chatFilename: filename)
+                            }
+                        }
+                    }
+                    chat.messages = Array(chat.messages[0...msgIdx])
                 }
+                chat.finalizeActiveStoppedTurn()
+                let placeholder = ChatMessage(role: .assistant, content: "", connectionName: connection.displayName)
+                appendMessage(placeholder, to: &chat)
             }
-            chat.messages = Array(chat.messages[0...msgIdx])
-            // Safety net on the surviving prefix (mirrors sendMessage).
-            chat.messages.finalizeStoppedTurn()
-            chat.messages.append(ChatMessage(role: .assistant, content: "", connectionName: connection.displayName))
             records[idx].chat = chat
             emit(.chatsChanged(records))
-            // Rebuild the request history: system prompt + surviving prefix.
+            // Rebuild the request history: system prompt + surviving prefix
+            // (the active path up to but not including the new placeholder).
             var messages: [ChatMessage] = []
             if let systemMsg = await systemMessage(for: chat) {
                 messages.append(systemMsg)
             }
-            messages.append(contentsOf: chat.messages.dropLast())
+            messages.append(contentsOf: chat.activeMessages.dropLast())
             runToolLoop(for: filename, connection: connection, messages: messages)
         } else {
             // Assistant-message edit: in-place text fix only.
             chat.messages[msgIdx].content = trimmed
-            // Clear any stale error/thinking on edit so the message renders cleanly.
             chat.messages[msgIdx].error = nil
             saveChat(chat, filename: filename)
             emit(.chatsChanged(records))
         }
     }
 
-    /// Deletes a message and everything after it (its whole continuation).
-    /// Rationale: deleting a random middle message either confuses the model
-    /// (missing context it refers to) or breaks provider validity (orphaned
-    /// tool results). After the deletion, `finalizeStoppedTurn()` runs on
-    /// the surviving tail as a safety net. Attachment-file cleanup applies to
-    /// all removed messages.
+    /// Deletes a message and its continuation along the active path only.
+    /// For forked chats, sibling branches hanging off the message's ancestors
+    /// are untouched (they become reachable via the nearest surviving fork).
+    /// After the deletion, tree metadata is pruned and the active choice is
+    /// reassigned to the most recent surviving sibling. For linear chats,
+    /// deletes the message and everything after it. Attachment-file cleanup
+    /// applies to all removed messages.
     func deleteMessage(filename: String, messageID: UUID) async {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         await ensureChatLoaded(filename: filename)
         guard var chat = records[idx].chat else { return }
-        guard let msgIdx = chat.messages.firstIndex(where: { $0.id == messageID }) else { return }
-        // Clean up attachment files owned by every removed message (the target
-        // and its whole continuation).
-        for m in chat.messages[msgIdx...] {
-            if let attachments = m.attachments {
-                for attachment in attachments {
-                    env.deleteAttachment(attachment, chatFilename: filename)
-                }
-            }
-        }
-        // Truncate to everything before the target message.
-        chat.messages = Array(chat.messages[..<msgIdx])
-        // Safety net on the surviving tail.
-        chat.messages.finalizeStoppedTurn()
+        guard chat.messages.contains(where: { $0.id == messageID }) else { return }
+        removeMessageAndSubtree(messageID: messageID, from: &chat, filename: filename)
+        chat.finalizeActiveStoppedTurn()
         saveChat(chat, filename: filename)
         emit(.chatsChanged(records))
+    }
+
+    // MARK: - Branch switching
+
+    /// Switches the active branch at a fork point: sets `childID` as the
+    /// active child of `parentID`, persists, and emits. The active path below
+    /// the switch re-derives automatically (each deeper fork follows its own
+    /// recorded choice). No-op when the chat isn't forked, the parent isn't
+    /// a fork point, or the child isn't one of its children.
+    func setActiveBranch(filename: String, parentID: UUID, childID: UUID) async {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        await ensureChatLoaded(filename: filename)
+        guard var chat = records[idx].chat, chat.hasForks else { return }
+        let parentKey = parentID.uuidString
+        let childKey = childID.uuidString
+        guard let children = chat.children?[parentKey], children.contains(childKey) else { return }
+        chat.setActiveChild(parentID: parentID, childID: childID)
+        saveChat(chat, filename: filename)
+        emit(.chatsChanged(records))
+    }
+
+    /// Resolves the sibling to switch to when the user clicks ◀ or ▶ on a
+    /// message with siblings. Returns the target sibling id, or nil when
+    /// there's only one sibling (no switch possible) or the message can't be
+    /// found. `direction` is -1 for ◀ (previous) or +1 for ▶ (next), wrapping
+    /// around at the ends.
+    func siblingForSwitch(filename: String, messageID: UUID, direction: Int) -> UUID? {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }),
+              let chat = records[idx].chat else { return nil }
+        let siblings = chat.siblings(of: messageID)
+        guard siblings.count > 1 else { return nil }
+        guard let parent = chat.parent(of: messageID),
+              let childIDs = chat.children?[parent.id.uuidString] else { return nil }
+        let currentKey = messageID.uuidString
+        guard let currentIdx = childIDs.firstIndex(of: currentKey) else { return nil }
+        let nextIdx = (currentIdx + direction + childIDs.count) % childIDs.count
+        return UUID(uuidString: childIDs[nextIdx])
     }
 
     // MARK: - Selection updates

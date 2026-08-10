@@ -930,8 +930,10 @@ extension ChatView {
     /// continuation that a delete or user-message edit would remove. Pure so it
     /// can be unit-tested without a view instance.
     nonisolated static func followOnMessageCount(for messageID: UUID, in chat: Chat?) -> Int {
-        guard let chat, let idx = chat.messages.firstIndex(where: { $0.id == messageID }) else { return 0 }
-        return max(0, chat.messages.count - idx - 1)
+        guard let chat else { return 0 }
+        let active = chat.activeMessages
+        guard let idx = active.firstIndex(where: { $0.id == messageID }) else { return 0 }
+        return max(0, active.count - idx - 1)
     }
 }
 

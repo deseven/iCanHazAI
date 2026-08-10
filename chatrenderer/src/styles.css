@@ -519,6 +519,33 @@ body {
   color: var(--error-text);
 }
 
+/* ── Branch switcher ───────────────────────────────────────────────── */
+
+.msg-branch-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.msg-branch-btn {
+  width: 20px;
+  height: 24px;
+}
+
+.msg-branch-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.msg-branch-count {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  min-width: 28px;
+  text-align: center;
+  user-select: none;
+}
+
 /* ── Content / markdown ────────────────────────────────────────────── */
 
 /* ── Image gallery ─────────────────────────────────────────────────── */

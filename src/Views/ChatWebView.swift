@@ -615,7 +615,7 @@ final class ChatWebViewModel: ObservableObject {
 
         enqueueRenderJob(.snapshot(
             chatId: item.id,
-            messages: chat.messages,
+            chat: chat,
             isStreaming: item.isStreaming,
             roleName: item.effectiveRoleName,
             // The accent is appearance-dependent — never persisted; re-resolved
@@ -749,6 +749,8 @@ final class ChatWebViewModel: ObservableObject {
             store.pendingDenyToolCallID = callId
         case .openAttachment(let url):
             openAttachment(url: url)
+        case .switchBranch(let messageId, let direction):
+            store.switchBranch(messageID: messageId, direction: direction)
         }
     }
 
@@ -971,6 +973,10 @@ enum BridgeMessageData: Codable, Sendable {
     /// original file in the system default app. `url` is the `ichai://`
     /// reference the host resolves to the file in the chat's attachment dir.
     case openAttachment(url: String)
+    /// User clicked ◀ or ▶ on a message with siblings to switch the active
+    /// branch. `direction` is -1 (previous) or +1 (next); the host resolves
+    /// the target sibling and calls `setActiveBranch`.
+    case switchBranch(messageId: String, direction: Int)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -979,6 +985,7 @@ enum BridgeMessageData: Codable, Sendable {
         case chatId
         case callId
         case url
+        case direction
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1021,6 +1028,10 @@ enum BridgeMessageData: Codable, Sendable {
         case .openAttachment(let url):
             try c.encode("openAttachment", forKey: .type)
             try c.encode(url, forKey: .url)
+        case .switchBranch(let messageId, let direction):
+            try c.encode("switchBranch", forKey: .type)
+            try c.encode(messageId, forKey: .messageId)
+            try c.encode(direction, forKey: .direction)
         }
     }
 
@@ -1054,6 +1065,9 @@ enum BridgeMessageData: Codable, Sendable {
             self = .denyToolCall(callId: try c.decode(String.self, forKey: .callId))
         case "openAttachment":
             self = .openAttachment(url: try c.decode(String.self, forKey: .url))
+        case "switchBranch":
+            self = .switchBranch(messageId: try c.decode(String.self, forKey: .messageId),
+                                 direction: try c.decode(Int.self, forKey: .direction))
         default:
             throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown type")
         }
@@ -1143,6 +1157,18 @@ struct ChatMessageData: Codable, Equatable, Sendable {
     /// Mutable so the view projection in `projectToolResults` can fold
     /// `tool`-role messages onto the preceding assistant message.
     var toolResults: [ToolResultData]?
+    /// Sibling index and count for branch switching. Present only for
+    /// messages that are fork members (siblings.count > 1). Nil for linear
+    /// chats and non-fork messages.
+    var siblings: SiblingsData?
+
+    /// Sibling position within a fork group, for the branch switcher UI.
+    struct SiblingsData: Codable, Equatable, Sendable {
+        /// 0-based index of this message within its sibling group.
+        let index: Int
+        /// Total number of siblings in the group (including this one).
+        let count: Int
+    }
 
     /// A single attachment reference for the wire protocol.
     struct AttachmentData: Codable, Equatable, Sendable {

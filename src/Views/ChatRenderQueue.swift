@@ -14,8 +14,10 @@ enum RenderJob: Sendable {
     case unload
     /// Render the given chat state, diffed against the last rendered state.
     /// A snapshot is self-contained: it supersedes an earlier queued (not yet
-    /// processed) snapshot, so only the latest one is kept.
-    case snapshot(chatId: String, messages: [ChatMessage], isStreaming: Bool, roleName: String?, roleAccent: String?, features: ChatSnapshotFeaturesData)
+    /// processed) snapshot, so only the latest one is kept. The full `Chat`
+    /// is passed so the queue can project the active path and compute
+    /// per-message sibling metadata for branch switching.
+    case snapshot(chatId: String, chat: Chat, isStreaming: Bool, roleName: String?, roleAccent: String?, features: ChatSnapshotFeaturesData)
 }
 
 /// Serializes and off-loads the expensive part of the Swift → renderer bridge:
@@ -85,8 +87,8 @@ actor ChatRenderQueue {
             // The renderer blanks itself, so the next snapshot must be full.
             clearDiffState()
             await send(.unload)
-        case .snapshot(let chatId, let messages, let isStreaming, let roleName, let roleAccent, let features):
-            await processSnapshot(chatId: chatId, messages: messages, isStreaming: isStreaming, roleName: roleName, roleAccent: roleAccent, features: features)
+        case .snapshot(let chatId, let chat, let isStreaming, let roleName, let roleAccent, let features):
+            await processSnapshot(chatId: chatId, chat: chat, isStreaming: isStreaming, roleName: roleName, roleAccent: roleAccent, features: features)
         }
     }
 
@@ -103,22 +105,25 @@ actor ChatRenderQueue {
     /// Diffs the given chat state against the last rendered state and sends
     /// incremental updates (updateMessage / addMessage / deleteMessage) when
     /// possible. Falls back to a full snapshot on chat switch, role/accent
-    /// change, feature-flag change, or streaming end.
-    private func processSnapshot(chatId: String, messages: [ChatMessage], isStreaming: Bool, roleName: String?, roleAccent: String?, features: ChatSnapshotFeaturesData) async {
-        let currentMessages = Self.projectToolResults(messages)
-        let currentIds = currentMessages.map(\.id)
+    /// change, feature-flag change, or streaming end. Projects the active
+    /// path (for forked chats) and computes per-message sibling metadata.
+    private func processSnapshot(chatId: String, chat: Chat, isStreaming: Bool, roleName: String?, roleAccent: String?, features: ChatSnapshotFeaturesData) async {
+        let currentMessages = Self.projectActiveMessages(chat)
 
         // A role/accent/features change affects things the renderer derives
         // from the snapshot (assistant title, regen button visibility), which
         // incremental message diffs wouldn't reflect, so force a fresh full
-        // snapshot.
+        // snapshot. A branch switch changes many message ids — the existing
+        // delete/add diffing handles it, but verify efficiency on deep chats
+        // and fall back to a forced full snapshot on switches if the diff
+        // gets pathological.
         if chatId != renderedChatId || roleName != lastRoleName || roleAccent != lastRoleAccent || features != lastFeatures {
             renderedChatId = chatId
             lastStreamingState = isStreaming
             lastRoleName = roleName
             lastRoleAccent = roleAccent
             lastFeatures = features
-            remember(currentMessages, ids: currentIds)
+            remember(currentMessages, ids: currentMessages.map(\.id))
             await send(.snapshot(snapshot: ChatSnapshotData(chatId: chatId, messages: currentMessages, isStreaming: isStreaming, roleName: roleName, roleAccent: roleAccent, features: features)))
             return
         }
@@ -126,7 +131,7 @@ actor ChatRenderQueue {
         if isStreaming != lastStreamingState {
             lastStreamingState = isStreaming
             if !isStreaming {
-                remember(currentMessages, ids: currentIds)
+                remember(currentMessages, ids: currentMessages.map(\.id))
                 await send(.snapshot(snapshot: ChatSnapshotData(chatId: chatId, messages: currentMessages, isStreaming: false, roleName: roleName, roleAccent: roleAccent, features: features)))
                 return
             } else {
@@ -134,6 +139,7 @@ actor ChatRenderQueue {
             }
         }
 
+        let currentIds = currentMessages.map(\.id)
         let oldIds = Set(lastMessageIds)
         let newIds = Set(currentIds)
 
@@ -177,13 +183,51 @@ actor ChatRenderQueue {
 
     // MARK: - Projection
 
-    /// Projects the stored message list into the wire shape, folding
+    /// Projects the chat's active messages into the wire shape, folding
     /// `tool`-role result messages onto the preceding assistant message's
     /// `toolResults` (matched by `callID`) so the renderer shows each result
     /// in the same inline tool block as the call that issued it. The folded
-    /// `tool` messages are dropped from the returned list. This is a pure view
-    /// projection — storage keeps the natural provider shape (one `tool`-role
-    /// message per result).
+    /// `tool` messages are dropped from the returned list. Also stamps
+    /// per-message sibling metadata (index/count within a fork group) for
+    /// branch switching. This is a pure view projection — storage keeps the
+    /// natural provider shape (one `tool`-role message per result).
+    static func projectActiveMessages(_ chat: Chat) -> [ChatMessageData] {
+        let activeMessages = chat.activeMessages
+        var out: [ChatMessageData] = []
+        var lastAssistantOutIndex: Int? = nil
+        for msg in activeMessages {
+            if msg.role == .tool, let results = msg.toolResults, !results.isEmpty {
+                if let aIdx = lastAssistantOutIndex {
+                    var folded = out[aIdx].toolResults ?? []
+                    for r in results {
+                        let imageData = r.image.map { ChatMessageData.ToolResultData.ToolResultImageData(mimeType: $0.mimeType, fallback: $0.fallback) }
+                        if let i = folded.firstIndex(where: { $0.callID == r.callID }) {
+                            folded[i] = ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming, isDenied: r.isDenied, isCancelled: r.isCancelled, summary: r.summary, image: imageData)
+                        } else {
+                            folded.append(ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming, isDenied: r.isDenied, isCancelled: r.isCancelled, summary: r.summary, image: imageData))
+                        }
+                    }
+                    out[aIdx].toolResults = folded
+                }
+                continue
+            }
+            var data = msg.webData
+            if msg.role == .assistant {
+                data.toolResults = nil
+                lastAssistantOutIndex = out.count
+            }
+            // Stamp sibling metadata for fork members (count > 1).
+            let siblings = chat.siblings(of: msg.id)
+            if siblings.count > 1 {
+                data.siblings = ChatMessageData.SiblingsData(index: siblings.index, count: siblings.count)
+            }
+            out.append(data)
+        }
+        return out
+    }
+
+    /// Legacy projection for tests that pass a flat message array. Used only
+    /// by tests that don't need tree metadata.
     static func projectToolResults(_ messages: [ChatMessage]) -> [ChatMessageData] {
         var out: [ChatMessageData] = []
         var lastAssistantOutIndex: Int? = nil
@@ -205,9 +249,6 @@ actor ChatRenderQueue {
             }
             var data = msg.webData
             if msg.role == .assistant {
-                // Assistant messages no longer carry folded toolResults in
-                // storage; clear any stale value so the projection is the
-                // single source of truth for the fold.
                 data.toolResults = nil
                 lastAssistantOutIndex = out.count
             }

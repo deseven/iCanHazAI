@@ -426,6 +426,7 @@ function ChatApp() {
                 roleAccent={snapshot?.roleAccent ?? null}
                 features={snapshot?.features}
                 isFirstMessage={m.id === messages[0]?.id}
+                siblings={m.siblings}
                 defaultThinkingOpen={expandThinking}
                 defaultToolOpen={expandToolUse}
               />

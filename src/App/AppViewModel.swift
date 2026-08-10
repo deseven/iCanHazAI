@@ -933,6 +933,20 @@ final class AppViewModel: ObservableObject {
         Task { await engine.regenerate(filename: filename, assistantMessageID: assistantMessageID) }
     }
 
+    /// Switches the active branch at the message's fork point. Resolves the
+    /// target sibling from `direction` (-1 for ◀, +1 for ▶) and calls the
+    /// engine's `setActiveBranch`. No-op when the message has no siblings.
+    func switchBranch(messageID: String, direction: Int) {
+        guard let filename = selectedChatID,
+              let messageUUID = UUID(uuidString: messageID) else { return }
+        Task {
+            if let siblingID = await engine.siblingForSwitch(filename: filename, messageID: messageUUID, direction: direction),
+               let parentID = await engine.record(for: filename)?.chat?.parent(of: messageUUID)?.id {
+                await engine.setActiveBranch(filename: filename, parentID: parentID, childID: siblingID)
+            }
+        }
+    }
+
     func stopStreaming() {
         guard let filename = selectedChatID else { return }
         Task { await engine.stopStreaming(filename: filename) }
