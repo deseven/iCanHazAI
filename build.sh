@@ -124,10 +124,11 @@ do_clean_dist() {
 do_resolve_deps() { swift package resolve; }
 
 do_build_web() {
-    cd "$loc/chatrenderer"
-    npm install --no-audit --no-fund
-    npm run build
-    cd "$loc"
+    (
+        cd "$loc/chatrenderer"
+        npm install --no-audit --no-fund
+        npm run build
+    )
 }
 
 # One `swift build` builds the app. Dev = arm64 only; otherwise universal (arm64+x86_64).
@@ -142,17 +143,19 @@ do_build_swift() {
 do_run_app_tests() { swift test --filter AllAppTests; }
 
 do_typecheck_web() {
-    cd "$loc/chatrenderer"
-    npm install --no-audit --no-fund
-    npm run typecheck
-    cd "$loc"
+    (
+        cd "$loc/chatrenderer"
+        npm install --no-audit --no-fund
+        npm run typecheck
+    )
 }
 
 do_run_web_tests() {
-    cd "$loc/chatrenderer"
-    npm install --no-audit --no-fund
-    npm test
-    cd "$loc"
+    (
+        cd "$loc/chatrenderer"
+        npm install --no-audit --no-fund
+        npm test
+    )
 }
 
 do_clean_app_cache() {
@@ -188,9 +191,10 @@ do_codesign() {
 }
 
 do_create_zip() {
-    cd "$loc/dist"
-    zip -r9 "$1" "$name.app"
-    cd "$loc"
+    (
+        cd "$loc/dist"
+        zip -r9 "$1" "$name.app"
+    )
 }
 
 do_create_dmg() {
@@ -294,8 +298,8 @@ if [ "$mode" != "test" ]; then
 fi
 
 if [ "$mode" = "test" ]; then
-    add "Typechecking chat renderer (web)..." "chat renderer typecheck failed"    do_typecheck_web
-    add "Running chat renderer tests..."  "chat renderer tests failed"            do_run_web_tests
+    add "Typechecking chatrenderer..." "chatrenderer typecheck failed"    do_typecheck_web
+    add "Running chatrenderer tests..."  "chatrenderer tests failed"            do_run_web_tests
     add "Running app tests..."        "app tests failed"                          do_run_app_tests
     run_pipeline
     echo ""
@@ -304,8 +308,8 @@ if [ "$mode" = "test" ]; then
 fi
 
 add "Resolving dependencies..."      "failed to resolve dependencies"            do_resolve_deps
-add "Building chat renderer (web)..." "failed to build chat renderer"            do_build_web
-add "Compiling Swift (app)..." "failed to compile $shortName"             do_build_swift
+add "Building chatrenderer..." "failed to build chat renderer"            do_build_web
+add "Compiling app..." "failed to compile $shortName"             do_build_swift
 add "Creating APP bundle..."         "failed to create app bundle"               do_create_bundle
 
 # Tests gate signing for release builds.
