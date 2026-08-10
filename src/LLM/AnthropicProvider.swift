@@ -38,6 +38,18 @@ struct AnthropicProvider: LLMProvider {
         if let apiKey = connection.apiKey, !apiKey.isEmpty {
             headers["x-api-key"] = apiKey
         }
+        // Custom headers are applied last so they can override anything,
+        // including auth and User-Agent. An empty-string value removes the
+        // header entirely (cheap way to suppress a default).
+        if let custom = connection.headers {
+            for (key, value) in custom {
+                if value.isEmpty {
+                    headers.removeValue(forKey: key)
+                } else {
+                    headers[key] = value
+                }
+            }
+        }
         return headers
     }
 

@@ -75,6 +75,13 @@ enum ConnectionFileWriter {
         }
         output += "    }\n"
 
+        output += "\n    // Custom HTTP headers sent with every request, applied last over the\n"
+        output += "    // provider's defaults (so any header can be overridden, including\n"
+        output += "    // auth and User-Agent). An empty-string value removes the header.\n"
+        output += "    // \"headers\": {\n"
+        output += "    //     \"User-Agent\": \"claude-cli/2.0.30 (external, cli)\"\n"
+        output += "    // }\n"
+
         output += "}\n"
         return output
     }

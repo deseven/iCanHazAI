@@ -458,7 +458,8 @@ enum ConfiguratorTools {
             apiKey: config.apiKey,
             model: config.model,
             imageInput: config.imageInput ?? false,
-            requestParameters: config.requestParameters
+            requestParameters: config.requestParameters,
+            headers: config.headers
         )
         let messages = [ChatMessage(role: .user, content: "say hi")]
         let answer = try await ChatService.shared.complete(connection: connection, messages: messages)

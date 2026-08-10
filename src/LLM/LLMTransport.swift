@@ -199,11 +199,15 @@ enum LLMTransport {
     // MARK: - Models listing
 
     /// Fetches the list of available models from a provider's `/models`
-    /// endpoint.
+    /// endpoint. `headers` is threaded through so a credentials check / model
+    /// fetch in the wizard matches what the saved connection will send —
+    /// otherwise the wizard could fail while the saved config works, for
+    /// exactly the header-gated gateway that motivated custom headers.
     static func listModels(
         provider: ConnectionProvider,
         baseUrl: String?,
-        apiKey: String?
+        apiKey: String?,
+        headers: [String: String]? = nil
     ) async throws -> [ModelInfo] {
         let strategy: any LLMProvider
         switch provider {
@@ -226,7 +230,8 @@ enum LLMTransport {
             apiKey: apiKey,
             model: "",
             imageInput: false,
-            requestParameters: nil
+            requestParameters: nil,
+            headers: headers
         )) {
             request.setValue(value, forHTTPHeaderField: key)
         }

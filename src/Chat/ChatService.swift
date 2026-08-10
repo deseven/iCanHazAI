@@ -219,9 +219,11 @@ final class ChatService: @unchecked Sendable {
 
     /// Fetches the list of available models from a provider's `/models`
     /// endpoint. Anthropic reports per-model capabilities (e.g.
-    /// `image_input`); OpenAI-compatible endpoints return ids only.
-    func listModels(provider: ConnectionProvider, baseUrl: String?, apiKey: String?) async throws -> [ModelInfo] {
-        try await LLMTransport.listModels(provider: provider, baseUrl: baseUrl, apiKey: apiKey)
+    /// `image_input`); OpenAI-compatible endpoints return ids only. `headers`
+    /// is threaded through so callers that need to match a saved connection's
+    /// header set (e.g. header-gated gateways) can do so.
+    func listModels(provider: ConnectionProvider, baseUrl: String?, apiKey: String?, headers: [String: String]? = nil) async throws -> [ModelInfo] {
+        try await LLMTransport.listModels(provider: provider, baseUrl: baseUrl, apiKey: apiKey, headers: headers)
     }
 
     /// Performs a non-streaming chat completion and returns the assistant's

@@ -36,6 +36,14 @@ enum ConfigValidation {
         if let v = obj["apiKey"], !(v is String) { throw ConfigValidationError("connection field \"apiKey\" must be a string") }
         if let v = obj["imageInput"], !(v is Bool) { throw ConfigValidationError("connection field \"imageInput\" must be a boolean") }
         if let v = obj["requestParameters"], !(v is [String: Any]) { throw ConfigValidationError("connection field \"requestParameters\" must be an object") }
+        if let v = obj["headers"] {
+            guard let dict = v as? [String: Any] else {
+                throw ConfigValidationError("connection field \"headers\" must be an object of strings")
+            }
+            for (k, val) in dict where !(val is String) {
+                throw ConfigValidationError("connection field \"headers\" must be an object of strings (value for \"\(k)\" is not a string)")
+            }
+        }
         do {
             return try JSONC.decode(data, as: ConnectionConfig.self)
         } catch {

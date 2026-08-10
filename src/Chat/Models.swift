@@ -918,6 +918,33 @@ struct Connection: Identifiable, Equatable, @unchecked Sendable {
     let imageInput: Bool
     /// Extra parameters inserted into every request body's root. Fully optional.
     let requestParameters: [String: LLMJSONValue]?
+    /// Custom HTTP headers applied **last** over the provider's defaults, so
+    /// any header can be overridden (including auth and `User-Agent`). An
+    /// empty-string value removes the header entirely. May carry secrets, so
+    /// it is redacted wherever the API key is. Fully optional.
+    let headers: [String: String]?
+
+    /// Explicit init so `headers` defaults to nil — keeps call sites that
+    /// don't care about headers (tests, wizard) concise.
+    init(
+        provider: ConnectionProvider,
+        name: String,
+        baseUrl: String?,
+        apiKey: String?,
+        model: String,
+        imageInput: Bool,
+        requestParameters: [String: LLMJSONValue]?,
+        headers: [String: String]? = nil
+    ) {
+        self.provider = provider
+        self.name = name
+        self.baseUrl = baseUrl
+        self.apiKey = apiKey
+        self.model = model
+        self.imageInput = imageInput
+        self.requestParameters = requestParameters
+        self.headers = headers
+    }
 
     /// Display name shown in the UI.
     var displayName: String { name }
@@ -930,4 +957,5 @@ struct ConnectionConfig: Codable {
     var model: String
     var imageInput: Bool?
     var requestParameters: [String: LLMJSONValue]?
+    var headers: [String: String]?
 }

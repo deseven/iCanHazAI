@@ -757,7 +757,8 @@ struct ConnectionWizardView: View {
             apiKey: token.isEmpty ? nil : token,
             model: selectedModel,
             imageInput: imageInput,
-            requestParameters: nil
+            requestParameters: nil,
+            headers: nil
         )
     }
 
