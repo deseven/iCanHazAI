@@ -6,6 +6,9 @@ connection_override_allowed = true
 mcps_override_allowed = true
 directory_isolation = true
 
+[features]
+with_attachments = true
+
 [utils]
 auto_allow_all = true
 

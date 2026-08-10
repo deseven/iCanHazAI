@@ -1658,8 +1658,13 @@ actor ChatEngine {
         // sent. Images are resized/re-encoded; text/documents have their
         // original copied and (for documents) text extracted. The returned
         // Attachment refs are persisted on the user message and used to build
-        // the request payload.
-        let committed: [Attachment] = pendingAttachments.compactMap {
+        // the request payload. Defensive strip: the UI gates attachments on
+        // the role's `with_attachments` flag, but a CLI-driven send against
+        // a chat whose role doesn't allow attachments drops them here so they
+        // never reach the request payload.
+        let roleAllowsAttachments = self.role(for: baseChat)?.hasAttachments ?? false
+        let effectiveAttachments = roleAllowsAttachments ? pendingAttachments : []
+        let committed: [Attachment] = effectiveAttachments.compactMap {
             AttachmentManager.commit($0, chatFilename: filename)
         }
 

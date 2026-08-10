@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import AppKit
 import PDFKit
+import TOML
 @testable import iCanHazAI
 
 // `Attachment` collides with `Testing.Attachment`; alias the app type so the
@@ -443,6 +444,61 @@ struct AttachmentTests {
         #expect(decoded.ext == "txt")
         // Falls back to the UUID + ext pattern.
         #expect(decoded.filename == "33333333-3333-3333-3333-333333333333.txt")
+    }
+
+    // MARK: - Role attachment gate
+
+    @Test("supportsAttachments is true for a role with with_attachments = true")
+    func supportsAttachmentsTrue() throws {
+        let toml = """
+        prompt = "Assistant"
+
+        [features]
+        with_attachments = true
+        """
+        let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+        let role = Role(name: "Assistant", config: config)
+        #expect(AppViewModel.supportsAttachments(role: role))
+    }
+
+    @Test("supportsAttachments is false for a role with no [features] table")
+    func supportsAttachmentsFalseNoFeatures() throws {
+        let toml = """
+        prompt = "Assistant"
+        """
+        let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+        let role = Role(name: "Assistant", config: config)
+        #expect(!AppViewModel.supportsAttachments(role: role))
+    }
+
+    @Test("supportsAttachments is false for a role with an empty [features] table")
+    func supportsAttachmentsFalseEmptyFeatures() throws {
+        let toml = """
+        prompt = "Assistant"
+
+        [features]
+        """
+        let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+        let role = Role(name: "Assistant", config: config)
+        #expect(!AppViewModel.supportsAttachments(role: role))
+    }
+
+    @Test("supportsAttachments is false for a role with other features but not with_attachments")
+    func supportsAttachmentsFalseOtherFeatures() throws {
+        let toml = """
+        prompt = "Assistant"
+
+        [features]
+        with_response_regen = true
+        """
+        let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+        let role = Role(name: "Assistant", config: config)
+        #expect(!AppViewModel.supportsAttachments(role: role))
+    }
+
+    @Test("supportsAttachments is false when the role is nil")
+    func supportsAttachmentsFalseNilRole() {
+        #expect(!AppViewModel.supportsAttachments(role: nil))
     }
 
     // MARK: - Helpers

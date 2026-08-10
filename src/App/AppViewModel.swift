@@ -873,11 +873,18 @@ final class AppViewModel: ObservableObject {
         return item.chat?.messages.last?.role == .user
     }
 
-    /// Whether attachments are enabled for the selected chat. Currently always
-    /// true — every chat accepts every attachment kind on every connection.
-    /// Reserved for a future role-level gate.
+    /// Whether attachments are enabled for the selected chat: the role's
+    /// `with_attachments` feature flag. Off when the role has no `[features]`
+    /// table or omits the key — the paperclip, drag-and-drop, and clipboard
+    /// paste paths are all gated on this.
     var selectedChatSupportsAttachments: Bool {
-        true
+        Self.supportsAttachments(role: selectedRole)
+    }
+
+    /// Pure decision logic behind `selectedChatSupportsAttachments`
+    /// (testable without an app instance).
+    nonisolated static func supportsAttachments(role: Role?) -> Bool {
+        role?.hasAttachments ?? false
     }
 
     /// Token usage for the currently selected chat, as reported by the

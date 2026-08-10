@@ -5,6 +5,10 @@ accent = "teal"
 connection_override_allowed = true
 mcps_override_allowed = true
 
+[features]
+with_attachments = true
+with_response_regen = true
+
 [utils]
 auto_allow_all = true
 

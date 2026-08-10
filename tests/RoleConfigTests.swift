@@ -785,6 +785,140 @@ extension AllAppTests {
         func workdirIconPlain() {
             #expect(AppViewModel.workdirIcon(directory: "/tmp/proj", isolated: false) == "folder")
         }
+
+        // MARK: - [features] table
+
+        @Test("RoleConfig decodes a [features] table")
+        func decodesFeatures() throws {
+            let toml = """
+            prompt = "Assistant"
+
+            [features]
+            with_attachments = true
+            with_response_regen = true
+            with_chat_trees = true
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let features = try #require(config.features)
+            #expect(features.withAttachments == true)
+            #expect(features.withResponseRegen == true)
+            #expect(features.withChatTrees == true)
+            let role = Role(name: "Assistant", config: config)
+            #expect(role.hasAttachments)
+            #expect(role.hasResponseRegen)
+            #expect(role.hasChatTrees)
+        }
+
+        @Test("RoleConfig decodes a partial [features] table (omitted keys default to nil)")
+        func decodesPartialFeatures() throws {
+            let toml = """
+            prompt = "Assistant"
+
+            [features]
+            with_attachments = true
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let features = try #require(config.features)
+            #expect(features.withAttachments == true)
+            #expect(features.withResponseRegen == nil)
+            #expect(features.withChatTrees == nil)
+            let role = Role(name: "Assistant", config: config)
+            #expect(role.hasAttachments)
+            #expect(!role.hasResponseRegen)
+            #expect(!role.hasChatTrees)
+        }
+
+        @Test("RoleConfig with no [features] table leaves all features off")
+        func noFeaturesTable() throws {
+            let toml = """
+            prompt = "Assistant"
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            #expect(config.features == nil)
+            let role = Role(name: "Assistant", config: config)
+            #expect(!role.hasAttachments)
+            #expect(!role.hasResponseRegen)
+            #expect(!role.hasChatTrees)
+        }
+
+        @Test("An empty [features] table leaves all features off")
+        func emptyFeaturesTable() throws {
+            let toml = """
+            prompt = "Assistant"
+
+            [features]
+            """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let features = try #require(config.features)
+            #expect(features.withAttachments == nil)
+            #expect(features.withResponseRegen == nil)
+            #expect(features.withChatTrees == nil)
+            let role = Role(name: "Assistant", config: config)
+            #expect(!role.hasAttachments)
+            #expect(!role.hasResponseRegen)
+            #expect(!role.hasChatTrees)
+        }
+
+        @Test("Role validation rejects with_chat_trees without with_response_regen")
+        func validationRejectsTreesWithoutRegen() throws {
+            let toml = """
+            prompt = "Assistant"
+
+            [features]
+            with_chat_trees = true
+            """
+            let data = Data(toml.utf8)
+            #expect(throws: ConfigValidationError.self) {
+                try ConfigValidation.decodeRole(data)
+            }
+        }
+
+        @Test("Role validation accepts with_chat_trees with with_response_regen")
+        func validationAcceptsTreesWithRegen() throws {
+            let toml = """
+            prompt = "Assistant"
+
+            [features]
+            with_response_regen = true
+            with_chat_trees = true
+            """
+            let data = Data(toml.utf8)
+            let config = try ConfigValidation.decodeRole(data)
+            #expect(config.features?.withChatTrees == true)
+            #expect(config.features?.withResponseRegen == true)
+        }
+
+        @Test("Role validation accepts with_response_regen without with_chat_trees")
+        func validationAcceptsRegenWithoutTrees() throws {
+            let toml = """
+            prompt = "Assistant"
+
+            [features]
+            with_response_regen = true
+            """
+            let data = Data(toml.utf8)
+            let config = try ConfigValidation.decodeRole(data)
+            #expect(config.features?.withResponseRegen == true)
+            #expect(config.features?.withChatTrees == nil)
+        }
+
+        @Test("trees-without-regen error explains the requirement")
+        func treesWithoutRegenMessage() throws {
+            let toml = """
+            prompt = "Assistant"
+
+            [features]
+            with_chat_trees = true
+            """
+            let data = Data(toml.utf8)
+            do {
+                _ = try ConfigValidation.decodeRole(data)
+                Issue.record("expected validation to reject with_chat_trees without with_response_regen")
+            } catch let error as ConfigValidationError {
+                #expect(error.message.contains("with_chat_trees"))
+                #expect(error.message.contains("with_response_regen"))
+            }
+        }
     }
 }
 

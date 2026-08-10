@@ -88,7 +88,7 @@ A `{name}.md` file in `Prompts/` — the entire file content is the system promp
 
 ### Role
 
-A `{name}.toml` file in `Roles/` — a template for new chats combining a prompt, a connection, a working directory, and tools. Tools come from the built-in groups (utils, filesystem, code, shell, web) and/or configured MCP servers, each with optional allowlists and auto-approve rules. The working directory can be pre-set, picked once per chat, or a remote SSH location (`host:/path`), and filesystem/code tools can be isolated to it. A chat's role and working directory are fixed at creation.
+A `{name}.toml` file in `Roles/` — a template for new chats combining a prompt, a connection, a working directory, and tools. Tools come from the built-in groups (utils, filesystem, code, shell, web) and/or configured MCP servers, each with optional allowlists and auto-approve rules. The working directory can be pre-set, picked once per chat, or a remote SSH location (`host:/path`), and filesystem/code tools can be isolated to it. A chat's role and working directory are fixed at creation. An optional `[features]` table gates per-role UI capabilities.
 
 ### Chat
 

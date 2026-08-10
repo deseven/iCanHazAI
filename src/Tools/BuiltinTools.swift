@@ -377,7 +377,7 @@ enum BuiltinTools {
     ]
 
     private static let shellToolDefs: [BuiltinToolDef] = {
-        let shellDesc = "Execute a command in the user's login shell (\(shellPath) -l). Returns stdout, and stderr on non-zero exit. Runs in current directory."
+        let shellDesc = "Execute a command in the user's login shell (\(shellPath) -l). Returns stdout, and stderr on non-zero exit. Runs in current directory. Only use if other available tools can't achieve the desired results at all or effectively enough."
         let commandDesc = "The shell command to execute. Could be a full multiline script as well."
         return [
             BuiltinToolDef(name: "shell",

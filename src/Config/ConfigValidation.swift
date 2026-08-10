@@ -95,6 +95,9 @@ enum ConfigValidation {
     /// - `directory_isolation` combined with the Shell group is an error:
     ///   Shell commands are not directory-isolated, so the model could escape
     ///   the confinement and the isolation promise would be void.
+    /// - `features.with_chat_trees = true` requires `features.with_response_regen`
+    ///   to also be true: chat trees only exist via regeneration/edit-forking,
+    ///   so enabling trees without regen is a contradiction.
     static func validateRole(_ config: RoleConfig, references: RoleReferences? = nil) throws {
         if let references {
             if let connection = config.connection, !connection.isEmpty, !references.connectionIDs.contains(connection) {
@@ -163,6 +166,15 @@ enum ConfigValidation {
                     + "shell tools are NOT directory-isolated, so the model could escape the confinement"
                 )
             }
+        }
+
+        // Chat trees only exist via regeneration/edit-forking, so enabling
+        // trees without regen is a contradiction.
+        if config.features?.withChatTrees == true && config.features?.withResponseRegen != true {
+            throw ConfigValidationError(
+                "role config enables with_chat_trees but not with_response_regen; "
+                + "chat trees only exist via response regeneration, so both must be enabled together"
+            )
         }
     }
 

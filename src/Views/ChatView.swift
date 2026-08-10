@@ -140,7 +140,8 @@ struct ChatView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
             .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
-                handleDrop(providers: providers)
+                guard store.selectedChatSupportsAttachments else { return false }
+                return handleDrop(providers: providers)
             }
         }
         .onAppear {
@@ -516,8 +517,10 @@ struct ChatView: View {
     /// Checks the system pasteboard for attachment content and, if found,
     /// attaches it as a pending attachment. Returns true if an attachment was
     /// consumed (so the caller can swallow the paste event), false to let
-    /// normal text paste proceed.
+    /// normal text paste proceed. No-op (returns false) when the selected
+    /// chat's role doesn't enable attachments.
     private func handleClipboardPaste() -> Bool {
+        guard store.selectedChatSupportsAttachments else { return false }
         let pb = NSPasteboard.general
 
         // 1. File URLs first (e.g. a file copied in Finder). We prefer the

@@ -4,4 +4,7 @@ icon = "gearshape"
 connection_override_allowed = true
 mcps_override_allowed = true
 
+[features]
+with_attachments = true
+
 # this is a special role that uses a special set of tools

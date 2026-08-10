@@ -741,6 +741,26 @@ struct RoleToolGroup: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+/// Per-role UI capability flags. All keys optional; an omitted key means the
+/// feature is off. A missing `[features]` table entirely leaves every feature
+/// off — the role behaves as a plain chat with no attachments, no regen, no
+/// trees.
+struct RoleFeatures: Codable, Equatable, Hashable, Sendable {
+    /// Whether chats with this role accept attachments (paperclip, drop, paste).
+    var withAttachments: Bool?
+    /// Whether assistant messages get a Regen button (re-stream the response).
+    var withResponseRegen: Bool?
+    /// Whether regen/edit create sibling branches instead of deleting the old
+    /// continuation. Validation requires this to come with `withResponseRegen`.
+    var withChatTrees: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case withAttachments = "with_attachments"
+        case withResponseRegen = "with_response_regen"
+        case withChatTrees = "with_chat_trees"
+    }
+}
+
 /// Raw structure decoded from a role TOML file (`~/iCanHazAI/roles/<name>.toml`).
 struct RoleConfig: Codable, Equatable, Hashable {
     var description: String?
@@ -774,6 +794,9 @@ struct RoleConfig: Codable, Equatable, Hashable {
     /// `RoleAccent` to an adaptive system color. Nil/unknown → falls back to
     /// the macOS accent color (system setting).
     var accent: String?
+    /// Per-role UI capability flags (attachments, response regen, chat trees).
+    /// Nil when the `[features]` table is absent — every feature off.
+    var features: RoleFeatures?
 
     enum CodingKeys: String, CodingKey {
         case description
@@ -792,6 +815,7 @@ struct RoleConfig: Codable, Equatable, Hashable {
         case mcpsOverrideAllowed = "mcps_override_allowed"
         case icon
         case accent
+        case features
     }
 }
 
@@ -892,6 +916,19 @@ struct Role: Identifiable, Equatable, Hashable {
     /// Whether this role enables the Web built-in tool group. Drives the
     /// globe badge in the role picker.
     var hasWebTools: Bool { config.web != nil }
+
+    /// Whether chats with this role accept attachments (paperclip, drop,
+    /// paste). Off when the role has no `[features]` table or omits the key.
+    var hasAttachments: Bool { config.features?.withAttachments ?? false }
+
+    /// Whether assistant messages in this role's chats get a Regen button.
+    /// Off when the role has no `[features]` table or omits the key.
+    var hasResponseRegen: Bool { config.features?.withResponseRegen ?? false }
+
+    /// Whether regen/edit create sibling branches instead of deleting the old
+    /// continuation. Off when the role has no `[features]` table or omits the
+    /// key. Validation requires this to come with `withResponseRegen`.
+    var hasChatTrees: Bool { config.features?.withChatTrees ?? false }
 }
 
 // MARK: - Connection

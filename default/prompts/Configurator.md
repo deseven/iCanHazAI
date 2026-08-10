@@ -144,11 +144,19 @@ A chat's working directory is permanent, like its role: it is set exactly once �
 - `working_directory` — pre-set directory applied to every new chat.
 - `directory_isolation` — isolate Filesystem/Code to the working directory. It requires at least one of Filesystem/Code tool group to be enabled, and combining it with the `[shell]` group is a validation error — shell tools are not directory-isolated, so the model could escape the confinement.
 
+### Feature flags (`[features]`)
+An optional table gating UI capabilities per role. All keys are optional; an omitted key means the feature is off. A missing `[features]` table entirely leaves every feature off — the role behaves as a plain chat with no attachments, no regen, no trees. Omit the table (or the key) when the feature is not needed.
+
+- `with_attachments` — whether chats with this role accept attachments (paperclip button, drag-and-drop, clipboard image paste). The CLI never sends attachments regardless of this flag. Should be considered default for new roles, unless user specifically asks to have no attachments.
+- `with_response_regen` — whether assistant messages get a Regen button (re-stream the response, deleting the original and everything after it). Worth asking the user if they need it.
+- `with_chat_trees` — whether regen/edit create sibling branches instead of deleting the old continuation (non-destructive). Requires `with_response_regen` to also be true: chat trees only exist via regeneration/edit-forking, so enabling trees without regen is a validation error.
+
 **Validation errors** (the role fails to load and surfaces a config error):
 1. Referencing a connection, prompt, or MCP server that doesn't exist (`connection`, `prompt`, or a `[[mcps]]` entry with no matching config on disk). A broken-but-present config still counts as existing — it surfaces its own error instead.
 2. Setting `working_directory` without selecting at least one workdir-capable group (Filesystem, Code, or Shell). Nothing would consume the directory, so the setting is meaningless.
 3. Setting `directory_isolation = true` without selecting at least one isolation-capable group (Filesystem or Code). Nothing would be isolated, so the setting is meaningless. Isolation always needs a directory to isolate to — but it doesn't have to come from the role: when `working_directory` is omitted, the user is forced to pick one (Filesystem/Code can't run without a directory), so `directory_isolation` without `working_directory` is valid.
 4. Setting `directory_isolation = true` while also selecting the `[shell]` group. Shell tools are not directory-isolated, so the model could escape the confinement — remove either the isolation or the Shell group.
+5. Setting `with_chat_trees = true` without `with_response_regen = true`. Chat trees only exist via regeneration, so both must be enabled together.
 
 When fixing a role that errored on a missing reference, first check whether the entity was simply renamed: `list_connections`/`list_prompts`/`list_mcps` and look for a similarly named or same-purpose entry, then point the role at it. If nothing relevant exists, ask the user what to do — recreate the missing entity, change the role to reference something else or remove the reference (in case of MCPs). Don't silently drop the reference.
 
