@@ -569,6 +569,38 @@ struct ChatStoreFSEventsTests {
         env.store.handleExternalDeletion(filename: "gone.json")
         #expect(env.store.getEntry(filename: "gone.json") == nil)
     }
+
+    // MARK: - shouldPersist
+
+    @Test("shouldPersist is false for a chat with no messages and no title")
+    func shouldPersistEmptyUntitled() {
+        let chat = Fixtures.chat(messages: [], title: nil)
+        #expect(chat.shouldPersist == false)
+    }
+
+    @Test("shouldPersist is false for a chat with no messages and an empty title")
+    func shouldPersistEmptyEmptyTitle() {
+        let chat = Fixtures.chat(messages: [], title: "")
+        #expect(chat.shouldPersist == false)
+    }
+
+    @Test("shouldPersist is true for a chat with no messages but a non-empty title")
+    func shouldPersistTitledEmpty() {
+        let chat = Fixtures.chat(messages: [], title: "Plans for later")
+        #expect(chat.shouldPersist == true)
+    }
+
+    @Test("shouldPersist is true for a chat with messages and no title")
+    func shouldPersistHasMessages() {
+        let chat = Fixtures.simpleChat(title: nil)
+        #expect(chat.shouldPersist == true)
+    }
+
+    @Test("shouldPersist is true for a chat with messages and a title")
+    func shouldPersistHasMessagesAndTitle() {
+        let chat = Fixtures.simpleChat(title: "Math")
+        #expect(chat.shouldPersist == true)
+    }
 }
 
 } // extension AllAppTests

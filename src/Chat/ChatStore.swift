@@ -336,6 +336,17 @@ extension Chat {
         }
         return nil
     }
+
+    /// Whether this chat is worth persisting to disk. A chat with messages is
+    /// always persisted. A chat with no messages is persisted only when it
+    /// has a non-empty title (the user renamed it, presumably planning to
+    /// write to it later). Truly empty chats (no messages, no title) are
+    /// in-memory placeholders and are never written — they'd become orphan
+    /// files if the user quit before sending a message.
+    var shouldPersist: Bool {
+        if !messages.isEmpty { return true }
+        return title?.isEmpty == false
+    }
 }
 
 // MARK: - URL modification date helper

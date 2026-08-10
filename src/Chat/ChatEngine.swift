@@ -1297,7 +1297,7 @@ actor ChatEngine {
 
     /// Removes all chats that have no messages, except the one identified by
     /// `keep` (pass nil to prune every empty chat). Since empty chats are
-    /// never written to disk (see `createNewChat`), pruning only removes the
+    /// never written to disk (see `saveChat`), pruning only removes the
     /// in-memory record — no file deletion is needed.
     func pruneEmptyChats(except keep: String?) {
         // Only prune chats that are loaded AND have no messages — these are
@@ -1382,11 +1382,26 @@ actor ChatEngine {
     /// suppression so the resulting FSEvents don't trigger a redundant reload.
     /// Also updates the cached metadata from the store.
     /// Temporary chats are never persisted — only the in-memory record
-    /// is updated.
+    /// is updated. Empty chats (no messages and no title) are also never
+    /// persisted: they're in-memory placeholders until the first message is
+    /// sent, and writing them would leave orphan files on disk if the user
+    /// quits before sending. The in-memory record is still updated so the
+    /// UI reflects the change (e.g. a picked working directory).
     private func saveChat(_ chat: Chat, filename: String) {
         if let idx = records.firstIndex(where: { $0.filename == filename }),
            records[idx].isTemporary {
             records[idx].chat = chat
+            return
+        }
+        // Don't persist empty chats — they have no content yet and would
+        // become orphan files if the user quits before sending a message.
+        // The in-memory record is still updated below so the UI reflects the
+        // change. Once the first message is sent, `finishStream` persists the
+        // chat (now non-empty) to disk.
+        if !chat.shouldPersist {
+            if let idx = records.firstIndex(where: { $0.filename == filename }) {
+                records[idx].chat = chat
+            }
             return
         }
         markSelfWrite(path: env.chatsURL.appendingPathComponent(filename).path)
