@@ -149,7 +149,7 @@ An optional table gating UI capabilities per role. All keys are optional; an omi
 
 - `with_attachments` — whether chats with this role accept attachments (paperclip button, drag-and-drop, clipboard image paste). The CLI never sends attachments regardless of this flag. Should be considered default for new roles, unless user specifically asks to have no attachments.
 - `with_response_regen` — whether assistant messages get a Regen button (re-stream the response, deleting the original and everything after it). Worth asking the user if they need it.
-- `with_chat_trees` — whether regen/edit create sibling branches instead of deleting the old continuation (non-destructive). Requires `with_response_regen` to also be true: chat trees only exist via regeneration/edit-forking, so enabling trees without regen is a validation error.
+- `with_chat_trees` — whether regen/edit create sibling branches instead of deleting the old continuation (non-destructive). Requires `with_response_regen` to also be true: chat trees only exist via regeneration/edit-forking, so enabling trees without regen is a validation error. When enabled, a tree overview button appears in the chat header (next to Chat Info) that opens a full-viewport view of the conversation's splitting points; clicking a node jumps to it (switching branches as needed).
 
 **Validation errors** (the role fails to load and surfaces a config error):
 1. Referencing a connection, prompt, or MCP server that doesn't exist (`connection`, `prompt`, or a `[[mcps]]` entry with no matching config on disk). A broken-but-present config still counts as existing — it surfaces its own error instead.

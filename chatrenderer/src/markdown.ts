@@ -106,9 +106,12 @@ for (const [name, lang] of languages) {
 }
 
 // Feature flags passed by the native host via URL query parameters. Flags are
-// presence-based: `?withMermaid&withKatex&withDebug` enables all features. When
-// a feature is disabled its (large) bundle is never loaded and the
+// presence-based: `?withMermaid&withKatex&withDebug` enables all features.
+// When a feature is disabled its (large) bundle is never loaded and the
 // corresponding markdown-it plugin / fence rule is not registered.
+//
+// The tree overview uses our own SVG renderer (TreeView), which is part of the
+// core bundle — no optional feature bundle is needed for it.
 interface ChatFeatures {
   mermaid: boolean;
   katex: boolean;

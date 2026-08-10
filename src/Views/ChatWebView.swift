@@ -177,7 +177,8 @@ final class ChatWebViewModel: ObservableObject {
     /// trying (and failing) to navigate the web view to them.
     private let navigationDelegate = ChatWebViewNavigationDelegate()
     /// Feature flags passed to the renderer via URL query params so it only
-    /// loads the (large) Mermaid/KaTeX bundles when enabled.
+    /// loads the (large) Mermaid/KaTeX bundles when enabled. The tree overview
+    /// uses our own SVG renderer (TreeView), so it needs no separate bundle.
     private var mermaidEnabled: Bool = false
     private var katexEnabled: Bool = false
     private var interfaceScale: Double = ChatFeaturesConfig.defaultInterfaceScale
@@ -687,6 +688,27 @@ final class ChatWebViewModel: ObservableObject {
         sendHostMessage(.startSearch)
     }
 
+    /// Opens the tree overview mode for the selected chat. Computes the
+    /// projection from the chat's tree metadata and sends it to the renderer.
+    /// No-op when the chat has no forks (the renderer shows a friendly empty
+    /// state for a single-node projection).
+    func enterTreeOverview() {
+        guard let store, let item = store.selectedChatItem, let chat = item.chat else { return }
+        let root = ChatRenderQueue.buildTreeOverview(chat)
+        sendHostMessage(.treeOverview(root: root))
+    }
+
+    /// Closes the tree overview mode.
+    func exitTreeOverview() {
+        sendHostMessage(.exitTreeOverview)
+    }
+
+    /// Scrolls the chat to bring `messageId` into view, with a brief highlight
+    /// flash. Sent after a branch switch triggered from the overview.
+    func scrollToMessage(_ messageId: String) {
+        sendHostMessage(.scrollToMessage(messageId: messageId))
+    }
+
     // MARK: - JS communication
 
     /// Encodes and sends a small, order-independent host message (theme,
@@ -751,6 +773,8 @@ final class ChatWebViewModel: ObservableObject {
             openAttachment(url: url)
         case .switchBranch(let messageId, let direction):
             store.switchBranch(messageID: messageId, direction: direction)
+        case .gotoMessage(let messageId):
+            store.gotoMessage(messageID: messageId)
         }
     }
 
@@ -772,7 +796,8 @@ final class ChatWebViewModel: ObservableObject {
 
     private func copyMessage(_ messageId: String) {
         guard let item = store?.selectedChatItem,
-              let msg = item.chat?.messages.first(where: { $0.id.uuidString == messageId }) else { return }
+              let uuid = UUID(uuidString: messageId),
+              let msg = item.chat?.message(id: uuid) else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(msg.content, forType: .string)
@@ -865,6 +890,16 @@ enum HostMessageData: Codable, Sendable {
     case updateMessage(chatId: String, message: ChatMessageData)
     case addMessage(chatId: String, message: ChatMessageData, index: Int)
     case deleteMessage(chatId: String, messageId: String)
+    /// Open (or update) the tree overview mode with the given root. Sent on
+    /// `enterTreeOverview` and re-pushed if the tree changes while the overview
+    /// is open. A nil root closes the overview (nothing to show).
+    case treeOverview(root: TreeNodeData?)
+    /// Close the tree overview mode.
+    case exitTreeOverview
+    /// Scroll the (re-rendered) chat to bring `messageId` into view, with a
+    /// brief highlight flash. Sent after a branch switch triggered from the
+    /// overview so the user lands on the jumped-to message.
+    case scrollToMessage(messageId: String)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -875,6 +910,7 @@ enum HostMessageData: Codable, Sendable {
         case message
         case index
         case messageId
+        case root
     }
 
     func encode(to encoder: Encoder) throws {
@@ -909,6 +945,14 @@ enum HostMessageData: Codable, Sendable {
             try c.encode("deleteMessage", forKey: .type)
             try c.encode(chatId, forKey: .chatId)
             try c.encode(messageId, forKey: .messageId)
+        case .treeOverview(let root):
+            try c.encode("treeOverview", forKey: .type)
+            try c.encodeIfPresent(root, forKey: .root)
+        case .exitTreeOverview:
+            try c.encode("exitTreeOverview", forKey: .type)
+        case .scrollToMessage(let messageId):
+            try c.encode("scrollToMessage", forKey: .type)
+            try c.encode(messageId, forKey: .messageId)
         }
     }
 
@@ -939,10 +983,46 @@ enum HostMessageData: Codable, Sendable {
         case "deleteMessage":
             self = .deleteMessage(chatId: try c.decode(String.self, forKey: .chatId),
                                   messageId: try c.decode(String.self, forKey: .messageId))
+        case "treeOverview":
+            self = .treeOverview(root: try c.decodeIfPresent(TreeNodeData.self, forKey: .root))
+        case "exitTreeOverview":
+            self = .exitTreeOverview
+        case "scrollToMessage":
+            self = .scrollToMessage(messageId: try c.decode(String.self, forKey: .messageId))
         default:
             throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown type")
         }
     }
+}
+
+/// A node in the tree overview projection: the conversation root, or one
+/// branch-head of a split. The projection mirrors the chat's tree structure
+/// directly — each node is a drawn card, and its `split` (when present) holds
+/// the alternative continuations, each headed by its own node. Everything
+/// between drawn nodes collapses into the node's `messageCount` (shown as a
+/// "{n} messages" badge).
+struct TreeNodeData: Codable, Equatable, Sendable {
+    /// The message id this node represents (used for goto-on-click).
+    let id: String
+    /// The message role ("user", "assistant", "tool", "system").
+    let role: String
+    /// A short snippet of the message content (≤100 chars), for the node card.
+    let snippet: String
+    /// Number of messages in this branch segment: from this node up to (and
+    /// including) the next split's owner, or to the end of the branch.
+    let messageCount: Int
+    /// Whether this node lies on the active path (root → active leaf).
+    let isActive: Bool
+    /// The split this node's segment ends in. Absent → the segment runs to a
+    /// leaf (the end of the branch).
+    let split: TreeSplitData?
+}
+
+/// A fork point: the alternative continuations after a node's segment, each
+/// headed by its own node. Exactly one branch is active (has `isActive`).
+struct TreeSplitData: Codable, Equatable, Sendable {
+    /// The branch heads, in order.
+    let branches: [TreeNodeData]
 }
 
 /// The JSON shape received JS -> Swift. Matches `BridgeMessage` in types.ts.
@@ -977,6 +1057,11 @@ enum BridgeMessageData: Codable, Sendable {
     /// branch. `direction` is -1 (previous) or +1 (next); the host resolves
     /// the target sibling and calls `setActiveBranch`.
     case switchBranch(messageId: String, direction: Int)
+    /// User clicked a node in the tree overview to jump to that message. The
+    /// host resolves the path to the node, calls `setActiveBranch` for each
+    /// fork on the way (no-op when already on-path), closes the overview,
+    /// pushes the resulting snapshot, then sends `scrollToMessage`.
+    case gotoMessage(messageId: String)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -1032,6 +1117,9 @@ enum BridgeMessageData: Codable, Sendable {
             try c.encode("switchBranch", forKey: .type)
             try c.encode(messageId, forKey: .messageId)
             try c.encode(direction, forKey: .direction)
+        case .gotoMessage(let messageId):
+            try c.encode("gotoMessage", forKey: .type)
+            try c.encode(messageId, forKey: .messageId)
         }
     }
 
@@ -1068,6 +1156,8 @@ enum BridgeMessageData: Codable, Sendable {
         case "switchBranch":
             self = .switchBranch(messageId: try c.decode(String.self, forKey: .messageId),
                                  direction: try c.decode(Int.self, forKey: .direction))
+        case "gotoMessage":
+            self = .gotoMessage(messageId: try c.decode(String.self, forKey: .messageId))
         default:
             throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown type")
         }

@@ -213,8 +213,6 @@ enum Fixtures {
     static func chat(
         id: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
         messages: [ChatMessage] = [],
-        children: [String: [String]]? = nil,
-        activeChild: [String: String]? = nil,
         connection: String? = nil,
         role: String? = nil,
         prompt: String? = nil,
@@ -224,7 +222,16 @@ enum Fixtures {
         archive: Bool? = nil,
         autoAllow: [String]? = nil
     ) -> Chat {
-        Chat(id: id, messages: messages, children: children, activeChild: activeChild, connection: connection, role: role, prompt: prompt, workingDirectory: workingDirectory, mcps: mcps, title: title, archive: archive, autoAllow: autoAllow)
+        Chat(id: id, messages: messages, connection: connection, role: role, prompt: prompt, workingDirectory: workingDirectory, mcps: mcps, title: title, archive: archive, autoAllow: autoAllow)
+    }
+
+    /// Attaches fork branches to a message, making it a fork owner. The owner
+    /// must end up as the last message of its branch array (tree invariant).
+    static func forking(_ msg: ChatMessage, branches: [[ChatMessage]], active: Int? = nil) -> ChatMessage {
+        var msg = msg
+        msg.branches = branches
+        msg.activeBranch = active
+        return msg
     }
 
     /// A chat with one user + one assistant message, useful for cache/display tests.

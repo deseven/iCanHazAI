@@ -870,7 +870,7 @@ final class AppViewModel: ObservableObject {
     /// that last user message (e.g. after the agent's answer was removed).
     var selectedChatLastMessageIsFromUser: Bool {
         guard let item = selectedChatItem else { return false }
-        return item.chat?.messages.last?.role == .user
+        return item.chat?.activeMessages.last?.role == .user
     }
 
     /// Whether attachments are enabled for the selected chat: the role's
@@ -899,6 +899,19 @@ final class AppViewModel: ObservableObject {
     /// (testable without an app instance).
     nonisolated static func supportsResponseRegen(role: Role?) -> Bool {
         role?.hasResponseRegen ?? false
+    }
+
+    /// Whether chat trees (non-destructive regen/edit branching) are enabled
+    /// for the selected chat: the role's `with_chat_trees` feature flag.
+    /// Drives the tree overview toolbar button visibility.
+    var selectedChatSupportsChatTrees: Bool {
+        Self.supportsChatTrees(role: selectedRole)
+    }
+
+    /// Pure decision logic behind `selectedChatSupportsChatTrees`
+    /// (testable without an app instance).
+    nonisolated static func supportsChatTrees(role: Role?) -> Bool {
+        role?.hasChatTrees ?? false
     }
 
     /// Token usage for the currently selected chat, as reported by the
@@ -945,6 +958,66 @@ final class AppViewModel: ObservableObject {
                 await engine.setActiveBranch(filename: filename, parentID: parentID, childID: siblingID)
             }
         }
+    }
+
+    /// Whether the tree overview mode is currently open for the selected chat.
+    @Published var treeOverviewOpen: Bool = false
+
+    /// Toggles the tree overview mode for the selected chat. When opening,
+    /// computes the projection and sends it to the renderer; when closing,
+    /// sends `exitTreeOverview`. No-op while streaming (the overview blocks
+    /// interactions anyway).
+    func toggleTreeOverview() {
+        if treeOverviewOpen {
+            closeTreeOverview()
+        } else {
+            openTreeOverview()
+        }
+    }
+
+    /// Opens the tree overview mode for the selected chat.
+    func openTreeOverview() {
+        guard let item = selectedChatItem, item.chat != nil else { return }
+        treeOverviewOpen = true
+        chatWebViewModel?.enterTreeOverview()
+    }
+
+    /// Closes the tree overview mode.
+    func closeTreeOverview() {
+        treeOverviewOpen = false
+        chatWebViewModel?.exitTreeOverview()
+    }
+
+    /// Jumps to a message from the tree overview: resolves the path to the
+    /// node, calls `setActiveBranch` for each fork on the way (no-op when
+    /// already on-path), closes the overview, pushes the snapshot, then
+    /// scrolls to the target message.
+    func gotoMessage(messageID: String) {
+        guard let filename = selectedChatID,
+              let targetUUID = UUID(uuidString: messageID) else { return }
+        let wasOpen = treeOverviewOpen
+        treeOverviewOpen = false
+        Task {
+            // Point the active path at the target message: every fork on the
+            // way switches to the branch containing it.
+            await engine.activatePath(filename: filename, messageID: targetUUID)
+            // Close the overview (if it was open) and push the snapshot.
+            if wasOpen {
+                chatWebViewModel?.exitTreeOverview()
+            }
+            // Give the renderer a frame to apply the new snapshot before
+            // scrolling to the target message.
+            pushSnapshotAfterBranchSwitch()
+            try? await Task.sleep(for: .milliseconds(50))
+            chatWebViewModel?.scrollToMessage(messageID)
+        }
+    }
+
+    /// Pushes a fresh snapshot after a branch switch triggered from the
+    /// overview, so the renderer reflects the new active path before the
+    /// scroll-to-message lands.
+    private func pushSnapshotAfterBranchSwitch() {
+        chatWebViewModel?.pushSnapshot()
     }
 
     func stopStreaming() {

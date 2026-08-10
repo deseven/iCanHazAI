@@ -191,7 +191,7 @@ struct ChatView: View {
             set: { if $0 == nil { store.pendingEditMessageID = nil } }
         )) { pending in
             if let item = store.selectedChatItem,
-               let msg = item.chat?.messages.first(where: { $0.id == pending.id }) {
+               let msg = item.chat?.message(id: pending.id) {
                 let followOn = Self.followOnMessageCount(for: pending.id, in: item.chat)
                 EditMessageSheet(
                     initialText: msg.content,
@@ -384,6 +384,17 @@ struct ChatView: View {
                 }
 
                 Spacer()
+
+                if store.selectedChatSupportsChatTrees {
+                    Button(action: { store.openTreeOverview() }) {
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.title3)
+                            .frame(width: 22, height: 22)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(store.isStreaming)
+                    .help("Tree overview")
+                }
 
                 Button(action: onToggleInfo) {
                     Image(systemName: "info.circle")

@@ -744,6 +744,7 @@ export const MessageItem = memo(function MessageItem({
   return (
     <div
       class={`msg msg-${message.role}`}
+      data-message-id={message.id}
       ref={rootRef}
       onMouseEnter={() => setHovering(true)}
       onMouseLeave={() => setHovering(false)}

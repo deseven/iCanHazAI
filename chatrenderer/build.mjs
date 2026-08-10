@@ -124,7 +124,11 @@ if (watch) {
   const ctxCore = await esbuild.context(coreOptions);
   const ctxKatex = await esbuild.context(katexOptions);
   const ctxMermaid = await esbuild.context(mermaidOptions);
-  await Promise.all([ctxCore.watch(), ctxKatex.watch(), ctxMermaid.watch()]);
+  await Promise.all([
+    ctxCore.watch(),
+    ctxKatex.watch(),
+    ctxMermaid.watch(),
+  ]);
   console.log("Watching for changes...");
 } else {
   typecheck();

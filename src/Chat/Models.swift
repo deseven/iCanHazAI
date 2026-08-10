@@ -45,8 +45,17 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     /// response. Nil when the provider didn't report usage (shown as N/A in
     /// the UI) or for non-assistant messages.
     var tokenUsage: TokenUsage?
+    /// Fork: alternative continuations after this message. Non-nil only on
+    /// the last message of a branch array and always holds ≥2 non-empty
+    /// branches. The visible continuation is `branches[activeBranch ?? last]`.
+    /// Because the structure is nested, a message physically lives in exactly
+    /// one place — no cross-referenced ids that can drift out of sync.
+    var branches: [[ChatMessage]]?
+    /// Which continuation branch is active. Nil → the last (most recently
+    /// added) branch.
+    var activeBranch: Int?
 
-    init(id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil, error: String? = nil, timestamp: Date = Date(), connectionName: String? = nil, attachments: [Attachment]? = nil, toolCalls: [ToolCall]? = nil, toolResults: [ToolResult]? = nil, tokenUsage: TokenUsage? = nil) {
+    init(id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil, error: String? = nil, timestamp: Date = Date(), connectionName: String? = nil, attachments: [Attachment]? = nil, toolCalls: [ToolCall]? = nil, toolResults: [ToolResult]? = nil, tokenUsage: TokenUsage? = nil, branches: [[ChatMessage]]? = nil, activeBranch: Int? = nil) {
         self.id = id
         self.role = role
         self.content = content
@@ -58,11 +67,14 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         self.toolCalls = toolCalls
         self.toolResults = toolResults
         self.tokenUsage = tokenUsage
+        self.branches = branches
+        self.activeBranch = activeBranch
     }
 
     enum CodingKeys: String, CodingKey {
         case id, role, content, thinking, error, timestamp, connectionName
         case attachments, toolCalls, toolResults, tokenUsage
+        case branches, activeBranch
     }
 
     /// Tolerant decode: every field is optional at the JSON level. A missing or
@@ -83,6 +95,33 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         toolCalls = try? c.decode([ToolCall].self, forKey: .toolCalls)
         toolResults = try? c.decode([ToolResult].self, forKey: .toolResults)
         tokenUsage = try? c.decode(TokenUsage.self, forKey: .tokenUsage)
+        branches = try? c.decode([[ChatMessage]].self, forKey: .branches)
+        activeBranch = try? c.decode(Int.self, forKey: .activeBranch)
+    }
+}
+
+extension ChatMessage {
+    /// A copy detached from the tree (no `branches`/`activeBranch`).
+    var detached: ChatMessage {
+        var copy = self
+        copy.branches = nil
+        copy.activeBranch = nil
+        return copy
+    }
+
+    /// Copies content fields from another message with the same id, keeping
+    /// the receiver's tree structure (`branches`/`activeBranch`).
+    mutating func applyContent(from other: ChatMessage) {
+        role = other.role
+        content = other.content
+        thinking = other.thinking
+        error = other.error
+        timestamp = other.timestamp
+        connectionName = other.connectionName
+        attachments = other.attachments
+        toolCalls = other.toolCalls
+        toolResults = other.toolResults
+        tokenUsage = other.tokenUsage
     }
 }
 
@@ -158,20 +197,6 @@ extension Array where Element == ChatMessage {
         }
         self[aIdx].toolCalls = calls
     }
-
-    /// Index of the most recent `tool`-role message carrying a result for
-    /// `callID`, bounded to the current turn (messages after the last
-    /// assistant message). Older turns are excluded on purpose: provider-issued
-    /// call IDs are only unique per response, so a previous turn may carry the
-    /// same ID, and touching its message would corrupt persisted history.
-    func lastToolResultIndex(callID: String) -> Int? {
-        let turnStart = indices.reversed().first(where: { self[$0].role == .assistant }).map { $0 + 1 } ?? 0
-        return indices.reversed().first(where: {
-            $0 >= turnStart
-                && self[$0].role == .tool
-                && self[$0].toolResults?.contains(where: { $0.callID == callID }) ?? false
-        })
-    }
 }
 
 // MARK: - Chat
@@ -188,17 +213,12 @@ enum ChatOutputRendering: String, Codable, Sendable {
 
 struct Chat: Codable, Identifiable, Equatable {
     var id: UUID
-    var messages: [ChatMessage]
-    /// Tree structure for branched chats: parent message id (UUID.uuidString)
-    /// → ordered child message ids. Nil for linear chats (no forks). When
-    /// non-nil, the full tree is stored — every parent-child relationship is
-    /// recorded, not just fork points. The visible conversation is derived
+    /// The conversation tree. Linear chats are a plain flat array. Forks are
+    /// nested: a message's `branches` holds the alternative continuations
+    /// after it (see `ChatMessage.branches`), so tree structure needs no
+    /// separate cross-referencing maps. The visible conversation is derived
     /// via `activeMessages`.
-    var children: [String: [String]]?
-    /// Per-fork active child selection: parent message id → active child id.
-    /// Nil for linear chats. When a parent isn't in this map, the last child
-    /// in `children` is used (the most recently added one).
-    var activeChild: [String: String]?
+    var messages: [ChatMessage]
     /// Selected connection identifier in the form "provider/name", e.g. "openai/myconn".
     /// When the chat's role allows connection overrides this is the per-chat
     /// override; otherwise the role's connection is used and this is ignored.
@@ -243,11 +263,9 @@ struct Chat: Codable, Identifiable, Equatable {
     /// plain text (CLI-created chats). Completely optional — a chat file
     /// without this key decodes as rich.
     var outputRendering: ChatOutputRendering?
-    init(id: UUID = UUID(), messages: [ChatMessage] = [], children: [String: [String]]? = nil, activeChild: [String: String]? = nil, connection: String? = nil, role: String? = nil, prompt: String? = nil, workingDirectory: String? = nil, mcps: [String]? = nil, title: String? = nil, archive: Bool? = nil, autoAllow: [String]? = nil, autoDeny: [String]? = nil, outputRendering: ChatOutputRendering? = nil) {
+    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, prompt: String? = nil, workingDirectory: String? = nil, mcps: [String]? = nil, title: String? = nil, archive: Bool? = nil, autoAllow: [String]? = nil, autoDeny: [String]? = nil, outputRendering: ChatOutputRendering? = nil) {
         self.id = id
         self.messages = messages
-        self.children = children
-        self.activeChild = activeChild
         self.connection = connection
         self.role = role
         self.prompt = prompt
@@ -261,7 +279,7 @@ struct Chat: Codable, Identifiable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, messages, children, activeChild, connection, role, prompt, workingDirectory, mcps, title, archive
+        case id, messages, connection, role, prompt, workingDirectory, mcps, title, archive
         case autoAllow = "auto_allow"
         case autoDeny = "auto_deny"
         case outputRendering = "output_rendering"
@@ -293,11 +311,10 @@ struct Chat: Codable, Identifiable, Equatable {
             debugLog("ChatDecode", "⚠️ skipped \(dropped) undecodable message(s) in a chat")
         }
         messages = recovered
-        // Tolerant tree decode: malformed children/activeChild drop the affected
-        // entry with a debug log and fall back to linear — never fail the chat load.
-        children = (try? c.decode([String: [String]].self, forKey: .children))
-        activeChild = (try? c.decode([String: String].self, forKey: .activeChild))
-        if children != nil { sanitizeTreeMetadata() }
+        // Enforce tree invariants (fork owner is last in its array, ≥2
+        // non-empty branches, valid active selection) so externally-edited
+        // files can't put the tree helpers into weird states.
+        Self.normalize(&messages)
     }
 
     /// Decodes a single message, yielding nil if the element can't be decoded,
@@ -318,111 +335,132 @@ struct Chat: Codable, Identifiable, Equatable {
     /// cache so an empty chat sorts by its file modification time rather than
     /// `distantPast` (which would pin it to the very bottom of the list).
     func lastActivity(fallback: Date) -> Date {
-        messages.last?.timestamp ?? fallback
+        mostRecentTimestamp ?? fallback
     }
 }
 
-// MARK: - Chat tree helpers
+// MARK: - Chat tree (branches)
 
 extension Chat {
 
-    /// Whether this chat has any forks (branches). When false, the chat is a
-    /// linear chain and all tree helpers degenerate to identity on the flat
-    /// `messages` array.
-    var hasForks: Bool { children != nil }
+    // MARK: Reads
 
-    /// The materialized active path: the visible conversation derived by walking
-    /// from the first message, following `activeChild` at each fork (defaulting
-    /// to the last child when no choice is recorded). For linear chats (no
-    /// forks), this is just `messages`.
+    /// Whether this chat has any forks. Forks live on messages (`branches`),
+    /// and every fork owner's chain bottoms out at a trunk message, so a
+    /// top-level scan finds them all.
+    var hasForks: Bool { messages.contains { $0.branches != nil } }
+
+    /// The visible conversation: the trunk, descending into the active
+    /// branch of each fork (the last branch when no choice is recorded).
+    /// Returned messages are detached from the tree (no `branches`).
     var activeMessages: [ChatMessage] {
-        guard let children, !messages.isEmpty else { return messages }
-        let byID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id.uuidString, $0) })
-        guard let firstID = messages.first?.id.uuidString else { return [] }
-        var result: [ChatMessage] = []
-        var currentID = firstID
-        var visited = Set<String>()
-        while let msg = byID[currentID], visited.insert(currentID).inserted {
-            result.append(msg)
-            guard let childIDs = children[currentID], !childIDs.isEmpty else { break }
-            let activeID = activeChild?[currentID] ?? childIDs.last!
-            currentID = activeID
+        var out: [ChatMessage] = []
+        var current = messages
+        descend: while true {
+            for msg in current {
+                out.append(msg.detached)
+                if let branches = msg.branches, !branches.isEmpty {
+                    // Invariant: a fork owner is the last message of its array.
+                    current = branches[Self.clampedActive(msg.activeBranch, branchCount: branches.count)]
+                    continue descend
+                }
+            }
+            break
         }
-        return result
+        return out
     }
 
     /// The id of the active leaf (last message on the active path). Nil for
     /// empty chats.
-    var activeLeafID: UUID? {
-        activeMessages.last?.id
-    }
+    var activeLeafID: UUID? { activeMessages.last?.id }
 
-    /// Materializes the tree structure from the flat array. Called when the
-    /// first fork is about to happen. After this, `children` is non-nil and
-    /// every parent-child relationship is recorded. `activeChild` stays nil
-    /// (no forks yet — no choices to record).
-    mutating func materializeTree() {
-        guard children == nil, messages.count > 1 else { return }
-        var tree: [String: [String]] = [:]
-        for i in 0..<(messages.count - 1) {
-            let parentID = messages[i].id.uuidString
-            let childID = messages[i + 1].id.uuidString
-            tree[parentID] = [childID]
+    /// Every message in the tree (each branch pre-order), detached.
+    var allMessages: [ChatMessage] { Self.flatten(messages) }
+
+    private static func flatten(_ msgs: [ChatMessage]) -> [ChatMessage] {
+        var out: [ChatMessage] = []
+        for msg in msgs {
+            out.append(msg.detached)
+            if let branches = msg.branches {
+                for branch in branches { out.append(contentsOf: flatten(branch)) }
+            }
         }
-        children = tree
+        return out
     }
 
-    /// Records a new child for a parent in the tree. Only has effect when the
-    /// tree is materialized (non-nil `children`). The active leaf always has
-    /// no children when this is called during normal streaming, so this creates
-    /// a new entry.
-    mutating func recordChild(parentID: UUID, childID: UUID) {
-        guard children != nil else { return }
-        let parentKey = parentID.uuidString
-        let childKey = childID.uuidString
-        if var existing = children?[parentKey] {
-            if !existing.contains(childKey) { existing.append(childKey) }
-            children?[parentKey] = existing
-        } else {
-            children?[parentKey] = [childKey]
+    /// The most recent message timestamp anywhere in the tree. Message
+    /// creation is append-ordered, so this is the latest activity across
+    /// all branches.
+    var mostRecentTimestamp: Date? { Self.maxTimestamp(in: messages) }
+
+    private static func maxTimestamp(in msgs: [ChatMessage]) -> Date? {
+        var best: Date?
+        for msg in msgs {
+            if best == nil || msg.timestamp > best! { best = msg.timestamp }
+            if let branches = msg.branches {
+                for branch in branches {
+                    if let t = maxTimestamp(in: branch), best == nil || t > best! { best = t }
+                }
+            }
         }
+        return best
     }
 
-    /// Sets the active child for a parent fork point. Used by branch switching.
-    mutating func setActiveChild(parentID: UUID, childID: UUID) {
-        if activeChild == nil { activeChild = [:] }
-        activeChild?[parentID.uuidString] = childID.uuidString
-    }
+    /// Finds a message by id anywhere in the tree (detached copy).
+    func message(id: UUID) -> ChatMessage? { Self.find(id: id, in: messages) }
 
-    /// Finds the parent of a message. For linear chats, the parent is the
-    /// previous message in the flat array. Returns nil for the first message.
-    func parent(of messageID: UUID) -> ChatMessage? {
-        let id = messageID.uuidString
-        guard let children else {
-            guard let idx = messages.firstIndex(where: { $0.id == messageID }), idx > 0 else { return nil }
-            return messages[idx - 1]
-        }
-        for (parentID, childIDs) in children {
-            if childIDs.contains(id) {
-                return messages.first(where: { $0.id.uuidString == parentID })
+    private static func find(id: UUID, in msgs: [ChatMessage]) -> ChatMessage? {
+        for msg in msgs {
+            if msg.id == id { return msg.detached }
+            if let branches = msg.branches {
+                for branch in branches {
+                    if let found = find(id: id, in: branch) { return found }
+                }
             }
         }
         return nil
     }
 
-    /// The sibling index and count for a message. For linear chats, every
-    /// message has exactly 1 sibling (itself): `(0, 1)`. The switcher UI
-    /// only appears when `count > 1`.
-    func siblings(of messageID: UUID) -> (index: Int, count: Int) {
-        let id = messageID.uuidString
-        guard let children, let parent = parent(of: messageID),
-              let childIDs = children[parent.id.uuidString] else { return (0, 1) }
-        guard let index = childIDs.firstIndex(of: id) else { return (0, 1) }
-        return (index, childIDs.count)
+    /// The parent of a message: the previous message in its branch array, or
+    /// the fork owner when the message heads a branch. Nil for the very
+    /// first message of the chat.
+    func parent(of messageID: UUID) -> ChatMessage? { Self.findParent(of: messageID, in: messages) }
+
+    private static func findParent(of id: UUID, in msgs: [ChatMessage]) -> ChatMessage? {
+        for i in msgs.indices {
+            if msgs[i].id == id { return i > 0 ? msgs[i - 1].detached : nil }
+            if let branches = msgs[i].branches {
+                for branch in branches {
+                    if branch.first?.id == id { return msgs[i].detached }
+                    if let p = findParent(of: id, in: branch) { return p }
+                }
+            }
+        }
+        return nil
     }
 
-    /// The path from the root to the given message, as an array of message ids.
-    /// Walks from the message up to the root via parent links.
+    /// The sibling index and count for a message: its position among the
+    /// branch heads of its fork. `(0, 1)` for messages that don't head a
+    /// branch (linear chats and mid-branch messages) — the switcher UI only
+    /// appears when `count > 1`.
+    func siblings(of messageID: UUID) -> (index: Int, count: Int) {
+        Self.findSiblings(of: messageID, in: messages) ?? (0, 1)
+    }
+
+    private static func findSiblings(of id: UUID, in msgs: [ChatMessage]) -> (Int, Int)? {
+        for msg in msgs {
+            if let branches = msg.branches {
+                for (b, branch) in branches.enumerated() {
+                    if branch.first?.id == id { return (b, branches.count) }
+                    if let s = findSiblings(of: id, in: branch) { return s }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// The path from the root to the given message, as an array of message
+    /// ids. Walks up via parent links.
     func leafPath(to messageID: UUID) -> [UUID] {
         var path: [UUID] = [messageID]
         var current = messageID
@@ -434,187 +472,394 @@ extension Chat {
         return path
     }
 
-    /// Collects all message ids in the subtree rooted at `messageID` (the
-    /// message and all its descendants, both active and non-active). Used by
-    /// deletion to remove a message and its entire branch.
+    /// All message ids in the subtree rooted at `messageID`: the message and
+    /// everything after it in its branch array, including nested branches.
     func subtreeIDs(of messageID: UUID) -> Set<UUID> {
-        guard let children else { return [messageID] }
-        var result: Set<UUID> = [messageID]
-        var queue: [String] = [messageID.uuidString]
-        while let current = queue.popLast() {
-            if let childIDs = children[current] {
-                for childID in childIDs where !result.contains(UUID(uuidString: childID) ?? UUID()) {
-                    result.insert(UUID(uuidString: childID) ?? UUID())
-                    queue.append(childID)
+        guard let suffix = Self.suffixFrom(id: messageID, in: messages) else { return [messageID] }
+        return Set(Self.flatten(suffix).map(\.id))
+    }
+
+    private static func suffixFrom(id: UUID, in msgs: [ChatMessage]) -> [ChatMessage]? {
+        for i in msgs.indices {
+            if msgs[i].id == id { return Array(msgs[i...]) }
+            if let branches = msgs[i].branches {
+                for branch in branches {
+                    if let s = suffixFrom(id: id, in: branch) { return s }
                 }
             }
         }
-        return result
+        return nil
     }
 
-    /// The path to the leaf with the most recent timestamp, ignoring
-    /// `activeChild` choices. Used by the CLI to determine where to append.
-    func mostRecentLeafPath() -> [ChatMessage] {
-        guard let children, !messages.isEmpty else { return messages }
-        let parentIDs = Set(children.keys)
-        let leaves = messages.filter { !parentIDs.contains($0.id.uuidString) }
-        guard let mostRecent = leaves.max(by: { $0.timestamp < $1.timestamp }) else { return messages }
-        let byID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id.uuidString, $0) })
-        var result: [ChatMessage] = []
-        var currentID = mostRecent.id.uuidString
-        var visited = Set<String>()
-        while let msg = byID[currentID], visited.insert(currentID).inserted {
-            result.insert(msg, at: 0)
-            guard let parentEntry = children.first(where: { $0.value.contains(currentID) }) else { break }
-            currentID = parentEntry.key
-        }
-        return result
+    /// The id of the most recent `tool`-role message carrying a result for
+    /// `callID`, bounded to the current turn on the active path (messages
+    /// after the last assistant message). Older turns are excluded on
+    /// purpose: provider-issued call IDs are only unique per response, so a
+    /// previous turn may carry the same ID, and touching its message would
+    /// corrupt persisted history.
+    func activeToolResultMessageID(callID: String) -> UUID? {
+        let active = activeMessages
+        let turnStart = active.indices.reversed().first(where: { active[$0].role == .assistant }).map { $0 + 1 } ?? 0
+        return active.indices.reversed().first(where: {
+            $0 >= turnStart
+                && active[$0].role == .tool
+                && active[$0].toolResults?.contains(where: { $0.callID == callID }) ?? false
+        }).map { active[$0].id }
     }
 
-    /// Updates `activeChild` along the path to the most recent leaf, so the
-    /// GUI's active path includes messages appended by the CLI.
-    mutating func setActivePathToMostRecentLeaf() {
-        guard let children, !messages.isEmpty else { return }
-        let parentIDs = Set(children.keys)
-        let leaves = messages.filter { !parentIDs.contains($0.id.uuidString) }
-        guard let mostRecent = leaves.max(by: { $0.timestamp < $1.timestamp }) else { return }
-        var path: [String] = [mostRecent.id.uuidString]
-        var currentID = mostRecent.id.uuidString
-        var visited = Set<String>([currentID])
-        while let parentEntry = children.first(where: { $0.value.contains(currentID) }),
-              visited.insert(parentEntry.key).inserted {
-            path.insert(parentEntry.key, at: 0)
-            currentID = parentEntry.key
-        }
-        if activeChild == nil { activeChild = [:] }
-        for i in 0..<(path.count - 1) {
-            activeChild?[path[i]] = path[i + 1]
-        }
+    // MARK: Mutations
+
+    /// Applies `transform` to the message with the given id, wherever it
+    /// lives in the tree. No-op when the id doesn't exist.
+    mutating func updateMessage(id: UUID, _ transform: (inout ChatMessage) -> Void) {
+        Self.update(id: id, in: &messages, transform)
     }
 
-    /// Prunes tree metadata entries whose ids no longer exist in `messages`.
-    /// Also removes deleted ids from child lists. Called after deletion and
-    /// during tolerant decode.
-    mutating func pruneTreeMetadata(deletedIDs: Set<UUID>) {
-        guard var children else { return }
-        let idStrings = Set(deletedIDs.map(\.uuidString))
-        for id in idStrings { children.removeValue(forKey: id) }
-        for (key, var childIDs) in children {
-            childIDs.removeAll(where: { idStrings.contains($0) })
-            if childIDs.isEmpty {
-                children.removeValue(forKey: key)
-            } else {
-                children[key] = childIDs
+    @discardableResult
+    private static func update(id: UUID, in msgs: inout [ChatMessage], _ transform: (inout ChatMessage) -> Void) -> Bool {
+        for i in msgs.indices {
+            if msgs[i].id == id {
+                transform(&msgs[i])
+                return true
+            }
+            if var branches = msgs[i].branches {
+                for b in branches.indices {
+                    if update(id: id, in: &branches[b], transform) {
+                        msgs[i].branches = branches
+                        return true
+                    }
+                }
             }
         }
-        self.children = children.isEmpty ? nil : children
-        if var activeChild {
-            for id in idStrings { activeChild.removeValue(forKey: id) }
-            activeChild = activeChild.filter { !idStrings.contains($0.value) }
-            self.activeChild = activeChild.isEmpty ? nil : activeChild
-        }
+        return false
     }
 
-    /// After deleting a child from a parent's child list, reassigns the active
-    /// child to the most recent surviving sibling (by timestamp). If no
-    /// siblings survive, the parent's child list collapses.
-    mutating func reassignActiveChildAfterDeletion(parentID: UUID, deletedChildID: UUID) {
-        guard let children else { return }
-        let parentKey = parentID.uuidString
-        guard let surviving = children[parentKey]?.filter({ $0 != deletedChildID.uuidString }) else { return }
-        if surviving.isEmpty {
-            self.children?.removeValue(forKey: parentKey)
-            activeChild?.removeValue(forKey: parentKey)
-            if let c = self.children, c.isEmpty { self.children = nil }
-            if let a = activeChild, a.isEmpty { self.activeChild = nil }
-            return
-        }
-        self.children?[parentKey] = surviving
-        let mostRecent = surviving.compactMap { id -> (String, Date)? in
-            guard let msg = messages.first(where: { $0.id.uuidString == id }) else { return nil }
-            return (id, msg.timestamp)
-        }.max(by: { $0.1 < $1.1 })?.0
-        if let mostRecent {
-            if activeChild == nil { activeChild = [:] }
-            activeChild?[parentKey] = mostRecent
-        }
+    /// Appends a message at the end of the active path. This is the only way
+    /// new messages enter the tree, so a message can never land on a
+    /// non-active branch.
+    mutating func appendToActiveLeaf(_ message: ChatMessage) {
+        Self.appendToActive(message, in: &messages)
     }
 
-    /// Validates and cleans tree metadata after decode. Drops entries with
-    /// unknown ids, detects cycles, and falls back to linear if the tree is
-    /// empty or the root is missing.
-    private mutating func sanitizeTreeMetadata() {
-        guard var children else { return }
-        let knownIDs = Set(messages.map { $0.id.uuidString })
-        // Drop entries with unknown parent ids.
-        children = children.filter { knownIDs.contains($0.key) }
-        // Drop unknown child ids from child lists.
-        for (key, var childIDs) in children {
-            childIDs.removeAll(where: { !knownIDs.contains($0) })
-            if childIDs.isEmpty {
-                children.removeValue(forKey: key)
-            } else {
-                children[key] = childIDs
-            }
-        }
-        // Drop activeChild entries with unknown parent or child ids.
-        if var activeChild {
-            activeChild = activeChild.filter { knownIDs.contains($0.key) && knownIDs.contains($0.value) }
-            if activeChild.isEmpty { self.activeChild = nil }
-            else { self.activeChild = activeChild }
-        }
-        // If the tree is empty after cleaning, fall back to linear.
-        if children.isEmpty {
-            self.children = nil
-            self.activeChild = nil
+    private static func appendToActive(_ message: ChatMessage, in msgs: inout [ChatMessage]) {
+        if var branches = msgs.last?.branches, !branches.isEmpty {
+            let lastIdx = msgs.count - 1
+            let activeIdx = clampedActive(msgs[lastIdx].activeBranch, branchCount: branches.count)
+            appendToActive(message, in: &branches[activeIdx])
+            msgs[lastIdx].branches = branches
         } else {
-            self.children = children
+            msgs.append(message)
         }
     }
 
-    /// Finalizes the incomplete trailing turn on the active path. For linear
-    /// chats, operates on the flat array directly. For forked chats, operates
-    /// on the active messages and syncs changes (removed/added/modified) back
-    /// to the flat array and tree metadata.
-    mutating func finalizeActiveStoppedTurn() {
-        guard children != nil else {
-            messages.finalizeStoppedTurn()
-            return
+    /// Regen-style fork: the message (with its whole subtree) stays stored as
+    /// an inactive sibling branch and `new` becomes the active branch head.
+    /// When the message already heads a branch of an existing fork, another
+    /// branch is simply added to that fork. Returns false when the message
+    /// isn't found or is the first message of the chat (no parent to hang a
+    /// fork on).
+    @discardableResult
+    mutating func forkRegenerating(_ messageID: UUID, adding new: ChatMessage) -> Bool {
+        Self.forkRegen(messageID, adding: new, in: &messages)
+    }
+
+    private static func forkRegen(_ target: UUID, adding new: ChatMessage, in msgs: inout [ChatMessage]) -> Bool {
+        for i in msgs.indices {
+            if msgs[i].id == target {
+                guard i > 0 else { return false }
+                let suffix = Array(msgs[i...])
+                msgs.removeLast(msgs.count - i)
+                // By invariant msgs[i-1] was not the array tail before the
+                // truncation, so it carries no branches yet.
+                msgs[i - 1].branches = [suffix, [new]]
+                msgs[i - 1].activeBranch = 1
+                return true
+            }
+            if var branches = msgs[i].branches {
+                for b in branches.indices {
+                    if branches[b].first?.id == target {
+                        branches.append([new])
+                        msgs[i].branches = branches
+                        msgs[i].activeBranch = branches.count - 1
+                        return true
+                    }
+                    if forkRegen(target, adding: new, in: &branches[b]) {
+                        msgs[i].branches = branches
+                        return true
+                    }
+                }
+            }
         }
+        return false
+    }
+
+    /// Edit-style fork: makes `new` the active continuation right after
+    /// `afterID`. The existing continuation (the inline tail or the existing
+    /// branches) is preserved as inactive sibling branch(es). When the
+    /// message is a leaf, this is a plain append.
+    @discardableResult
+    mutating func forkContinuing(after afterID: UUID, adding new: ChatMessage) -> Bool {
+        Self.forkContinue(afterID, adding: new, in: &messages)
+    }
+
+    private static func forkContinue(_ target: UUID, adding new: ChatMessage, in msgs: inout [ChatMessage]) -> Bool {
+        for i in msgs.indices {
+            if msgs[i].id == target {
+                if var branches = msgs[i].branches {
+                    branches.append([new])
+                    msgs[i].branches = branches
+                    msgs[i].activeBranch = branches.count - 1
+                } else if i + 1 < msgs.count {
+                    let suffix = Array(msgs[(i + 1)...])
+                    msgs.removeLast(msgs.count - i - 1)
+                    msgs[i].branches = [suffix, [new]]
+                    msgs[i].activeBranch = 1
+                } else {
+                    msgs.append(new)
+                }
+                return true
+            }
+            if var branches = msgs[i].branches {
+                for b in branches.indices {
+                    if forkContinue(target, adding: new, in: &branches[b]) {
+                        msgs[i].branches = branches
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    /// Sets the active continuation branch of `parentID` to the branch
+    /// starting with `childID`. No-op (false) when either id is unknown or
+    /// the child doesn't head one of the parent's branches.
+    @discardableResult
+    mutating func switchActiveBranch(parentID: UUID, to childID: UUID) -> Bool {
+        Self.setActive(parentID: parentID, childID: childID, in: &messages)
+    }
+
+    private static func setActive(parentID: UUID, childID: UUID, in msgs: inout [ChatMessage]) -> Bool {
+        for i in msgs.indices {
+            if var branches = msgs[i].branches {
+                if msgs[i].id == parentID {
+                    guard let b = branches.firstIndex(where: { $0.first?.id == childID }) else { return false }
+                    msgs[i].activeBranch = b
+                    return true
+                }
+                for b in branches.indices {
+                    if setActive(parentID: parentID, childID: childID, in: &branches[b]) {
+                        msgs[i].branches = branches
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    /// The sibling to switch to when the user clicks ◀ or ▶ on a branch
+    /// head: `direction` -1 (previous) or +1 (next), wrapping around. Nil
+    /// when the message doesn't head a branch or the fork has <2 branches.
+    func siblingID(of messageID: UUID, direction: Int) -> UUID? {
+        Self.findSiblingSwitch(of: messageID, direction: direction, in: messages)
+    }
+
+    private static func findSiblingSwitch(of id: UUID, direction: Int, in msgs: [ChatMessage]) -> UUID? {
+        for msg in msgs {
+            if let branches = msg.branches {
+                for (b, branch) in branches.enumerated() {
+                    if branch.first?.id == id {
+                        guard branches.count > 1 else { return nil }
+                        return branches[(b + direction + branches.count) % branches.count].first?.id
+                    }
+                    if let r = findSiblingSwitch(of: id, direction: direction, in: branch) { return r }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Removes a message and its entire subtree (everything after it in its
+    /// branch, including nested forks), returning the removed messages
+    /// (detached) so the caller can clean up attachments. For linear chats
+    /// this is a plain truncation. Invariants are restored afterwards: a
+    /// branch emptied by the removal is dropped (a removed active selection
+    /// falls back to the most recent survivor) and a fork reduced to a
+    /// single branch is unwrapped inline.
+    @discardableResult
+    mutating func deleteSubtree(of messageID: UUID) -> [ChatMessage] {
+        let removed = Self.delete(messageID, in: &messages).map { Self.flatten($0) } ?? []
+        Self.normalize(&messages)
+        return removed
+    }
+
+    private static func delete(_ target: UUID, in msgs: inout [ChatMessage]) -> [ChatMessage]? {
+        for i in msgs.indices {
+            if msgs[i].id == target {
+                let removed = Array(msgs[i...])
+                msgs.removeLast(msgs.count - i)
+                return removed
+            }
+            if var branches = msgs[i].branches {
+                for b in branches.indices {
+                    if let removed = delete(target, in: &branches[b]) {
+                        if branches[b].isEmpty {
+                            branches.remove(at: b)
+                            // The recorded active branch is gone → fall back
+                            // to the most recent survivor (nil = last); a
+                            // removal before it shifts the index.
+                            if let a = msgs[i].activeBranch {
+                                if a == b { msgs[i].activeBranch = nil }
+                                else if a > b { msgs[i].activeBranch = a - 1 }
+                            }
+                        }
+                        msgs[i].branches = branches
+                        return removed
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Points every fork on the way to `messageID` at the branch containing
+    /// it, so the message lands on the active path. No-op (false) for
+    /// unknown ids.
+    @discardableResult
+    mutating func activatePath(to messageID: UUID) -> Bool {
+        Self.activate(messageID, in: &messages)
+    }
+
+    private static func activate(_ target: UUID, in msgs: inout [ChatMessage]) -> Bool {
+        for i in msgs.indices {
+            if msgs[i].id == target { return true }
+            if var branches = msgs[i].branches {
+                for b in branches.indices {
+                    if containsID(target, in: branches[b]) {
+                        msgs[i].activeBranch = b
+                        _ = activate(target, in: &branches[b])
+                        msgs[i].branches = branches
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    private static func containsID(_ id: UUID, in msgs: [ChatMessage]) -> Bool {
+        for msg in msgs {
+            if msg.id == id { return true }
+            if let branches = msg.branches, branches.contains(where: { containsID(id, in: $0) }) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Points every fork's active branch at the path to the leaf with the
+    /// most recent timestamp, ignoring recorded choices. Used by the CLI,
+    /// which appends to the freshest branch.
+    mutating func setActivePathToMostRecentLeaf() {
+        guard let (_, choices) = Self.freshestLeaf(in: messages) else { return }
+        Self.applyChoices(choices, in: &messages)
+    }
+
+    /// The newest leaf timestamp in the array and the branch choices leading
+    /// to it. Only the array's last message can lead to leaves (invariant:
+    /// fork owners are last).
+    private static func freshestLeaf(in msgs: [ChatMessage]) -> (Date, [Int])? {
+        guard let last = msgs.last else { return nil }
+        guard let branches = last.branches, !branches.isEmpty else { return (last.timestamp, []) }
+        var best: (Date, [Int])?
+        for (b, branch) in branches.enumerated() {
+            if let candidate = freshestLeaf(in: branch), best == nil || candidate.0 > best!.0 {
+                best = (candidate.0, [b] + candidate.1)
+            }
+        }
+        return best
+    }
+
+    private static func applyChoices(_ choices: [Int], in msgs: inout [ChatMessage]) {
+        guard let choice = choices.first, var branches = msgs.last?.branches,
+              (0..<branches.count).contains(choice) else { return }
+        msgs[msgs.count - 1].activeBranch = choice
+        applyChoices(Array(choices.dropFirst()), in: &branches[choice])
+        msgs[msgs.count - 1].branches = branches
+    }
+
+    /// Finalizes the incomplete trailing turn on the active path (see
+    /// [`Array.finalizeStoppedTurn`](src/Chat/Models.swift) for the turn
+    /// semantics). Operates directly on the tree: removed trailing
+    /// placeholders form a contiguous active-path tail (they never carry
+    /// branches), so deleting the first one's subtree covers them all;
+    /// modified messages are written back by id (structure preserved);
+    /// synthesized results append to the active leaf.
+    mutating func finalizeActiveStoppedTurn() {
         var active = activeMessages
-        let beforeIDs = active.map(\.id)
         let before = active
         active.finalizeStoppedTurn()
-        if active.count == before.count && active == before { return }
-        // Sync removed messages (trailing placeholders removed by finalize).
-        let afterIDs = Set(active.map(\.id))
-        let removedIDs = Set(beforeIDs).subtracting(afterIDs)
-        if !removedIDs.isEmpty {
-            messages.removeAll(where: { removedIDs.contains($0.id) })
-            pruneTreeMetadata(deletedIDs: removedIDs)
-        }
-        // Sync added messages (synthesized cancelled tool results).
+        guard active != before else { return }
         let beforeByID = Dictionary(uniqueKeysWithValues: before.map { ($0.id, $0) })
-        for msg in active where beforeByID[msg.id] == nil {
-            messages.append(msg)
-            if let parentID = activeParentID(of: msg.id, in: active) {
-                recordChild(parentID: parentID, childID: msg.id)
-            }
+        let afterIDs = Set(active.map(\.id))
+        if let firstRemoved = before.first(where: { !afterIDs.contains($0.id) }) {
+            deleteSubtree(of: firstRemoved.id)
         }
-        // Sync modified messages (tool calls changed on the last assistant).
         for msg in active {
             if let original = beforeByID[msg.id], original != msg {
-                if let idx = messages.firstIndex(where: { $0.id == msg.id }) {
-                    messages[idx] = msg
-                }
+                updateMessage(id: msg.id) { $0.applyContent(from: msg) }
             }
+        }
+        for msg in active where beforeByID[msg.id] == nil {
+            appendToActiveLeaf(msg)
         }
     }
 
-    /// Finds the parent id of a message within a given active path array.
-    private func activeParentID(of messageID: UUID, in active: [ChatMessage]) -> UUID? {
-        guard let idx = active.firstIndex(where: { $0.id == messageID }), idx > 0 else { return nil }
-        return active[idx - 1].id
+    // MARK: Invariants
+
+    /// The branch index to follow when none (or an invalid one) is recorded:
+    /// the last branch — the most recently added continuation.
+    private static func clampedActive(_ active: Int?, branchCount: Int) -> Int {
+        guard let active, (0..<branchCount).contains(active) else { return branchCount - 1 }
+        return active
+    }
+
+    /// Restores tree invariants, recursing into branches:
+    /// - a fork owner must be the last message of its array (a trailing
+    ///   inline tail is folded into a new first branch);
+    /// - forks need ≥2 non-empty branches (fewer → unwrapped inline);
+    /// - `activeBranch` must be a valid index (else nil = last).
+    static func normalize(_ msgs: inout [ChatMessage]) {
+        var i = 0
+        while i < msgs.count {
+            if var branches = msgs[i].branches {
+                for b in branches.indices { normalize(&branches[b]) }
+                branches.removeAll { $0.isEmpty }
+                if i + 1 < msgs.count {
+                    var tail = Array(msgs[(i + 1)...])
+                    msgs.removeLast(msgs.count - i - 1)
+                    normalize(&tail)
+                    branches.insert(tail, at: 0)
+                }
+                if branches.count >= 2 {
+                    if let a = msgs[i].activeBranch, !(0..<branches.count).contains(a) {
+                        msgs[i].activeBranch = nil
+                    }
+                    msgs[i].branches = branches
+                } else {
+                    // Degenerate fork: unwrap the surviving branch inline.
+                    msgs[i].branches = nil
+                    msgs[i].activeBranch = nil
+                    if let single = branches.first {
+                        msgs.insert(contentsOf: single, at: i + 1)
+                    }
+                }
+            } else if msgs[i].activeBranch != nil {
+                msgs[i].activeBranch = nil
+            }
+            i += 1
+        }
     }
 }
 

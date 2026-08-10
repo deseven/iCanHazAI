@@ -15,9 +15,10 @@
 import { render } from "preact";
 import { useEffect, useRef, useState, useCallback } from "preact/hooks";
 import { ChevronDown, ChevronLeft, ChevronRight, X } from "lucide-preact";
-import type { ChatSnapshot, HostMessage } from "./types";
+import type { ChatSnapshot, HostMessage, TreeNode } from "./types";
 import { setHostSubscriber, sendToHost } from "./bridge";
 import { MessageItem } from "./components/Message";
+import { TreeOverview } from "./components/TreeOverview";
 import { setMermaidTheme, featuresReady } from "./markdown";
 import { debugLog } from "./debug";
 import { expandThinking, expandToolUse } from "./chatBehaviour";
@@ -34,6 +35,16 @@ function ChatApp() {
   // Whether we're waiting for the first snapshot from the host. Shows a
   // spinner until content arrives.
   const [loading, setLoading] = useState(true);
+
+  // ── Tree overview mode ──────────────────────────────────────────────
+  /** Whether the tree overview layer is open. */
+  const [overviewOpen, setOverviewOpen] = useState(false);
+  /** The root of the tree overview projection, when open. */
+  const [overviewRoot, setOverviewRoot] = useState<TreeNode | null>(null);
+  /** Bump counter to trigger a scroll-to-message + highlight flash. */
+  const [scrollToMessageId, setScrollToMessageId] = useState<string | null>(null);
+  /** Ref to the scroller so we can scroll to a message after a branch switch. */
+  const messageListRef = useRef<HTMLDivElement>(null);
 
   // ── In-chat search ──────────────────────────────────────────────────
   /** Whether the search bar is open. */
@@ -169,6 +180,20 @@ function ChatApp() {
           setTick((t) => t + 1);
           setSearchTick((t) => t + 1);
           break;
+        case "treeOverview":
+          debugLog("tree", `treeOverview root=${msg.root ? msg.root.id : "null"}`);
+          setOverviewRoot(msg.root ?? null);
+          setOverviewOpen(msg.root != null);
+          break;
+        case "exitTreeOverview":
+          debugLog("tree", "exitTreeOverview");
+          setOverviewOpen(false);
+          setOverviewRoot(null);
+          break;
+        case "scrollToMessage":
+          debugLog("tree", `scrollToMessage id=${msg.messageId}`);
+          setScrollToMessageId(msg.messageId);
+          break;
       }
     });
     debugLog("init", "renderer ready, signaling host");
@@ -210,12 +235,36 @@ function ChatApp() {
   // to ensure the DOM has been painted before scrolling.
   useEffect(() => {
     if (!snapshot) return;
+    if (overviewOpen) return;
     if (atBottomRef.current) {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => scrollToBottom(false));
       });
     }
-  }, [snapshot, tick]);
+  }, [snapshot, tick, overviewOpen]);
+
+  // ── Scroll to a message after a branch switch from the overview ─────
+  // The host sends scrollToMessage after updating the snapshot; we find the
+  // message element by its data-message-id, scroll it into view, and flash a
+  // brief highlight so the user sees where they landed.
+  useEffect(() => {
+    if (!scrollToMessageId) return;
+    const id = scrollToMessageId;
+    setScrollToMessageId(null);
+    // Double rAF so the new snapshot (after the branch switch) has painted.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = messageListRef.current?.querySelector(
+          `[data-message-id="${id}"]`,
+        );
+        if (el) {
+          el.scrollIntoView({ block: "center", behavior: "auto" });
+          el.classList.add("msg-highlight-flash");
+          setTimeout(() => el.classList.remove("msg-highlight-flash"), 1500);
+        }
+      });
+    });
+  }, [scrollToMessageId]);
 
   // ── Scroll handling ─────────────────────────────────────────────────
   const onScroll = useCallback(() => {
@@ -407,7 +456,7 @@ function ChatApp() {
         </div>
       )}
       <div class="chat-scroller" ref={scrollerRef} onScroll={onScroll}>
-        <div class="chat-list">
+        <div class="chat-list" ref={messageListRef}>
           {/* Sentinel for infinite scroll; also acts as top padding. */}
           <div class="scroll-sentinel-top" />
           {loading ? (
@@ -436,7 +485,7 @@ function ChatApp() {
           <div class="scroll-sentinel-bottom" />
         </div>
       </div>
-      {showScrollButton && (
+      {showScrollButton && !overviewOpen && (
         <button
           type="button"
           class="scroll-to-bottom-btn"
@@ -446,6 +495,15 @@ function ChatApp() {
         >
           <ChevronDown size={22} />
         </button>
+      )}
+      {overviewOpen && (
+        <TreeOverview
+          root={overviewRoot}
+          onClose={() => {
+            setOverviewOpen(false);
+            setOverviewRoot(null);
+          }}
+        />
       )}
     </div>
   );

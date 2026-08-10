@@ -115,7 +115,7 @@ struct ChatInfoSidebar: View {
         if let title = item.chat?.title, !title.isEmpty {
             return title
         }
-        if let firstUser = item.chat?.messages.first(where: { $0.role == .user }) {
+        if let firstUser = item.chat?.activeMessages.first(where: { $0.role == .user }) {
             let trimmed = firstUser.content.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
                 return String(trimmed.prefix(60))
@@ -129,7 +129,7 @@ struct ChatInfoSidebar: View {
     }
 
     private func updatedDate(for item: ChatRecord) -> Date {
-        item.chat?.messages.last?.timestamp ?? item.createdAt
+        item.chat?.mostRecentTimestamp ?? item.createdAt
     }
 
     private func formatted(_ date: Date) -> String {

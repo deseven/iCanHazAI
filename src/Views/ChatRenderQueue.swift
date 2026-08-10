@@ -226,6 +226,60 @@ actor ChatRenderQueue {
         return out
     }
 
+    /// Builds the tree overview projection: a nested tree mirroring the chat's
+    /// structure. Each node is a drawn card (the conversation root or one
+    /// branch-head of a split); everything between drawn nodes collapses into
+    /// the node's `messageCount`. Returns nil for an empty chat. For a linear
+    /// chat (no forks) the projection is a single root node whose segment runs
+    /// to the end of the conversation.
+    static func buildTreeOverview(_ chat: Chat) -> TreeNodeData? {
+        guard !chat.messages.isEmpty else { return nil }
+        let activeIDSet = Set(chat.activeMessages.map(\.id))
+        return node(forSegment: chat.messages, activeIDSet: activeIDSet)
+    }
+
+    /// Builds the node for the segment that *starts* with `msgs[0]` and runs
+    /// to the next split (the first message with `branches`) or to the end of
+    /// `msgs`. The segment's message count includes the head and the split
+    /// owner; the split's branches become child nodes.
+    private static func node(forSegment msgs: [ChatMessage], activeIDSet: Set<UUID>) -> TreeNodeData {
+        let head = msgs[0]
+        // Find the split owner: the first message in the segment (including
+        // the head itself) that carries `branches`. The segment's count runs
+        // from the head up to and including that owner.
+        var count = 0
+        var splitMsg: ChatMessage? = nil
+        for m in msgs {
+            count += 1
+            if m.branches != nil { splitMsg = m; break }
+        }
+        let split = splitMsg?.branches.map { branches in
+            TreeSplitData(branches: branches.map { node(forSegment: $0, activeIDSet: activeIDSet) })
+        }
+        return TreeNodeData(
+            id: head.id.uuidString,
+            role: head.role.rawValue,
+            snippet: snippet(of: head),
+            messageCount: count,
+            isActive: activeIDSet.contains(head.id),
+            split: split
+        )
+    }
+
+    /// A short snippet (≤100 chars) of a message's content, for the node card.
+    private static func snippet(of msg: ChatMessage) -> String {
+        let trimmed = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            if msg.error != nil { return "(error)" }
+            if let calls = msg.toolCalls, !calls.isEmpty { return "tool call: \(calls.first?.name ?? "")" }
+            if msg.role == .assistant { return "(empty)" }
+            return ""
+        }
+        if trimmed.count <= 100 { return trimmed }
+        let endIndex = trimmed.index(trimmed.startIndex, offsetBy: 100)
+        return String(trimmed[..<endIndex]) + "…"
+    }
+
     /// Legacy projection for tests that pass a flat message array. Used only
     /// by tests that don't need tree metadata.
     static func projectToolResults(_ messages: [ChatMessage]) -> [ChatMessageData] {

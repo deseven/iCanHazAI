@@ -89,47 +89,48 @@ extension AllAppTests {
             }
         }
 
-        // MARK: - [ChatMessage].lastToolResultIndex
+        // MARK: - Chat.activeToolResultMessageID
 
         @Test("finds a result message in the current turn")
         func findsCurrentTurnResult() {
-            let messages = [
+            let resultMsg = ChatMessage(role: .tool, content: "", toolResults: [ToolResult(callID: "ls:0", content: "partial", isError: false, isStreaming: true)])
+            let chat = Fixtures.chat(messages: [
                 ChatMessage(role: .assistant, content: "", toolCalls: [ToolCall(id: "ls:0", name: "ls", arguments: "{}")]),
-                ChatMessage(role: .tool, content: "", toolResults: [ToolResult(callID: "ls:0", content: "partial", isError: false, isStreaming: true)]),
-            ]
-            #expect(messages.lastToolResultIndex(callID: "ls:0") == 1)
+                resultMsg,
+            ])
+            #expect(chat.activeToolResultMessageID(callID: "ls:0") == resultMsg.id)
         }
 
         @Test("a previous turn's result with the same callID is not touched")
         func previousTurnResultIgnored() {
             // The data-loss scenario: turn 2 reuses turn 1's provider-issued
             // ID. Looking up the ID must not find turn 1's persisted result.
-            let messages = [
+            let chat = Fixtures.chat(messages: [
                 ChatMessage(role: .assistant, content: "", toolCalls: [ToolCall(id: "ls:0", name: "ls", arguments: "{}")]),
                 ChatMessage(role: .tool, content: "", toolResults: [ToolResult(callID: "ls:0", content: "turn 1 result", isError: false)]),
                 ChatMessage(role: .assistant, content: "", toolCalls: [ToolCall(id: "ls:0", name: "ls", arguments: "{}")]),
-            ]
-            #expect(messages.lastToolResultIndex(callID: "ls:0") == nil)
+            ])
+            #expect(chat.activeToolResultMessageID(callID: "ls:0") == nil)
         }
 
         @Test("when both turns carry the ID, the current turn's message wins")
         func currentTurnWins() {
-            let messages = [
+            let turn2 = ChatMessage(role: .tool, content: "", toolResults: [ToolResult(callID: "ls:0", content: "turn 2", isError: false, isStreaming: true)])
+            let chat = Fixtures.chat(messages: [
                 ChatMessage(role: .assistant, content: "", toolCalls: [ToolCall(id: "ls:0", name: "ls", arguments: "{}")]),
                 ChatMessage(role: .tool, content: "", toolResults: [ToolResult(callID: "ls:0", content: "turn 1", isError: false)]),
                 ChatMessage(role: .assistant, content: "", toolCalls: [ToolCall(id: "ls:0", name: "ls", arguments: "{}")]),
-                ChatMessage(role: .tool, content: "", toolResults: [ToolResult(callID: "ls:0", content: "turn 2", isError: false, isStreaming: true)]),
-            ]
-            #expect(messages.lastToolResultIndex(callID: "ls:0") == 3)
+                turn2,
+            ])
+            #expect(chat.activeToolResultMessageID(callID: "ls:0") == turn2.id)
         }
 
         @Test("no assistant message means the whole history is one turn")
         func noAssistantMessage() {
-            let messages = [
-                ChatMessage(role: .tool, content: "", toolResults: [ToolResult(callID: "ls:0", content: "x", isError: false)]),
-            ]
-            #expect(messages.lastToolResultIndex(callID: "ls:0") == 0)
-            #expect(messages.lastToolResultIndex(callID: "nope:0") == nil)
+            let resultMsg = ChatMessage(role: .tool, content: "", toolResults: [ToolResult(callID: "ls:0", content: "x", isError: false)])
+            let chat = Fixtures.chat(messages: [resultMsg])
+            #expect(chat.activeToolResultMessageID(callID: "ls:0") == resultMsg.id)
+            #expect(chat.activeToolResultMessageID(callID: "nope:0") == nil)
         }
     }
 }

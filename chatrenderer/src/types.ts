@@ -150,6 +150,36 @@ export interface ChatSnapshot {
   features?: ChatSnapshotFeatures;
 }
 
+/** A node in the tree overview projection: the conversation root, or one
+ *  branch-head of a split. The projection mirrors the chat's tree structure
+ *  directly — each node is a drawn card, and its `split` (when present) holds
+ *  the alternative continuations, each headed by its own node. Everything
+ *  between drawn nodes collapses into the node's `messageCount` (shown as a
+ *  "{n} messages" badge). */
+export interface TreeNode {
+  /** The message id this node represents (used for goto-on-click). */
+  id: string;
+  /** The message role ("user", "assistant", "tool", "system"). */
+  role: MessageRole;
+  /** A short snippet of the message content (≤100 chars), for the node card. */
+  snippet: string;
+  /** Number of messages in this branch segment: from this node up to (and
+   *  including) the next split's owner, or to the end of the branch. */
+  messageCount: number;
+  /** Whether this node lies on the active path (root → active leaf). */
+  isActive: boolean;
+  /** The split this node's segment ends in. Absent → the segment runs to a
+   *  leaf (the end of the branch). */
+  split?: TreeSplit;
+}
+
+/** A fork point: the alternative continuations after a node's segment, each
+ *  headed by its own node. Exactly one branch is active (has `isActive`). */
+export interface TreeSplit {
+  /** The branch heads, in order. */
+  branches: TreeNode[];
+}
+
 /**
  * Messages flowing Swift -> JS via `window.chatHost.postMessage(...)`.
  * Tagged union so the renderer can switch on `type`.
@@ -170,7 +200,16 @@ export type HostMessage =
   | { type: "unload" }
   | { type: "updateMessage"; chatId: string; message: ChatMessage }
   | { type: "addMessage"; chatId: string; message: ChatMessage; index: number }
-  | { type: "deleteMessage"; chatId: string; messageId: string };
+  | { type: "deleteMessage"; chatId: string; messageId: string }
+  /** Open (or update) the tree overview mode with the given root. A null/absent
+   *  root closes the overview (nothing to show). */
+  | { type: "treeOverview"; root?: TreeNode | null }
+  /** Close the tree overview mode. */
+  | { type: "exitTreeOverview" }
+  /** Scroll the (re-rendered) chat to bring `messageId` into view, with a
+   *  brief highlight flash. Sent after a branch switch triggered from the
+   *  overview so the user lands on the jumped-to message. */
+  | { type: "scrollToMessage"; messageId: string };
 
 /**
  * Messages flowing JS -> Swift via `window.webkit.messageHandlers.bridge.postMessage(...)`.
@@ -199,4 +238,9 @@ export type BridgeMessage =
   /** Switch the active branch at the message's fork point. `direction` is
    *  -1 (previous sibling) or +1 (next sibling); the host resolves the
    *  target sibling and calls `setActiveBranch`. */
-  | { type: "switchBranch"; messageId: string; direction: number };
+  | { type: "switchBranch"; messageId: string; direction: number }
+  /** Jump to a message from the tree overview. The host resolves the path to
+   *  the node, calls `setActiveBranch` for each fork on the way (no-op when
+   *  already on-path), closes the overview, pushes the resulting snapshot,
+   *  then sends `scrollToMessage`. */
+  | { type: "gotoMessage"; messageId: string };
