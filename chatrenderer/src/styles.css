@@ -727,8 +727,9 @@ body {
 .markdown li.task-list-item {
   list-style: none;
   margin-left: -20px;
-  display: flex;
-  align-items: baseline;
+  /* Hanging indent: wrapped lines align after the 20px checkbox + gap. */
+  padding-left: 20px;
+  text-indent: -20px;
 }
 
 .markdown .task-list-checkbox {
@@ -741,9 +742,10 @@ body {
   border-radius: 3px;
   background: transparent;
   cursor: default;
-  flex: 0 0 14px;
   position: relative;
   top: 2px;
+  /* Negative text-indent on the li must not shift the checkbox itself. */
+  text-indent: 0;
 }
 
 .markdown .task-list-checkbox:checked {
