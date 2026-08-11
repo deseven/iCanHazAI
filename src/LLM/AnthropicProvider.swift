@@ -254,25 +254,39 @@ struct AnthropicProvider: LLMProvider {
                 }
             }
         case "message_start":
-            // `message_start` carries the input token count. We stash it on
-            // the accumulator so the later `message_delta` (which carries the
-            // output token count) can emit a combined usage chunk.
             if let message = json["message"] as? [String: Any],
                let input = message["usage"] as? [String: Any],
-               let inputTokens = input["input_tokens"] as? Int {
-                accumulator.setInputTokens(inputTokens)
+               let inputTokens = input["input_tokens"] as? Int,
+               let outputTokens = input["output_tokens"] as? Int {
+                let cached = input["cache_read_input_tokens"] as? Int ?? 0
+                let creation = input["cache_creation_input_tokens"] as? Int ?? 0
+                let total = inputTokens + cached + outputTokens
+                accumulator.setInputTokens(inputTokens, cached: cached, creation: creation)
+                // Anthropic sometimes reports full usage in message_start already.
+                chunks.append(.usage(TokenUsage(
+                    tokensUsed: total,
+                    inputTokens: inputTokens,
+                    outputTokens: outputTokens,
+                    cachedInputTokens: cached,
+                    cacheCreationTokens: creation
+                )))
             }
         case "message_delta":
             if let delta = json["delta"] as? [String: Any],
                let reason = delta["stop_reason"] as? String {
                 chunks.append(.finishReason(reason))
             }
-            // `message_delta` carries the output token count. Combined with
-            // the stashed input tokens, emit the full usage.
             if let usage = json["usage"] as? [String: Any],
                let outputTokens = usage["output_tokens"] as? Int {
-                let total = accumulator.getInputTokens() + outputTokens
-                chunks.append(.usage(TokenUsage(tokensUsed: total)))
+                let (input, cached, creation) = accumulator.getInputTokens()
+                let total = input + cached + outputTokens
+                chunks.append(.usage(TokenUsage(
+                    tokensUsed: total,
+                    inputTokens: input,
+                    outputTokens: outputTokens,
+                    cachedInputTokens: cached,
+                    cacheCreationTokens: creation
+                )))
             }
         default:
             break

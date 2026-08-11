@@ -933,11 +933,11 @@ final class AppViewModel: ObservableObject {
         role?.hasChatTrees ?? false
     }
 
-    /// Token usage for the currently selected chat, as reported by the
-    /// provider on the last assistant response. Nil until the first
-    /// response with usage completes.
-    var selectedChatTokenCount: Int? {
-        selectedChatItem?.tokenCount
+    /// Cumulative token usage for the currently selected chat, summed
+    /// across all assistant responses. Nil until the first response
+    /// with usage completes.
+    var selectedChatTokenUsage: TokenUsage? {
+        selectedChatItem?.tokenUsage
     }
 
     /// Whether two `records` snapshots differ in any field SwiftUI actually

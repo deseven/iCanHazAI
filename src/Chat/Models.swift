@@ -985,13 +985,25 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
         chat?.archive ?? cachedArchive
     }
 
-    /// Token usage reported by the provider for the most recent assistant
-    /// response that has usage. Nil when the chat is unloaded.
+    /// Cumulative token usage across all assistant responses in this chat.
+    /// Nil when the chat is unloaded or has no usage data.
+    var tokenUsage: TokenUsage? {
+    guard let chat = chat else { return nil }
+    let usages = chat.activeMessages.compactMap { $0.tokenUsage }
+    guard !usages.isEmpty else { return nil }
+    return TokenUsage(
+        tokensUsed: usages.reduce(0) { $0 + $1.tokensUsed },
+        inputTokens: usages.reduce(0) { $0 + $1.inputTokens },
+        outputTokens: usages.reduce(0) { $0 + $1.outputTokens },
+        cachedInputTokens: usages.reduce(0) { $0 + $1.cachedInputTokens },
+        cacheCreationTokens: usages.reduce(0) { $0 + $1.cacheCreationTokens }
+    )
+}
+
+    /// Total token count (input + output + cached) across all assistant
+    /// responses. Convenience alias of `tokenUsage?.tokensUsed`.
     var tokenCount: Int? {
-        guard let chat = chat else { return nil }
-        return chat.activeMessages.reversed()
-            .first(where: { $0.role == .assistant && $0.tokenUsage != nil })?
-            .tokenUsage?.tokensUsed
+        tokenUsage?.tokensUsed
     }
 
     /// Key used to order chats in the sidebar. When the chat is loaded, uses

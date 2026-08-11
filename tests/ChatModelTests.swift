@@ -431,8 +431,8 @@ struct ChatModelTests {
         #expect(rec.tokenCount == nil)
     }
 
-    @Test("tokenCount picks the most recent assistant message with usage")
-    func tokenCountFromLastAssistant() {
+    @Test("tokenCount sums usage across all assistant messages")
+    func tokenCountSumsAll() {
         let chat = Fixtures.chat(messages: [
             Fixtures.message(role: .assistant, content: "old", timestamp: Date(timeIntervalSince1970: 1),
                              tokenUsage: TokenUsage(tokensUsed: 10)),
@@ -441,7 +441,7 @@ struct ChatModelTests {
                              tokenUsage: TokenUsage(tokensUsed: 99))
         ])
         let rec = ChatRecord(filename: "a.json", chat: chat)
-        #expect(rec.tokenCount == 99)
+        #expect(rec.tokenCount == 109)
     }
 
     @Test("tokenCount is nil when no assistant message reported usage")

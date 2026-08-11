@@ -196,11 +196,18 @@ struct OpenAIProvider: LLMProvider {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return []
         }
-        // The final chunk (with `stream_options.include_usage`) carries a
-        // top-level `usage` object and an empty `choices` array.
         if let usage = json["usage"] as? [String: Any],
-           let total = usage["total_tokens"] as? Int {
-            return [.usage(TokenUsage(tokensUsed: total))]
+           let total = usage["total_tokens"] as? Int,
+           let promptTokens = usage["prompt_tokens"] as? Int,
+           let completionTokens = usage["completion_tokens"] as? Int {
+            let cached = (usage["prompt_tokens_details"] as? [String: Any])?["cached_tokens"] as? Int ?? 0
+            return [.usage(TokenUsage(
+                tokensUsed: total,
+                inputTokens: promptTokens - cached,
+                outputTokens: completionTokens,
+                cachedInputTokens: cached,
+                cacheCreationTokens: 0
+            ))]
         }
         guard let choices = json["choices"] as? [[String: Any]] else {
             return []

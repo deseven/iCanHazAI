@@ -45,7 +45,13 @@ struct ChatInfoSidebar: View {
                         InfoCell(label: "Updated", value: formatted(updatedDate(for: item)))
                     }
                     Section("Usage") {
-                        LabeledContent("Tokens", value: item.tokenCount.map { "\($0)" } ?? "N/A")
+                        if let usage = item.tokenUsage {
+                            InfoCell(label: "Input", value: "\(usage.inputTokens)")
+                            InfoCell(label: "Cached", value: "\(usage.cachedInputTokens)")
+                            InfoCell(label: "Output", value: "\(usage.outputTokens)")
+                        } else {
+                            InfoCell(label: "Tokens", value: "N/A")
+                        }
                     }
                     if let snapshot = toolSnapshot {
                         if !snapshot.builtin.isEmpty {
