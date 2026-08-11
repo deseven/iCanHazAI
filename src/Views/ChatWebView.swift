@@ -588,9 +588,16 @@ final class ChatWebViewModel: ObservableObject {
     /// current chat state (cheap — arrays are COW value types) and hands it
     /// to `ChatRenderQueue`, which projects/diffs/encodes off the main actor
     /// and delivers the resulting JS back here in order.
-    func pushSnapshot() {
+    ///
+    /// `records` overrides the store's published `chatItems` for the lookup.
+    /// The store content-gates `chatItems` during streaming (to avoid
+    /// invalidating the whole view tree per token), so the streaming caller
+    /// passes the engine's fresh records here — otherwise the webview would
+    /// render stale content mid-stream.
+    func pushSnapshot(records: [ChatRecord]? = nil) {
         guard let store else { return }
-        guard let item = store.selectedChatItem else { return }
+        let source = records ?? store.chatItems
+        guard let item = source.first(where: { $0.id == store.selectedChatID }) else { return }
         // If the chat is not loaded yet, there's nothing to render.
         guard let chat = item.chat else { return }
 

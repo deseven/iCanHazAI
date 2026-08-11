@@ -899,7 +899,10 @@ private struct AttachmentChip: View {
 /// image formats plus common document and plain-text types so the picker
 /// accepts anything the classifier can route.
 enum AttachmentPickerTypes {
-    static var supported: [UTType] {
+    /// Memoized: this is read on every `ChatView` body evaluation (it's the
+    /// `allowedContentTypes` of the file importer), so it must not rebuild the
+    /// set per call — during streaming the body runs on every token flush.
+    static let supported: [UTType] = {
         var types: [UTType] = []
         // Image formats.
         for uti in ImageProcessor.supportedTypeIdentifiers {
@@ -928,7 +931,7 @@ enum AttachmentPickerTypes {
         // Deduplicate while preserving order.
         var seen = Set<UTType>()
         return types.filter { seen.insert($0).inserted }
-    }
+    }()
 }
 
 /// A wrapper that makes a `UUID` `Identifiable` so it can drive `.sheet(item:)`.

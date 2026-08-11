@@ -428,14 +428,30 @@ final class AppViewModel: ObservableObject {
     private func apply(_ event: EngineEvent) {
         switch event {
         case .chatsChanged(let records):
-            chatItems = records
-            // Archived chats are hidden from the sidebar list but kept in
-            // `chatItems` so they remain selectable (e.g. via deep links) and
-            // their in-memory state is preserved. Temporary chats are hidden
-            // too — they're destroyed the moment another chat is selected.
-            chatSummaries = records
+            // Content-gated publishing. During streaming the engine emits a
+            // coalesced chatsChanged on every token flush, but the only thing
+            // that changed is the selected chat's message text — which the
+            // webview already receives via `pushSnapshot()` below (not through
+            // SwiftUI). Reassigning `chatItems`/`chatSummaries` unconditionally
+            // here gave every subscriber a brand-new array identity each token,
+            // invalidating the ENTIRE view tree (the observed main-thread
+            // AttributeGraph storm). So only touch the @Published arrays when
+            // a UI-relevant value actually changed:
+            //  - `chatSummaries` is message-free (title/flags/sortKey) and
+            //    Hashable, so a token flush yields an EQUAL array → skipped.
+            //  - `chatItems` is updated only when a record's non-content
+            //    fields changed (flags, selection, titles, metadata); pure
+            //    text/thinking appends are not, since SwiftUI never reads
+            //    message content directly.
+            let newSummaries = records
                 .filter { !$0.isArchived && !$0.isTemporary }
                 .map(ChatSummary.init)
+            if newSummaries != chatSummaries {
+                chatSummaries = newSummaries
+            }
+            if Self.recordsUIRelevantChanged(from: chatItems, to: records) {
+                chatItems = records
+            }
             // Drafts of destroyed temporary chats are dead weight (their
             // filenames are never reused) — drop them.
             inputDrafts.removeStaleTemporaryDrafts(validFilenames: Set(records.map(\.id)))
@@ -488,8 +504,11 @@ final class AppViewModel: ObservableObject {
             }
             // Push the snapshot synchronously in the same main-actor turn so
             // the web view reflects tool-call state before the engine resumes
-            // to execute the tool.
-            chatWebViewModel?.pushSnapshot()
+            // to execute the tool. Pass the fresh records: `chatItems` is
+            // content-gated above, so during streaming it lags the engine —
+            // the webview must render from the live snapshot, not the stale
+            // published array.
+            chatWebViewModel?.pushSnapshot(records: records)
         case .rolesChanged(let roles):
             self.roles = roles
             refreshPreferences()
@@ -919,6 +938,81 @@ final class AppViewModel: ObservableObject {
     /// response with usage completes.
     var selectedChatTokenCount: Int? {
         selectedChatItem?.tokenCount
+    }
+
+    /// Whether two `records` snapshots differ in any field SwiftUI actually
+    /// reads. Used to gate `chatItems` publishing (see `apply(.chatsChanged)`):
+    /// during streaming the only per-token change is the selected chat's
+    /// message *text* (`content`/`thinking`), which SwiftUI never reads — it
+    /// renders through the webview via `pushSnapshot()`. Everything else a view
+    /// can observe (flags, selection metadata, title, message structure, tool
+    /// calls, errors, token usage) is compared here; if none changed, the
+    /// @Published array is left untouched so subscribers aren't invalidated.
+    nonisolated static func recordsUIRelevantChanged(from old: [ChatRecord], to new: [ChatRecord]) -> Bool {
+        guard old.count == new.count else { return true }
+        for (a, b) in zip(old, new) {
+            if a.filename != b.filename { return true }
+            // Record-level scalars.
+            if a.isStreaming != b.isStreaming
+                || a.stopAfterIteration != b.stopAfterIteration
+                || a.hasUnreadActivity != b.hasUnreadActivity
+                || a.lastError != b.lastError
+                || a.cachedName != b.cachedName
+                || a.cachedRole != b.cachedRole
+                || a.cachedArchive != b.cachedArchive
+                || a.cachedLastActivity != b.cachedLastActivity
+                || a.isTemporary != b.isTemporary { return true }
+            // Loaded-chat structure. We compare everything EXCEPT the message
+            // text bodies (content/thinking), which stream in per token and
+            // are only consumed by the webview.
+            if chatsUIRelevantChanged(a.chat, b.chat) { return true }
+        }
+        return false
+    }
+
+    /// Structural comparison of two loaded chats, ignoring the streaming text
+    /// bodies (`content`/`thinking`). Nil-vs-loaded and any structural or
+    /// metadata difference counts as changed.
+    private nonisolated static func chatsUIRelevantChanged(_ a: Chat?, _ b: Chat?) -> Bool {
+        switch (a, b) {
+        case (nil, nil): return false
+        case (nil, .some), (.some, nil): return true
+        case let (x?, y?):
+            if x.role != y.role
+                || x.title != y.title
+                || x.connection != y.connection
+                || x.prompt != y.prompt
+                || x.workingDirectory != y.workingDirectory
+                || x.mcps != y.mcps
+                || x.archive != y.archive
+                || x.outputRendering != y.outputRendering { return true }
+            return messagesUIRelevantChanged(x.messages, y.messages)
+        }
+    }
+
+    /// Structural comparison of message trees, ignoring `content`/`thinking`.
+    private nonisolated static func messagesUIRelevantChanged(_ a: [ChatMessage], _ b: [ChatMessage]) -> Bool {
+        guard a.count == b.count else { return true }
+        for (m, n) in zip(a, b) {
+            if m.id != n.id
+                || m.role != n.role
+                || m.error != n.error
+                || m.timestamp != n.timestamp
+                || m.connectionName != n.connectionName
+                || m.attachments != n.attachments
+                || m.toolCalls != n.toolCalls
+                || m.toolResults != n.toolResults
+                || m.tokenUsage != n.tokenUsage
+                || m.activeBranch != n.activeBranch { return true }
+            switch (m.branches, n.branches) {
+            case (nil, nil): break
+            case (nil, .some), (.some, nil): return true
+            case let (mb?, nb?):
+                guard mb.count == nb.count else { return true }
+                for (ba, bb) in zip(mb, nb) where messagesUIRelevantChanged(ba, bb) { return true }
+            }
+        }
+        return false
     }
 
     // MARK: - Actions (forwarders to the engine)
