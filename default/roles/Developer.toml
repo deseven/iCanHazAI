@@ -9,10 +9,12 @@ mcps_override_allowed = true
 with_attachments = true
 
 [utils]
+tools = ["calc", "hash", "rand", "uuid", "sleep"]
 auto_allow_all = true
 
 [filesystem]
-auto_allow = ["ls", "read_file", "stat", "find_file", "find_text", "pwd"]
+tools = ["read_file", "write_file"]
+auto_allow = ["read_file"]
 
 [code]
 

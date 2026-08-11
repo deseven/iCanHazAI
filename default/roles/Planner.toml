@@ -10,6 +10,7 @@ with_attachments = true
 with_response_regen = true
 
 [utils]
+tools = ["calc", "rand", "datetime"]
 auto_allow_all = true
 
 [web]

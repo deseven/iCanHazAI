@@ -11,6 +11,7 @@ with_response_regen = true
 with_chat_trees = true
 
 [utils]
+tools = ["calc", "rand", "datetime"]
 auto_allow_all = true
 
 [web]
