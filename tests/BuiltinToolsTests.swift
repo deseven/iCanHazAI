@@ -230,6 +230,16 @@ extension AllAppTests {
             #expect(!r.contains("\t"), "gutter must not use tabs: \(r)")
         }
 
+        @Test("read_file handles large files with multi-byte UTF-8")
+        func readMultiByteLargeFile() async throws {
+            let tmp = try TestDir()
+            let content = String(repeating: "# ─── section ───\n", count: 800)
+            try tmp.write("multi.txt", content: content)
+            let (text, err) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": tmp.sub("multi.txt")])
+            #expect(!err, "read_file failed: \(text)")
+            #expect(text.contains("section"))
+        }
+
         @Test("ls lists a directory")
         func lsLists() async throws {
             let tmp = try TestDir()
@@ -441,6 +451,16 @@ extension AllAppTests {
             #expect(withHidden.contains(".hidden.txt"))
             // Binary files are never searched, even with include_hidden.
             #expect(!withHidden.contains("bin.dat"))
+        }
+
+        @Test("find_text searches large files with multi-byte UTF-8")
+        func findTextMultiByteLargeFile() async throws {
+            let tmp = try TestDir()
+            let content = String(repeating: "# ─── section ───\n", count: 800)
+            try tmp.write("s/multi.txt", content: content)
+            let (text, err) = await Self.call("find_text", BuiltinTools.filesystemGroup, ["path": tmp.sub("s"), "regex": "section"])
+            #expect(!err)
+            #expect(text.contains("multi.txt"))
         }
 
         @Test("find_text file_pattern filters by glob")

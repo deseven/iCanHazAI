@@ -229,6 +229,30 @@ extension AllAppTests {
             let kind = DocumentClassifier.classify(data: f.rtf, hint: .init(filename: "a.rtf"))
             #expect(kind == .document(.rtf))
         }
+
+        @Test("text with multi-byte UTF-8 characters classifies as text")
+        func multiByteUtf8Text() {
+            // Rich in ─ (U+2500, 3-byte UTF-8) — the kind of content that
+            // broke the old strict-UTF-8-decode-on-sample heuristic when a
+            // multi-byte sequence straddled the 8 KB sample boundary.
+            let line = "# ─── section ───\n"
+            let data = Data(String(repeating: line, count: 800).utf8)
+            #expect(data.count > 8192)
+            #expect(DocumentClassifier.classify(data: data, hint: .none) == .text)
+        }
+
+        @Test("NUL byte in sample is classified as non-text")
+        func nulByteBinary() {
+            #expect(DocumentClassifier.classify(data: Data("hello\0world".utf8), hint: .none) != .text)
+        }
+
+        @Test("high control-byte ratio is classified as non-text")
+        func controlByteRatio() {
+            var data = Data()
+            data.append(Data(repeating: 0x01, count: 400))
+            data.append(Data(repeating: 0x61, count: 600))
+            #expect(DocumentClassifier.classify(data: data, hint: .none) != .text)
+        }
     }
 
     // MARK: - Extraction

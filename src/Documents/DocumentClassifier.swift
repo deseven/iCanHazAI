@@ -166,9 +166,8 @@ enum DocumentClassifier {
 
     /// True if the data sample carries the WordprocessingML namespace marker.
     private static func looksLikeWordML(_ data: Data) -> Bool {
-        let sample = data.count > 65536 ? data.prefix(65536) : data
-        guard let s = String(data: sample, encoding: .utf8) else { return false }
-        return s.contains("schemas.microsoft.com/office/word")
+        let sample = data.prefix(65536)
+        return sample.range(of: Data("schemas.microsoft.com/office/word".utf8)) != nil
     }
 }
 

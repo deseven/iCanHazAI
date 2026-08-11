@@ -637,9 +637,16 @@ enum BuiltinTools {
     // MARK: - File helpers
 
     static func isText(_ data: Data) -> Bool {
-        let sample = data.count > 8192 ? data.prefix(8192) : data
-        if sample.contains(0) { return false }
-        return String(data: sample, encoding: .utf8) != nil
+        let sample = data.prefix(1024)
+        if sample.isEmpty { return true }
+        var nonText = 0
+        for byte in sample {
+            if byte == 0 { return false }
+            if (byte < 0x20 && byte != 0x09 && byte != 0x0A && byte != 0x0D) || byte == 0x7F {
+                nonText += 1
+            }
+        }
+        return Double(nonText) / Double(sample.count) <= 0.3
     }
 
     /// Fully symlink-resolved spelling of an existing path (realpath(3)).

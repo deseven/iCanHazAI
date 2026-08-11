@@ -246,6 +246,11 @@ do_notarize() {
 do_staple_app() { xcrun stapler staple "$loc/dist/$name.app"; }
 do_staple_dmg() { xcrun stapler staple "$loc/dist/$shortName.dmg"; }
 
+do_install_app() {
+    rm -rf "/Applications/$name.app"
+    cp -R "$loc/dist/$name.app" "/Applications/"
+}
+
 do_verify() {
     codesign --verify --deep --strict --verbose=2 "$loc/dist/$name.app"
     if [ "$can_notarize" = true ]; then
@@ -351,6 +356,7 @@ elif [ "$mode" = "dev-release" ]; then
     if [ "$can_sign" = true ]; then
         add "Verifying signatures..."     "failed to verify signatures"           do_verify
     fi
+    add "Installing to /Applications..."  "failed to install app to /Applications" do_install_app
     add "Uploading dev build..."       "failed to upload dev build"              do_upload "$loc/dist/$shortName-dev.zip"
 fi
 
@@ -368,17 +374,14 @@ case "$mode" in
         echo -e "  ${dimColor}launching...${noColor}"
         # Run the bundled binary directly so the app's stdout/stderr stays
         # attached to this terminal. `--gui` keeps the direct invocation from
-        # being detected as CLI (see CLIClient.isCLIInvocation); any previous
-        # instance is killed first — a second one would fight over the CLI
-        # control socket.
-        pkill -x "$name" 2>/dev/null || true
+        # being detected as CLI (see CLIClient.isCLIInvocation).
         "$loc/dist/$name.app/Contents/MacOS/$name" --gui --maindir ~/iCanHazAI-dev
         ;;
     dev-release)
         echo -e "  ${dimColor}mode: development release${noColor}"
         echo -e "  ${dimColor}signing: $(if [ "$can_sign" = true ]; then echo "Developer ID"; else echo "ad-hoc"; fi)${noColor}"
         echo -e "  ${dimColor}notarized: $(if [ "$can_notarize" = true ]; then echo "yes"; else echo "no"; fi)${noColor}"
-        echo -e "  ${dimColor}artifacts: dist/$name.app  dist/$shortName-dev.zip${noColor}"
+        echo -e "  ${dimColor}artifacts: dist/$name.app  dist/$shortName-dev.zip  /Applications/$name.app${noColor}"
         ;;
     release)
         echo -e "  ${dimColor}mode: release${noColor}"
