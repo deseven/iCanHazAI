@@ -240,10 +240,10 @@ extension AllAppTests {
         // MARK: - web_fetch
 
         @Test("web_fetch rejects non-http(s) URLs before any network access")
-        func fetchRejectsBadSchemes() async {
+        func fetchRejectsBadSchemes() {
             for url in ["ftp://example.com", "file:///etc/passwd", "not a url"] {
-                await #expect(throws: BuiltinToolError.self) {
-                    _ = try await BuiltinToolsWeb.fetch(["url": url])
+                #expect(throws: BuiltinToolError.self) {
+                    _ = try BuiltinToolsWeb.parseFetchParams(["url": url])
                 }
             }
         }
@@ -252,6 +252,93 @@ extension AllAppTests {
         func fetchOutputFormat() {
             #expect(BuiltinToolsWeb.fetchOutput(httpCode: 200, content: "hi") == "http_code: 200\n\nhi")
             #expect(BuiltinToolsWeb.fetchOutput(httpCode: 0, content: "Error: boom") == "http_code: 0\n\nError: boom")
+        }
+
+        @Test("web_fetch output includes response headers when present")
+        func fetchOutputWithHeaders() {
+            let withHeaders = BuiltinToolsWeb.fetchOutput(httpCode: 200, content: "body", headers: ["Content-Type": "application/json", "X-Total": "42"])
+            #expect(withHeaders == "http_code: 200\nContent-Type: application/json\nX-Total: 42\n\nbody")
+        }
+
+        @Test("web_fetch output without headers has no header lines")
+        func fetchOutputWithoutHeaders() {
+            let noHeaders = BuiltinToolsWeb.fetchOutput(httpCode: 200, content: "body", headers: [:])
+            #expect(noHeaders == "http_code: 200\n\nbody")
+        }
+
+        // MARK: - web_fetch request parsing and building
+
+        @Test("web_fetch defaults to GET with no extra arguments")
+        func fetchDefaultsToGet() throws {
+            let params = try BuiltinToolsWeb.parseFetchParams(["url": "https://example.com"])
+            #expect(params.method == "GET")
+            #expect(params.body == nil)
+            #expect(params.headers == [:])
+            #expect(params.returnHeaders == false)
+        }
+
+        @Test("web_fetch defaults to POST when data is provided without request_type")
+        func fetchDefaultsToPostWithData() throws {
+            let params = try BuiltinToolsWeb.parseFetchParams(["url": "https://example.com", "data": "{\"k\":1}"])
+            #expect(params.method == "POST")
+            #expect(params.body == "{\"k\":1}")
+        }
+
+        @Test("web_fetch uses explicit request_type and uppercases it")
+        func fetchExplicitMethod() throws {
+            let params = try BuiltinToolsWeb.parseFetchParams(["url": "https://example.com", "request_type": "put"])
+            #expect(params.method == "PUT")
+        }
+
+        @Test("web_fetch rejects unknown HTTP methods")
+        func fetchRejectsUnknownMethod() {
+            #expect(throws: BuiltinToolError.self) {
+                _ = try BuiltinToolsWeb.parseFetchParams(["url": "https://example.com", "request_type": "TRACE"])
+            }
+        }
+
+        @Test("web_fetch request_type takes precedence over data default")
+        func fetchMethodPrecedence() throws {
+            let params = try BuiltinToolsWeb.parseFetchParams(["url": "https://example.com", "request_type": "PATCH", "data": "body"])
+            #expect(params.method == "PATCH")
+            #expect(params.body == "body")
+        }
+
+        @Test("web_fetch parses headers as a string dict")
+        func fetchParsesHeaders() throws {
+            let params = try BuiltinToolsWeb.parseFetchParams([
+                "url": "https://example.com",
+                "headers": ["Authorization": "Bearer tok", "X-Api-Key": "123"],
+            ])
+            #expect(params.headers == ["Authorization": "Bearer tok", "X-Api-Key": "123"])
+        }
+
+        @Test("web_fetch builds a URLRequest with method, body, and default User-Agent")
+        func fetchRequestBuild() throws {
+            let params = try BuiltinToolsWeb.parseFetchParams(["url": "https://example.com", "data": "body"])
+            let req = BuiltinToolsWeb.fetchRequest(params)
+            #expect(req.url?.absoluteString == "https://example.com")
+            #expect(req.httpMethod == "POST")
+            #expect(req.value(forHTTPHeaderField: "User-Agent") == AppInfo.userAgent)
+            #expect(String(data: req.httpBody ?? Data(), encoding: .utf8) == "body")
+        }
+
+        @Test("web_fetch user headers override the default User-Agent")
+        func fetchHeadersOverrideUserAgent() throws {
+            let params = try BuiltinToolsWeb.parseFetchParams([
+                "url": "https://example.com",
+                "headers": ["User-Agent": "custom/1.0"],
+            ])
+            let req = BuiltinToolsWeb.fetchRequest(params)
+            #expect(req.value(forHTTPHeaderField: "User-Agent") == "custom/1.0")
+        }
+
+        @Test("web_fetch return_headers flag is parsed")
+        func fetchReturnHeadersFlag() throws {
+            let on = try BuiltinToolsWeb.parseFetchParams(["url": "https://example.com", "return_headers": true])
+            #expect(on.returnHeaders == true)
+            let off = try BuiltinToolsWeb.parseFetchParams(["url": "https://example.com", "return_headers": false])
+            #expect(off.returnHeaders == false)
         }
 
         // MARK: - [web_search] config section

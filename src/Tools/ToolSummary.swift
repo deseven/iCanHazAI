@@ -288,7 +288,7 @@ private extension ToolSummary {
         // Built-in: Web
         "web_search": KnownToolSpec(primary: ["query"], secondary: ["num_results", "date_start", "date_end"]),
         "web_extract": KnownToolSpec(primary: ["url"]),
-        "web_fetch": KnownToolSpec(primary: ["url"]),
+        "web_fetch": KnownToolSpec(primary: ["url"], secondary: ["request_type", "headers", "data", "return_headers"]),
         // Configurator
         "read_connection": KnownToolSpec(primary: ["id"]),
         "write_connection": KnownToolSpec(primary: ["id"]),

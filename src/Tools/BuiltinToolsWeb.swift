@@ -54,15 +54,18 @@ enum BuiltinToolsWeb {
         BuiltinToolDef(name: extractToolName,
             description: "Extract the readable content of a web page. Prefer this over web_fetch for reading articles and documentation pages.",
             schema: #"{"type":"object","properties":{"url":{"type":"string","description":"The URL of the page to extract."}},"required":["url"]}"#),
-        BuiltinToolDef(name: fetchToolName,
-            description: "Download the raw contents of a URL directly (like curl), without any extraction or rendering. Returns the final HTTP status code and the body as text. Fails on binary content or bodies larger than 256KB.",
-            schema: #"{"type":"object","properties":{"url":{"type":"string","description":"The http(s) URL to download."}},"required":["url"]}"#),
-    ]
+       BuiltinToolDef(name: fetchToolName,
+            description: "Download the raw contents of a URL directly (like curl), without any extraction or rendering. Returns the final HTTP status code and the body as text. Fails on binary content or bodies larger than 256KB. Supports custom HTTP methods, request headers (which override defaults), a request body, and an option to include response headers in the output.",
+            schema: #"{"type":"object","properties":{"url":{"type":"string","description":"The http(s) URL to download."},"request_type":{"type":"string","enum":["GET","POST","PUT","PATCH","DELETE","HEAD","OPTIONS"],"description":"HTTP method. Defaults to GET (or POST when 'data' is provided)."},"headers":{"type":"object","description":"Additional request headers as name-value pairs. These override any internal headers (e.g. User-Agent)."},"data":{"type":"string","description":"Request body text to send with the request (e.g. form contents, JSON, XML). When provided without 'request_type', the method defaults to POST."},"return_headers":{"type":"boolean","description":"If true, include the response headers in the output. Default false."}},"required":["url"]}"#),
+   ]
 
-    /// Bodies larger than this are rejected by `web_fetch`.
-    static let maxFetchBytes = 256 * 1024
+   /// Bodies larger than this are rejected by `web_fetch`.
+   static let maxFetchBytes = 256 * 1024
 
-    private static let session: URLSession = {
+    /// HTTP methods accepted by `web_fetch`.
+    static let allowedMethods: Set<String> = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+
+   private static let session: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 60
         return URLSession(configuration: config)
@@ -87,49 +90,122 @@ enum BuiltinToolsWeb {
         let url = try BuiltinTools.requireString(args, "url")
         let data = try await post(extractRequest(config: config, url: url))
         let page = try parseExtractedPage(provider: config.resolvedProvider, data: data, url: url)
-        return ToolOutput(content: formatExtractOutput(page: page), isError: false)
+       return ToolOutput(content: formatExtractOutput(page: page), isError: false)
+   }
+
+    /// Parsed `web_fetch` arguments, extracted for testability.
+    struct FetchParams: Equatable {
+        let url: URL
+        let method: String
+        let headers: [String: String]
+        let body: String?
+        let returnHeaders: Bool
     }
 
-    /// Raw download. Redirects are followed by URLSession; the reported code
-    /// is the final one. The body is streamed with a hard cap so an oversized
-    /// response is rejected without being fully downloaded.
-    static func fetch(_ args: [String: Any]) async throws -> ToolOutput {
+    /// Parses `web_fetch` arguments into `FetchParams`. When `data` is
+    /// provided without `request_type`, the method defaults to POST.
+    static func parseFetchParams(_ args: [String: Any]) throws -> FetchParams {
         let urlString = try BuiltinTools.requireString(args, "url")
         guard let url = URL(string: urlString),
               let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
               url.host != nil else {
             throw BuiltinToolError("invalid argument 'url': expected a valid http(s) URL")
         }
-        var request = URLRequest(url: url)
+        let body = BuiltinTools.optionalString(args, "data")
+        let method = BuiltinTools.optionalString(args, "request_type")?.uppercased() ?? (body != nil ? "POST" : "GET")
+        guard allowedMethods.contains(method) else {
+            throw BuiltinToolError("invalid argument 'request_type': must be one of \(allowedMethods.sorted().joined(separator: ", "))")
+        }
+        return FetchParams(
+            url: url,
+            method: method,
+            headers: parseHeaders(args["headers"]),
+            body: body,
+            returnHeaders: BuiltinTools.optionalBool(args, "return_headers") ?? false
+        )
+    }
+
+    /// Builds a `URLRequest` from parsed fetch params. User headers override
+    /// the internal User-Agent (they're applied after the default).
+    static func fetchRequest(_ params: FetchParams) -> URLRequest {
+        var request = URLRequest(url: params.url)
+        request.httpMethod = params.method
         request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
+        for (name, value) in params.headers {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+        if let body = params.body {
+            request.httpBody = Data(body.utf8)
+        }
         request.timeoutInterval = 30
+        return request
+    }
+
+    /// Raw HTTP request. Redirects are followed by URLSession; the reported
+    /// code is the final one. The body is streamed with a hard cap so an
+    /// oversized response is rejected without being fully downloaded.
+    static func fetch(_ args: [String: Any]) async throws -> ToolOutput {
+        let params = try parseFetchParams(args)
+        let request = fetchRequest(params)
         do {
             let (bytes, response) = try await session.bytes(for: request)
-            let httpCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let http = response as? HTTPURLResponse
+            let httpCode = http?.statusCode ?? 0
+            let respHeaders = params.returnHeaders ? responseHeaders(from: http) : [:]
             if response.expectedContentLength > Int64(maxFetchBytes) {
-                return ToolOutput(content: fetchOutput(httpCode: httpCode, content: "Error: content is larger than 256KB"), isError: true)
+                return ToolOutput(content: fetchOutput(httpCode: httpCode, content: "Error: content is larger than 256KB", headers: respHeaders), isError: true)
             }
             var data = Data()
             data.reserveCapacity(min(max(Int(response.expectedContentLength), 0), maxFetchBytes))
             for try await byte in bytes {
                 data.append(byte)
                 if data.count > maxFetchBytes {
-                    return ToolOutput(content: fetchOutput(httpCode: httpCode, content: "Error: content is larger than 256KB"), isError: true)
+                    return ToolOutput(content: fetchOutput(httpCode: httpCode, content: "Error: content is larger than 256KB", headers: respHeaders), isError: true)
                 }
             }
             guard BuiltinTools.isText(data), let text = String(data: data, encoding: .utf8) else {
-                return ToolOutput(content: fetchOutput(httpCode: httpCode, content: "Error: content is binary"), isError: true)
+                return ToolOutput(content: fetchOutput(httpCode: httpCode, content: "Error: content is binary", headers: respHeaders), isError: true)
             }
-            return ToolOutput(content: fetchOutput(httpCode: httpCode, content: text), isError: httpCode >= 400)
+            return ToolOutput(content: fetchOutput(httpCode: httpCode, content: text, headers: respHeaders), isError: httpCode >= 400)
         } catch {
             return ToolOutput(content: fetchOutput(httpCode: 0, content: "Error: \(error.localizedDescription)"), isError: true)
         }
     }
 
     /// `web_fetch` output shape: the final status code on the first line
-    /// (0 when the request never got a response), then the content.
-    static func fetchOutput(httpCode: Int, content: String) -> String {
-        "http_code: \(httpCode)\n\n\(content)"
+    /// (0 when the request never got a response), optional response headers,
+    /// then the content.
+    static func fetchOutput(httpCode: Int, content: String, headers: [String: String] = [:]) -> String {
+        var out = "http_code: \(httpCode)\n"
+        for name in headers.keys.sorted() {
+            out += "\(name): \(headers[name]!)\n"
+        }
+        out += "\n\(content)"
+        return out
+    }
+
+    /// Extracts response headers as a string dict from an HTTPURLResponse.
+    static func responseHeaders(from response: HTTPURLResponse?) -> [String: String] {
+        guard let response else { return [:] }
+        var out: [String: String] = [:]
+        for (key, value) in response.allHeaderFields {
+            guard let name = key as? String else { continue }
+            if let s = value as? String { out[name] = s }
+            else if let n = value as? NSNumber { out[name] = n.stringValue }
+            else { out[name] = "\(value)" }
+        }
+        return out
+    }
+
+    /// Coerces a `headers` argument (JSON object) into `[String: String]`.
+    private static func parseHeaders(_ raw: Any?) -> [String: String] {
+        guard let dict = raw as? [String: Any] else { return [:] }
+        var out: [String: String] = [:]
+        for (k, v) in dict {
+            if let s = v as? String { out[k] = s }
+            else if let n = v as? NSNumber { out[k] = n.stringValue }
+        }
+        return out
     }
 
     // MARK: - Search: unified params and per-provider requests
