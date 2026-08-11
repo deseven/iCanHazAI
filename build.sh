@@ -7,6 +7,7 @@ shortName="ichai"
 ident="wtf.d7.icanhazai"
 loc="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 logFile="$loc/build.log"
+stepLog="$loc/build-step.log"
 
 if [ -f "$loc/.env" ]; then
     set -a
@@ -69,14 +70,9 @@ step() {
 ok() { echo -e "${greenColor}[OK]${noColor}"; }
 
 die() {
-    # The step's output was captured to $stepLog (not $logFile) precisely so
-    # this error dump can go to real stderr without feeding back into the
-    # log and looping.
-    echo -e "${redColor}[FAILED]${noColor}" >&2
-    echo -e "  ${redColor}$1${noColor}" >&2
-    echo -e "  ${dimColor}--- error output ---${noColor}" >&2
-    cat "$stepLog" >&2
-    echo -e "  ${dimColor}--- end error output ---${noColor}" >&2
+    echo -e "${redColor}[FAILED]${noColor}"
+    echo -e "  ${redColor}$1${noColor}"
+    cat "$stepLog"
     exit 1
 }
 
@@ -94,7 +90,7 @@ run_pipeline() {
     for spec in "${STEPS[@]}"; do
         IFS=$'\t' read -r label err func arg <<< "$spec"
         step "$label"
-        stepLog="$(mktemp "${TMPDIR:-/tmp}/ichai-step.XXXXXX")"
+        : > "$stepLog"
         echo "--- $label ---" >> "$logFile"
         if [ -n "$arg" ]; then
             "$func" "$arg" > "$stepLog" 2>&1 || die "$err"
@@ -102,9 +98,9 @@ run_pipeline() {
             "$func" > "$stepLog" 2>&1 || die "$err"
         fi
         cat "$stepLog" >> "$logFile"
-        rm -f "$stepLog"
         ok
     done
+    rm -f "$stepLog"
 }
 
 # ── Step functions ───────────────────────────────────────────────────
