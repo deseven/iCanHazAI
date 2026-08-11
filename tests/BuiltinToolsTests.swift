@@ -126,21 +126,52 @@ extension AllAppTests {
         }
 
         @Test("sleep returns after the requested duration")
-        func sleepShort() async throws {
-            let start = Date()
-            let (text, isError) = await Self.call("sleep", BuiltinTools.utilsGroup, ["seconds": 0.1])
-            let elapsed = Date().timeIntervalSince(start)
-            #expect(!isError)
-            #expect(text.contains("Slept"))
-            #expect(elapsed >= 0.1)
-        }
+       func sleepShort() async throws {
+           let start = Date()
+           let (text, isError) = await Self.call("sleep", BuiltinTools.utilsGroup, ["seconds": 0.1])
+           let elapsed = Date().timeIntervalSince(start)
+           #expect(!isError)
+           #expect(text.contains("Slept"))
+           #expect(elapsed >= 0.1)
+       }
 
-        @Test("unknown tool errors")
-        func unknownTool() async throws {
-            let (text, err) = await Self.call("does_not_exist", BuiltinTools.utilsGroup, [:])
-            #expect(err)
-            #expect(text.contains("Unknown tool"))
-        }
+       @Test("rand returns a number within the default range")
+       func randDefault() async throws {
+           let (text, isError) = await Self.call("rand", BuiltinTools.utilsGroup, [:])
+           #expect(!isError)
+           let n = Int(text.trimmingCharacters(in: .whitespacesAndNewlines))
+           #expect(n != nil)
+           #expect(n! >= 0 && n! <= 100)
+       }
+
+       @Test("rand respects a custom range")
+       func randRange() async throws {
+           let (text, isError) = await Self.call("rand", BuiltinTools.utilsGroup, ["min": 1000, "max": 1001])
+           #expect(!isError)
+           let n = Int(text.trimmingCharacters(in: .whitespacesAndNewlines))
+           #expect(n == 1000 || n == 1001)
+       }
+
+       @Test("rand errors when min > max")
+       func randInverted() async throws {
+           let (text, isError) = await Self.call("rand", BuiltinTools.utilsGroup, ["min": 50, "max": 40])
+           #expect(isError)
+           #expect(text.contains("min"))
+       }
+
+       @Test("rand single-value range returns that value")
+       func randSingleValue() async throws {
+           let (text, isError) = await Self.call("rand", BuiltinTools.utilsGroup, ["min": 7, "max": 7])
+           #expect(!isError)
+           #expect(text.trimmingCharacters(in: .whitespacesAndNewlines) == "7")
+       }
+
+       @Test("unknown tool errors")
+       func unknownTool() async throws {
+           let (text, err) = await Self.call("does_not_exist", BuiltinTools.utilsGroup, [:])
+           #expect(err)
+           #expect(text.contains("Unknown tool"))
+       }
 
         // Static wrapper so nested struct can call the helper.
         static func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir = .none) async -> (text: String, isError: Bool) {
@@ -1374,7 +1405,8 @@ extension AllAppTests {
             #expect(defs.contains { $0.name == "base64_encode" && $0.serverName == "Utils" })
             #expect(defs.contains { $0.name == "base64_decode" && $0.serverName == "Utils" })
             #expect(defs.contains { $0.name == "sleep" && $0.serverName == "Utils" })
-            // Filesystem
+           #expect(defs.contains { $0.name == "rand" && $0.serverName == "Utils" })
+           // Filesystem
             #expect(defs.contains { $0.name == "ls" && $0.serverName == "Filesystem" })
             #expect(defs.contains { $0.name == "read_file" && $0.serverName == "Filesystem" })
             #expect(defs.contains { $0.name == "write_file" && $0.serverName == "Filesystem" })

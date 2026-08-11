@@ -283,9 +283,10 @@ private extension ToolSummary {
         "base64_encode": KnownToolSpec(primary: ["input"]),
         "base64_decode": KnownToolSpec(primary: ["input"]),
         "sleep": KnownToolSpec(primary: ["seconds"]),
-        "datetime": KnownToolSpec(primary: []),
-        "uuid": KnownToolSpec(primary: []),
-        // Built-in: Web
+       "datetime": KnownToolSpec(primary: []),
+       "uuid": KnownToolSpec(primary: []),
+       "rand": KnownToolSpec(primary: [], secondary: ["min", "max"]),
+       // Built-in: Web
         "web_search": KnownToolSpec(primary: ["query"], secondary: ["num_results", "date_start", "date_end"]),
         "web_extract": KnownToolSpec(primary: ["url"]),
         "web_fetch": KnownToolSpec(primary: ["url"], secondary: ["request_type", "headers", "data", "return_headers"]),

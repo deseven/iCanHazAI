@@ -392,7 +392,8 @@ body {
    skip optimization buys nothing there anyway. */
 .msg:has(.msg-pending-spinner),
 .msg:has(.thinking-spinner),
-.msg:has(.tool-spinner) {
+.msg:has(.tool-spinner),
+.msg:has(.tool-badge-pending) {
   content-visibility: visible;
 }
 
@@ -1410,6 +1411,10 @@ body {
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   animation: tool-pending-pulse 1.4s ease-in-out infinite;
+  /* Same compositor promotion as the spinners above: while a tool approval is
+     pending the page is idle, so WebKit won't schedule repaints for this
+     main-thread opacity animation without it. */
+  will-change: opacity;
 }
 
 @keyframes tool-pending-pulse {

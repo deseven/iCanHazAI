@@ -12,6 +12,8 @@ import Foundation
 //   DeleteFile:= "*** Delete File: " path NL
 //   UpdateFile:= "*** Update File: " path NL [ "*** Move to: " newPath NL ] { Hunk }
 //   Hunk      := "@@" [ header ] NL { HunkLine } [ "*** End of File" NL ]
+//   The @@ header is consumed as a search anchor — it is not repeated inside
+//   { HunkLine }. The hunk body (old/new/context lines) starts at the NEXT line.
 //   HunkLine  := (" " | "-" | "+") text NL
 
 let BEGIN_PATCH = "*** Begin Patch"

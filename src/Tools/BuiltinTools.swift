@@ -286,8 +286,11 @@ enum BuiltinTools {
             description: "Decode a base64 string to UTF-8 text.",
             schema: #"{"type":"object","properties":{"input":{"type":"string","description":"The base64 string to decode."}},"required":["input"]}"#),
         BuiltinToolDef(name: "sleep",
-            description: "Pause for a number of seconds. Useful for polling workflows. Clamped to [0, 3600].",
-            schema: #"{"type":"object","properties":{"seconds":{"type":"number","description":"Number of seconds to sleep. Must be between 0 and 3600."}},"required":["seconds"]}"#),
+           description: "Pause for a number of seconds. Useful for polling workflows. Clamped to [0, 3600].",
+           schema: #"{"type":"object","properties":{"seconds":{"type":"number","description":"Number of seconds to sleep. Must be between 0 and 3600."}},"required":["seconds"]}"#),
+        BuiltinToolDef(name: "rand",
+            description: "Generate a random integer in the inclusive range [min, max]. Defaults to 0–100. Uses the system's cryptographically secure random number generator.",
+            schema: #"{"type":"object","properties":{"min":{"type":"integer","description":"Lower bound (inclusive). Default 0."},"max":{"type":"integer","description":"Upper bound (inclusive). Default 100."}},"required":[]}"#),
     ]
 
     private static let filesystemToolDefs: [BuiltinToolDef] = [
@@ -367,6 +370,19 @@ enum BuiltinTools {
     +print("Hello, world!")
      print("done")
     *** Delete File: obsolete.txt
+    *** End Patch
+
+    @@ anchor worked example: the @@ header is a search anchor — a verbatim
+    line from the file used to locate the edit point. The hunk body (context,
+    -, +) starts at the NEXT line; the anchor is never repeated as a context line:
+
+    *** Begin Patch
+    *** Update File: greet.py
+    @@ def greet():
+     print("starting")
+    -print("Hi")
+    +print("Hello, world!")
+     print("done")
     *** End Patch
     """
 
@@ -483,8 +499,9 @@ enum BuiltinTools {
         case (utilsGroup, "base64_encode"): return try base64Encode(args)
         case (utilsGroup, "base64_decode"): return try base64Decode(args)
         case (utilsGroup, "sleep"): return try await sleepTool(args)
-        // Filesystem
-        case (filesystemGroup, "ls"): return try ls(args, workdir: workdir)
+        case (utilsGroup, "rand"): return try randTool(args)
+       // Filesystem
+       case (filesystemGroup, "ls"): return try ls(args, workdir: workdir)
         case (filesystemGroup, "read_file"): return try readFile(args, workdir: workdir, chatFilename: chatFilename)
         case (filesystemGroup, "write_file"): return try writeFile(args, workdir: workdir)
         case (filesystemGroup, "find_file"): return try findFile(args, workdir: workdir)
@@ -818,6 +835,15 @@ enum BuiltinTools {
         seconds = min(max(seconds, 0), 3600)
         try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
         return ToolOutput(content: "Slept for \(seconds) seconds.", isError: false)
+    }
+
+    private static func randTool(_ args: [String: Any]) throws -> ToolOutput {
+        let minVal = optionalInt(args, "min") ?? 0
+        let maxVal = optionalInt(args, "max") ?? 100
+        guard minVal <= maxVal else {
+            throw BuiltinToolError("invalid argument 'min': must be <= max")
+        }
+        return ToolOutput(content: "\(Int.random(in: minVal...maxVal))", isError: false)
     }
 
     // MARK: - Filesystem tools
