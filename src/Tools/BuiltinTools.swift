@@ -177,6 +177,7 @@ struct Workdir: Sendable {
     static let none = Workdir(root: nil, isolated: false)
     static let pathDescription = "Absolute or relative path, resolved against the current working directory."
     static let searchRootDescription = "Directory to search in (absolute or relative to the current working directory). Defaults to the current working directory."
+    static let excludePathsDescription = "Exact file or directory paths to exclude from the search, each resolved like 'path'. Excluding a directory prunes its entire subtree. Example: [\"node_modules\", \"/tmp/scratch\"]."
 }
 
 // MARK: - Errors
@@ -305,10 +306,10 @@ enum BuiltinTools {
             schema: #"{"type":"object","properties":{"path":{"type":"string","description":"File path to write. \#(Workdir.pathDescription)"},"content":{"type":"string","description":"The complete text content to write, without line numbers or truncation."}},"required":["path","content"]}"#),
         BuiltinToolDef(name: "find_file",
             description: "Find files by name (glob) within a directory tree. Results are sorted and capped at 200 entries.",
-            schema: #"{"type":"object","properties":{"path":{"type":"string","description":"\#(Workdir.searchRootDescription)"},"pattern":{"type":"string","description":"Glob pattern, e.g. '*.swift' or '**/test_*.py'. Supports * (any run within a path component), ? (single character), [...] (character class) and ** (any number of directories). Patterns containing '/' match the path relative to the search root, otherwise the bare filename."},"case_insensitive":{"type":"boolean","description":"Match without regard to case. Default false."},"include_hidden":{"type":"boolean","description":"Also search hidden files and directories (names starting with '.'). Default false."}},"required":["pattern"]}"#),
+            schema: #"{"type":"object","properties":{"path":{"type":"string","description":"\#(Workdir.searchRootDescription)"},"pattern":{"type":"string","description":"Glob pattern, e.g. '*.swift' or '**/test_*.py'. Supports * (any run within a path component), ? (single character), [...] (character class) and ** (any number of directories). A pattern with no '/' matches the filename of every entry anywhere in the tree ('*.swift' finds every Swift file); a pattern containing '/' is matched against the entry's path relative to the search root, so 'src/*.py' only matches directly inside 'src/' and '**/test_*.py' matches in any directory."},"case_insensitive":{"type":"boolean","description":"Match without regard to case. Default false."},"include_hidden":{"type":"boolean","description":"Also search hidden files and directories (names starting with '.'). Default false."},"exclude_paths":{"type":"array","items":{"type":"string"},"description":"\#(Workdir.excludePathsDescription)"}},"required":["pattern"]}"#),
         BuiltinToolDef(name: "find_text",
             description: "Search file contents with a regular expression across a directory tree. Returns path:line:content for each matching line (context lines use '-' separators, groups are split by '--'), sorted deterministically; lines longer than 300 characters are truncated. Binary files are skipped.",
-            schema: #"{"type":"object","properties":{"path":{"type":"string","description":"\#(Workdir.searchRootDescription)"},"regex":{"type":"string","description":"Regular expression to search for in file contents. The full regex syntax is supported (\\d \\w \\s, quantifiers, alternation, groups, anchors); in some environments it is POSIX ERE (grep -E: alternation, groups, + ? {n,m} quantifiers, but no \\d \\w \\s shorthands — use [[:digit:]] etc.). Invalid patterns are reported as errors."},"file_pattern":{"type":"string","description":"Optional glob to filter files by name, e.g. '*.swift'. Same glob syntax as find_file."},"case_insensitive":{"type":"boolean","description":"Match without regard to case. Default false."},"include_hidden":{"type":"boolean","description":"Also search hidden files and directories (names starting with '.'). Default false."},"max_results":{"type":"integer","description":"Maximum number of matching lines to return (1-1000), applied after sorting so truncation is deterministic. Default 200."},"context":{"type":"integer","description":"Lines of context before and after each match (0-25), grep-style. Default 0."}},"required":["regex"]}"#),
+            schema: #"{"type":"object","properties":{"path":{"type":"string","description":"\#(Workdir.searchRootDescription)"},"regex":{"type":"string","description":"Regular expression to search for in file contents. The full regex syntax is supported (\\d \\w \\s, quantifiers, alternation, groups, anchors); in some environments it is POSIX ERE (grep -E: alternation, groups, + ? {n,m} quantifiers, but no \\d \\w \\s shorthands — use [[:digit:]] etc.). Invalid patterns are reported as errors."},"file_pattern":{"type":"string","description":"Optional glob to filter files by name, e.g. '*.swift'. Same glob syntax as find_file."},"case_insensitive":{"type":"boolean","description":"Match without regard to case. Default false."},"include_hidden":{"type":"boolean","description":"Also search hidden files and directories (names starting with '.'). Default false."},"exclude_paths":{"type":"array","items":{"type":"string"},"description":"\#(Workdir.excludePathsDescription)"},"max_results":{"type":"integer","description":"Maximum number of matching lines to return (1-1000), applied after sorting so truncation is deterministic. Default 200."},"context":{"type":"integer","description":"Lines of context before and after each match (0-25), grep-style. Default 0."}},"required":["regex"]}"#),
         BuiltinToolDef(name: "mkdir",
             description: "Create a directory (recursive). Parent directories are created as needed.",
             schema: #"{"type":"object","properties":{"path":{"type":"string","description":"Directory path to create. \#(Workdir.pathDescription)"}},"required":["path"]}"#),
@@ -560,6 +561,23 @@ enum BuiltinTools {
         return arr.compactMap { $0 as? String }
     }
 
+    /// Optional string array, rejecting non-string elements so a mistyped
+    /// exclusion can't pass silently instead of being dropped.
+    static func optionalStringArray(_ args: [String: Any], _ key: String) throws -> [String]? {
+        guard let v = args[key] else { return nil }
+        guard let arr = v as? [Any] else {
+            throw BuiltinToolError("invalid argument '\(key)': expected an array of strings")
+        }
+        var out: [String] = []
+        for el in arr {
+            guard let s = el as? String else {
+                throw BuiltinToolError("invalid argument '\(key)': expected an array of strings")
+            }
+            out.append(s)
+        }
+        return out
+    }
+
     // MARK: - Process helper
 
     private struct RunResult {
@@ -654,6 +672,35 @@ enum BuiltinTools {
         return p
     }
 
+    /// Set of canonical resolved paths to skip in a directory walk, built
+    /// from `exclude_paths` entries resolved like `path`. Entries that don't
+    /// exist (e.g. a worktree-relative exclusion in a directory that lacks
+    /// it) are dropped; the residual plain `rel` values then can't match
+    /// anything.
+    static func excludePathSet(_ args: [String: Any], workdir: Workdir) throws -> Set<String>? {
+        guard let raw = try optionalStringArray(args, "exclude_paths"), !raw.isEmpty else { return nil }
+        var excluded: Set<String> = []
+        for e in raw {
+            guard !e.isEmpty else { continue }
+            let r = try workdir.resolve(e)
+            excluded.insert(canonicalPath(r))
+        }
+        return excluded.isEmpty ? nil : excluded
+    }
+
+    /// An excluded directory (or any ancestor of one) doesn't need its
+    /// children visited — prune the whole subtree instead of filtering every
+    /// descendant individually.
+    static func shouldSkip(_ canonical: String, _ excluded: Set<String>) -> Bool {
+        if excluded.contains(canonical) { return true }
+        var parent = (canonical as NSString).deletingLastPathComponent
+        while parent.count > 1 {
+            if excluded.contains(parent) { return true }
+            parent = (parent as NSString).deletingLastPathComponent
+        }
+        return parent == "/" && excluded.contains("/")
+    }
+
     /// Strips ANSI/VT100 escape sequences (colors, cursor moves, OSC title
     /// setters) from captured process output so the model sees plain text.
     /// Used by the shell tool for both local and SSH execution.
@@ -680,8 +727,8 @@ enum BuiltinTools {
     /// Glob matcher for `find_file` and `find_text`'s `file_pattern`. Supports
     /// `*` (any run within one path component), `?` (single character),
     /// `[...]` (character class, `!` or `^` negates) and `**` (any number of
-    /// path components). Patterns containing `/` match against the path
-    /// relative to the search root, otherwise against the bare filename.
+    /// path components). Patterns containing `/` match the entry's path
+    /// relative to the search root, otherwise the filename of every entry.
     struct GlobMatcher {
         private let regex: NSRegularExpression
         let isPathPattern: Bool
@@ -1050,6 +1097,7 @@ enum BuiltinTools {
         let caseInsensitive = optionalBool(args, "case_insensitive") ?? false
         let includeHidden = optionalBool(args, "include_hidden") ?? false
         let resolved = try workdir.resolve(searchRoot)
+        let excluded = try excludePathSet(args, workdir: workdir)
 
         let fm = FileManager.default
         var isDir: ObjCBool = false
@@ -1059,7 +1107,7 @@ enum BuiltinTools {
 
         let glob = try GlobMatcher(pattern: pattern, caseInsensitive: caseInsensitive)
         let options: FileManager.DirectoryEnumerationOptions = includeHidden ? [] : [.skipsHiddenFiles]
-        guard let enumerator = fm.enumerator(at: URL(fileURLWithPath: resolved), includingPropertiesForKeys: [], options: options) else {
+        guard let enumerator = fm.enumerator(at: URL(fileURLWithPath: resolved), includingPropertiesForKeys: [.isDirectoryKey], options: options) else {
             throw BuiltinToolError("invalid argument 'path': failed to enumerate: \(searchRoot)")
         }
         // Matches are collected fully, then sorted, so the 200-cap truncation
@@ -1069,6 +1117,10 @@ enum BuiltinTools {
         let root = canonicalPath(resolved)
         var matches: [String] = []
         for case let url as URL in enumerator {
+            if let excluded, shouldSkip(url.path, excluded) {
+                if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true { enumerator.skipDescendants() }
+                continue
+            }
             let rel = relativize(url.path, root: root)
             if glob.matches(filename: url.lastPathComponent, relativePath: rel) {
                 matches.append(rel)
@@ -1099,6 +1151,7 @@ enum BuiltinTools {
         let maxResults = min(max(optionalInt(args, "max_results") ?? 200, 1), 1000)
         let context = min(max(optionalInt(args, "context") ?? 0, 0), 25)
         let resolved = try workdir.resolve(searchRoot)
+        let excluded = try excludePathSet(args, workdir: workdir)
 
         // Native matching via the stdlib regex engine (full syntax, and
         // compile errors surface instead of silently returning nothing) —
@@ -1128,12 +1181,16 @@ enum BuiltinTools {
         var files: [(path: String, display: String)] = []
         if isDir.boolValue {
             let options: FileManager.DirectoryEnumerationOptions = includeHidden ? [] : [.skipsHiddenFiles]
-            guard let enumerator = fm.enumerator(at: URL(fileURLWithPath: resolved), includingPropertiesForKeys: [.isRegularFileKey], options: options) else {
+            guard let enumerator = fm.enumerator(at: URL(fileURLWithPath: resolved), includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey], options: options) else {
                 throw BuiltinToolError("invalid argument 'path': failed to enumerate: \(searchRoot)")
             }
             let root = canonicalPath(resolved)
             let jailBase = workdir.isolated ? workdir.displayPath(forResolved: resolved) : nil
             while let url = enumerator.nextObject() as? URL {
+                if let excluded, shouldSkip(url.path, excluded) {
+                    if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true { enumerator.skipDescendants() }
+                    continue
+                }
                 guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { continue }
                 let rel = relativize(url.path, root: root)
                 if let fileGlob, !fileGlob.matches(filename: url.lastPathComponent, relativePath: rel) { continue }
@@ -1147,7 +1204,9 @@ enum BuiltinTools {
             }
             files.sort { $0.display < $1.display }
         } else {
-            files = [(resolved, workdir.displayPath(forResolved: resolved))]
+            if !(excluded?.contains(canonicalPath(resolved)) ?? false) {
+                files = [(resolved, workdir.displayPath(forResolved: resolved))]
+            }
         }
 
         var out: [String] = []

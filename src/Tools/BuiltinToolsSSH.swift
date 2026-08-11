@@ -63,6 +63,31 @@ enum BuiltinToolsSSH {
         return String(path[path.startIndex..<idx])
     }
 
+    /// `find` predicate excluding `exclude_paths` entries from a `cd <root>;
+    /// find . ...` walk. Each entry is resolved like `path` (which enforces
+    /// the jail, so escapes are rejected) and then expressed relative to the
+    /// resolved search root. `-path` matches each path itself and the `/*`
+    /// variant its whole subtree — no glob support, so excluding a directory
+    /// always prunes it entirely. Entries outside the search root can never
+    /// match and are dropped. Empty when there are no usable exclusions.
+    static func findExcludePredicate(_ args: [String: Any], workdir: Workdir, resolvedRoot: String, caseInsensitive: Bool) throws -> String {
+        guard let excluded = try BuiltinTools.optionalStringArray(args, "exclude_paths") else { return "" }
+        var frags: [String] = []
+        for e in excluded where !e.isEmpty {
+            var rel = try workdir.resolve(e)
+            while rel.hasSuffix("/") { rel.removeLast() }
+            // Relativize against the search root; outside entries can't
+            // match anything in the walk.
+            if rel == resolvedRoot { rel = "" }
+            else if rel.hasPrefix(resolvedRoot + "/") { rel = String(rel.dropFirst(resolvedRoot.count + 1)) }
+            else { continue }
+            if rel.isEmpty { continue }
+            let flag = caseInsensitive ? "-ipath" : "-path"
+            frags.append("\(flag) \(q("./" + rel)) -o \(flag) \(q("./" + rel + "/*"))")
+        }
+        return frags.isEmpty ? "" : "-not \\( " + frags.joined(separator: " -o ") + " \\) "
+    }
+
     private static func run(_ ssh: SSHContext, script: String, stdin: Data? = nil,
                             hardTimeout: TimeInterval? = fileOpTimeout,
                             idleTimeout: TimeInterval? = nil) async throws -> SSHManager.RunResult {
@@ -201,6 +226,8 @@ enum BuiltinToolsSSH {
         let includeHidden = BuiltinTools.optionalBool(args, "include_hidden") ?? false
         let resolved = try workdir.resolve(searchRoot)
 
+        let exclude = try findExcludePredicate(args, workdir: workdir, resolvedRoot: resolved, caseInsensitive: caseInsensitive)
+
         // find's fnmatch natively supports *, ? and [...]; with -path its
         // wildcards also cross '/', which approximates '**' (zero-or-more
         // components is handled by additionally matching with '**/' removed).
@@ -220,7 +247,7 @@ enum BuiltinToolsSSH {
 
         let script = """
         if [ ! -d \(qp(resolved)) ]; then printf 'not a directory: %s\\n' \(q(searchRoot)) >&2; exit 1; fi
-        cd \(qp(resolved)) && find . \(prune)\(predicate) -print | sort
+        cd \(qp(resolved)) && find . \(prune)\(exclude)\(predicate) -print | sort
         """
         let r = try await run(ssh, script: script)
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
@@ -243,6 +270,19 @@ enum BuiltinToolsSSH {
     }
     private static let grepLineSeparatorRegex = try! NSRegularExpression(pattern: #"[:-][0-9]+[:-]"#)
 
+    /// grep's fatal diagnostics ("grep: Unmatched [") carry no file prefix;
+    /// per-file warnings ("grep: ./x: Permission denied") do. Fatal when the
+    /// first `": "` doesn't look like it follows a path (heuristic: fatal
+    /// messages contain a space before the colon, path prefixes don't).
+    private static func grepStderrLineIsFatal(_ line: String) -> Bool {
+        guard line.hasPrefix("grep: ") else { return true }
+        let rest = line.dropFirst("grep: ".count)
+        // "grep: <msg>" — the msg itself contains no path separator.
+        // "grep: <path>: <msg>" — path may contain spaces but always a '/'.
+        guard let colonRange = rest.range(of: ": ") else { return true }
+        return !rest[..<colonRange.lowerBound].contains("/")
+    }
+
     private static func findText(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
         let regex = try BuiltinTools.requireString(args, "regex")
         // Default search root: same jail-aware defaulting as findFile.
@@ -252,33 +292,43 @@ enum BuiltinToolsSSH {
         let maxResults = min(max(BuiltinTools.optionalInt(args, "max_results") ?? 200, 1), 1000)
         let context = min(max(BuiltinTools.optionalInt(args, "context") ?? 0, 0), 25)
         let resolved = try workdir.resolve(searchRoot)
-        // grep prefixes every output line with the resolved remote path; in
-        // isolated mode that's rewritten to the jail spelling (root as "/")
-        // so the real remote layout never leaks.
+        // Every grep output line carries the path grep opened; the rewrite
+        // below swaps the resolved prefix for the display spelling, so in
+        // isolated mode the real remote layout never leaks.
         let displayBase = workdir.displayPath(forResolved: resolved)
+
+        let exclude = try findExcludePredicate(args, workdir: workdir, resolvedRoot: resolved, caseInsensitive: false)
 
         // ERE (`grep -E`) gives the remote side real alternation, groups and
         // quantifiers; \d-style classes don't exist in POSIX ERE, which the
-        // tool description calls out. -H forces the filename prefix even when
-        // the search root is a single file (local parity, and the isolated
-        // path rewrite below keys off that prefix). The output-capping pipe
-        // would mask grep's own exit code, so it's echoed to stderr as a
-        // marker and parsed back here (141 = SIGPIPE from `head`, i.e.
-        // capped output).
-        var grepArgs = "-REInH"
+        // tool description calls out. When the search root is a directory the
+        // file list comes from `find` (hidden entries and exclude_paths
+        // pruned during the walk, -exec grep {} + batching the invocation) —
+        // grep's own --exclude-dir only matches bare basenames, so it can't
+        // express path or subtree exclusions. -H forces the filename prefix,
+        // keeping it even for a single-file search root (local parity, and
+        // the isolated path rewrite below keys off it). The output-capping
+        // pipe would mask grep's own exit code, so it's echoed to stderr as
+        // a marker and parsed back here.
+        var grepArgs = "-EInH"
         if caseInsensitive { grepArgs += "i" }
         if context > 0 { grepArgs += " -C \(context)" }
-        var script = "grep \(grepArgs)"
+        let prune = includeHidden ? "" : "\\( -name '.*' ! -name . -prune \\) -o "
+        var findPred = "-type f"
         if let filePattern = BuiltinTools.optionalString(args, "file_pattern") {
-            script += " --include=\(q(filePattern))"
+            let flag = caseInsensitive ? "-iname" : "-name"
+            findPred = "\(flag) \(q(filePattern)) -a \(findPred)"
         }
-        if !includeHidden {
-            script += " --exclude='.*' --exclude-dir='.*'"
-        }
-        script += " -- \(q(regex)) \(qp(resolved))"
-        script = "{ \(script); printf 'ICHAI-GREP-EXIT %s\\n' \"$?\" >&2; } | head -c 1048576"
+        let dirCommand = "cd \(qp(resolved)) && find . \(prune)\(exclude)\(findPred) -exec grep \(grepArgs) -- \(q(regex)) {} +"
+        // Missing search roots error with the caller's spelling (scrubbed
+        // below), mirroring the local tool instead of grep's own message.
+        let script = """
+        if [ ! -e \(qp(resolved)) ]; then printf 'not found: %s\\n' \(q(searchRoot)) >&2; exit 1; fi
+        if [ -d \(qp(resolved)) ]; then \(dirCommand); else grep \(grepArgs) -- \(q(regex)) \(qp(resolved)); fi
+        """
+        let wrapped = "{ \(script); printf 'ICHAI-GREP-EXIT %s\\n' \"$?\" >&2; } | head -c 1048576"
 
-        let r = try await run(ssh, script: script)
+        let r = try await run(ssh, script: wrapped)
         if r.failure != nil { try requireSuccess(r, scrubbing: [(resolved, displayBase)]) }
 
         var grepExit = 0
@@ -290,15 +340,22 @@ enum BuiltinToolsSSH {
                 errLines.append(String(line))
             }
         }
-        if grepExit >= 2 && grepExit != 141 {
-            var msg = errLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        // Fatal grep failures (bad regex, bad options) are reported without a
+        // file prefix ("grep: Unmatched ["); per-file warnings carry one
+        // ("grep: ./x: Permission denied"). `find -exec {} +` collapses the
+        // 1-vs-2 exit distinction, so the stderr shape is the discriminator.
+        // Per-file warnings pass through silently, matching the local tool
+        // skipping files it can't open.
+        let fatal = errLines.filter { Self.grepStderrLineIsFatal($0) }
+        if !fatal.isEmpty {
+            var msg = fatal.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
             if displayBase != resolved {
                 msg = msg.replacingOccurrences(of: resolved, with: displayBase)
             }
             throw BuiltinToolError(msg.isEmpty ? "grep failed (exit code \(grepExit))" : msg)
         }
 
-        // grep -R emits raw traversal order, which would make the max_results
+        // Traversal emits raw walk order, which would make the max_results
         // cut arbitrary. Sort first: with context, blocks (separated by `--`)
         // are the sort unit and stay intact; without, each line is a block.
         var blocks: [(key: String, lines: [String], matches: Int)] = []

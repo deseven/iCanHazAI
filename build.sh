@@ -58,15 +58,6 @@ fi
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
-die() {
-    echo -e "${redColor}[FAILED]${noColor}" >&2
-    echo -e "  ${redColor}$1${noColor}" >&2
-    echo -e "  ${dimColor}--- error output ---${noColor}" >&2
-    tail -n +"$logMark" "$logFile" >&2
-    echo -e "  ${dimColor}--- end error output ---${noColor}" >&2
-    exit 1
-}
-
 stepNum=0
 totalSteps=0
 
@@ -76,6 +67,18 @@ step() {
 }
 
 ok() { echo -e "${greenColor}[OK]${noColor}"; }
+
+die() {
+    # The step's output was captured to $stepLog (not $logFile) precisely so
+    # this error dump can go to real stderr without feeding back into the
+    # log and looping.
+    echo -e "${redColor}[FAILED]${noColor}" >&2
+    echo -e "  ${redColor}$1${noColor}" >&2
+    echo -e "  ${dimColor}--- error output ---${noColor}" >&2
+    cat "$stepLog" >&2
+    echo -e "  ${dimColor}--- end error output ---${noColor}" >&2
+    exit 1
+}
 
 # Steps are queued as tab-separated "label\terror\tfunc\targ" records; the
 # pipeline runner executes them in order, so the total is always correct
@@ -91,15 +94,15 @@ run_pipeline() {
     for spec in "${STEPS[@]}"; do
         IFS=$'\t' read -r label err func arg <<< "$spec"
         step "$label"
-        logMark=$(($(wc -l < "$logFile") + 1))
-        {
-            echo "--- $label ---"
-            if [ -n "$arg" ]; then
-                "$func" "$arg" || die "$err"
-            else
-                "$func" || die "$err"
-            fi
-        } >> "$logFile" 2>&1
+        stepLog="$(mktemp "${TMPDIR:-/tmp}/ichai-step.XXXXXX")"
+        echo "--- $label ---" >> "$logFile"
+        if [ -n "$arg" ]; then
+            "$func" "$arg" > "$stepLog" 2>&1 || die "$err"
+        else
+            "$func" > "$stepLog" 2>&1 || die "$err"
+        fi
+        cat "$stepLog" >> "$logFile"
+        rm -f "$stepLog"
         ok
     done
 }

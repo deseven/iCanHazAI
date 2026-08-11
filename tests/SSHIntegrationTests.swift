@@ -265,6 +265,50 @@ extension AllAppTests {
             await Self.destroy(wd, remote)
         }
 
+        @Test("find_file and find_text exclude_paths prune remote directories and files")
+        func findToolsExcludePaths() async {
+            let (wd, remote) = Self.makeContext()
+            _ = await Self.call("write_file", Self.fs, ["path": "src/a.swift", "content": "needle\n"], workdir: wd)
+            _ = await Self.call("write_file", Self.fs, ["path": "build/b.swift", "content": "needle\n"], workdir: wd)
+            _ = await Self.call("write_file", Self.fs, ["path": "notes.txt", "content": "needle\n"], workdir: wd)
+
+            let (ff, ffErr) = await Self.call("find_file", Self.fs, ["pattern": "*.swift", "exclude_paths": ["build"]], workdir: wd)
+            #expect(!ffErr)
+            #expect(ff.contains("src/a.swift"))
+            #expect(!ff.contains("build"))
+
+            // A trailing slash still excludes the whole directory.
+            let (ffT, _) = await Self.call("find_file", Self.fs, ["pattern": "*", "exclude_paths": ["build/"]], workdir: wd)
+            #expect(!ffT.contains("build"))
+
+            let (ft, ftErr) = await Self.call("find_text", Self.fs, ["regex": "needle", "exclude_paths": ["build", "notes.txt"]], workdir: wd)
+            #expect(!ftErr)
+            #expect(ft.contains("src/a.swift"))
+            #expect(!ft.contains("build"))
+            #expect(!ft.contains("notes.txt"))
+
+            await Self.destroy(wd, remote)
+        }
+
+        @Test("find_text exclude_paths honors the jail when isolated")
+        func findTextExcludeIsolated() async {
+            let (wd, remote) = Self.makeContext()
+            _ = await Self.call("write_file", Self.fs, ["path": "src/a.txt", "content": "needle\n"], workdir: wd)
+            _ = await Self.call("write_file", Self.fs, ["path": "build/b.txt", "content": "needle\n"], workdir: wd)
+
+            let jail = Workdir(root: "\(Self.host):\(remote)", isolated: true, chatID: Self.chatID)
+            let (ft, ftErr) = await Self.call("find_text", Self.fs, ["regex": "needle", "exclude_paths": ["/build"]], workdir: jail)
+            #expect(!ftErr)
+            #expect(ft.contains("/src/a.txt"))
+            #expect(!ft.contains("build"))
+            // Escaping the jail is rejected like any other path.
+            let (escape, escapeErr) = await Self.call("find_text", Self.fs, ["regex": "needle", "exclude_paths": ["../.."]], workdir: jail)
+            #expect(escapeErr)
+            #expect(escape.contains("escapes"))
+
+            await Self.destroy(wd, remote)
+        }
+
         @Test("apply_patch adds and updates remote files")
         func applyPatch() async {
             let (wd, remote) = Self.makeContext()

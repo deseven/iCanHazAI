@@ -474,6 +474,80 @@ extension AllAppTests {
             #expect(!text.contains("a.txt"))
         }
 
+        @Test("find_file exclude_paths prunes directories and files")
+        func findFileExcludePaths() async throws {
+            let tmp = try TestDir()
+            try tmp.write("f/src/a.swift", content: "")
+            try tmp.write("f/build/b.swift", content: "")
+            try tmp.write("f/notes.txt", content: "")
+            let (dirExcl, dirErr) = await Self.call("find_file", BuiltinTools.filesystemGroup, ["path": tmp.sub("f"), "pattern": "*", "exclude_paths": [tmp.sub("f/build")]])
+            #expect(!dirErr)
+            #expect(dirExcl.contains("src/a.swift"))
+            #expect(dirExcl.contains("notes.txt"))
+            #expect(!dirExcl.contains("build"))
+            // A trailing slash still excludes the whole directory.
+            let (trailing, trailingErr) = await Self.call("find_file", BuiltinTools.filesystemGroup, ["path": tmp.sub("f"), "pattern": "*", "exclude_paths": [tmp.sub("f/build") + "/"]])
+            #expect(!trailingErr)
+            #expect(!trailing.contains("build"))
+            // An excluded file disappears; siblings stay.
+            let (fileExcl, fileErr) = await Self.call("find_file", BuiltinTools.filesystemGroup, ["path": tmp.sub("f"), "pattern": "*", "exclude_paths": [tmp.sub("f/notes.txt")]])
+            #expect(!fileErr)
+            #expect(!fileExcl.contains("notes.txt"))
+            #expect(fileExcl.contains("src/a.swift"))
+        }
+
+        @Test("find_text exclude_paths prunes directories and files")
+        func findTextExcludePaths() async throws {
+            let tmp = try TestDir()
+            try tmp.write("s/keep/a.txt", content: "needle\n")
+            try tmp.write("s/skip/b.txt", content: "needle\n")
+            try tmp.write("s/loose.txt", content: "needle\n")
+            let (dirExcl, dirErr) = await Self.call("find_text", BuiltinTools.filesystemGroup, ["path": tmp.sub("s"), "regex": "needle", "exclude_paths": [tmp.sub("s/skip")]])
+            #expect(!dirErr)
+            #expect(dirExcl.contains("keep/a.txt"))
+            #expect(dirExcl.contains("loose.txt"))
+            #expect(!dirExcl.contains("skip"))
+            let (fileExcl, fileErr) = await Self.call("find_text", BuiltinTools.filesystemGroup, ["path": tmp.sub("s"), "regex": "needle", "exclude_paths": [tmp.sub("s/loose.txt")]])
+            #expect(!fileErr)
+            #expect(!fileExcl.contains("loose.txt"))
+            #expect(fileExcl.contains("keep/a.txt"))
+        }
+
+        @Test("find_text exclude_paths can exclude the single-file search root")
+        func findTextExcludeSearchRootFile() async throws {
+            let tmp = try TestDir()
+            let file = try tmp.write("s/a.txt", content: "needle\n")
+            let (text, err) = await Self.call("find_text", BuiltinTools.filesystemGroup, ["path": file, "regex": "needle", "exclude_paths": [file]])
+            #expect(!err)
+            #expect(text.isEmpty)
+        }
+
+        @Test("find_file exclude_paths resolves relative entries against the working directory")
+        func findFileExcludeRelative() async throws {
+            let tmp = try TestDir()
+            try tmp.write("proj/src/a.swift", content: "")
+            try tmp.write("proj/build/b.swift", content: "")
+            let wd = Workdir(root: tmp.sub("proj"), isolated: false)
+            let (text, err) = await Self.call("find_file", BuiltinTools.filesystemGroup, ["pattern": "*.swift", "exclude_paths": ["build"]], workdir: wd)
+            #expect(!err)
+            #expect(text == "src/a.swift")
+        }
+
+        @Test("find_file exclude_paths honors the jail when isolated")
+        func findFileExcludeIsolated() async throws {
+            let tmp = try TestDir()
+            try tmp.write("src/a.swift", content: "")
+            try tmp.write("build/b.swift", content: "")
+            let wd = Workdir(root: tmp.path, isolated: true)
+            let (text, err) = await Self.call("find_file", BuiltinTools.filesystemGroup, ["pattern": "*.swift", "exclude_paths": ["/build"]], workdir: wd)
+            #expect(!err)
+            #expect(text == "src/a.swift")
+            // Escaping the jail is rejected like any other path.
+            let (escape, escapeErr) = await Self.call("find_file", BuiltinTools.filesystemGroup, ["pattern": "*", "exclude_paths": ["../.."]], workdir: wd)
+            #expect(escapeErr)
+            #expect(escape.contains("escapes"))
+        }
+
         @Test("find_file supports ? wildcards and character classes")
         func findFileGlobSyntax() async throws {
             let tmp = try TestDir()
