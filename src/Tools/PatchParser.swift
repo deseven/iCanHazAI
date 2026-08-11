@@ -42,6 +42,12 @@ struct UpdateFileChunk {
     var isEndOfFile: Bool
 }
 
+extension UpdateFileChunk {
+    /// True when old and new lines are identical — a no-op hunk (all context
+    /// or matched -/+ pairs). Not an error; reported as informational output.
+    var isNoOp: Bool { oldLines == newLines }
+}
+
 enum PatchHunk {
     case addFile(path: String, contents: String)
     case deleteFile(path: String)
@@ -159,12 +165,6 @@ enum PatchParser {
                     r.chunk.isEndOfFile = true
                     eofAnchorPending = false
                 }
-                if r.chunk.oldLines == r.chunk.newLines {
-                    // By this point the +/-/space prefixes are already stripped,
-                    // so we can't distinguish "all context" from "matching
-                    // -foo/+foo pairs". Report the fact neutrally.
-                    throw PatchParseError(message: "Update hunk for '\(path)' makes no changes — old and new lines are identical. This happens when every line is context, or when every '-' line has a matching '+' line with the same content. Remove this hunk if it was not intended to modify the file.", lineNumber: lineNumber + consumed)
-                }
                 chunks.append(r.chunk)
                 consumed += r.linesConsumed
                 i += r.linesConsumed
@@ -174,7 +174,9 @@ enum PatchParser {
                 chunks[chunks.count - 1].isEndOfFile = true
             }
 
-            guard !chunks.isEmpty else {
+            // A move-only update (no hunks, just a rename) is valid per the
+            // codex grammar: `update_hunk: ... change_move? change?`
+            guard !chunks.isEmpty || movePath != nil else {
                 throw PatchParseError(message: "Update file hunk for path '\(path)' is empty", lineNumber: lineNumber)
             }
             return (.updateFile(path: path, movePath: movePath, chunks: chunks), consumed)
@@ -264,10 +266,13 @@ enum PatchParser {
                 parsed += 1
             default:
                 if parsed == 0 {
+                    // A second @@ line right after the first (no body lines
+                    // yet) starts a new chunk — return the empty one and let
+                    // the caller re-enter with the new @@ line.
                     if line.hasPrefix(EMPTY_CONTEXT) {
-                        throw PatchParseError(message: "Unexpected stacked @@ marker: '\(line)'. Each hunk starts with a single @@ line — combine nested context into one anchor (e.g. '@@ class UserService def greet():')", lineNumber: lineNumber + 1)
+                        return (chunk, parsed + (idx - start))
                     }
-                    throw PatchParseError(message: "Unexpected line found in update hunk: '\(line)'. Every line should start with ' ' (context), '+' (added), or '-' (removed) — a context line copied from the file still needs a leading space added (so 4-space-indented code gets 5 leading spaces), and the 'N | ' line-number prefix shown by read_file must be dropped", lineNumber: lineNumber + 1)
+                    throw PatchParseError(message: "Unexpected line found in update hunk: '\(line)'. Every line should start with ' ' (context), '+' (added), or '-' (removed) — a context line copied from the file still needs a leading space added (so 4-space-indented code gets 5 leading spaces), and the 'N|' line-number prefix shown by read_file must be dropped", lineNumber: lineNumber + 1)
                 }
                 return (chunk, parsed + (idx - start))
             }
@@ -475,7 +480,8 @@ enum PatchApplier {
                 } else {
                     overlay[resolved] = newContent
                 }
-                ops.append(.updateFile(path: path, resolved: resolved, movePath: movePath, moveResolved: moveResolved, chunkCount: chunks.count, original: original, newContent: newContent))
+                let isNoOp = newContent == original && movePath == nil
+                ops.append(.updateFile(path: path, resolved: resolved, movePath: movePath, moveResolved: moveResolved, chunkCount: chunks.count, original: original, newContent: newContent, isNoOp: isNoOp))
             }
         }
         return ops
@@ -487,7 +493,7 @@ enum PatchApplier {
 enum PlannedPatchOp {
     case addFile(path: String, resolved: String, contents: String)
     case deleteFile(path: String, resolved: String, original: String?)
-    case updateFile(path: String, resolved: String, movePath: String?, moveResolved: String?, chunkCount: Int, original: String, newContent: String)
+    case updateFile(path: String, resolved: String, movePath: String?, moveResolved: String?, chunkCount: Int, original: String, newContent: String, isNoOp: Bool)
 }
 
 // MARK: - SeekSequence (multi-pass sequence matching)

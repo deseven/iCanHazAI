@@ -216,7 +216,7 @@ extension AllAppTests {
             #expect(!r.contains("d"))
         }
 
-        @Test("read_file prefixes lines with a right-aligned 'N | ' gutter")
+        @Test("read_file prefixes lines with a right-aligned 'N|' gutter")
         func readLineNumberGutter() async throws {
             let tmp = try TestDir()
             let content = (1...12).map { "line\($0)" }.joined(separator: "\n") + "\n"
@@ -225,8 +225,8 @@ extension AllAppTests {
             #expect(!err)
             // Gutter pads to the file's line-count width and uses a visible
             // pipe separator (not a tab) so content indentation stays intact.
-            #expect(r.hasPrefix(" 1 | line1\n"), "expected padded gutter: \(r)")
-            #expect(r.contains("\n12 | line12"), "expected padded gutter: \(r)")
+            #expect(r.hasPrefix(" 1|line1\n"), "expected padded gutter: \(r)")
+            #expect(r.contains("\n12|line12"), "expected padded gutter: \(r)")
             #expect(!r.contains("\t"), "gutter must not use tabs: \(r)")
         }
 
@@ -944,7 +944,7 @@ extension AllAppTests {
             #expect(text.contains("@@"), "expected a hint about the @@ marker: \(text)")
         }
 
-        @Test("apply_patch rejects a context-only no-op hunk")
+        @Test("apply_patch no-op context-only hunk succeeds with a note")
         func patchNoOpContextOnlyHunk() async throws {
             let tmp = try TestDir()
             let path = tmp.sub("noop.md")
@@ -957,12 +957,12 @@ extension AllAppTests {
             *** End Patch
             """
             let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
-            #expect(err)
-            #expect(text.contains("makes no changes"), "unexpected message: \(text)")
+            #expect(!err, "no-op hunk should succeed: \(text)")
+            #expect(text.contains("No changes needed"), "unexpected message: \(text)")
             #expect(try tmp.read("noop.md") == "- [x] done\n- [ ] todo\n")
         }
 
-        @Test("apply_patch rejects a hunk whose removed and added lines are identical")
+        @Test("apply_patch no-op hunk with identical -/+ lines succeeds with a note")
         func patchNoOpIdenticalReplaceHunk() async throws {
             let tmp = try TestDir()
             let path = tmp.sub("noop2.txt")
@@ -976,8 +976,8 @@ extension AllAppTests {
             *** End Patch
             """
             let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
-            #expect(err)
-            #expect(text.contains("makes no changes"), "unexpected message: \(text)")
+            #expect(!err, "no-op hunk should succeed: \(text)")
+            #expect(text.contains("No changes needed"), "unexpected message: \(text)")
             #expect(try tmp.read("noop2.txt") == "same\n")
         }
 
@@ -996,7 +996,7 @@ extension AllAppTests {
             let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
             #expect(err)
             #expect(text.contains("leading space"), "expected the leading-space hint: \(text)")
-            #expect(text.contains("N | "), "expected the read_file prefix hint: \(text)")
+            #expect(text.contains("N|"), "expected the read_file prefix hint: \(text)")
         }
 
         @Test("apply_patch multi-op: update+move, add, delete in one call")
@@ -1057,7 +1057,23 @@ extension AllAppTests {
             #expect(!tmp.exists("partial.txt"), "failed patch must not write anything")
         }
 
-        @Test("apply_patch stacked @@ markers produce a targeted error")
+        @Test("apply_patch move-only update renames a file")
+        func patchMoveOnly() async throws {
+            let tmp = try TestDir()
+            try tmp.write("old.txt", content: "hello\n")
+            let patch = """
+            *** Begin Patch
+            *** Update File: \(tmp.sub("old.txt"))
+            *** Move to: \(tmp.sub("new.txt"))
+            *** End Patch
+            """
+            let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
+            #expect(!err, "move-only update failed: \(text)")
+            #expect(!tmp.exists("old.txt"))
+            #expect(try tmp.read("new.txt") == "hello\n")
+        }
+
+        @Test("apply_patch stacked @@ markers work as separate hunks")
         func patchStackedContextMarkers() async throws {
             let tmp = try TestDir()
             let path = tmp.sub("stacked.txt")
@@ -1072,8 +1088,8 @@ extension AllAppTests {
             *** End Patch
             """
             let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
-            #expect(err)
-            #expect(text.contains("stacked @@"), "unexpected message: \(text)")
+            #expect(!err, "stacked @@ should succeed as separate hunks: \(text)")
+            #expect(try tmp.read("stacked.txt") == "class A:\n    def f():\n        return 1\n")
         }
 
         @Test("apply_patch anchor repeated in body gets a diagnostic error")
@@ -1559,7 +1575,7 @@ extension AllAppTests {
             #expect(text.contains("Hello RTF"))
             #expect(text.contains("Second line of RTF text."))
             // Line-numbered gutter is present.
-            #expect(text.contains(" | Hello RTF"))
+            #expect(text.contains("|Hello RTF"))
         }
 
         @Test("read_file extracts DOCX to line-numbered text")
@@ -1569,7 +1585,7 @@ extension AllAppTests {
             let (text, err) = await Self.call("read_file", Self.fs, ["path": f.docxPath])
             #expect(!err, "read_file failed: \(text)")
             #expect(text.contains("Hello RTF"))
-            #expect(text.contains(" | "))
+            #expect(text.contains("1|"))
         }
 
         @Test("read_file extracts PDF with page markers")

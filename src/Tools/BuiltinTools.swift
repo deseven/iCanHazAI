@@ -298,7 +298,7 @@ enum BuiltinTools {
             description: "List files and directories at a path. Returns one entry per line, directories suffixed with '/'.",
             schema: #"{"type":"object","properties":{"path":{"type":"string","description":"Directory path to list. \#(Workdir.pathDescription)"},"recursive":{"type":"boolean","description":"If true, list recursively to a fixed depth of 1 (direct children plus one level into subdirectories) with a cap of 1000 entries. Default false."},"include_hidden":{"type":"boolean","description":"Include hidden files and directories (names starting with '.'). Default false."}},"required":["path"]}"#),
         BuiltinToolDef(name: "read_file",
-            description: "Read a file and return its contents in a format that you can process. Use this as a main tool for reading inidividual files. Supports plain text and any other textual formats, document binaries (docx, doc, odt, rtf, pdf and similar) and image files. When relevant, the output is line-numbered in the format 'N | content' (right-aligned line number, a pipe separator, then the raw line) — the 'N | ' prefix is NOT part of the file, so never include it when quoting file content.",
+            description: "Read a file and return its contents in a format that you can process. Use this as a main tool for reading inidividual files. Supports plain text and any other textual formats, document binaries (docx, doc, odt, rtf, pdf and similar) and image files. When relevant, the output is line-numbered in the format 'N|content' (right-aligned line number, a pipe separator, then the raw line) — the 'N|' prefix is NOT part of the file, so never include it when quoting file content.",
             schema: #"{"type":"object","properties":{"path":{"type":"string","description":"File path to read. \#(Workdir.pathDescription)"},"offset":{"type":"integer","description":"1-based starting line number. Defaults to 1."},"limit":{"type":"integer","description":"Maximum number of lines to read. Defaults to 2000."}},"required":["path"]}"#),
         BuiltinToolDef(name: "write_file",
             description: "Write text content to a file (creates or overwrites). Parent directories are created as needed. ALWAYS provide the COMPLETE intended content of the file — partial updates or placeholders like '// rest unchanged' are forbidden. Do NOT include line numbers in the content. For targeted edits to existing files, prefer apply_patch.",
@@ -329,7 +329,7 @@ enum BuiltinTools {
     /// Full apply_patch format documentation, embedded in the tool description
     /// so every role with the code group gets it regardless of its prompt.
     private static let applyPatchDescription = """
-    Apply patches to files using the Codex apply_patch format — a stripped-down, file-oriented diff. One call can create, delete, and update multiple files.
+    Apply patches to files using a stripped-down, file-oriented diff format. One call can create, delete, and update multiple files.
 
     Patch envelope:
     *** Begin Patch
@@ -341,22 +341,20 @@ enum BuiltinTools {
     - *** Delete File: <path> — remove an existing file. Nothing follows.
     - *** Update File: <path> — patch an existing file in place. May be immediately followed by *** Move to: <new path> to rename.
 
-    Update File sections contain one or more hunks, each introduced by @@ optionally followed by an anchor: a single line copied verbatim from the file (e.g. a class or function signature) that the hunk body is searched for after. The FIRST hunk of a file may omit @@; every later hunk must start with @@ (a bare @@ with nothing after it is fine). Only ONE @@ line per hunk.
+    Update File sections contain one or more hunks, each introduced by @@ optionally followed by an anchor (a line copied verbatim from the file, e.g. a class or function signature). Multiple @@ lines per file are allowed — each starts a new hunk.
 
-    CRITICAL: within a hunk, EVERY line must start with exactly one prefix character:
-    - ' ' (a single space) for context lines (unchanged) — a file line indented with 4 spaces therefore has 5 leading spaces in the patch
+    Within a hunk, every line starts with one prefix character:
+    - ' ' (space) for context lines (unchanged) — a file line indented with 4 spaces has 5 leading spaces in the patch
     - '-' for lines to remove
     - '+' for lines to add
-    Never paste lines copied from read_file output without adding the prefix, and never include the 'N | ' line-number prefix that read_file displays — it is not part of the file.
+    Never paste lines copied from read_file output without adding the prefix, and never include the 'N|' line-number prefix that read_file displays — it is not part of the file.
 
     Context guidelines:
     - Show 3 lines of context above and below each change.
     - If 3 lines of context cannot uniquely identify the location, use @@ with a class/function anchor.
-    - The @@ anchor is not part of the hunk body — never repeat the anchor line as a context line.
-    - Hunks must appear in file order and must not overlap; each hunk is searched for after the previous one. Merge adjacent changes into a single hunk.
+    - The @@ anchor is not part of the hunk body — do not repeat it as a context line.
     - To append to a file, use a hunk containing only + lines (no context, no removals) — it is inserted at end of file.
     - Context lines must match the file exactly — read the file before patching and copy context verbatim.
-    - Every hunk must change at least one line — a hunk of only context lines (no '-' or '+') is a no-op and is rejected. If the edit is already applied, drop the hunk.
 
     Example:
     *** Begin Patch
@@ -370,19 +368,6 @@ enum BuiltinTools {
     +print("Hello, world!")
      print("done")
     *** Delete File: obsolete.txt
-    *** End Patch
-
-    @@ anchor worked example: the @@ header is a search anchor — a verbatim
-    line from the file used to locate the edit point. The hunk body (context,
-    -, +) starts at the NEXT line; the anchor is never repeated as a context line:
-
-    *** Begin Patch
-    *** Update File: greet.py
-    @@ def greet():
-     print("starting")
-    -print("Hi")
-    +print("Hello, world!")
-     print("done")
     *** End Patch
     """
 
@@ -994,7 +979,7 @@ enum BuiltinTools {
     }
 
     /// Formats text as line-numbered output with offset/limit slicing,
-    /// matching the read_file 'N | content' gutter format. The pipe separator
+    /// matching the read_file 'N|content' gutter format. The pipe separator
     /// makes the boundary between gutter and code indentation unambiguous for
     /// models copying context into patches.
     private static func formatTextLines(_ text: String, offset: Int, limit: Int) -> ToolOutput {
@@ -1016,7 +1001,7 @@ enum BuiltinTools {
         for (i, line) in slice.enumerated() {
             let lineNo = startIdx + i + 1
             let num = String(lineNo)
-            out.append(String(repeating: " ", count: gutterWidth - num.count) + num + " | " + line)
+            out.append(String(repeating: " ", count: gutterWidth - num.count) + num + "|" + line)
         }
         if endIdx - startIdx == hardLimit && cleaned.count > endIdx {
             out.append("... (truncated at \(hardLimit) lines)")
@@ -1359,7 +1344,11 @@ enum BuiltinTools {
                 try fm.removeItem(atPath: resolved)
                 summary.append("Deleted: \(path)")
 
-            case .updateFile(let path, let resolved, let movePath, let moveResolved, let chunkCount, _, let newContent):
+            case .updateFile(let path, let resolved, let movePath, let moveResolved, let chunkCount, _, let newContent, let isNoOp):
+                if isNoOp {
+                    summary.append("No changes needed: \(path) (content already matches)")
+                    continue
+                }
                 // Preserve the original file's permissions across the inode
                 // swap (the temp file is written with the umask default).
                 let savedMode = filePermissions(at: resolved)

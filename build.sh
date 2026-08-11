@@ -59,11 +59,11 @@ fi
 # ── Helpers ──────────────────────────────────────────────────────────
 
 die() {
-    echo -e "${redColor}[FAILED]${noColor}" > /dev/tty
-    echo -e "  ${redColor}$1${noColor}" > /dev/tty
-    echo -e "  ${dimColor}--- error output ---${noColor}" > /dev/tty
-    tail -n +"$logMark" "$logFile" > /dev/tty 2>&1
-    echo -e "  ${dimColor}--- end error output ---${noColor}" > /dev/tty
+    echo -e "${redColor}[FAILED]${noColor}" >&2
+    echo -e "  ${redColor}$1${noColor}" >&2
+    echo -e "  ${dimColor}--- error output ---${noColor}" >&2
+    tail -n +"$logMark" "$logFile" >&2
+    echo -e "  ${dimColor}--- end error output ---${noColor}" >&2
     exit 1
 }
 

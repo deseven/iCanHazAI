@@ -464,9 +464,9 @@ private extension ToolSummary {
     static func doneDescription(name: String, content: String) -> String {
         switch name {
         case "read_file":
-            // Text output lines carry the "N | content" gutter; anything else
+            // Text output lines carry the "N|content" gutter; anything else
             // (image/binary notices) falls back to the first line.
-            let re = try? NSRegularExpression(pattern: #"^\s*\d+ \| "#)
+            let re = try? NSRegularExpression(pattern: #"^\s*\d+\|"#)
             let n = content.split(separator: "\n", omittingEmptySubsequences: false).filter { line in
                 let s = String(line)
                 return re?.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil

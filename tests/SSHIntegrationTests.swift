@@ -84,8 +84,8 @@ extension AllAppTests {
             #expect(!rErr)
             #expect(rText.contains("line1"))
             #expect(rText.contains("line2"))
-            // Line-numbered output ('N | content' gutter).
-            #expect(rText.contains("1 | line1"))
+            // Line-numbered output ('N|content' gutter).
+            #expect(rText.contains("1|line1"))
 
             await Self.destroy(wd, remote)
         }
@@ -97,9 +97,9 @@ extension AllAppTests {
 
             let (text, isError) = await Self.call("read_file", Self.fs, ["path": "f.txt", "offset": 2, "limit": 2], workdir: wd)
             #expect(!isError)
-            #expect(text.contains("2 | b"))
-            #expect(text.contains("3 | c"))
-            #expect(!text.contains("4 | d"))
+            #expect(text.contains("2|b"))
+            #expect(text.contains("3|c"))
+            #expect(!text.contains("4|d"))
 
             let (missing, missingErr) = await Self.call("read_file", Self.fs, ["path": "nope.txt"], workdir: wd)
             #expect(missingErr)

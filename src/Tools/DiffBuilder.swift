@@ -82,7 +82,7 @@ enum DiffBuilder {
             case .deleteFile(let path, _, let original):
                 let d = unifiedDiff(old: original ?? "", new: "", oldPath: path, newPath: nil)
                 if !d.isEmpty { sections.append(d) }
-            case .updateFile(let path, _, let movePath, _, _, let original, let newContent):
+            case .updateFile(let path, _, let movePath, _, _, let original, let newContent, _):
                 let d = unifiedDiff(old: original, new: newContent, oldPath: path, newPath: movePath ?? path)
                 if !d.isEmpty { sections.append(d) }
             }

@@ -147,9 +147,9 @@ extension AllAppTests {
 
         @Test("read_file counts the numbered output lines, ignoring truncation markers")
         func readFileResult() {
-            let r = ToolSummary.resultStatus(name: "read_file", result: ToolResult(callID: "c", content: " 1 | first\n 2 | second\n10 | tenth", isError: false))
+            let r = ToolSummary.resultStatus(name: "read_file", result: ToolResult(callID: "c", content: " 1|first\n 2|second\n10|tenth", isError: false))
             #expect(r?.description == "Read 3 lines.")
-            let truncated = ToolSummary.resultStatus(name: "read_file", result: ToolResult(callID: "c", content: "1 | only\n... (truncated at 2000 lines)", isError: false))
+            let truncated = ToolSummary.resultStatus(name: "read_file", result: ToolResult(callID: "c", content: "1|only\n... (truncated at 2000 lines)", isError: false))
             #expect(truncated?.description == "Read 1 line.")
             // An image read carries the processed image on `result.image`; the
             // collapsed description is empty (the renderer shows the image in
@@ -217,7 +217,7 @@ extension AllAppTests {
             let decodedCall = try JSONDecoder().decode(ToolCall.self, from: JSONEncoder().encode(call))
             #expect(decodedCall == call)
 
-            let result = ToolResult(callID: "c1", content: "1 | x", isError: false,
+            let result = ToolResult(callID: "c1", content: "1|x", isError: false,
                                     summary: ToolSummary.Status(kind: .done, label: "done", description: "Read 1 line."))
             let data = try JSONEncoder().encode(result)
             // The persisted key is tool_call_result_summary.

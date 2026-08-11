@@ -544,7 +544,11 @@ enum BuiltinToolsSSH {
                 let r = try await run(ssh, script: "rm \(qp(resolved))")
                 try requireSuccess(r)
                 summary.append("Deleted: \(path)")
-            case .updateFile(let path, let resolved, let movePath, let moveResolved, let chunkCount, _, let newContent):
+            case .updateFile(let path, let resolved, let movePath, let moveResolved, let chunkCount, _, let newContent, let isNoOp):
+                if isNoOp {
+                    summary.append("No changes needed: \(path) (content already matches)")
+                    continue
+                }
                 if let movePath, let moveResolved {
                     // Preserve the source file's mode across the move: the
                     // destination is written fresh (cat >) and would otherwise

@@ -288,7 +288,7 @@ extension AllAppTests {
                 fileExists: { $0 == "/remote/f.txt" },
                 fileContent: { resolved, _ in resolved == "/remote/f.txt" ? "old\n" : nil }
             )
-            guard ops.count == 1, case .updateFile(_, _, _, _, _, _, let newContent) = ops[0] else {
+            guard ops.count == 1, case .updateFile(_, _, _, _, _, _, let newContent, _) = ops[0] else {
                 Issue.record("expected a single updateFile op")
                 return
             }
