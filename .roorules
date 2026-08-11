@@ -24,7 +24,7 @@ Generally two things might need updates:
 - `default/prompts/Configurator.md` - the prompt for our agentic configuration manager that should have all current information about existing configs
 
 # Tests
-The app is partly covered with tests. Please write new tests when touching old code or writing new one. To run the tests, use `./build.sh test` or `swift test`/`npm test` for more targeted approach.
+Please write new tests or update the old ones when needed. To run the tests, use `./build.sh test` (outputs quick summary, writes full log to `build.log`) or `swift test`/`npm test` for more targeted approach.
 
 # Code Style
 Keep comments minimal. Don't describe the obvious — focus only on:

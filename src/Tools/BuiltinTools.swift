@@ -645,6 +645,29 @@ enum BuiltinTools {
         return p
     }
 
+    /// Strips ANSI/VT100 escape sequences (colors, cursor moves, OSC title
+    /// setters) from captured process output so the model sees plain text.
+    /// Used by the shell tool for both local and SSH execution.
+    static let ansiRegex: NSRegularExpression = {
+        // CSI (ESC [ ... final) | OSC (ESC ] ... BEL/ST) | other 2-char ESC seqs.
+        let pattern = "\u{001B}\\][^\u{0007}\u{001B}]*(?:\u{0007}|\u{001B}\\\\)|\u{001B}\\[[0-?]*[ -/]*[@-~]|\u{001B}[@-Z\\\\-_]"
+        return try! NSRegularExpression(pattern: pattern)
+    }()
+
+    static func stripAnsi(_ s: String) -> String {
+        let range = NSRange(s.startIndex..., in: s)
+        return ansiRegex.stringByReplacingMatches(in: s, range: range, withTemplate: "")
+    }
+
+    /// POSIX permission bits (0o0000–0o7777) of an existing path, or nil when
+    /// the path doesn't exist. Used to preserve the executable bit (and any
+    /// custom mode) across the inode swap that `Data.write(.atomic)` performs.
+    static func filePermissions(at path: String) -> UInt16? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let mode = attrs[.posixPermissions] as? NSNumber else { return nil }
+        return UInt16(truncating: mode) & 0o7777
+    }
+
     /// Glob matcher for `find_file` and `find_text`'s `file_pattern`. Supports
     /// `*` (any run within one path component), `?` (single character),
     /// `[...]` (character class, `!` or `^` negates) and `**` (any number of
@@ -991,8 +1014,15 @@ enum BuiltinTools {
         if !fm.fileExists(atPath: dir) {
             try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
         }
+        // Atomic write swaps the inode, which resets the mode to the umask
+        // default — preserve the existing file's permissions (e.g. the
+        // executable bit) across the swap.
+        let savedMode = filePermissions(at: resolved)
         let data = Data(content.utf8)
         try data.write(to: URL(fileURLWithPath: resolved), options: .atomic)
+        if let savedMode {
+            try? fm.setAttributes([.posixPermissions: savedMode], ofItemAtPath: resolved)
+        }
         return ToolOutput(content: "Wrote \(data.count) bytes to \(path)", isError: false)
     }
 
@@ -1297,6 +1327,9 @@ enum BuiltinTools {
                 summary.append("Deleted: \(path)")
 
             case .updateFile(let path, let resolved, let movePath, let moveResolved, let chunkCount, _, let newContent):
+                // Preserve the original file's permissions across the inode
+                // swap (the temp file is written with the umask default).
+                let savedMode = filePermissions(at: resolved)
                 let tempURL = URL(fileURLWithPath: resolved)
                     .deletingLastPathComponent()
                     .appendingPathComponent(".ichai-patch-tmp-\(UUID().uuidString)")
@@ -1309,10 +1342,12 @@ enum BuiltinTools {
                     _ = try? fm.removeItem(atPath: moveResolved)
                     try fm.moveItem(atPath: tempURL.path, toPath: moveResolved)
                     try fm.removeItem(atPath: resolved)
+                    if let savedMode { try? fm.setAttributes([.posixPermissions: savedMode], ofItemAtPath: moveResolved) }
                     summary.append("Updated: \(path) → \(movePath) (\(chunkCount) hunks)")
                 } else {
                     _ = try? fm.removeItem(atPath: resolved)
                     try fm.moveItem(atPath: tempURL.path, toPath: resolved)
+                    if let savedMode { try? fm.setAttributes([.posixPermissions: savedMode], ofItemAtPath: resolved) }
                     summary.append("Updated: \(path) (\(chunkCount) hunks)")
                 }
             }
@@ -1333,10 +1368,11 @@ enum BuiltinTools {
         process.arguments = ["-l"]
         process.currentDirectoryURL = URL(fileURLWithPath: cwd)
 
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
+        // Merge stderr into stdout so the model sees output in the order it was
+        // written, emulating a terminal instead of two separate channels.
+        let mergedPipe = Pipe()
+        process.standardOutput = mergedPipe
+        process.standardError = mergedPipe
 
         let stdinPipe = Pipe()
         process.standardInput = stdinPipe
@@ -1360,26 +1396,16 @@ enum BuiltinTools {
             }
         }
 
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        let outputData = mergedPipe.fileHandleForReading.readDataToEndOfFile()
         if !timedOut { await awaitProcessExit(process) }
 
-        let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-        let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+        let text = stripAnsi(String(data: outputData, encoding: .utf8) ?? "")
         let exitCode = process.terminationStatus
 
         if timedOut {
-            var text = stdout
-            if !stderr.isEmpty { text += stderr }
-            text += "\n[exit code: timed out after \(Int(timeout!))s]"
-            return ToolOutput(content: text, isError: false)
+            return ToolOutput(content: "\(text)\n[exit code: timed out after \(Int(timeout!))s]", isError: false)
         }
-
-        if exitCode == 0 {
-            return ToolOutput(content: "\(stdout)\n[exit code: 0]", isError: false)
-        } else {
-            return ToolOutput(content: "\(stdout)\(stderr)\n[exit code: \(exitCode)]", isError: false)
-        }
+        return ToolOutput(content: "\(text)\n[exit code: \(exitCode)]", isError: false)
     }
 
     private static func applescript(_ args: [String: Any]) async throws -> ToolOutput {

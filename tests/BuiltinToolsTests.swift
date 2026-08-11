@@ -1134,6 +1134,47 @@ extension AllAppTests {
             #expect(text.contains("timed out"))
         }
 
+        @Test("shell merges stderr into stdout in write order")
+        func shellStderrMerged() async throws {
+            // Interleave stdout and stderr; the merged stream must preserve
+            // the order the lines were written, not bucket stdout-then-stderr.
+            let cmd = "echo out1; echo err1 >&2; echo out2; echo err2 >&2"
+            let (text, err) = await Self.call("shell", BuiltinTools.shellGroup, ["command": cmd])
+            #expect(!err)
+            let lines = text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+            #expect(lines.contains("out1"))
+            #expect(lines.contains("err1"))
+            #expect(lines.contains("out2"))
+            #expect(lines.contains("err2"))
+            let o1 = lines.firstIndex(of: "out1")!
+            let e1 = lines.firstIndex(of: "err1")!
+            let o2 = lines.firstIndex(of: "out2")!
+            let e2 = lines.firstIndex(of: "err2")!
+            #expect(o1 < e1 && e1 < o2 && o2 < e2, "expected out1<err1<out2<err2, got: \(lines)")
+        }
+
+        @Test("shell returns stderr on a zero-exit command")
+        func shellStderrOnSuccess() async throws {
+            // stderr must be surfaced even when the command exits 0 (the old
+            // behavior dropped stderr entirely on exit code 0).
+            let (text, err) = await Self.call("shell", BuiltinTools.shellGroup, ["command": "echo to-stderr >&2; exit 0"])
+            #expect(!err)
+            #expect(text.contains("to-stderr"))
+            #expect(text.contains("[exit code: 0]"))
+        }
+
+        @Test("shell strips ANSI color codes from output")
+        func shellStripsAnsi() async throws {
+            // A colored echo (red) must come back as plain text with the escape
+            // sequences removed, not as raw \x1B[...m bytes.
+            let cmd = "printf '\\033[31mred\\033[0m plain'"
+            let (text, err) = await Self.call("shell", BuiltinTools.shellGroup, ["command": cmd])
+            #expect(!err)
+            #expect(!text.contains("\u{1B}"), "ANSI escape leaked into output: \(text.debugDescription)")
+            #expect(text.contains("red"))
+            #expect(text.contains("plain"))
+        }
+
         @Test("applescript returns a result")
         func applescript() async throws {
             let (text, err) = await Self.call("applescript", BuiltinTools.shellGroup, ["script": "return 1 + 1"])
@@ -1155,6 +1196,108 @@ extension AllAppTests {
             let (text, err) = await Self.call("shell", BuiltinTools.shellGroup, ["command": "pwd"], workdir: wd)
             #expect(!err)
             #expect(text.contains(tmp.path))
+        }
+
+        // MARK: - chmod preservation
+
+        /// Reads the POSIX permission bits of a path as an octal string (e.g.
+        /// "755"), for asserting the executable bit survives a write.
+        private func modeString(_ path: String) throws -> String {
+            let attrs = try FileManager.default.attributesOfItem(atPath: path)
+            let mode = (attrs[.posixPermissions] as? NSNumber)?.int16Value ?? 0
+            return String(mode & 0o7777, radix: 8)
+        }
+
+        static func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir = .none) async -> (text: String, isError: Bool) {
+            let arguments = (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
+            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir, chatFilename: "test.json")
+            return (result.content, result.isError)
+        }
+    }
+
+    // MARK: - Shell chmod preservation
+
+    @Suite("Builtin tools: Shell chmod preservation")
+    struct BuiltinShellChmodTests {
+        private static let fs = BuiltinTools.filesystemGroup
+        private static let code = BuiltinTools.codeGroup
+
+        private func modeString(_ path: String) throws -> String {
+            let attrs = try FileManager.default.attributesOfItem(atPath: path)
+            let mode = (attrs[.posixPermissions] as? NSNumber)?.int16Value ?? 0
+            return String(mode & 0o7777, radix: 8)
+        }
+
+        @Test("write_file preserves the executable bit on an existing file")
+        func writePreservesExecBit() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("script.sh")
+            try Data("#!/bin/sh\necho hi\n".utf8).write(to: URL(fileURLWithPath: path))
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+            #expect(try modeString(path) == "755")
+
+            let (_, err) = await Self.call("write_file", Self.fs, ["path": path, "content": "#!/bin/sh\necho bye\n"])
+            #expect(!err)
+            // The atomic write swaps the inode; the executable bit must survive.
+            #expect(try modeString(path) == "755", "executable bit was lost on write_file")
+        }
+
+        @Test("write_file preserves a custom mode on an existing file")
+        func writePreservesCustomMode() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("cfg.conf")
+            try Data("old\n".utf8).write(to: URL(fileURLWithPath: path))
+            try FileManager.default.setAttributes([.posixPermissions: 0o640], ofItemAtPath: path)
+            #expect(try modeString(path) == "640")
+
+            let (_, err) = await Self.call("write_file", Self.fs, ["path": path, "content": "new\n"])
+            #expect(!err)
+            #expect(try modeString(path) == "640", "custom mode was lost on write_file")
+        }
+
+        @Test("apply_patch preserves the executable bit when updating a file")
+        func patchPreservesExecBit() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("run.sh")
+            try Data("#!/bin/sh\necho old\n".utf8).write(to: URL(fileURLWithPath: path))
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path)
+            #expect(try modeString(path) == "755")
+
+            let patch = """
+            *** Begin Patch
+            *** Update File: \(path)
+             #!/bin/sh
+            -echo old
+            +echo new
+            *** End Patch
+            """
+            let (text, err) = await Self.call("apply_patch", Self.code, ["patch": patch])
+            #expect(!err, "patch failed: \(text)")
+            #expect(try modeString(path) == "755", "executable bit was lost on apply_patch")
+        }
+
+        @Test("apply_patch preserves the executable bit across a move")
+        func patchPreservesExecBitOnMove() async throws {
+            let tmp = try TestDir()
+            let src = tmp.sub("orig.sh")
+            try Data("#!/bin/sh\necho old\n".utf8).write(to: URL(fileURLWithPath: src))
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: src)
+            #expect(try modeString(src) == "755")
+
+            let dst = tmp.sub("moved.sh")
+            let patch = """
+            *** Begin Patch
+            *** Update File: \(src)
+            *** Move to: \(dst)
+             #!/bin/sh
+            -echo old
+            +echo new
+            *** End Patch
+            """
+            let (text, err) = await Self.call("apply_patch", Self.code, ["patch": patch])
+            #expect(!err, "patch failed: \(text)")
+            #expect(!FileManager.default.fileExists(atPath: src))
+            #expect(try modeString(dst) == "755", "executable bit was lost on apply_patch move")
         }
 
         static func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir = .none) async -> (text: String, isError: Bool) {

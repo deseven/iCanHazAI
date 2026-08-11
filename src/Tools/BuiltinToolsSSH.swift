@@ -546,11 +546,18 @@ enum BuiltinToolsSSH {
                 summary.append("Deleted: \(path)")
             case .updateFile(let path, let resolved, let movePath, let moveResolved, let chunkCount, _, let newContent):
                 if let movePath, let moveResolved {
+                    // Preserve the source file's mode across the move: the
+                    // destination is written fresh (cat >) and would otherwise
+                    // get the umask default, dropping e.g. the executable bit.
+                    let mode = try await remoteFileMode(ssh, resolved: resolved)
                     try await remoteWrite(ssh, resolved: moveResolved, contents: newContent)
+                    if let mode { try await remoteChmod(ssh, resolved: moveResolved, mode: mode) }
                     let r = try await run(ssh, script: "rm \(qp(resolved))")
                     try requireSuccess(r)
                     summary.append("Updated: \(path) → \(movePath) (\(chunkCount) hunks)")
                 } else {
+                    // Non-move: `cat >` truncates in place, preserving the
+                    // existing inode and its mode — no chmod needed.
                     try await remoteWrite(ssh, resolved: resolved, contents: newContent)
                     summary.append("Updated: \(path) (\(chunkCount) hunks)")
                 }
@@ -589,6 +596,25 @@ enum BuiltinToolsSSH {
         let script = "mkdir -p \(qp(posixDirname(resolved))) && cat > \(qp(resolved))"
         let r = try await run(ssh, script: script, stdin: Data(contents.utf8))
         try requireSuccess(r)
+    }
+
+    /// Reads the POSIX mode (0o000–0o7777) of a remote file, or nil if it
+    /// doesn't exist. Used to carry permissions across a move in apply_patch.
+    private static func remoteFileMode(_ ssh: SSHContext, resolved: String) async throws -> UInt16? {
+        // GNU stat -c %a, BSD stat -f %Lp; missing file → empty (nil).
+        let script = "stat -c '%a' \(qp(resolved)) 2>/dev/null || stat -f '%Lp' \(qp(resolved)) 2>/dev/null || true"
+        let r = try await run(ssh, script: script)
+        let raw = r.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let octal = UInt16(raw, radix: 8) else { return nil }
+        return octal & 0o7777
+    }
+
+    /// Applies `chmod <mode>` to a remote path (mode is an octal string like
+    /// "755"). Failures are swallowed — a best-effort restore, not a hard
+    /// error, mirroring the local tool's `try?` on setAttributes.
+    private static func remoteChmod(_ ssh: SSHContext, resolved: String, mode: UInt16) async throws {
+        let script = "chmod \(String(mode, radix: 8)) \(qp(resolved))"
+        _ = try? await run(ssh, script: script)
     }
 
     // MARK: - Pre-execution diff previews
@@ -647,6 +673,11 @@ enum BuiltinToolsSSH {
             let resolved = try workdir.resolve(cwd)
             script += "cd \(qp(resolved)) || exit 1\n"
         }
+        // Merge stderr into stdout for the rest of the script so the model
+        // sees output in the order it was written, emulating a terminal. The
+        // SSH transport keeps stdout/stderr as separate channels (see IOBox),
+        // so without this the two streams can't be interleaved correctly.
+        script += "exec 2>&1\n"
         script += command
 
         // An explicit timeout is a hard kill (local semantics). Without one,
@@ -656,23 +687,23 @@ enum BuiltinToolsSSH {
                               hardTimeout: timeout,
                               idleTimeout: timeout == nil ? shellIdleTimeout : nil)
 
-        var text = r.stdoutString
+        // With `exec 2>&1` everything lands on stdout; stderr is empty unless
+        // the redirect itself failed (ssh transport errors surface via
+        // `failure`). Strip ANSI color codes from the merged output.
+        var text = BuiltinTools.stripAnsi(r.stdoutString)
         switch r.failure {
         case .hardTimeout(let t):
-            if !r.stderrString.isEmpty { text += r.stderrString }
+            if !r.stderrString.isEmpty { text += BuiltinTools.stripAnsi(r.stderrString) }
             text += "\n[exit code: timed out after \(Int(t))s]"
             return ToolOutput(content: text, isError: false)
         case .idleTimeout(let t):
-            if !r.stderrString.isEmpty { text += r.stderrString }
+            if !r.stderrString.isEmpty { text += BuiltinTools.stripAnsi(r.stderrString) }
             text += "\n[exit code: killed after \(Int(t))s without output; pass an explicit timeout for long-running silent commands]"
             return ToolOutput(content: text, isError: false)
         case nil:
             break
         }
 
-        if r.exitCode == 0 {
-            return ToolOutput(content: "\(text)\n[exit code: 0]", isError: false)
-        }
-        return ToolOutput(content: "\(text)\(r.stderrString)\n[exit code: \(r.exitCode)]", isError: false)
+        return ToolOutput(content: "\(text)\n[exit code: \(r.exitCode)]", isError: false)
     }
 }
