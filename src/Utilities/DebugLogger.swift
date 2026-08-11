@@ -98,9 +98,7 @@ enum DebugLogger {
     /// Must be called once at launch, before any `debugLog` call that should
     /// reach the file.
     static func startFileLogging() {
-        let homeURL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-        let rootURL = homeURL.appendingPathComponent("iCanHazAI", isDirectory: true)
-        startFileLogging(rootURL: rootURL)
+        startFileLogging(rootURL: EnvironmentManager.shared.rootURL)
     }
 
     /// Internal entry point that allows tests to redirect the log into a

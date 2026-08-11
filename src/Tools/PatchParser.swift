@@ -158,7 +158,10 @@ enum PatchParser {
                     eofAnchorPending = false
                 }
                 if r.chunk.oldLines == r.chunk.newLines {
-                    throw PatchParseError(message: "Update hunk for '\(path)' makes no changes — every line starts with ' ' (context). A hunk needs at least one '-' or '+' line: to change a line, repeat it with '-' followed by the new version with '+'. If the edit is already applied, drop this hunk from the patch", lineNumber: lineNumber + consumed)
+                    // By this point the +/-/space prefixes are already stripped,
+                    // so we can't distinguish "all context" from "matching
+                    // -foo/+foo pairs". Report the fact neutrally.
+                    throw PatchParseError(message: "Update hunk for '\(path)' makes no changes — old and new lines are identical. This happens when every line is context, or when every '-' line has a matching '+' line with the same content. Remove this hunk if it was not intended to modify the file.", lineNumber: lineNumber + consumed)
                 }
                 chunks.append(r.chunk)
                 consumed += r.linesConsumed

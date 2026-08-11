@@ -164,7 +164,9 @@ do_clean_app_cache() {
     # is only a manual reset — wired to `./build.sh clean`, not every dev build
     # (wiping it every build defeated the cache, forcing a full re-scan each
     # startup).
-    rm -rf "$HOME/iCanHazAI/.cache"
+    for base in "$HOME/iCanHazAI" "$HOME/iCanHazAI-dev"; do
+        rm -rf "$base/.cache"
+    done
 }
 
 do_create_bundle() {
@@ -276,16 +278,23 @@ fi
 if [ "$mode" = "apply-roles" ]; then
     for sub in roles prompts; do
         case "$sub" in
-            roles)   ext="toml"; dest="$HOME/iCanHazAI/Roles" ;;
-            prompts) ext="md";   dest="$HOME/iCanHazAI/Prompts" ;;
+            roles)   ext="toml" ;;
+            prompts) ext="md"   ;;
         esac
-        mkdir -p "$dest"
-        for f in "$loc/default/$sub/"*."$ext"; do
-            [ "$(basename "$f" ".$ext")" = "Configurator" ] && continue
-            cp -f "$f" "$dest/"
+        for dest_base in "$HOME/iCanHazAI" "$HOME/iCanHazAI-dev"; do
+            [ -d "$dest_base" ] || continue
+            case "$sub" in
+                roles)   dest="$dest_base/Roles" ;;
+                prompts) dest="$dest_base/Prompts" ;;
+            esac
+            mkdir -p "$dest"
+            for f in "$loc/default/$sub/"*."$ext"; do
+                [ "$(basename "$f" ".$ext")" = "Configurator" ] && continue
+                cp -f "$f" "$dest/"
+            done
         done
     done
-    echo -e "  ${greenColor}${bold}Default roles and prompts applied to ~/iCanHazAI.${noColor}"
+    echo -e "  ${greenColor}${bold}Default roles and prompts applied to ~/iCanHazAI (and ~/iCanHazAI-dev if present).${noColor}"
     exit 0
 fi
 
@@ -363,7 +372,7 @@ case "$mode" in
         # instance is killed first — a second one would fight over the CLI
         # control socket.
         pkill -x "$name" 2>/dev/null || true
-        "$loc/dist/$name.app/Contents/MacOS/$name" --gui
+        "$loc/dist/$name.app/Contents/MacOS/$name" --gui --maindir ~/iCanHazAI-dev
         ;;
     dev-release)
         echo -e "  ${dimColor}mode: development release${noColor}"

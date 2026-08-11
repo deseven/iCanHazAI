@@ -33,4 +33,4 @@ Keep comments minimal. Don't describe the obvious — focus only on:
 - Things genuinely worth noting
 
 # General Guidance
-Don't overthink. If something is unclear, ask. If you hit a difficult problem, explain it first and ask for advice before proceeding. When running shell commands, set the timeout argument to 600 always - the user will monitor the progress and stop it if hanged or on any other issue.
+Don't overthink. If something is unclear, ask. If you hit a difficult problem, explain it first and ask for advice before proceeding.

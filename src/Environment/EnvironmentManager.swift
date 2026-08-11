@@ -22,6 +22,12 @@ final class EnvironmentManager: @unchecked Sendable {
     /// The APP↔CLI control socket (`~/iCanHazAI/app.sock`).
     let socketURL: URL
 
+    /// Override for the main data directory, set from the hidden `--maindir`
+    /// launch arg (GUI-only). When set, the production singleton uses this
+    /// directory instead of `~/iCanHazAI`. Must be set before `shared` is first
+    /// accessed (i.e. in `AppEntry.main`, before `iCanHazAIApp.main()`).
+    nonisolated(unsafe) static var mainDirOverride: URL?
+
     /// Internal initializer taking an explicit root URL, so tests can point
     /// the environment at a throwaway temp directory instead of `~/iCanHazAI`.
     /// The production singleton (`shared`) uses the home-directory root.
@@ -38,6 +44,10 @@ final class EnvironmentManager: @unchecked Sendable {
     }
 
     private convenience init() {
+        if let override = Self.mainDirOverride {
+            self.init(rootURL: override)
+            return
+        }
         let homeURL = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         self.init(rootURL: homeURL.appendingPathComponent("iCanHazAI", isDirectory: true))
     }

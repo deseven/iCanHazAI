@@ -251,8 +251,7 @@ actor ConfigManager {
     var willWriteConfig: (@Sendable () -> Void)?
 
     private init() {
-        let home = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-        fileURL = home.appendingPathComponent("iCanHazAI").appendingPathComponent("config.toml")
+        fileURL = EnvironmentManager.shared.rootURL.appendingPathComponent("config.toml")
     }
 
     // MARK: - Synchronous bootstrap
@@ -276,8 +275,7 @@ actor ConfigManager {
     /// The config file URL, computed without touching actor isolation so the
     /// synchronous bootstrap can resolve it on the calling thread.
     private static var bootstrapFileURL: URL {
-        let home = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-        return home.appendingPathComponent("iCanHazAI").appendingPathComponent("config.toml")
+        return EnvironmentManager.shared.rootURL.appendingPathComponent("config.toml")
     }
 
     /// Reads and decodes `config.toml` synchronously on the calling thread and
