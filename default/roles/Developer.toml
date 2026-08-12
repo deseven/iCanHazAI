@@ -9,7 +9,7 @@ mcps_override_allowed = true
 with_attachments = true
 
 [utils]
-tools = ["calc", "hash", "rand", "uuid", "sleep"]
+tools = ["calc", "rand", "uuid"]
 auto_allow_all = true
 
 [filesystem]
@@ -22,4 +22,5 @@ auto_allow = ["read_file"]
 tools = ["shell"]
 
 [web]
-auto_allow = ["web_search", "web_fetch"]
+tools = ["web_search", "web_extract"]
+auto_allow = ["web_search"]

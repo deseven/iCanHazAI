@@ -9,7 +9,7 @@ mcps_override_allowed = true
 with_attachments = true
 
 [utils]
-tools = ["calc", "hash", "rand", "uuid"]
+tools = ["calc", "rand"]
 auto_allow_all = true
 
 [filesystem]
