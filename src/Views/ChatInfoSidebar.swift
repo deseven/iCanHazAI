@@ -56,15 +56,19 @@ struct ChatInfoSidebar: View {
                     if let snapshot = toolSnapshot {
                         if !snapshot.builtin.isEmpty {
                             Section("Tools") {
-                                ToolTagCloud(tools: snapshot.builtin) { name in
-                                    store.toggleChatToolAutoApproval(toolName: name)
+                                ForEach(groupedSections(from: snapshot.builtin, preferredOrder: BuiltinTools.groupOrder), id: \.0) { groupName, tools in
+                                    ToolSubcategory(label: groupName, tools: tools) { name in
+                                        store.toggleChatToolAutoApproval(toolName: name)
+                                    }
                                 }
                             }
                         }
                         if !snapshot.external.isEmpty {
-                            Section("External Tools") {
-                                ToolTagCloud(tools: snapshot.external) { name in
-                                    store.toggleChatToolAutoApproval(toolName: name)
+                            Section("MCP Tools") {
+                                ForEach(groupedSections(from: snapshot.external), id: \.0) { mcpName, tools in
+                                    ToolSubcategory(label: mcpName, tools: tools) { name in
+                                        store.toggleChatToolAutoApproval(toolName: name)
+                                    }
                                 }
                             }
                         }
@@ -87,6 +91,22 @@ struct ChatInfoSidebar: View {
     }
 
     // MARK: - Helpers
+
+    /// Groups tool entries by their `source` field (built-in group name or
+    /// MCP server name) and returns (groupName, tools) pairs. When
+    /// `preferredOrder` is given, groups are sorted by that order (unknown
+    /// groups fall back to alphabetical); otherwise purely alphabetical.
+    private func groupedSections(from tools: [ChatToolEntry], preferredOrder: [String] = []) -> [(String, [ChatToolEntry])] {
+        let groups = Dictionary(grouping: tools, by: { $0.source })
+        return groups
+            .map { ($0.key, $0.value) }
+            .sorted { a, b in
+                let ai = preferredOrder.firstIndex(of: a.0) ?? Int.max
+                let bi = preferredOrder.firstIndex(of: b.0) ?? Int.max
+                if ai != bi { return ai < bi }
+                return a.0.localizedCaseInsensitiveCompare(b.0) == .orderedAscending
+            }
+    }
 
     /// Everything that can change the tool list or its approval states: the
     /// chat itself, its role, its per-chat MCP selection and approval
@@ -175,7 +195,8 @@ private struct InfoCell: View {
 }
 
 /// A wrapping cloud of tool tags. Auto-approved tools are green, tools that
-/// require user confirmation are gray; clicking a tag flips its state.
+/// require user confirmation are gray (yellow for shell with a whitelist);
+/// clicking a tag flips its state.
 private struct ToolTagCloud: View {
     let tools: [ChatToolEntry]
     let onToggle: (String) -> Void
@@ -187,6 +208,23 @@ private struct ToolTagCloud: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+/// A labeled subcategory of tool tags: a small caption header (e.g.
+/// "Filesystem") followed by a wrapping tag cloud. Used inside the merged
+/// "Tools" and "MCP Tools" sections.
+private struct ToolSubcategory: View {
+    let label: String
+    let tools: [ChatToolEntry]
+    let onToggle: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            ToolTagCloud(tools: tools, onToggle: onToggle)
+        }
     }
 }
 
@@ -202,6 +240,14 @@ private struct ToolTag: View {
         tool.description.count <= 300 ? tool.description : String(tool.description.prefix(300)) + "..."
     }
 
+    private var unapprovedColor: Color {
+        tool.hasShellWhitelist ? Color.yellow.opacity(0.2) : Color.gray.opacity(0.15)
+    }
+
+    private var unapprovedBorder: Color {
+        tool.hasShellWhitelist ? Color.yellow.opacity(0.5) : Color.gray.opacity(0.4)
+    }
+
     var body: some View {
         Button(action: action) {
             Text(tool.name)
@@ -209,10 +255,10 @@ private struct ToolTag: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
                 .background(
-                    Capsule().fill(tool.autoApproved ? Color.green.opacity(0.25) : Color.gray.opacity(0.15))
+                    Capsule().fill(tool.autoApproved ? Color.green.opacity(0.25) : unapprovedColor)
                 )
                 .overlay(
-                    Capsule().strokeBorder(tool.autoApproved ? Color.green.opacity(0.6) : Color.gray.opacity(0.4))
+                    Capsule().strokeBorder(tool.autoApproved ? Color.green.opacity(0.6) : unapprovedBorder)
                 )
         }
         .buttonStyle(.plain)

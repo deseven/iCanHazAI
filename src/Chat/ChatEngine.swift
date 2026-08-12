@@ -3192,7 +3192,9 @@ actor ChatEngine {
                         name: tool.name,
                         description: tool.description,
                         autoApproved: chat.isToolAutoApproved(namespacedName: tool.name, roleDefault: r.autoAllows(tool: tool.name)),
-                        roleAutoApproved: r.autoAllows(tool: tool.name)
+                        roleAutoApproved: r.autoAllows(tool: tool.name),
+                        source: r.name,
+                        hasShellWhitelist: r.name == BuiltinTools.shellGroup && !r.shellWhitelist.isEmpty
                     ))
                 }
             } else {
@@ -3209,7 +3211,9 @@ actor ChatEngine {
                         name: namespaced,
                         description: tool.description ?? "",
                         autoApproved: chat.isToolAutoApproved(namespacedName: namespaced, roleDefault: r.autoAllows(tool: tool.name)),
-                        roleAutoApproved: r.autoAllows(tool: tool.name)
+                        roleAutoApproved: r.autoAllows(tool: tool.name),
+                        source: serverConfig?.name ?? r.name,
+                        hasShellWhitelist: false
                     ))
                 }
             }
@@ -3317,6 +3321,14 @@ struct ChatToolEntry: Equatable, Sendable {
     /// The role's default auto-approval state, used when toggling so a state
     /// matching the default persists no override.
     let roleAutoApproved: Bool
+    /// The source group this tool belongs to: a built-in group name (e.g.
+    /// "Filesystem") for built-in tools, or the MCP server name for external
+    /// tools. Used by the chat-info sidebar to render subsections.
+    let source: String
+    /// Whether a `shell_whitelist` is defined for this tool (shell only).
+    /// When true, the sidebar renders the tag in yellow/green instead of
+    /// grey/green to signify partial auto-approval.
+    let hasShellWhitelist: Bool
 }
 
 /// The tools available to a chat, split into built-in groups ("Tools") and

@@ -979,13 +979,15 @@ final class AppViewModel: ObservableObject {
         case (nil, .some), (.some, nil): return true
         case let (x?, y?):
             if x.role != y.role
-                || x.title != y.title
-                || x.connection != y.connection
-                || x.prompt != y.prompt
-                || x.workingDirectory != y.workingDirectory
-                || x.mcps != y.mcps
-                || x.archive != y.archive
-                || x.outputRendering != y.outputRendering { return true }
+     || x.title != y.title
+     || x.connection != y.connection
+     || x.prompt != y.prompt
+     || x.workingDirectory != y.workingDirectory
+     || x.mcps != y.mcps
+     || x.archive != y.archive
+     || x.autoAllow != y.autoAllow
+     || x.autoDeny != y.autoDeny
+     || x.outputRendering != y.outputRendering { return true }
             return messagesUIRelevantChanged(x.messages, y.messages)
         }
     }
