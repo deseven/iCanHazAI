@@ -219,7 +219,7 @@ enum BuiltinToolsSSH {
 
     private static func writeFile(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
         let path = try BuiltinTools.requireString(args, "path")
-        let content = try BuiltinTools.requireString(args, "content")
+        let content = HashlineFormat.stripPastedPrefixes(try BuiltinTools.requireString(args, "content"))
         let resolved = try workdir.resolve(path)
 
         // `cat >` consumes the raw bytes from the same stdin stream right

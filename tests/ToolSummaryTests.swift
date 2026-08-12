@@ -156,11 +156,12 @@ extension AllAppTests {
         func readFileResult() {
             let r = ToolSummary.resultStatus(
                 name: "read_file",
-                result: ToolResult(callID: "c", content: " 1|first\n 2|second\n10|tenth", isError: false))
+                result: ToolResult(callID: "c", content: "[a.txt#A1B2]\n1:first\n2:second\n10:tenth", isError: false))
             #expect(r?.description == "Read 3 lines.")
             let truncated = ToolSummary.resultStatus(
                 name: "read_file",
-                result: ToolResult(callID: "c", content: "1|only\n... (truncated at 2000 lines)", isError: false))
+                result: ToolResult(
+                    callID: "c", content: "[a.txt#A1B2]\n1:only\n... (truncated at 2000 lines)", isError: false))
             #expect(truncated?.description == "Read 1 line.")
             // An image read carries the processed image on `result.image`; the
             // collapsed description is empty (the renderer shows the image in

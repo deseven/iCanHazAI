@@ -218,6 +218,33 @@ extension AllAppTests {
             #expect(r.contains("line2"))
         }
 
+        @Test("write_file strips pasted read_file headers and line-number prefixes")
+        func writeStripsPastedPrefixes() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("pasted.txt")
+            // Pasting read_file output verbatim (header + N: prefixes) must
+            // write only the real content.
+            let pasted = "\(HashlineFormat.formatHashlineHeader(path: path, fileHash: "A1B2"))\n1:line1\n2:line2\n"
+            let (w, wErr) = await Self.call(
+                "write_file", BuiltinTools.filesystemGroup, ["path": path, "content": pasted])
+            #expect(!wErr)
+            #expect(!w.contains("#A1B2"), "result must not carry a tag: \(w)")
+            let (r, rErr) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": path])
+            #expect(!rErr)
+            #expect(r.contains("\n1:line1"))
+            #expect(r.contains("\n2:line2"))
+            #expect(!r.contains("1:1:"), "line-number prefix must have been stripped")
+            // Genuine content without prefixes is untouched.
+            let plain = "no prefix here\nand: neither: this\n"
+            let (w2, w2Err) = await Self.call(
+                "write_file", BuiltinTools.filesystemGroup, ["path": path, "content": plain])
+            #expect(!w2Err)
+            let (r2, r2Err) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": path])
+            #expect(!r2Err)
+            #expect(r2.contains("no prefix here"))
+            #expect(r2.contains("and: neither: this"))
+        }
+
         @Test("read_file supports offset and limit")
         func readOffsetLimit() async throws {
             let tmp = try TestDir()
@@ -225,22 +252,31 @@ extension AllAppTests {
             let (r, rErr) = await Self.call(
                 "read_file", BuiltinTools.filesystemGroup, ["path": tmp.sub("offset.txt"), "offset": 2, "limit": 2])
             #expect(!rErr)
-            #expect(r.contains("b"))
-            #expect(r.contains("c"))
-            #expect(!r.contains("d"))
+            #expect(r.contains("2:b"))
+            #expect(r.contains("3:c"))
+            #expect(!r.contains("4:d"))
+            // The header hash comes from the full file, so a partial read can
+            // still anchor an edit anywhere in the file.
+            let expectedTag = HashlineFormat.computeFileHash("a\nb\nc\nd\ne\n")
+            #expect(
+                r.hasPrefix(
+                    "\(HashlineFormat.formatHashlineHeader(path: tmp.sub("offset.txt"), fileHash: expectedTag))\n"))
         }
 
-        @Test("read_file prefixes lines with a right-aligned 'N|' gutter")
+        @Test("read_file emits a hashline header and unpadded 'N:' lines")
         func readLineNumberGutter() async throws {
             let tmp = try TestDir()
             let content = (1...12).map { "line\($0)" }.joined(separator: "\n") + "\n"
+            let path = tmp.sub("nums.txt")
             try tmp.write("nums.txt", content: content)
-            let (r, err) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": tmp.sub("nums.txt")])
+            let (r, err) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": path])
             #expect(!err)
-            // Gutter pads to the file's line-count width and uses a visible
-            // pipe separator (not a tab) so content indentation stays intact.
-            #expect(r.hasPrefix(" 1|line1\n"), "expected padded gutter: \(r)")
-            #expect(r.contains("\n12|line12"), "expected padded gutter: \(r)")
+            // Header carries the path and a hash of the full file content.
+            let expectedTag = HashlineFormat.computeFileHash(content)
+            #expect(r.hasPrefix("\(HashlineFormat.formatHashlineHeader(path: path, fileHash: expectedTag))\n"))
+            #expect(r.contains("\n1:line1"))
+            #expect(r.contains("\n12:line12"))
+            #expect(!r.contains("|"), "gutter must not use pipes: \(r)")
             #expect(!r.contains("\t"), "gutter must not use tabs: \(r)")
         }
 
@@ -393,9 +429,9 @@ extension AllAppTests {
             let (text, err) = await Self.call(
                 "find_text", BuiltinTools.filesystemGroup, ["path": tmp.sub("s"), "regex": #"error code \d+"#])
             #expect(!err)
-            #expect(text.contains(":1:"))
-            #expect(text.contains(":3:"))
-            #expect(!text.contains(":2:"))
+            #expect(text.contains("\n1:error code 42"))
+            #expect(text.contains("\n3:error code 7"))
+            #expect(!text.contains("2:"))
             let (alt, altErr) = await Self.call(
                 "find_text", BuiltinTools.filesystemGroup,
                 ["path": tmp.sub("s"), "regex": #"^(warning|error) .*[0-9]{1,2}$"#])
@@ -460,11 +496,11 @@ extension AllAppTests {
             let (text, err) = await Self.call(
                 "find_text", BuiltinTools.filesystemGroup, ["path": tmp.sub("s"), "regex": "match", "context": 1])
             #expect(!err)
-            #expect(text.contains(":3:match"))
-            #expect(text.contains("-2-b"))
-            #expect(text.contains("-4-c"))
-            #expect(!text.contains("-1-a"))
-            #expect(!text.contains("-5-d"))
+            #expect(text.contains("\n3:match"))
+            #expect(text.contains("\n2-b"))
+            #expect(text.contains("\n4-c"))
+            #expect(!text.contains("1-a"))
+            #expect(!text.contains("5-d"))
         }
 
         @Test("find_text skips hidden and binary files by default")
@@ -770,29 +806,33 @@ extension AllAppTests {
             // Default search root (the jail "/").
             let (text, err) = await Self.call("find_text", Self.fs, ["regex": "hello"], workdir: wd)
             #expect(!err)
-            #expect(text.contains("/sub/note.txt:2:hello isolated world"))
-            #expect(text.contains("/top.txt:1:hello from the top"))
+            #expect(text.contains("[/sub/note.txt#"))
+            #expect(text.contains("\n2:hello isolated world"))
+            #expect(text.contains("[/top.txt#"))
+            #expect(text.contains("\n1:hello from the top"))
             #expect(!text.contains(Self.hostMarker))
 
             // Explicit subdirectory as the search root: display paths stay
             // jail-absolute so they can be fed back into read_file as-is.
             let (sub, subErr) = await Self.call("find_text", Self.fs, ["regex": "hello", "path": "/sub"], workdir: wd)
             #expect(!subErr)
-            #expect(sub.contains("/sub/note.txt:2:hello isolated world"))
+            #expect(sub.contains("[/sub/note.txt#"))
+            #expect(sub.contains("\n2:hello isolated world"))
             #expect(!sub.contains(Self.hostMarker))
 
             // A single file as the search root.
             let (file, fileErr) = await Self.call(
                 "find_text", Self.fs, ["regex": "hello", "path": "/sub/note.txt"], workdir: wd)
             #expect(!fileErr)
-            #expect(file.contains("/sub/note.txt:2:hello isolated world"))
+            #expect(file.contains("[/sub/note.txt#"))
+            #expect(file.contains("\n2:hello isolated world"))
             #expect(!file.contains(Self.hostMarker))
 
             // Context lines get the same jail spelling.
             let (ctx, ctxErr) = await Self.call("find_text", Self.fs, ["regex": "hello", "context": 1], workdir: wd)
             #expect(!ctxErr)
-            #expect(ctx.contains("/sub/note.txt-1-before"))
-            #expect(ctx.contains("/sub/note.txt-3-after"))
+            #expect(ctx.contains("\n1-before"))
+            #expect(ctx.contains("\n3-after"))
             #expect(!ctx.contains(Self.hostMarker))
         }
 
@@ -814,7 +854,9 @@ extension AllAppTests {
             let wd = Workdir(root: tmp.path, isolated: false)
             let (text, err) = await Self.call("find_text", Self.fs, ["regex": "hello"], workdir: wd)
             #expect(!err)
-            #expect(text.contains("/sub/note.txt:1:hello plain world"))
+            // Real (host) path shows in the header, unpadded line prefix below.
+            #expect(text.contains("sub/note.txt#"))
+            #expect(text.contains("\n1:hello plain world"))
             // The whole point of isolation: without it the real path shows.
             #expect(text.contains(Self.hostMarker))
         }
@@ -1289,7 +1331,7 @@ extension AllAppTests {
             }
         }
 
-        @Test("read_file extracts RTF to line-numbered text")
+        @Test("read_file extracts RTF as plain text without hashline headers")
         @MainActor
         func readRTF() async throws {
             let f = try DocFixtures()
@@ -1297,18 +1339,20 @@ extension AllAppTests {
             #expect(!err, "read_file failed: \(text)")
             #expect(text.contains("Hello RTF"))
             #expect(text.contains("Second line of RTF text."))
-            // Line-numbered gutter is present.
-            #expect(text.contains("|Hello RTF"))
+            // Documents are not editable: no hashline header, no line numbers.
+            #expect(!text.contains("["))
+            #expect(!text.contains("\n1:Hello"))
         }
 
-        @Test("read_file extracts DOCX to line-numbered text")
+        @Test("read_file extracts DOCX as plain text without hashline headers")
         @MainActor
         func readDOCX() async throws {
             let f = try DocFixtures()
             let (text, err) = await Self.call("read_file", Self.fs, ["path": f.docxPath])
             #expect(!err, "read_file failed: \(text)")
             #expect(text.contains("Hello RTF"))
-            #expect(text.contains("1|"))
+            #expect(!text.contains("1:"))
+            #expect(!text.contains("["))
         }
 
         @Test("read_file extracts PDF with page markers")

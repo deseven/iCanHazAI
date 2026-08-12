@@ -329,14 +329,14 @@ enum BuiltinTools {
         BuiltinToolDef(
             name: "read_file",
             description:
-                "Read a file and return its contents in a format that you can process. Use this as a main tool for reading inidividual files. Supports plain text and any other textual formats, document binaries (docx, doc, odt, rtf, pdf and similar) and image files. When relevant, the output is line-numbered in the format 'N|content' (right-aligned line number, a pipe separator, then the raw line) — the 'N|' prefix is NOT part of the file, so never include it when quoting file content.",
+                "Read a file and return its contents in a format that you can process. Use this as a main tool for reading individual files. Supports plain text and any other textual formats, document binaries (docx, doc, odt, rtf, pdf and similar) and image files. Text files are returned as a '[path#TAG]' header followed by 'N:content' numbered lines: #TAG is a file-version hash — copy it verbatim into edit_file to prove the file hasn't changed. The 'N:' prefix is display metadata, not file content — never include it in write_file content or edit_file body rows. Document binaries are returned as extracted plain text with no headers or line numbers and cannot be edited via edit_file.",
             schema:
                 #"{"type":"object","properties":{"path":{"type":"string","description":"File path to read. \#(Workdir.pathDescription)"},"offset":{"type":"integer","description":"1-based starting line number. Defaults to 1."},"limit":{"type":"integer","description":"Maximum number of lines to read. Defaults to 2000."}},"required":["path"]}"#
         ),
         BuiltinToolDef(
             name: "write_file",
             description:
-                "Write text content to a file (creates or overwrites). Parent directories are created as needed. ALWAYS provide the COMPLETE intended content of the file — partial updates or placeholders like '// rest unchanged' are forbidden. Do NOT include line numbers in the content.",
+                "Write text content to a file (creates or overwrites). Parent directories are created as needed. ALWAYS provide the COMPLETE intended content of the file — partial updates or placeholders like '// rest unchanged' are forbidden. Pasted read_file output (headers and line numbers) is automatically stripped. For targeted edits to existing files, use edit_file instead.",
             schema:
                 #"{"type":"object","properties":{"path":{"type":"string","description":"File path to write. \#(Workdir.pathDescription)"},"content":{"type":"string","description":"The complete text content to write, without line numbers or truncation."}},"required":["path","content"]}"#
         ),
@@ -350,7 +350,7 @@ enum BuiltinTools {
         BuiltinToolDef(
             name: "find_text",
             description:
-                "Search file contents with a regular expression across a directory tree. Returns path:line:content for each matching line (context lines use '-' separators, groups are split by '--'), sorted deterministically; lines longer than 300 characters are truncated. Binary files are skipped.",
+                "Search file contents with a regular expression across a directory tree. Returns a '[path#TAG]' header per file followed by 'N:content' for each matching line (context lines use '-' separators, groups are split by '--'), sorted deterministically; lines longer than 300 characters are truncated. #TAG is the file-version hash — copy it verbatim into edit_file. Binary files are skipped.",
             schema:
                 #"{"type":"object","properties":{"path":{"type":"string","description":"\#(Workdir.searchRootDescription)"},"regex":{"type":"string","description":"Regular expression to search for in file contents. The full regex syntax is supported (\\d \\w \\s, quantifiers, alternation, groups, anchors); in some environments it is POSIX ERE (grep -E: alternation, groups, + ? {n,m} quantifiers, but no \\d \\w \\s shorthands — use [[:digit:]] etc.). Invalid patterns are reported as errors."},"file_pattern":{"type":"string","description":"Optional glob to filter files by name, e.g. '*.swift'. Same glob syntax as find_file."},"case_insensitive":{"type":"boolean","description":"Match without regard to case. Default false."},"include_hidden":{"type":"boolean","description":"Also search hidden files and directories (names starting with '.'). Default false."},"exclude_paths":{"type":"array","items":{"type":"string"},"description":"\#(Workdir.excludePathsDescription)"},"max_results":{"type":"integer","description":"Maximum number of matching lines to return (1-1000), applied after sorting so truncation is deterministic. Default 200."},"context":{"type":"integer","description":"Lines of context before and after each match (0-25), grep-style. Default 0."}},"required":["regex"]}"#
         ),
@@ -1007,12 +1007,19 @@ enum BuiltinTools {
             guard let text = String(data: data, encoding: .utf8) else {
                 throw BuiltinToolError("invalid argument 'path': file is not valid UTF-8: \(path)")
             }
-            return formatTextLines(text, offset: offset, limit: limit)
+            return formatTextLines(text, path: path, offset: offset, limit: limit)
 
         case .document(let format):
             switch DocumentExtractor.extract(data: data, format: format) {
             case .success(let extraction):
-                return formatTextLines(extraction.text, offset: offset, limit: limit)
+                // Extracted text is not the file on disk — a hash tag would be
+                // meaningless and line numbers misleading, so return as-is.
+                let slice = sliceText(extraction.text, offset: offset, limit: limit)
+                var doc = slice.lines.joined(separator: "\n")
+                if slice.truncated {
+                    doc += "\n... (truncated at 2000 lines)"
+                }
+                return ToolOutput(content: doc, isError: false)
             case .unsupported(_, let reason):
                 return ToolOutput(content: "Could not extract \(path): \(reason)", isError: false)
             case .failed(let reason):
@@ -1049,11 +1056,12 @@ enum BuiltinTools {
         return ToolOutput(content: fallback, isError: false, image: image)
     }
 
-    /// Formats text as line-numbered output with offset/limit slicing,
-    /// matching the read_file 'N|content' gutter format. The pipe separator
-    /// makes the boundary between gutter and code indentation unambiguous for
-    /// models copying context into patches.
-    private static func formatTextLines(_ text: String, offset: Int, limit: Int) -> ToolOutput {
+    /// Slices text into an offset/limit window. Returns the windowed lines and
+    /// whether more content follows beyond the hard 2000-line cap. A lone empty
+    /// line (a file containing just a newline) stays addressable: the file has
+    /// no lines only when the text itself is empty.
+    private static func sliceText(_ text: String, offset: Int, limit: Int) -> (lines: [String], truncated: Bool) {
+        if text.isEmpty { return ([], false) }
         let lines = text.components(separatedBy: "\n")
         let cleaned: [String] = lines.last?.isEmpty ?? false ? Array(lines.dropLast()) : lines
 
@@ -1061,21 +1069,29 @@ enum BuiltinTools {
         let effectiveLimit = min(limit, hardLimit)
         let startIdx = offset - 1
         guard startIdx < cleaned.count else {
-            return ToolOutput(content: "", isError: false)
+            return ([], false)
         }
         let endIdx = min(startIdx + effectiveLimit, cleaned.count)
-        let slice = cleaned[startIdx..<endIdx]
+        return (Array(cleaned[startIdx..<endIdx]), endIdx - startIdx == hardLimit && cleaned.count > endIdx)
+    }
 
-        let gutterWidth = String(cleaned.count).count
-        var out: [String] = []
-        out.reserveCapacity(slice.count)
-        for (i, line) in slice.enumerated() {
-            let lineNo = startIdx + i + 1
-            let num = String(lineNo)
-            out.append(String(repeating: " ", count: gutterWidth - num.count) + num + "|" + line)
+    /// Formats text as hashline output: a `[path#TAG]` header (tag computed
+    /// from the full file text, so partial reads still anchor edits to the
+    /// whole file) followed by unpadded `N:content` lines. The hash comes from
+    /// the full `text`, not the visible slice.
+    private static func formatTextLines(_ text: String, path: String, offset: Int, limit: Int) -> ToolOutput {
+        let slice = sliceText(text, offset: offset, limit: limit)
+        guard !slice.lines.isEmpty else {
+            return ToolOutput(content: "", isError: false)
         }
-        if endIdx - startIdx == hardLimit && cleaned.count > endIdx {
-            out.append("... (truncated at \(hardLimit) lines)")
+        let tag = HashlineFormat.computeFileHash(text)
+        var out: [String] = []
+        out.append(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))
+        for (i, line) in slice.lines.enumerated() {
+            out.append(HashlineFormat.formatNumberedLine(lineNumber: offset + i, content: line))
+        }
+        if slice.truncated {
+            out.append("... (truncated at 2000 lines)")
         }
         return ToolOutput(content: out.joined(separator: "\n"), isError: false)
     }
@@ -1095,7 +1111,7 @@ enum BuiltinTools {
 
     private static func writeFile(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
         let path = try requireString(args, "path")
-        let content = try requireString(args, "content")
+        let content = HashlineFormat.stripPastedPrefixes(try requireString(args, "content"))
         let resolved = try workdir.resolve(path)
 
         let fm = FileManager.default
@@ -1278,10 +1294,20 @@ enum BuiltinTools {
                 }
             }
 
+            // One hashline header per file, then 'N:content' lines for matches
+            // and context (context uses '-', matching lines ':').
+            let tag = HashlineFormat.computeFileHash(text)
+            let header = HashlineFormat.formatHashlineHeader(path: display, fileHash: tag)
+            var headerEmitted = false
             for group in groups {
                 if context > 0, !out.isEmpty {
                     out.append("--")
                     outBytes += 3
+                }
+                if !headerEmitted {
+                    out.append(header)
+                    outBytes += header.utf8.count + 1
+                    headerEmitted = true
                 }
                 for i in group.range {
                     let isMatch = matching.contains(i)
@@ -1296,8 +1322,8 @@ enum BuiltinTools {
                         hitByteCap = true
                         break fileLoop
                     }
-                    let sep = isMatch ? ":" : "-"
-                    let line = "\(display)\(sep)\(i + 1)\(sep)\(truncateMatchLine(lines[i]))"
+                    let content = truncateMatchLine(lines[i])
+                    let line = "\(i + 1)\(isMatch ? ":" : "-")\(content)"
                     out.append(line)
                     outBytes += line.utf8.count + 1
                 }
