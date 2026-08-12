@@ -1,0 +1,18 @@
+#!/bin/zsh
+#
+# Pre-commit hook: auto-formats staged Swift/TypeScript files, then re-stages
+# them so the commit always contains correctly formatted code. Wired up with
+# `git config core.hooksPath tools/hooks`.
+
+set -uo pipefail
+
+loc="$(cd "$(dirname "${(%):-%x}")/../.." && pwd)"
+cd "$loc"
+
+if ! ./tools/check-format.sh --staged-fix; then
+    echo
+    echo "Formatting failed — fix manually with:"
+    echo "  ./tools/check-format.sh --fix"
+    echo "then re-stage and commit again."
+    exit 1
+fi
