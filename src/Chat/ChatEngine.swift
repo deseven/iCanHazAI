@@ -657,6 +657,7 @@ actor ChatEngine {
                     records[idx].cachedRole = info.role
                     records[idx].cachedModificationTime = info.modificationTime
                     records[idx].cachedArchive = info.archive
+                    records[idx].cachedWorkingDirectory = info.workingDirectory
                     records[idx].cachedLastActivity = info.lastActivity
                     records[idx].lastError = nil
                 } else {
@@ -668,6 +669,7 @@ actor ChatEngine {
                         cachedRole: info.role,
                         cachedModificationTime: info.modificationTime,
                         cachedArchive: info.archive,
+                        cachedWorkingDirectory: info.workingDirectory,
                         cachedLastActivity: info.lastActivity
                     ))
                 }
@@ -1100,6 +1102,7 @@ actor ChatEngine {
                 cachedRole: info.role,
                 cachedModificationTime: info.modificationTime,
                 cachedArchive: info.archive,
+                cachedWorkingDirectory: info.workingDirectory,
                 cachedLastActivity: info.lastActivity,
                 isStreaming: existing?.isStreaming ?? false,
                 stopAfterIteration: existing?.stopAfterIteration ?? false,
@@ -1131,6 +1134,7 @@ actor ChatEngine {
                 cachedRole: info.role,
                 cachedModificationTime: info.modificationTime,
                 cachedArchive: info.archive,
+                cachedWorkingDirectory: info.workingDirectory,
                 cachedLastActivity: info.lastActivity,
                 isStreaming: existing?.isStreaming ?? false,
                 stopAfterIteration: existing?.stopAfterIteration ?? false,
@@ -1175,7 +1179,7 @@ actor ChatEngine {
     /// selected or created. Any existing temporary chat is destroyed first —
     /// at most one temporary chat can exist at a time.
     @discardableResult
-    func createNewChat(role roleName: String, temporary: Bool = false, outputRendering: ChatOutputRendering? = nil) async -> String {
+    func createNewChat(role roleName: String, temporary: Bool = false, outputRendering: ChatOutputRendering? = nil, workingDirectory overrideWorkdir: String? = nil) async -> String {
         pruneEmptyChats(except: nil)
         destroyAllTemporaryChats()
         let filename = temporary ? env.newTemporaryChatFilename() : store.newChatFilename()
@@ -1193,12 +1197,13 @@ actor ChatEngine {
                 chat.connection = conn
             }
         }
-        // Pre-set the working directory from the role so every new chat starts
-        // with the role's directory applied (no need for the user to pick it).
-        // The per-chat override is only honored when the role allows overrides,
-        // but the pre-set value is always applied when the role defines one.
+        // Pre-set the working directory: an explicit override (e.g. from the
+        // sidebar's "By Directory" mode) is applied only when the role
+        // doesn't pre-set its own — a role with a fixed directory always wins.
         if let roleWorkdir = role?.workingDirectory, !roleWorkdir.isEmpty {
             chat.workingDirectory = roleWorkdir
+        } else if let override = overrideWorkdir, !override.isEmpty {
+            chat.workingDirectory = override
         }
         // Seed the chat's active custom MCPs from the role. The selection is
         // stored per chat so it stays stable if the role is edited later, and
@@ -1413,6 +1418,7 @@ actor ChatEngine {
                 records[idx].cachedRole = info.role
                 records[idx].cachedModificationTime = info.modificationTime
                 records[idx].cachedArchive = info.archive
+                records[idx].cachedWorkingDirectory = info.workingDirectory
                 records[idx].cachedLastActivity = info.lastActivity
             }
         }
@@ -2849,6 +2855,7 @@ actor ChatEngine {
             records[idx].cachedRole = info.role
             records[idx].cachedModificationTime = info.modificationTime
             records[idx].cachedArchive = info.archive
+            records[idx].cachedWorkingDirectory = info.workingDirectory
             records[idx].cachedLastActivity = info.lastActivity
         }
         records[idx].isStreaming = false

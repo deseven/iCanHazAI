@@ -20,7 +20,7 @@ auto_allow = ["read_file"]
 
 [shell]
 tools = ["shell"]
-shell_whitelist = ["ls", "cat", "head", "tail", "grep", "wc", "sort", "uniq", "diff", "stat", "file", "find", "strings", "nl", "pwd", "cd", "swift", "npm", "npx", "node", "cargo", "make", "python3", "go", "curl"]
+shell_whitelist = ["ls", "cat", "head", "tail", "grep", "wc", "sort", "uniq", "diff", "stat", "file", "find", "echo", "strings", "nl", "pwd", "cd", "swift", "npm", "npx", "node", "cargo", "make", "python3", "go", "curl"]
 
 [web]
 tools = ["web_search", "web_extract"]

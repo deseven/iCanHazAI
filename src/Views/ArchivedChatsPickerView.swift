@@ -23,10 +23,14 @@ struct ArchivedChatsPickerView: View {
     @State private var confirmingDeleteAll = false
 
     /// All archived chats, unfiltered — drives the Delete All button so it
-    /// stays available (and correctly counted) while a search query hides
-    /// part of the list.
-    private var allArchived: [ChatSummary] { Self.filter(store.chatItems, query: "") }
-    private var items: [ChatSummary] { Self.filter(store.chatItems, query: query) }
+   /// stays available (and correctly counted) while a search query hides
+   /// part of the list.
+    private var allArchived: [ChatSummary] {
+        FuzzySearch.rank(store.visibleArchivedSummaries, query: "") { [$0.displayTitle, $0.filename] }
+    }
+    private var items: [ChatSummary] {
+        FuzzySearch.rank(store.visibleArchivedSummaries, query: query) { [$0.displayTitle, $0.filename] }
+    }
 
     /// Projects archived chats into summaries sorted by last activity
     /// (newest first), fuzzy-filtered by display title and filename.

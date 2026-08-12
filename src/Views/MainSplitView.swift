@@ -8,9 +8,9 @@ import AppKit
 /// the split view delegate (AppKit callbacks) can read them without hopping
 /// to the main actor.
 enum SidebarSizing {
-    static let chatListRange: ClosedRange<CGFloat> = 180...400
+    static let chatListRange: ClosedRange<CGFloat> = 200...400
     static let chatInfoRange: ClosedRange<CGFloat> = 220...480
-    static let defaultChatListWidth: CGFloat = 220
+    static let defaultChatListWidth: CGFloat = 240
     static let defaultChatInfoWidth: CGFloat = 260
 }
 

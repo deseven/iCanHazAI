@@ -29,6 +29,11 @@ final class ChatCacheEntry {
     /// archived chats without reading the full chat JSON. Defaults to false
     /// for chats created before this field existed.
     var archive: Bool
+    /// Cached working directory. Mirrors `Chat.workingDirectory` so the
+    /// sidebar can filter chats by directory without reading the full chat
+    /// JSON. Nil for chats created before this field existed or chats with
+    /// no working directory set.
+    var workingDirectory: String?
     /// Cached last-activity time (the most recent message timestamp, or
     /// `distantPast` for empty chats). Used as the sidebar sort key for
     /// unloaded chats. Distinct from `modificationTime` because a file can
@@ -36,12 +41,13 @@ final class ChatCacheEntry {
     /// mod time would then mis-order chats relative to their real activity.
     var lastActivity: Date
 
-    init(filename: String, name: String?, role: String?, modificationTime: Date, archive: Bool = false, lastActivity: Date = .distantPast) {
+    init(filename: String, name: String?, role: String?, modificationTime: Date, archive: Bool = false, workingDirectory: String? = nil, lastActivity: Date = .distantPast) {
         self.filename = filename
         self.name = name
         self.role = role
         self.modificationTime = modificationTime
         self.archive = archive
+        self.workingDirectory = workingDirectory
         self.lastActivity = lastActivity
     }
 }
@@ -54,5 +60,6 @@ struct ChatCacheInfo: Sendable, Equatable {
     let role: String?
     let modificationTime: Date
     let archive: Bool
+    let workingDirectory: String?
     let lastActivity: Date
 }

@@ -20,6 +20,8 @@ struct AppConfig: Codable, Equatable {
     var chatFeatures: ChatFeaturesConfig = ChatFeaturesConfig()
     /// Web search provider settings for the built-in `web` tool group.
     var webSearch: WebSearchConfig = WebSearchConfig()
+    /// Chat list sidebar display mode and filter selection.
+    var chatList: ChatListConfig = ChatListConfig()
     /// Debug preferences: chat renderer debug overlay.
     var debug: DebugConfig = DebugConfig()
     /// Window position and size for the UI layer.
@@ -30,6 +32,7 @@ struct AppConfig: Codable, Equatable {
         case chatBehaviour = "chat_behaviour"
         case chatFeatures = "chat_features"
         case webSearch = "web_search"
+        case chatList = "chat_list"
         case debug
         case window
     }
@@ -45,6 +48,7 @@ struct AppConfig: Codable, Equatable {
         chatBehaviour = try c.decodeIfPresent(ChatBehaviourConfig.self, forKey: .chatBehaviour) ?? ChatBehaviourConfig()
         chatFeatures = try c.decodeIfPresent(ChatFeaturesConfig.self, forKey: .chatFeatures) ?? ChatFeaturesConfig()
         webSearch = try c.decodeIfPresent(WebSearchConfig.self, forKey: .webSearch) ?? WebSearchConfig()
+        chatList = try c.decodeIfPresent(ChatListConfig.self, forKey: .chatList) ?? ChatListConfig()
         debug = try c.decodeIfPresent(DebugConfig.self, forKey: .debug) ?? DebugConfig()
         window = try c.decodeIfPresent(WindowConfig.self, forKey: .window)
     }
@@ -172,6 +176,20 @@ struct WebSearchConfig: Codable, Equatable, Sendable {
             try c.encodeIfPresent(tavilyAdvancedExtraction, forKey: .tavilyAdvancedExtraction)
         }
     }
+}
+
+/// `[chat_list]` group — sidebar display mode and filter selection.
+/// The mode determines how chats are grouped/filtered in the sidebar:
+/// "all" (plain list), "role" (filter by role), or "directory" (filter by
+/// working directory). The `role` and `directory` keys persist the last
+/// selection even when the mode isn't active, so switching back restores it.
+struct ChatListConfig: Codable, Equatable {
+    /// Display mode: "all", "role", or "directory". Nil/missing → "all".
+    var mode: String?
+    /// Role name for "role" mode. Nil → default role.
+    var role: String?
+    /// Directory path for "directory" mode. Nil → "~" (user home).
+    var directory: String?
 }
 
 /// `[debug]` group — debug-related toggles.
@@ -556,6 +574,15 @@ actor ConfigManager {
 
     func getChatInfoSidebarWidth() -> Double? {
         config.window?.chatInfoSidebarWidth
+    }
+
+    func getChatListConfig() -> ChatListConfig {
+        config.chatList
+    }
+
+    func setChatListConfig(_ value: ChatListConfig) {
+        config.chatList = value
+        persist()
     }
 
     func setDefaultConnection(_ id: String?) {

@@ -188,7 +188,7 @@ final class ChatStore: @unchecked Sendable {
     func getEntry(filename: String) -> ChatCacheInfo? {
         queue.sync {
             guard let entry = fetchEntry(filename: filename) else { return nil }
-            return ChatCacheInfo(filename: entry.filename, name: entry.name, role: entry.role, modificationTime: entry.modificationTime, archive: entry.archive, lastActivity: entry.lastActivity)
+            return ChatCacheInfo(filename: entry.filename, name: entry.name, role: entry.role, modificationTime: entry.modificationTime, archive: entry.archive, workingDirectory: entry.workingDirectory, lastActivity: entry.lastActivity)
         }
     }
 
@@ -259,7 +259,7 @@ final class ChatStore: @unchecked Sendable {
         let descriptor = FetchDescriptor<ChatCacheEntry>(sortBy: [SortDescriptor(\.lastActivity, order: .reverse)])
         do {
             let entries = try context.fetch(descriptor)
-            return entries.map { ChatCacheInfo(filename: $0.filename, name: $0.name, role: $0.role, modificationTime: $0.modificationTime, archive: $0.archive, lastActivity: $0.lastActivity) }
+            return entries.map { ChatCacheInfo(filename: $0.filename, name: $0.name, role: $0.role, modificationTime: $0.modificationTime, archive: $0.archive, workingDirectory: $0.workingDirectory, lastActivity: $0.lastActivity) }
         } catch {
             debugLog("ChatStore", "⚠️ fetchAllEntries failed: \(error)")
             return []
@@ -286,9 +286,10 @@ final class ChatStore: @unchecked Sendable {
             existing.role = chat.role
             existing.modificationTime = modificationTime
             existing.archive = chat.archive ?? false
+            existing.workingDirectory = chat.workingDirectory
             existing.lastActivity = activity
         } else {
-            let entry = ChatCacheEntry(filename: filename, name: chat.cacheName, role: chat.role, modificationTime: modificationTime, archive: chat.archive ?? false, lastActivity: activity)
+            let entry = ChatCacheEntry(filename: filename, name: chat.cacheName, role: chat.role, modificationTime: modificationTime, archive: chat.archive ?? false, workingDirectory: chat.workingDirectory, lastActivity: activity)
             context.insert(entry)
         }
         do {

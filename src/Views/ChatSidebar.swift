@@ -86,11 +86,29 @@ struct ChatSidebar: View {
 
             Divider()
 
-            // Filter field: fuzzy-matches chat titles and exactly matches
-            // (case-insensitive substring) filenames; contents are never
-            // touched, so filtering stays instant. ↑/↓ move the highlight,
-            // ↵ opens the highlighted chat, Esc clears the filter. Sits below
-            // the divider so it reads as part of the list, not the header.
+           // Filter field: fuzzy-matches chat titles and exactly matches
+           // (case-insensitive substring) filenames; contents are never
+           // touched, so filtering stays instant. ↑/↓ move the highlight,
+           // ↵ opens the highlighted chat, Esc clears the filter. Sits below
+           // the divider so it reads as part of the list, not the header.
+            // Mode bar: three tab-like buttons for All / By Role / By Directory,
+            // with an optional role/directory picker control following them.
+            HStack(spacing: 4) {
+                modeButton(.all, icon: "list.bullet.circle", help: "All chats")
+                modeButton(.role, icon: "theatermasks.circle", help: "By Role")
+                modeButton(.directory, icon: "folder.circle", help: "By Directory")
+                if store.chatListMode == .role {
+                    RoleFilterTag()
+                        .onTapGesture { store.showSidebarRolePicker = true }
+                } else if store.chatListMode == .directory {
+                    DirectoryFilterTag()
+                        .onTapGesture { store.showSidebarDirectoryPicker = true }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .font(.callout)
@@ -130,15 +148,15 @@ struct ChatSidebar: View {
                                 }
                             }
                         } else {
-                            // A single flat ForEach, NOT nested ForEach(sections) {
-                            // ForEach(items) }: with nesting, a chat moving between
-                            // sections (e.g. "Today" -> "Yesterday" at day rollover)
-                            // jumps between two different ForEach containers, and
-                            // LazyVStack reuses the cached row view with its stale
-                            // selection highlight. Flat entries with stable ids turn
-                            // the move into a plain reorder, which diffs correctly.
-                            ForEach(ChatSidebar.sidebarEntries(for: store.chatSummaries)) { entry in
-                                switch entry {
+                           // A single flat ForEach, NOT nested ForEach(sections) {
+                           // ForEach(items) }: with nesting, a chat moving between
+                           // sections (e.g. "Today" -> "Yesterday" at day rollover)
+                           // jumps between two different ForEach containers, and
+                           // LazyVStack reuses the cached row view with its stale
+                           // selection highlight. Flat entries with stable ids turn
+                           // the move into a plain reorder, which diffs correctly.
+                            ForEach(ChatSidebar.sidebarEntries(for: store.visibleChatSummaries)) { entry in
+                               switch entry {
                                 case .header(let title):
                                     PickerSectionHeader(title: title)
                                 case .row(let item, let showsDivider):
@@ -204,10 +222,10 @@ struct ChatSidebar: View {
     private var isFiltering: Bool { !filterText.isEmpty }
 
     /// The chat list filtered by `filterText` (identity when the filter is
-    /// empty).
-    private var filteredChats: [ChatSummary] {
-        ChatSidebar.filterChats(store.chatSummaries, query: filterText)
-    }
+   /// empty).
+   private var filteredChats: [ChatSummary] {
+        ChatSidebar.filterChats(store.visibleChatSummaries, query: filterText)
+   }
 
     /// Filters the chat list: fuzzy matching on the display title plus exact
     /// (case-insensitive substring) matching on the filename. Chat contents
@@ -277,19 +295,20 @@ struct ChatSidebar: View {
     }
 
     @ViewBuilder
-    private func chatRow(for item: ChatSummary) -> some View {
-        let role = item.roleName.flatMap { name in
-            store.roles.first(where: { $0.name == name })
-        }
-        ChatRow(
-            item: item,
-            roleIcon: role?.icon ?? Role.defaultIcon,
-            roleAccent: role?.accentColor ?? .accentColor,
-            isSelected: isFiltering ? item.id == filterSelection?.id : item.id == store.selectedChatID,
-            isUnread: item.hasUnreadActivity && item.id != store.selectedChatID,
-            isStreaming: item.isStreaming,
-            isBlinking: store.blinkingChatIDs.contains(item.id)
-        )
+   private func chatRow(for item: ChatSummary) -> some View {
+       let role = item.roleName.flatMap { name in
+           store.roles.first(where: { $0.name == name })
+       }
+       ChatRow(
+           item: item,
+           roleIcon: role?.icon ?? Role.defaultIcon,
+           roleAccent: role?.accentColor ?? .accentColor,
+           isSelected: isFiltering ? item.id == filterSelection?.id : item.id == store.selectedChatID,
+           isUnread: item.hasUnreadActivity && item.id != store.selectedChatID,
+           isStreaming: item.isStreaming,
+            isBlinking: store.blinkingChatIDs.contains(item.id),
+            hidesRoleBadge: store.chatListMode == .role
+       )
         .contentShape(Rectangle())
         .onTapGesture {
             openChat(item.id)
@@ -314,8 +333,23 @@ struct ChatSidebar: View {
 
     /// Opens the chat JSON file in Finder, selecting it.
     private func revealInFinder(filename: String) {
-        let url = EnvironmentManager.shared.chatsURL.appendingPathComponent(filename)
-        NSWorkspace.shared.activateFileViewerSelecting([url])
+       let url = EnvironmentManager.shared.chatsURL.appendingPathComponent(filename)
+       NSWorkspace.shared.activateFileViewerSelecting([url])
+   }
+
+    // MARK: - Mode bar
+
+    @ViewBuilder
+    private func modeButton(_ mode: AppViewModel.ChatListMode, icon: String, help: String) -> some View {
+        let isActive = store.chatListMode == mode
+        Button(action: { store.setChatListMode(mode) }) {
+            Image(systemName: icon)
+                .font(.system(size: 16))
+                .foregroundStyle(isActive ? Color.accentColor : .secondary)
+                .frame(width: 22, height: 22)
+        }
+        .buttonStyle(.borderless)
+        .help(help)
     }
 
     // MARK: - Date sectioning
@@ -432,20 +466,24 @@ private struct ChatRow: View {
     var isUnread: Bool = false
     var isStreaming: Bool = false
     /// Pulses the row to flag a tool call awaiting approval in this chat.
-    var isBlinking: Bool = false
+   var isBlinking: Bool = false
 
-    @State private var blink: Bool = false
+    /// When true, the role badge is hidden (used in "By Role" mode where the
+    /// role is already picked and showing it on every row is redundant).
+    var hidesRoleBadge: Bool = false
 
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.displayTitle)
-                    .font(.callout)
-                    .lineLimit(1)
-                HStack(spacing: 5) {
-                    if let roleName = item.roleName, !roleName.isEmpty {
-                        RoleBadge(name: roleName, icon: roleIcon, accent: roleAccent)
-                    }
+   @State private var blink: Bool = false
+
+   var body: some View {
+       HStack {
+           VStack(alignment: .leading, spacing: 2) {
+               Text(item.displayTitle)
+                   .font(.callout)
+                   .lineLimit(1)
+               HStack(spacing: 5) {
+                    if !hidesRoleBadge, let roleName = item.roleName, !roleName.isEmpty {
+                       RoleBadge(name: roleName, icon: roleIcon, accent: roleAccent)
+                   }
                     Text(item.filename)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -518,3 +556,51 @@ private struct RoleBadge: View {
     }
 }
 
+/// A capsule tag showing the currently selected role in "By Role" mode,
+/// styled like the role badges in chat rows. Tapping opens the role picker.
+private struct RoleFilterTag: View {
+    @EnvironmentObject var store: AppViewModel
+
+    var body: some View {
+        let role = store.chatListSelectedRole
+        let name = store.chatListRole ?? "None"
+        let truncated = AppViewModel.truncateRoleName(name)
+        HStack(spacing: 3) {
+            Image(systemName: role?.icon ?? Role.defaultIcon)
+                .font(.system(size: 9, weight: .semibold))
+            Text(truncated)
+                .font(.caption2)
+                .fontWeight(.medium)
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background((role?.accentColor ?? .accentColor).opacity(0.15), in: Capsule())
+        .foregroundStyle(role?.accentColor ?? .accentColor)
+        .lineLimit(1)
+        .help("Filtering by role: \(name). Click to change.")
+    }
+}
+
+/// A capsule tag showing the currently selected directory in "By Directory"
+/// mode. Tapping opens the directory picker.
+private struct DirectoryFilterTag: View {
+    @EnvironmentObject var store: AppViewModel
+
+    var body: some View {
+        let display = store.chatListDirectoryDisplay
+        let truncated = AppViewModel.truncateDirectoryPath(display)
+        HStack(spacing: 3) {
+            Image(systemName: SSHSpec.isSSH(store.chatListDirectory ?? "") ? "network" : "folder")
+                .font(.system(size: 9, weight: .semibold))
+            Text(truncated)
+                .font(.caption2)
+                .fontWeight(.medium)
+        }
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background(Color.accentColor.opacity(0.15), in: Capsule())
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .help("Filtering by directory: \(display). Click to change.")
+    }
+}

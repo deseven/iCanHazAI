@@ -25,6 +25,16 @@ final class AppViewModel: ObservableObject {
         case assignToExisting(filename: String)
     }
 
+    /// The sidebar's chat list display mode.
+    enum ChatListMode: String, Equatable, CaseIterable {
+        /// Plain list of all chats (default).
+        case all
+        /// Filter chats by role.
+        case role
+        /// Filter chats by working directory.
+        case directory
+    }
+
     /// Shared reference set by the app on launch so that auxiliary windows
     /// (e.g. Preferences) can reach the view model without walking the
     /// responder chain.
@@ -148,6 +158,32 @@ final class AppViewModel: ObservableObject {
     /// views displaying live MCP tool lists know when to refetch.
     @Published var mcpConfigurationVersion: Int = 0
 
+    // MARK: - Chat list mode state
+
+    /// Current sidebar display mode (all / role / directory). Persisted to
+    /// `[chat_list].mode` in the app config.
+    @Published var chatListMode: ChatListMode = .all {
+        didSet { saveChatListState() }
+    }
+    /// Role selected in "By Role" mode. Persisted to `[chat_list].role`.
+    @Published var chatListRole: String? = nil {
+        didSet { saveChatListState() }
+    }
+    /// Directory selected in "By Directory" mode. Persisted to
+    /// `[chat_list].directory`. Defaults to "~" (user home).
+    @Published var chatListDirectory: String? = nil {
+        didSet { saveChatListState() }
+    }
+    /// Whether the sidebar's role picker (for "By Role" mode) is shown.
+    @Published var showSidebarRolePicker: Bool = false
+    /// Whether the sidebar's directory picker (for "By Directory" mode) is
+   /// shown.
+   @Published var showSidebarDirectoryPicker: Bool = false
+
+    /// Suppresses `saveChatListState` during initial load so restoring values
+    /// from config doesn't trigger redundant writes.
+    private var isLoadingChatListState = false
+
     // MARK: - Private
 
     private let engine = ChatEngine.shared
@@ -223,6 +259,7 @@ final class AppViewModel: ObservableObject {
             let et = await config.getExpandThinking()
             let eu = await config.getExpandToolUse()
             let ws = await config.getWebSearchConfig()
+            let clm = await config.getChatListConfig()
             preferencesDefaultConnection = dc
             preferencesDefaultRole = dr
             preferencesUtilityConnection = uc
@@ -238,6 +275,21 @@ final class AppViewModel: ObservableObject {
             preferencesWebSearchToken = ws.token ?? ""
             preferencesLinkupRenderJS = ws.linkupRenderJS ?? false
             preferencesTavilyAdvancedExtraction = ws.tavilyAdvancedExtraction ?? false
+            // Restore chat list mode and filter selections, falling back to
+            // defaults when the stored role/directory no longer exists.
+            isLoadingChatListState = true
+            chatListMode = ChatListMode(rawValue: clm.mode ?? "all") ?? .all
+            chatListRole = clm.role.flatMap { name in
+                roles.contains(where: { $0.name == name }) ? name : nil
+            } ?? preferencesDefaultRole
+            chatListDirectory = clm.directory ?? Self.homeDirectoryPath
+            isLoadingChatListState = false
+            // If the mode is "role" and the default role isn't available,
+            // trigger the sidebar role picker so the user picks one.
+            if chatListMode == .role, !roles.isEmpty,
+               !roles.contains(where: { $0.name == chatListRole }) {
+                showSidebarRolePicker = true
+            }
             DebugLogger.setEnabled(ad)
             if let rs { chatInfoSidebarVisible = rs }
             // Clamp restored widths into the allowed ranges so a hand-edited
@@ -265,6 +317,322 @@ final class AppViewModel: ObservableObject {
     /// Reloads preferences (call after FSEvents changes to connections/roles).
     func refreshPreferences() {
         loadPreferences()
+    }
+
+    // MARK: - Chat list mode persistence
+
+    /// The user's home directory path, used as the default directory filter.
+    nonisolated static let homeDirectoryPath: String = {
+        (NSHomeDirectory() as NSString).standardizingPath
+    }()
+
+    /// Persists the current chat list mode and filter selections to config.
+    /// Called on every change to `chatListMode`, `chatListRole`, or
+    /// `chatListDirectory`. Even when the mode is "all", the last role and
+    /// directory selections are saved so switching back restores them.
+    private func saveChatListState() {
+        guard !isLoadingChatListState else { return }
+        let mode = chatListMode.rawValue
+        let role = chatListRole
+        let directory = chatListDirectory
+        Task {
+            await config.setChatListConfig(ChatListConfig(
+                mode: mode,
+                role: role,
+                directory: directory
+            ))
+        }
+    }
+
+    // MARK: - Chat list filtering
+
+    /// The chats visible in the sidebar after applying the current mode filter.
+    /// In "all" mode this is every non-archived, non-temporary chat. In "role"
+    /// mode only chats matching `chatListRole` are shown. In "directory" mode
+    /// only chats whose working directory matches `chatListDirectory` are shown.
+    /// The active chat is NOT forced into the list — it stays selected and
+    /// viewable even when filtered out.
+    var visibleChatSummaries: [ChatSummary] {
+        switch chatListMode {
+        case .all:
+            return chatSummaries
+        case .role:
+            let targetRole = chatListRole ?? ""
+            return chatSummaries.filter { $0.roleName == targetRole }
+        case .directory:
+            return chatSummaries.filter { Self.chatMatchesDirectory($0, directory: chatListDirectory ?? Self.homeDirectoryPath) }
+        }
+    }
+
+    /// Archived chats filtered by the current mode, for the archive picker.
+    var visibleArchivedSummaries: [ChatSummary] {
+        let archived = chatItems
+            .filter { $0.isArchived && !$0.isTemporary }
+            .map(ChatSummary.init)
+            .sorted { $0.sortKey > $1.sortKey }
+        switch chatListMode {
+        case .all:
+            return archived
+        case .role:
+            let targetRole = chatListRole ?? ""
+            return archived.filter { $0.roleName == targetRole }
+        case .directory:
+            return archived.filter { Self.chatMatchesDirectory($0, directory: chatListDirectory ?? Self.homeDirectoryPath) }
+        }
+    }
+
+    /// Whether a chat's working directory matches the filter directory.
+    /// Home directory (`~`) matches chats with no working directory set.
+    /// `nonisolated` so it can be unit-tested without the main actor.
+    nonisolated static func chatMatchesDirectory(_ chat: ChatSummary, directory: String) -> Bool {
+        let normalized = Self.normalizeDirectoryForComparison(directory)
+        let chatDir = chat.workingDirectory
+        if chatDir == nil || chatDir?.isEmpty == true {
+            // Chats with no directory match the home filter.
+            return normalized == Self.homeDirectoryPath
+        }
+        return Self.normalizeDirectoryForComparison(chatDir!) == normalized
+    }
+
+    /// Normalizes a directory path for comparison: SSH specs are kept
+    /// verbatim; local paths are tilde-expanded and standardized.
+    nonisolated static func normalizeDirectoryForComparison(_ path: String) -> String {
+        if SSHSpec.isSSH(path) { return path.trimmingCharacters(in: .whitespaces) }
+        return (path as NSString).standardizingPath
+    }
+
+    /// Truncates a role name for display in the sidebar mode bar: shows the
+    /// first part of the name with "..." appended when it's too long.
+    nonisolated static func truncateRoleName(_ name: String, maxLen: Int = 12) -> String {
+        guard name.count > maxLen else { return name }
+        return String(name.prefix(maxLen - 3)) + "..."
+    }
+
+    /// Truncates a directory path for display in the sidebar mode bar.
+    /// SSH specs show as "host.../last" when too long; local paths show as
+    /// ".../last" when too long.
+    nonisolated static func truncateDirectoryPath(_ path: String, maxLen: Int = 20) -> String {
+        guard path.count > maxLen else { return path }
+        if SSHSpec.isSSH(path) {
+            // Try to show "host.../lastPathComponent"
+            if let slash = path.lastIndex(of: "/") {
+                let host = path[..<slash]
+                let last = path[path.index(after: slash)...]
+                let hostStr = String(host)
+                let lastStr = String(last)
+                if lastStr.count + 4 <= maxLen && !hostStr.isEmpty {
+                    return String(hostStr.prefix(1)) + "..." + "/" + lastStr
+                }
+            }
+            return String(path.prefix(maxLen - 3)) + "..."
+        }
+        // Local path: show ".../last few components" via middle truncation.
+        let nsPath = path as NSString
+        let last = nsPath.lastPathComponent
+        if last.count + 4 <= maxLen {
+            return "..." + String(path.suffix(maxLen - 3))
+        }
+        return String(path.prefix(maxLen - 3)) + "..."
+    }
+
+    /// The display label for the current directory filter, abbreviated with
+    /// `~` for the home directory.
+    var chatListDirectoryDisplay: String {
+        let dir = chatListDirectory ?? Self.homeDirectoryPath
+        if dir == Self.homeDirectoryPath {
+            return "~"
+        }
+        return SSHSpec.isSSH(dir) ? dir : (dir as NSString).abbreviatingWithTildeInPath
+    }
+
+    /// The currently selected role object for "By Role" mode, if it exists.
+    var chatListSelectedRole: Role? {
+        guard let name = chatListRole else { return nil }
+        return roles.first(where: { $0.name == name })
+    }
+
+    // MARK: - Chat list mode actions
+
+    /// Switches the sidebar to a new display mode. No-op when the mode is
+    /// already active (acts like tabs — pressing the active button does nothing).
+    func setChatListMode(_ mode: ChatListMode) {
+        guard chatListMode != mode else { return }
+        chatListMode = mode
+        if mode == .role, !roles.isEmpty,
+           !roles.contains(where: { $0.name == chatListRole }) {
+            showSidebarRolePicker = true
+        }
+        if mode == .directory, chatListDirectory == nil || chatListDirectory?.isEmpty == true {
+            chatListDirectory = Self.homeDirectoryPath
+        }
+    }
+
+    /// Called when a role is picked from the sidebar's role picker.
+    func sidebarRolePickerPicked(role roleName: String) {
+        chatListRole = roleName
+        showSidebarRolePicker = false
+    }
+
+    /// Called when the sidebar's role picker is cancelled.
+    func sidebarRolePickerCancelled() {
+        showSidebarRolePicker = false
+        // If no valid role is selected, fall back to "all" mode.
+        if !roles.contains(where: { $0.name == chatListRole }) {
+            chatListMode = .all
+        }
+    }
+
+    /// Called when a directory is picked from the sidebar's directory picker.
+    func sidebarDirectoryPickerPicked(_ path: String) {
+        chatListDirectory = path
+        showSidebarDirectoryPicker = false
+    }
+
+    /// Called when the sidebar's directory picker is cancelled.
+    func sidebarDirectoryPickerCancelled() {
+        showSidebarDirectoryPicker = false
+    }
+
+    /// Roles available for the sidebar's "By Directory" mode picker — only
+    /// roles that have disk access (bind to a directory) are offered, since
+    /// the directory is pre-picked and we skip the workdir picker.
+    var rolesWithDiskAccess: [Role] {
+        roles.filter { $0.bindsToDirectory }
+    }
+
+    // MARK: - Chat creation (mode-aware)
+
+    /// Begins creating a new chat, mode-aware. In "role" mode the picked role
+    /// is used directly (no role picker). In "directory" mode only roles with
+    /// disk access are offered and the picked directory is pre-set (no workdir
+    /// picker). In "all" mode the standard flow applies.
+    func createNewChat() {
+        if let current = selectedChatID {
+            previousChatID = current
+        }
+        if roles.isEmpty {
+            Task {
+                let filename = await engine.createNewChat(role: "")
+                selectedChatID = filename
+                await engine.selectChat(filename: filename)
+                await engine.markViewed(filename: filename)
+            }
+            return
+        }
+        switch chatListMode {
+        case .role:
+            // Role is already picked — create directly.
+            if let roleName = chatListRole, roles.contains(where: { $0.name == roleName }) {
+                createNewChat(role: roleName)
+            } else {
+                // No valid role — fall back to the picker.
+                rolePickerMode = .newChat
+                showRolePicker = true
+            }
+        case .directory:
+            // Offer only roles with disk access; the directory is pre-set.
+            rolePickerMode = .newChat
+            showRolePicker = true
+        case .all:
+            rolePickerMode = .newChat
+            showRolePicker = true
+        }
+    }
+
+    /// Begins creating a temporary chat, mode-aware (same logic as
+    /// `createNewChat` but for temporary chats).
+    func createNewTemporaryChat() {
+        if let current = selectedChatID {
+            previousChatID = current
+        }
+        if roles.isEmpty {
+            Task {
+                let filename = await engine.createNewChat(role: "", temporary: true)
+                selectedChatID = filename
+                await engine.selectChat(filename: filename)
+                await engine.markViewed(filename: filename)
+            }
+            return
+        }
+        switch chatListMode {
+        case .role:
+            if let roleName = chatListRole, roles.contains(where: { $0.name == roleName }) {
+                createNewTemporaryChat(role: roleName)
+            } else {
+                rolePickerMode = .newTemporaryChat
+                showRolePicker = true
+            }
+        case .directory:
+            rolePickerMode = .newTemporaryChat
+            showRolePicker = true
+        case .all:
+            rolePickerMode = .newTemporaryChat
+            showRolePicker = true
+        }
+    }
+
+    /// Creates a new chat with the chosen role (called from the role picker).
+   /// Mode-aware: in "role" mode the role is already picked so this isn't
+   /// called. In "directory" mode the picked directory is pre-set and the
+   /// workdir picker is skipped. In "all" mode the standard flow applies.
+    func createNewChat(role roleName: String) {
+       showRolePicker = false
+       let needsWorkdir: Bool
+       let overrideWorkdir: String?
+       switch chatListMode {
+       case .directory:
+           overrideWorkdir = chatListDirectory
+           // Skip workdir picker — the directory is pre-set from the mode.
+           needsWorkdir = false
+       case .role, .all:
+           overrideWorkdir = nil
+           needsWorkdir = roleNeedsWorkdirPick(roleName)
+       }
+       Task {
+           let filename = await engine.createNewChat(role: roleName, workingDirectory: overrideWorkdir)
+           selectedChatID = filename
+           await engine.selectChat(filename: filename)
+           await engine.markViewed(filename: filename)
+           if needsWorkdir { showWorkdirPicker = true }
+       }
+   }
+
+   /// Creates a temporary chat with the chosen role (called from the role
+   /// picker in "New Temporary Chat" mode). Same mode-aware logic as
+   /// `createNewChat(role:)`.
+    func createNewTemporaryChat(role roleName: String) {
+       showRolePicker = false
+       let needsWorkdir: Bool
+       let overrideWorkdir: String?
+       switch chatListMode {
+       case .directory:
+           overrideWorkdir = chatListDirectory
+           needsWorkdir = false
+       case .role, .all:
+           overrideWorkdir = nil
+           needsWorkdir = roleNeedsWorkdirPick(roleName)
+       }
+       Task {
+           let filename = await engine.createNewChat(role: roleName, temporary: true, workingDirectory: overrideWorkdir)
+            selectedChatID = filename
+            await engine.selectChat(filename: filename)
+            await engine.markViewed(filename: filename)
+            if needsWorkdir { showWorkdirPicker = true }
+       }
+   }
+
+    /// True when a role requires the user to pick a working directory: it has
+    /// directory-relevant tools (Filesystem/Code) and doesn't pre-set a
+    /// directory. Used to auto-present the workdir picker after a role is picked.
+    private func roleNeedsWorkdirPick(_ roleName: String) -> Bool {
+        guard let role = roles.first(where: { $0.name == roleName }) else { return false }
+        return Self.roleNeedsWorkdirPick(role)
+    }
+
+    /// Pure decision logic (testable without an app instance).
+    nonisolated static func roleNeedsWorkdirPick(_ role: Role) -> Bool {
+        guard role.hasDirectoryRelevantTools else { return false }
+        return role.workingDirectory?.isEmpty ?? true
     }
 
     // MARK: - Preference bindings (two-way, write-through to ConfigManager)
@@ -954,14 +1322,15 @@ final class AppViewModel: ObservableObject {
             if a.filename != b.filename { return true }
             // Record-level scalars.
             if a.isStreaming != b.isStreaming
-                || a.stopAfterIteration != b.stopAfterIteration
-                || a.hasUnreadActivity != b.hasUnreadActivity
-                || a.lastError != b.lastError
-                || a.cachedName != b.cachedName
-                || a.cachedRole != b.cachedRole
-                || a.cachedArchive != b.cachedArchive
-                || a.cachedLastActivity != b.cachedLastActivity
-                || a.isTemporary != b.isTemporary { return true }
+               || a.stopAfterIteration != b.stopAfterIteration
+               || a.hasUnreadActivity != b.hasUnreadActivity
+               || a.lastError != b.lastError
+               || a.cachedName != b.cachedName
+               || a.cachedRole != b.cachedRole
+               || a.cachedArchive != b.cachedArchive
+                || a.cachedWorkingDirectory != b.cachedWorkingDirectory
+               || a.cachedLastActivity != b.cachedLastActivity
+               || a.isTemporary != b.isTemporary { return true }
             // Loaded-chat structure. We compare everything EXCEPT the message
             // text bodies (content/thinking), which stream in per token and
             // are only consumed by the webview.
@@ -1154,95 +1523,7 @@ final class AppViewModel: ObservableObject {
     func deleteMessage(messageID: UUID) {
         guard let filename = selectedChatID else { return }
         Task { await engine.deleteMessage(filename: filename, messageID: messageID) }
-    }
-
-    /// Begins creating a temporary chat by presenting the role picker
-    /// ("New Temporary Chat"). The chat is created once the user picks a role.
-    /// A temporary chat is never saved to disk, never listed in the sidebar,
-    /// and is destroyed irreversibly when another chat is selected or created.
-    func createNewTemporaryChat() {
-        if let current = selectedChatID {
-            previousChatID = current
-        }
-        if roles.isEmpty {
-            // No roles available — create a temporary chat with no role.
-            Task {
-                let filename = await engine.createNewChat(role: "", temporary: true)
-                selectedChatID = filename
-                await engine.selectChat(filename: filename)
-                await engine.markViewed(filename: filename)
-            }
-            return
-        }
-        rolePickerMode = .newTemporaryChat
-        showRolePicker = true
-    }
-
-    /// Begins creating a new chat by presenting the role picker. The actual
-    /// chat is created once the user picks a role.
-    func createNewChat() {
-        if let current = selectedChatID {
-            previousChatID = current
-        }
-        if roles.isEmpty {
-            // No roles available — create a chat with no role. The input will
-            // be disabled until a role is assigned.
-            Task {
-                let filename = await engine.createNewChat(role: "")
-                selectedChatID = filename
-                await engine.selectChat(filename: filename)
-                await engine.markViewed(filename: filename)
-            }
-            return
-        }
-        rolePickerMode = .newChat
-        showRolePicker = true
-    }
-
-    /// Creates a new chat with the chosen role (called from the role picker).
-    /// When the role requires a user-picked working directory (override allowed,
-    /// no role-default directory), the workdir picker is presented right after
-    /// the chat is created so the user isn't left at a dead "No directory" chat.
-    func createNewChat(role roleName: String) {
-        showRolePicker = false
-        let needsWorkdir = roleNeedsWorkdirPick(roleName)
-        Task {
-            let filename = await engine.createNewChat(role: roleName)
-            selectedChatID = filename
-            await engine.selectChat(filename: filename)
-            await engine.markViewed(filename: filename)
-            if needsWorkdir { showWorkdirPicker = true }
-        }
-    }
-
-    /// Creates a temporary chat with the chosen role (called from the role
-    /// picker in "New Temporary Chat" mode). Same flow as `createNewChat(role:)`
-    /// but the chat is never persisted and is destroyed on deselection.
-    func createNewTemporaryChat(role roleName: String) {
-        showRolePicker = false
-        let needsWorkdir = roleNeedsWorkdirPick(roleName)
-        Task {
-            let filename = await engine.createNewChat(role: roleName, temporary: true)
-            selectedChatID = filename
-            await engine.selectChat(filename: filename)
-            await engine.markViewed(filename: filename)
-            if needsWorkdir { showWorkdirPicker = true }
-        }
-    }
-
-    /// True when a role requires the user to pick a working directory: it has
-    /// directory-relevant tools (Filesystem/Code) and doesn't pre-set a
-    /// directory. Used to auto-present the workdir picker after a role is picked.
-    private func roleNeedsWorkdirPick(_ roleName: String) -> Bool {
-        guard let role = roles.first(where: { $0.name == roleName }) else { return false }
-        return Self.roleNeedsWorkdirPick(role)
-    }
-
-    /// Pure decision logic (testable without an app instance).
-    nonisolated static func roleNeedsWorkdirPick(_ role: Role) -> Bool {
-        guard role.hasDirectoryRelevantTools else { return false }
-        return role.workingDirectory?.isEmpty ?? true
-    }
+   }
 
     /// Unified role-picker confirmation. Dispatches based on the current
     /// picker mode: creates a new chat (`.newChat`) or assigns the role to an
@@ -1330,13 +1611,13 @@ final class AppViewModel: ObservableObject {
     }
 
     /// Deletes every archived chat (the archived-chats picker's "Delete All"
-    /// action). Deletions run sequentially through the engine.
-    func deleteAllArchivedChats() {
-        let filenames = chatItems.filter { $0.isArchived && !$0.isTemporary }.map(\.filename)
-        for filename in filenames { inputDrafts.remove(for: filename) }
-        if let preview = archivedPreviewID, filenames.contains(preview) { archivedPreviewID = nil }
-        Task { for filename in filenames { await engine.deleteChat(filename: filename) } }
-    }
+   /// action). Deletions run sequentially through the engine.
+   func deleteAllArchivedChats() {
+        let filenames = visibleArchivedSummaries.map(\.filename)
+       for filename in filenames { inputDrafts.remove(for: filename) }
+       if let preview = archivedPreviewID, filenames.contains(preview) { archivedPreviewID = nil }
+       Task { for filename in filenames { await engine.deleteChat(filename: filename) } }
+   }
 
     /// Opens an archived chat in the chat view without unarchiving it: it
     /// stays hidden from the sidebar, like a temporary chat.

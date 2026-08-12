@@ -229,13 +229,18 @@ tavily_advanced_extraction = false         # Tavily only: use the advanced extra
 app_debug_enabled = false                  # app-level debug logging (log + stdout)
 chat_renderer_debug_enabled = false        # chat renderer debug overlay
 
+[chat_list]
+mode = "all"                              # all (default) | role | directory — sidebar display mode
+role = "Assistant"                        # role filter for "role" mode; falls back to default_role if invalid
+directory = "~"                           # directory filter for "directory" mode; "~" = user home
+
 [window]                                   # optional; managed by the app (default/minimum size: 1024x600)
 x = 100.0
 y = 100.0
 width = 1024.0
 height = 600.0
 chat_info_sidebar_visible = false
-chat_list_sidebar_width = 220.0
+chat_list_sidebar_width = 240.0
 chat_info_sidebar_width = 260.0
 ```
 

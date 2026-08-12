@@ -25,6 +25,7 @@ To address the elephant in the room: there are many AI chat apps and agentic har
 - attachments: attach images, plain text, and documents (docx/doc/odt/rtf/pdf) to any chat on any connection — images on non-vision connections get a local text fallback
 - clean configuration/data structure in a single directory (`~/iCanHazAI`), all plain text, hot-reloaded on external edits and errors gracefully handled
 - bundled Configurator role that edits the configuration for you
+- chat list modes: browse all chats, filter by role, or filter by working directory — the sidebar adapts and new chats inherit the active filter
 
 
 ## Roadmap

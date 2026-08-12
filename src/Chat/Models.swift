@@ -945,6 +945,10 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     /// Cached archive flag from SwiftData. Mirrors `Chat.archive` so the
     /// sidebar can hide archived chats without loading the full chat.
     var cachedArchive: Bool
+    /// Cached working directory from SwiftData. Mirrors
+    /// `Chat.workingDirectory` so the sidebar can filter chats by directory
+    /// without loading the full chat.
+    var cachedWorkingDirectory: String?
     /// Cached last-activity time from SwiftData (the most recent message
     /// timestamp, or `distantPast` for empty chats). Used as the sidebar
     /// sort key when the chat is unloaded, so the sidebar order reflects
@@ -955,13 +959,14 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     /// irreversibly as soon as another chat is selected or created.
     var isTemporary: Bool
 
-    init(filename: String, chat: Chat? = nil, cachedName: String? = nil, cachedRole: String? = nil, cachedModificationTime: Date = Date(), cachedArchive: Bool = false, cachedLastActivity: Date = .distantPast, isStreaming: Bool = false, stopAfterIteration: Bool = false, hasUnreadActivity: Bool = false, lastError: String? = nil, createdAt: Date = Date(), isTemporary: Bool = false) {
+    init(filename: String, chat: Chat? = nil, cachedName: String? = nil, cachedRole: String? = nil, cachedModificationTime: Date = Date(), cachedArchive: Bool = false, cachedWorkingDirectory: String? = nil, cachedLastActivity: Date = .distantPast, isStreaming: Bool = false, stopAfterIteration: Bool = false, hasUnreadActivity: Bool = false, lastError: String? = nil, createdAt: Date = Date(), isTemporary: Bool = false) {
         self.filename = filename
         self.chat = chat
         self.cachedName = cachedName
         self.cachedRole = cachedRole
         self.cachedModificationTime = cachedModificationTime
         self.cachedArchive = cachedArchive
+        self.cachedWorkingDirectory = cachedWorkingDirectory
         self.cachedLastActivity = cachedLastActivity
         self.isStreaming = isStreaming
         self.stopAfterIteration = stopAfterIteration
@@ -976,6 +981,13 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     /// is set.
     var effectiveRoleName: String? {
         chat?.role ?? cachedRole
+    }
+
+    /// The working directory for this chat: the live chat's value when
+    /// loaded (authoritative), otherwise the cached value. Nil when neither
+    /// is set.
+    var effectiveWorkingDirectory: String? {
+        chat?.workingDirectory ?? cachedWorkingDirectory
     }
 
     /// Whether this chat is archived: the live chat's `archive` flag when
@@ -1053,6 +1065,10 @@ struct ChatSummary: Identifiable, Hashable, Sendable {
     /// Role name for this chat (live role when loaded, else cached). The
     /// sidebar badges each row with this. Nil when no role is set.
     let roleName: String?
+    /// Working directory for this chat (live value when loaded, else cached).
+    /// The sidebar filters by this in "By Directory" mode. Nil when no
+    /// directory is set.
+    let workingDirectory: String?
     let isStreaming: Bool
     let hasUnreadActivity: Bool
     let lastError: String?
@@ -1069,6 +1085,7 @@ struct ChatSummary: Identifiable, Hashable, Sendable {
         self.filename = record.filename
         self.displayTitle = record.displayTitle
         self.roleName = record.effectiveRoleName
+        self.workingDirectory = record.effectiveWorkingDirectory
         self.isStreaming = record.isStreaming
         self.hasUnreadActivity = record.hasUnreadActivity
         self.lastError = record.lastError
