@@ -1465,10 +1465,21 @@ actor ChatEngine {
         let autoAllow: Set<String>
         let autoAllowAll: Bool
         let directoryIsolation: Bool
+        let shellWhitelist: Set<String>
 
         /// Whether a tool (by raw name) should be auto-approved.
         func autoAllows(tool name: String) -> Bool {
             autoAllowAll || autoAllow.contains(name)
+        }
+
+        /// Whether a shell command passes the shell whitelist. Returns false
+        /// when the command is nil (too complex to parse) or any command name
+        /// is not in the whitelist. Returns true when the whitelist is empty
+        /// (no whitelist configured — the caller checks autoAllow first).
+        func shellCommandAllowed(_ command: String) -> Bool {
+            guard !shellWhitelist.isEmpty else { return false }
+            guard let commands = ShellCommandExtractor.extractCommands(command) else { return false }
+            return commands.allSatisfy { shellWhitelist.contains($0) }
         }
     }
 
@@ -1574,7 +1585,8 @@ actor ChatEngine {
                 // Isolation is a role-level switch applied to the
                 // isolation-capable groups (Filesystem/Code).
                 directoryIsolation: role.hasDirectoryIsolation
-                    && BuiltinTools.isolationCapableGroups.contains(group)
+                    && BuiltinTools.isolationCapableGroups.contains(group),
+                shellWhitelist: Set(cfg.shellWhitelist ?? [])
             ))
         }
         // Custom MCP servers: the chat's own selection (seeded from the role,
@@ -1598,7 +1610,8 @@ actor ChatEngine {
                 toolsFilter: entry?.tools ?? [],
                 autoAllow: Set(entry?.autoAllow ?? []),
                 autoAllowAll: entry?.autoAllowAll ?? false,
-                directoryIsolation: false
+                directoryIsolation: false,
+                shellWhitelist: []
             ))
         }
         return sources
@@ -2347,9 +2360,23 @@ actor ChatEngine {
         let chat = records.first(where: { $0.filename == filename })?.chat
         let resolved = chat.map { resolvedToolSources(for: $0) } ?? []
         let roleAllows = resolved.first(where: { $0.name == sourceName })?.autoAllows(tool: toolName) ?? false
-        let autoAllowed = chat?.isToolAutoApproved(namespacedName: call.name, roleDefault: roleAllows) ?? roleAllows
-        // Working directory + isolation for built-in groups.
-        let workdir = chat.flatMap { effectiveWorkingDirectory(for: $0) }
+      let autoAllowed = chat?.isToolAutoApproved(namespacedName: call.name, roleDefault: roleAllows) ?? roleAllows
+       // Shell whitelist: when the shell tool requires confirmation but the
+       // role configures a command whitelist, a command whose every command
+       // name is whitelisted skips the approval prompt. No-op when the tool
+       // is already auto-allowed (role or chat level override).
+       var shellWhitelisted = false
+       if !autoAllowed, sourceName == BuiltinTools.shellGroup, toolName == "shell" {
+           let source = resolved.first(where: { $0.name == sourceName })
+           if let argsData = call.arguments.data(using: .utf8),
+              let args = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any],
+              let command = args["command"] as? String,
+              source?.shellCommandAllowed(command) == true {
+               shellWhitelisted = true
+           }
+       }
+       // Working directory + isolation for built-in groups.
+       let workdir = chat.flatMap { effectiveWorkingDirectory(for: $0) }
         let isolation = resolved.first(where: { $0.name == sourceName })?.directoryIsolation ?? false
         // Per-chat identity for SSH control-socket naming (one master
         // connection per chat+host).
@@ -2415,10 +2442,13 @@ actor ChatEngine {
         }
 
         let approval: ToolApproval
-        if autoAllowed {
-            debugLog("Tool", "auto-allowed \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
-            approval = .allow
-        } else if cliDriven.contains(filename) {
+       if autoAllowed {
+           debugLog("Tool", "auto-allowed \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
+           approval = .allow
+       } else if shellWhitelisted {
+           debugLog("Tool", "shell whitelist approved \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
+           approval = .allow
+       } else if cliDriven.contains(filename) {
             if cliAllowAll.contains(filename) {
                 debugLog("Tool", "auto-approved via --allow-all \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
                 approval = .allow

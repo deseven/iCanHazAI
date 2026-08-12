@@ -129,8 +129,9 @@ Bundles a prompt, connection, working directory, and tools. Tools come from two 
 
 1. **Built-in tool groups** — `[utils]`, `[filesystem]`, `[code]`, `[shell]`, `[web]`. These run in-process (no subprocess). A group is enabled simply by mentioning it; an empty group (e.g. `[utils]` with no keys) enables all its tools with defaults. Each group accepts:
    - `tools` — allowlist (empty/missing = all).
-   - `auto_allow` — tools to auto-approve (empty/missing = none).
-   - `auto_allow_all = true` — auto-approve everything.
+  - `auto_allow` — tools to auto-approve (empty/missing = none).
+  - `auto_allow_all = true` — auto-approve everything.
+  - `shell_whitelist` — **Shell group only.** A list of command names that bypass the approval prompt when the `shell` tool requires confirmation. A command is auto-approved only if every command name in it is whitelisted. Commands too complex to parse safely (command substitution `$()`, backticks, subshells `()`, loops, conditionals, heredocs, process substitution, etc.) always require confirmation. No-op when `shell` is already auto-approved (`auto_allow` or `auto_allow_all`).
 
 2. **Custom MCP servers** — `[[mcps]]` array-of-tables entries, each with `mcp = "<name>"` (matching a configured MCP server), plus `tools`/`auto_allow`/`auto_allow_all`.
 
@@ -269,6 +270,7 @@ The app ships with five built-in tool groups, always available (no MCP needed) a
 - **Code** (`[code]`) — code-aware tools: `apply_patch`.
 - **Shell** (`[shell]`) — shell execution: `shell`, `applescript`.
 - **Web** (`[web]`) — web access: `web_search`, `web_extract`, `web_fetch`. `web_fetch` (raw curl-like download, 256KB text cap) always works; `web_search` and `web_extract` share one unified interface regardless of provider and are always advertised to the model — without a configured provider in `[web_search]` they fail at call time. The group needs no working directory.
+  The Shell group supports a `shell_whitelist` key: a list of command names (e.g. `["ls", "cat", "grep"]`) that are allowed to run without user confirmation when the `shell` tool would otherwise require it. A command is auto-approved only when every command in it (across pipes, `&&`, `||`, and `;`) is in the whitelist. Commands with complex constructs (command substitution, subshells, loops, heredocs, etc.) always require confirmation — when in doubt, the user is asked.
 
 These run in-process (no subprocess), so there's no `check_mcp_bundled` tool — the tool list above is authoritative. To build a `tools` allowlist for a role, pick from the names listed above.
 

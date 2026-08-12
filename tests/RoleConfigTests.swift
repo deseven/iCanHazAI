@@ -641,25 +641,54 @@ extension AllAppTests {
         }
 
         @Test("Role.hasWebTools is true only when the Web group is enabled")
-        func hasWebTools() throws {
-            let withWeb = """
-            prompt = "Developer"
+       func hasWebTools() throws {
+           let withWeb = """
+           prompt = "Developer"
 
-            [web]
-            """
-            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(withWeb.utf8))
-            #expect(Role(name: "Developer", config: config).hasWebTools)
+           [web]
+           """
+           let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(withWeb.utf8))
+           #expect(Role(name: "Developer", config: config).hasWebTools)
 
-            let withoutWeb = """
-            prompt = "Developer"
+           let withoutWeb = """
+           prompt = "Developer"
 
-            [utils]
-            """
-            let config2 = try TOMLDecoder().decode(RoleConfig.self, from: Data(withoutWeb.utf8))
-            #expect(!Role(name: "Developer", config: config2).hasWebTools)
-        }
+           [utils]
+           """
+           let config2 = try TOMLDecoder().decode(RoleConfig.self, from: Data(withoutWeb.utf8))
+           #expect(!Role(name: "Developer", config: config2).hasWebTools)
+       }
 
-        // MARK: - workdirPickerEnabled (pick permanence)
+       // MARK: - shell_whitelist
+
+       @Test("RoleConfig decodes shell_whitelist under [shell]")
+       func decodesShellWhitelist() throws {
+           let toml = """
+           prompt = "Developer"
+
+           [shell]
+           tools = ["shell"]
+           shell_whitelist = ["ls", "cat", "grep", "find", "stat", "file", "curl", "cd", "pwd", "head", "tail"]
+           """
+           let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+           let shell = try #require(config.shell)
+           #expect(shell.shellWhitelist == ["ls", "cat", "grep", "find", "stat", "file", "curl", "cd", "pwd", "head", "tail"])
+       }
+
+       @Test("RoleConfig decodes [shell] without shell_whitelist (nil default)")
+       func shellWhitelistNilDefault() throws {
+           let toml = """
+           prompt = "Developer"
+
+           [shell]
+           tools = ["shell"]
+           """
+           let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+           let shell = try #require(config.shell)
+           #expect(shell.shellWhitelist == nil)
+       }
+
+       // MARK: - workdirPickerEnabled (pick permanence)
 
         /// A role with directory-relevant tools and no pre-set directory.
         private func pickerRole() throws -> Role {
