@@ -48,15 +48,26 @@ enum PromptVariables {
     /// identifier closed by `}` — optionally with `:arguments` in between —
     /// returns `(name, args, indexAfterBrace)`; `args` is nil when no colon is
     /// present. Otherwise returns `nil` (the `{` is not a variable reference).
-    private static func readVariable(in chars: [Character], from start: Int) -> (name: String, args: String?, end: Int)? {
+    private static func readVariable(in chars: [Character], from start: Int) -> (name: String, args: String?, end: Int)?
+    {
         var j = start
         var name = ""
         while j < chars.count {
             let c = chars[j]
             if name.isEmpty {
-                if isNameStart(c) { name.append(c); j += 1 } else { return nil }
+                if isNameStart(c) {
+                    name.append(c)
+                    j += 1
+                } else {
+                    return nil
+                }
             } else {
-                if isNameChar(c) { name.append(c); j += 1 } else { break }
+                if isNameChar(c) {
+                    name.append(c)
+                    j += 1
+                } else {
+                    break
+                }
             }
         }
         guard !name.isEmpty, j < chars.count else { return nil }

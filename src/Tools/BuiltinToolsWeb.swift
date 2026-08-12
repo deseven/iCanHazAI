@@ -48,24 +48,36 @@ enum BuiltinToolsWeb {
     }
 
     static let toolDefs: [BuiltinToolDef] = [
-        BuiltinToolDef(name: searchToolName,
-            description: "Search the web. Returns a numbered list of results with title, URL and a text snippet; publication date and author are included when available.",
-            schema: #"{"type":"object","properties":{"query":{"type":"string","description":"The search query."},"num_results":{"type":"integer","description":"Number of results to return (1-50). Default 10."},"date_start":{"type":"string","description":"Only include results published on or after this date (YYYY-MM-DD)."},"date_end":{"type":"string","description":"Only include results published on or before this date (YYYY-MM-DD)."}},"required":["query"]}"#),
-        BuiltinToolDef(name: extractToolName,
-            description: "Extract the readable content of a web page. Prefer this over web_fetch for reading articles and documentation pages.",
-            schema: #"{"type":"object","properties":{"url":{"type":"string","description":"The URL of the page to extract."}},"required":["url"]}"#),
-       BuiltinToolDef(name: fetchToolName,
-            description: "Download the raw contents of a URL directly (like curl), without any extraction or rendering. Returns the final HTTP status code and the body as text. Fails on binary content or bodies larger than 256KB. Supports custom HTTP methods, request headers (which override defaults), a request body, and an option to include response headers in the output.",
-            schema: #"{"type":"object","properties":{"url":{"type":"string","description":"The http(s) URL to download."},"request_type":{"type":"string","enum":["GET","POST","PUT","PATCH","DELETE","HEAD","OPTIONS"],"description":"HTTP method. Defaults to GET (or POST when 'data' is provided)."},"headers":{"type":"object","description":"Additional request headers as name-value pairs. These override any internal headers (e.g. User-Agent)."},"data":{"type":"string","description":"Request body text to send with the request (e.g. form contents, JSON, XML). When provided without 'request_type', the method defaults to POST."},"return_headers":{"type":"boolean","description":"If true, include the response headers in the output. Default false."}},"required":["url"]}"#),
-   ]
+        BuiltinToolDef(
+            name: searchToolName,
+            description:
+                "Search the web. Returns a numbered list of results with title, URL and a text snippet; publication date and author are included when available.",
+            schema:
+                #"{"type":"object","properties":{"query":{"type":"string","description":"The search query."},"num_results":{"type":"integer","description":"Number of results to return (1-50). Default 10."},"date_start":{"type":"string","description":"Only include results published on or after this date (YYYY-MM-DD)."},"date_end":{"type":"string","description":"Only include results published on or before this date (YYYY-MM-DD)."}},"required":["query"]}"#
+        ),
+        BuiltinToolDef(
+            name: extractToolName,
+            description:
+                "Extract the readable content of a web page. Prefer this over web_fetch for reading articles and documentation pages.",
+            schema:
+                #"{"type":"object","properties":{"url":{"type":"string","description":"The URL of the page to extract."}},"required":["url"]}"#
+        ),
+        BuiltinToolDef(
+            name: fetchToolName,
+            description:
+                "Download the raw contents of a URL directly (like curl), without any extraction or rendering. Returns the final HTTP status code and the body as text. Fails on binary content or bodies larger than 256KB. Supports custom HTTP methods, request headers (which override defaults), a request body, and an option to include response headers in the output.",
+            schema:
+                #"{"type":"object","properties":{"url":{"type":"string","description":"The http(s) URL to download."},"request_type":{"type":"string","enum":["GET","POST","PUT","PATCH","DELETE","HEAD","OPTIONS"],"description":"HTTP method. Defaults to GET (or POST when 'data' is provided)."},"headers":{"type":"object","description":"Additional request headers as name-value pairs. These override any internal headers (e.g. User-Agent)."},"data":{"type":"string","description":"Request body text to send with the request (e.g. form contents, JSON, XML). When provided without 'request_type', the method defaults to POST."},"return_headers":{"type":"boolean","description":"If true, include the response headers in the output. Default false."}},"required":["url"]}"#
+        ),
+    ]
 
-   /// Bodies larger than this are rejected by `web_fetch`.
-   static let maxFetchBytes = 256 * 1024
+    /// Bodies larger than this are rejected by `web_fetch`.
+    static let maxFetchBytes = 256 * 1024
 
     /// HTTP methods accepted by `web_fetch`.
     static let allowedMethods: Set<String> = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 
-   private static let session: URLSession = {
+    private static let session: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 60
         return URLSession(configuration: config)
@@ -82,7 +94,10 @@ enum BuiltinToolsWeb {
             dateEnd: try validatedDate(BuiltinTools.optionalString(args, "date_end"), key: "date_end")
         )
         let data = try await post(searchRequest(config: config, params: params))
-        return ToolOutput(content: formatSearchOutput(query: params.query, hits: try parseSearchHits(provider: config.resolvedProvider, data: data)), isError: false)
+        return ToolOutput(
+            content: formatSearchOutput(
+                query: params.query, hits: try parseSearchHits(provider: config.resolvedProvider, data: data)),
+            isError: false)
     }
 
     static func extract(_ args: [String: Any]) async throws -> ToolOutput {
@@ -90,8 +105,8 @@ enum BuiltinToolsWeb {
         let url = try BuiltinTools.requireString(args, "url")
         let data = try await post(extractRequest(config: config, url: url))
         let page = try parseExtractedPage(provider: config.resolvedProvider, data: data, url: url)
-       return ToolOutput(content: formatExtractOutput(page: page), isError: false)
-   }
+        return ToolOutput(content: formatExtractOutput(page: page), isError: false)
+    }
 
     /// Parsed `web_fetch` arguments, extracted for testability.
     struct FetchParams: Equatable {
@@ -107,14 +122,16 @@ enum BuiltinToolsWeb {
     static func parseFetchParams(_ args: [String: Any]) throws -> FetchParams {
         let urlString = try BuiltinTools.requireString(args, "url")
         guard let url = URL(string: urlString),
-              let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
-              url.host != nil else {
+            let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+            url.host != nil
+        else {
             throw BuiltinToolError("invalid argument 'url': expected a valid http(s) URL")
         }
         let body = BuiltinTools.optionalString(args, "data")
         let method = BuiltinTools.optionalString(args, "request_type")?.uppercased() ?? (body != nil ? "POST" : "GET")
         guard allowedMethods.contains(method) else {
-            throw BuiltinToolError("invalid argument 'request_type': must be one of \(allowedMethods.sorted().joined(separator: ", "))")
+            throw BuiltinToolError(
+                "invalid argument 'request_type': must be one of \(allowedMethods.sorted().joined(separator: ", "))")
         }
         return FetchParams(
             url: url,
@@ -153,22 +170,32 @@ enum BuiltinToolsWeb {
             let httpCode = http?.statusCode ?? 0
             let respHeaders = params.returnHeaders ? responseHeaders(from: http) : [:]
             if response.expectedContentLength > Int64(maxFetchBytes) {
-                return ToolOutput(content: fetchOutput(httpCode: httpCode, content: "Error: content is larger than 256KB", headers: respHeaders), isError: true)
+                return ToolOutput(
+                    content: fetchOutput(
+                        httpCode: httpCode, content: "Error: content is larger than 256KB", headers: respHeaders),
+                    isError: true)
             }
             var data = Data()
             data.reserveCapacity(min(max(Int(response.expectedContentLength), 0), maxFetchBytes))
             for try await byte in bytes {
                 data.append(byte)
                 if data.count > maxFetchBytes {
-                    return ToolOutput(content: fetchOutput(httpCode: httpCode, content: "Error: content is larger than 256KB", headers: respHeaders), isError: true)
+                    return ToolOutput(
+                        content: fetchOutput(
+                            httpCode: httpCode, content: "Error: content is larger than 256KB", headers: respHeaders),
+                        isError: true)
                 }
             }
             guard BuiltinTools.isText(data), let text = String(data: data, encoding: .utf8) else {
-                return ToolOutput(content: fetchOutput(httpCode: httpCode, content: "Error: content is binary", headers: respHeaders), isError: true)
+                return ToolOutput(
+                    content: fetchOutput(httpCode: httpCode, content: "Error: content is binary", headers: respHeaders),
+                    isError: true)
             }
-            return ToolOutput(content: fetchOutput(httpCode: httpCode, content: text, headers: respHeaders), isError: httpCode >= 400)
+            return ToolOutput(
+                content: fetchOutput(httpCode: httpCode, content: text, headers: respHeaders), isError: httpCode >= 400)
         } catch {
-            return ToolOutput(content: fetchOutput(httpCode: 0, content: "Error: \(error.localizedDescription)"), isError: true)
+            return ToolOutput(
+                content: fetchOutput(httpCode: 0, content: "Error: \(error.localizedDescription)"), isError: true)
         }
     }
 
@@ -190,9 +217,13 @@ enum BuiltinToolsWeb {
         var out: [String: String] = [:]
         for (key, value) in response.allHeaderFields {
             guard let name = key as? String else { continue }
-            if let s = value as? String { out[name] = s }
-            else if let n = value as? NSNumber { out[name] = n.stringValue }
-            else { out[name] = "\(value)" }
+            if let s = value as? String {
+                out[name] = s
+            } else if let n = value as? NSNumber {
+                out[name] = n.stringValue
+            } else {
+                out[name] = "\(value)"
+            }
         }
         return out
     }
@@ -202,8 +233,7 @@ enum BuiltinToolsWeb {
         guard let dict = raw as? [String: Any] else { return [:] }
         var out: [String: String] = [:]
         for (k, v) in dict {
-            if let s = v as? String { out[k] = s }
-            else if let n = v as? NSNumber { out[k] = n.stringValue }
+            if let s = v as? String { out[k] = s } else if let n = v as? NSNumber { out[k] = n.stringValue }
         }
         return out
     }
@@ -259,20 +289,26 @@ enum BuiltinToolsWeb {
         let token = config.token ?? ""
         switch config.resolvedProvider {
         case .exa:
-            return try jsonPostRequest(url: "https://api.exa.ai/contents", token: token, bearer: false, body: [
-                "urls": [url],
-                "text": true,
-            ])
+            return try jsonPostRequest(
+                url: "https://api.exa.ai/contents", token: token, bearer: false,
+                body: [
+                    "urls": [url],
+                    "text": true,
+                ])
         case .linkup:
-            return try jsonPostRequest(url: "https://api.linkup.so/v1/fetch", token: token, bearer: true, body: [
-                "url": url,
-                "renderJs": config.linkupRenderJS ?? false,
-            ])
+            return try jsonPostRequest(
+                url: "https://api.linkup.so/v1/fetch", token: token, bearer: true,
+                body: [
+                    "url": url,
+                    "renderJs": config.linkupRenderJS ?? false,
+                ])
         case .tavily:
-            return try jsonPostRequest(url: "https://api.tavily.com/extract", token: token, bearer: true, body: [
-                "urls": [url],
-                "extract_depth": (config.tavilyAdvancedExtraction ?? false) ? "advanced" : "basic",
-            ])
+            return try jsonPostRequest(
+                url: "https://api.tavily.com/extract", token: token, bearer: true,
+                body: [
+                    "urls": [url],
+                    "extract_depth": (config.tavilyAdvancedExtraction ?? false) ? "advanced" : "basic",
+                ])
         case .none:
             throw notConfiguredError
         }
@@ -364,8 +400,11 @@ enum BuiltinToolsWeb {
         case .exa:
             // A failed crawl shows up in `statuses` with no matching result.
             if let statuses = obj["statuses"] as? [[String: Any]],
-               let first = statuses.first, (first["status"] as? String) != "success" {
-                let reason = (first["error"] as? [String: Any])?["httpStatusCode"].map { "HTTP \($0)" } ?? (first["status"] as? String ?? "unknown error")
+                let first = statuses.first, (first["status"] as? String) != "success"
+            {
+                let reason =
+                    (first["error"] as? [String: Any])?["httpStatusCode"].map { "HTTP \($0)" }
+                    ?? (first["status"] as? String ?? "unknown error")
                 throw BuiltinToolError("extraction failed: \(reason)")
             }
             guard let r = (obj["results"] as? [[String: Any]])?.first else {
@@ -385,14 +424,17 @@ enum BuiltinToolsWeb {
             return ExtractedPage(url: url, title: nil, published: nil, author: nil, content: markdown)
         case .tavily:
             if let failed = (obj["failed_results"] as? [[String: Any]])?.first,
-               let error = failed["error"] as? String {
+                let error = failed["error"] as? String
+            {
                 throw BuiltinToolError("extraction failed: \(error)")
             }
             guard let r = (obj["results"] as? [[String: Any]])?.first,
-                  let content = r["raw_content"] as? String else {
+                let content = r["raw_content"] as? String
+            else {
                 throw BuiltinToolError("provider returned no content for this URL")
             }
-            return ExtractedPage(url: r["url"] as? String ?? url, title: nil, published: nil, author: nil, content: content)
+            return ExtractedPage(
+                url: r["url"] as? String ?? url, title: nil, published: nil, author: nil, content: content)
         case .none:
             throw notConfiguredError
         }
@@ -436,7 +478,9 @@ enum BuiltinToolsWeb {
         return obj
     }
 
-    private static func jsonPostRequest(url: String, token: String, bearer: Bool, body: [String: Any]) throws -> URLRequest {
+    private static func jsonPostRequest(url: String, token: String, bearer: Bool, body: [String: Any]) throws
+        -> URLRequest
+    {
         guard let endpoint = URL(string: url) else {
             throw BuiltinToolError("invalid provider endpoint \"\(url)\"")
         }

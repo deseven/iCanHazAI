@@ -9,14 +9,14 @@ import type { ChatMessage, ChatSnapshotFeatures } from "./types";
  *  - Only when the role's `with_response_regen` feature flag is on.
  *  - Not while the chat is streaming. */
 export function canRegenerate(
-  message: ChatMessage,
-  isFirstMessage: boolean,
-  features: ChatSnapshotFeatures | undefined,
-  isStreaming: boolean,
+    message: ChatMessage,
+    isFirstMessage: boolean,
+    features: ChatSnapshotFeatures | undefined,
+    isStreaming: boolean,
 ): boolean {
-  if (message.role !== "assistant") return false;
-  if (isFirstMessage) return false;
-  if (!(features?.responseRegen ?? false)) return false;
-  if (isStreaming) return false;
-  return true;
+    if (message.role !== "assistant") return false;
+    if (isFirstMessage) return false;
+    if (!(features?.responseRegen ?? false)) return false;
+    if (isStreaming) return false;
+    return true;
 }

@@ -102,11 +102,14 @@ enum PatchParser {
             throw PatchParseError(message: "The first line of the patch must be '*** Begin Patch'", lineNumber: 1)
         }
         guard lines[lines.count - 1].trimmingCharacters(in: .whitespaces) == END_PATCH else {
-            throw PatchParseError(message: "The last line of the patch must be '*** End Patch'", lineNumber: lines.count)
+            throw PatchParseError(
+                message: "The last line of the patch must be '*** End Patch'", lineNumber: lines.count)
         }
     }
 
-    private static func parseOneHunk(_ lines: [String], _ start: Int, _ lineNumber: Int) throws -> (hunk: PatchHunk, linesConsumed: Int) {
+    private static func parseOneHunk(_ lines: [String], _ start: Int, _ lineNumber: Int) throws -> (
+        hunk: PatchHunk, linesConsumed: Int
+    ) {
         let firstLine = lines[start].trimmingCharacters(in: .whitespaces)
 
         if firstLine.hasPrefix(ADD_FILE) {
@@ -160,7 +163,8 @@ enum PatchParser {
                 // Stop at the next file operation marker.
                 if lines[i].hasPrefix("***") { break }
 
-                var r = try parseUpdateFileChunk(lines, i, lineNumber + consumed, allowMissingContext: chunks.isEmpty || eofAnchorPending)
+                var r = try parseUpdateFileChunk(
+                    lines, i, lineNumber + consumed, allowMissingContext: chunks.isEmpty || eofAnchorPending)
                 if eofAnchorPending {
                     r.chunk.isEndOfFile = true
                     eofAnchorPending = false
@@ -182,10 +186,15 @@ enum PatchParser {
             return (.updateFile(path: path, movePath: movePath, chunks: chunks), consumed)
         }
 
-        throw PatchParseError(message: "'\(firstLine)' is not a valid hunk header. Valid: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'", lineNumber: lineNumber)
+        throw PatchParseError(
+            message:
+                "'\(firstLine)' is not a valid hunk header. Valid: '*** Add File: {path}', '*** Delete File: {path}', '*** Update File: {path}'",
+            lineNumber: lineNumber)
     }
 
-    private static func parseUpdateFileChunk(_ lines: [String], _ start: Int, _ lineNumber: Int, allowMissingContext: Bool) throws -> (chunk: UpdateFileChunk, linesConsumed: Int) {
+    private static func parseUpdateFileChunk(
+        _ lines: [String], _ start: Int, _ lineNumber: Int, allowMissingContext: Bool
+    ) throws -> (chunk: UpdateFileChunk, linesConsumed: Int) {
         guard start < lines.count else {
             throw PatchParseError(message: "Update hunk does not contain any lines", lineNumber: lineNumber)
         }
@@ -202,7 +211,9 @@ enum PatchParser {
             changeContext = String(structural.dropFirst(CONTEXT_MARKER.count))
             idx += 1
         } else if !allowMissingContext {
-            throw PatchParseError(message: "Expected update hunk to start with a @@ context marker, got: '\(lines[idx])'", lineNumber: lineNumber)
+            throw PatchParseError(
+                message: "Expected update hunk to start with a @@ context marker, got: '\(lines[idx])'",
+                lineNumber: lineNumber)
         }
 
         guard idx < lines.count else {
@@ -225,7 +236,8 @@ enum PatchParser {
                     // Lenient: the marker opens a hunk (appears before any body
                     // lines) — anchor this chunk at end of file and keep reading.
                     guard bodyFollows else {
-                        throw PatchParseError(message: "Update hunk does not contain any lines", lineNumber: lineNumber + 1)
+                        throw PatchParseError(
+                            message: "Update hunk does not contain any lines", lineNumber: lineNumber + 1)
                     }
                     chunk.isEndOfFile = true
                     i += 1
@@ -272,7 +284,10 @@ enum PatchParser {
                     if line.hasPrefix(EMPTY_CONTEXT) {
                         return (chunk, parsed + (idx - start))
                     }
-                    throw PatchParseError(message: "Unexpected line found in update hunk: '\(line)'. Every line should start with ' ' (context), '+' (added), or '-' (removed) — a context line copied from the file still needs a leading space added (so 4-space-indented code gets 5 leading spaces), and the 'N|' line-number prefix shown by read_file must be dropped", lineNumber: lineNumber + 1)
+                    throw PatchParseError(
+                        message:
+                            "Unexpected line found in update hunk: '\(line)'. Every line should start with ' ' (context), '+' (added), or '-' (removed) — a context line copied from the file still needs a leading space added (so 4-space-indented code gets 5 leading spaces), and the 'N|' line-number prefix shown by read_file must be dropped",
+                        lineNumber: lineNumber + 1)
                 }
                 return (chunk, parsed + (idx - start))
             }
@@ -300,15 +315,20 @@ enum PatchApplier {
 
     /// Compute the replacements needed to transform `originalLines` according
     /// to the update chunks.
-    static func computeReplacements(originalLines: [String], filePath: String, chunks: [UpdateFileChunk]) throws -> [Replacement] {
+    static func computeReplacements(originalLines: [String], filePath: String, chunks: [UpdateFileChunk]) throws
+        -> [Replacement]
+    {
         var replacements: [Replacement] = []
         var lineIndex = 0
 
         for chunk in chunks {
             // If a chunk has a change_context, find it first.
             if let ctx = chunk.changeContext {
-                guard let idx = SeekSequence.seek(lines: originalLines, pattern: [ctx], start: lineIndex, eof: false) else {
-                    throw ApplyPatchError(message: contextNotFoundMessage(ctx: ctx, filePath: filePath, originalLines: originalLines, lineIndex: lineIndex))
+                guard let idx = SeekSequence.seek(lines: originalLines, pattern: [ctx], start: lineIndex, eof: false)
+                else {
+                    throw ApplyPatchError(
+                        message: contextNotFoundMessage(
+                            ctx: ctx, filePath: filePath, originalLines: originalLines, lineIndex: lineIndex))
                 }
                 lineIndex = idx + 1
             }
@@ -328,7 +348,8 @@ enum PatchApplier {
             // Find the old_lines in the file.
             var pattern = chunk.oldLines
             var newSlice = chunk.newLines
-            var found = SeekSequence.seek(lines: originalLines, pattern: pattern, start: lineIndex, eof: chunk.isEndOfFile)
+            var found = SeekSequence.seek(
+                lines: originalLines, pattern: pattern, start: lineIndex, eof: chunk.isEndOfFile)
 
             // If not found and pattern ends with an empty string (trailing newline), retry without it.
             if found == nil, !pattern.isEmpty, pattern.last!.isEmpty {
@@ -336,14 +357,18 @@ enum PatchApplier {
                 if !newSlice.isEmpty, newSlice.last!.isEmpty {
                     newSlice = Array(newSlice.dropLast())
                 }
-                found = SeekSequence.seek(lines: originalLines, pattern: pattern, start: lineIndex, eof: chunk.isEndOfFile)
+                found = SeekSequence.seek(
+                    lines: originalLines, pattern: pattern, start: lineIndex, eof: chunk.isEndOfFile)
             }
 
             if let f = found {
                 replacements.append(Replacement(start: f, oldLength: pattern.count, newLines: newSlice))
                 lineIndex = f + pattern.count
             } else {
-                throw ApplyPatchError(message: expectedLinesNotFoundMessage(pattern: pattern, filePath: filePath, originalLines: originalLines, lineIndex: lineIndex, isEndOfFile: chunk.isEndOfFile))
+                throw ApplyPatchError(
+                    message: expectedLinesNotFoundMessage(
+                        pattern: pattern, filePath: filePath, originalLines: originalLines, lineIndex: lineIndex,
+                        isEndOfFile: chunk.isEndOfFile))
             }
         }
 
@@ -354,24 +379,36 @@ enum PatchApplier {
     /// body is searched for only after its @@ anchor. When a seek fails we
     /// re-scan the whole file — not to apply, but to tell the model exactly
     /// why it failed and how to fix the patch.
-    private static func contextNotFoundMessage(ctx: String, filePath: String, originalLines: [String], lineIndex: Int) -> String {
+    private static func contextNotFoundMessage(ctx: String, filePath: String, originalLines: [String], lineIndex: Int)
+        -> String
+    {
         if lineIndex > 0, let earlier = SeekSequence.seek(lines: originalLines, pattern: [ctx], start: 0, eof: false) {
-            return "Failed to find context '\(ctx)' in \(filePath): it matches line \(earlier + 1), but a previous hunk already consumed up to line \(lineIndex). Hunks must apply top-to-bottom without overlapping — merge or reorder them."
+            return
+                "Failed to find context '\(ctx)' in \(filePath): it matches line \(earlier + 1), but a previous hunk already consumed up to line \(lineIndex). Hunks must apply top-to-bottom without overlapping — merge or reorder them."
         }
-        return "Failed to find context '\(ctx)' in \(filePath) — the @@ context must exactly match a single line in the file (copy it verbatim; line numbers don't work)"
+        return
+            "Failed to find context '\(ctx)' in \(filePath) — the @@ context must exactly match a single line in the file (copy it verbatim; line numbers don't work)"
     }
 
-    private static func expectedLinesNotFoundMessage(pattern: [String], filePath: String, originalLines: [String], lineIndex: Int, isEndOfFile: Bool) -> String {
+    private static func expectedLinesNotFoundMessage(
+        pattern: [String], filePath: String, originalLines: [String], lineIndex: Int, isEndOfFile: Bool
+    ) -> String {
         let preview = pattern.joined(separator: "\n")
         let truncated = preview.count > 200 ? String(preview.prefix(200)) + "..." : preview
         if isEndOfFile {
             if let anywhere = SeekSequence.seek(lines: originalLines, pattern: pattern, start: 0, eof: false) {
-                return "Failed to find expected lines in \(filePath): they match line \(anywhere + 1), but the hunk is marked *** End of File, which anchors it at the end of the file. Remove the marker if the change isn't at the end.\nExpected lines:\n\(truncated)"
+                return
+                    "Failed to find expected lines in \(filePath): they match line \(anywhere + 1), but the hunk is marked *** End of File, which anchors it at the end of the file. Remove the marker if the change isn't at the end.\nExpected lines:\n\(truncated)"
             }
-        } else if lineIndex > 0, let earlier = SeekSequence.seek(lines: originalLines, pattern: pattern, start: 0, eof: false), earlier < lineIndex {
-            return "Failed to find expected lines in \(filePath): they match line \(earlier + 1), but the hunk body must come after its @@ anchor and after all previous hunks (currently searching from line \(lineIndex + 1)). If the @@ anchor line is repeated as the hunk's first context line, remove it from the body.\nExpected lines:\n\(truncated)"
+        } else if lineIndex > 0,
+            let earlier = SeekSequence.seek(lines: originalLines, pattern: pattern, start: 0, eof: false),
+            earlier < lineIndex
+        {
+            return
+                "Failed to find expected lines in \(filePath): they match line \(earlier + 1), but the hunk body must come after its @@ anchor and after all previous hunks (currently searching from line \(lineIndex + 1)). If the @@ anchor line is repeated as the hunk's first context line, remove it from the body.\nExpected lines:\n\(truncated)"
         }
-        return "Failed to find expected lines in \(filePath):\n\(truncated)\nMake sure the context lines match the file exactly — re-read the file if it may have changed."
+        return
+            "Failed to find expected lines in \(filePath):\n\(truncated)\nMake sure the context lines match the file exactly — re-read the file if it may have changed."
     }
 
     /// Apply replacements to the original lines, returning the modified lines.
@@ -385,7 +422,9 @@ enum PatchApplier {
     }
 
     /// Apply update chunks to file content, returning the new content.
-    static func applyChunksToContent(originalContent: String, filePath: String, chunks: [UpdateFileChunk]) throws -> String {
+    static func applyChunksToContent(originalContent: String, filePath: String, chunks: [UpdateFileChunk]) throws
+        -> String
+    {
         var originalLines = originalContent.components(separatedBy: "\n")
         // Drop trailing empty element from a final newline so line counts match diff behavior.
         if !originalLines.isEmpty, originalLines.last!.isEmpty {
@@ -461,18 +500,18 @@ enum PatchApplier {
                 ops.append(.deleteFile(path: path, resolved: resolved, original: original))
 
             case .updateFile(let path, let movePath, let chunks):
-               let resolved = try workdir.resolve(path)
-               guard exists(resolved) else {
-                   throw ApplyPatchError(message: "\(path) does not exist")
-               }
-               guard let original = try content(resolved, path: path) else {
-                   throw ApplyPatchError(message: "\(path) is not readable as UTF-8")
-               }
-               let newContent = try applyChunksToContent(
-                   originalContent: original,
-                   filePath: path,
-                   chunks: chunks
-               )
+                let resolved = try workdir.resolve(path)
+                guard exists(resolved) else {
+                    throw ApplyPatchError(message: "\(path) does not exist")
+                }
+                guard let original = try content(resolved, path: path) else {
+                    throw ApplyPatchError(message: "\(path) is not readable as UTF-8")
+                }
+                let newContent = try applyChunksToContent(
+                    originalContent: original,
+                    filePath: path,
+                    chunks: chunks
+                )
                 // Normalize a move-to-same-path: if the destination resolves to
                 // the same path, treat it as a plain update (no move). Without
                 // this, the execution path removes the file, moves a temp into
@@ -499,10 +538,13 @@ enum PatchApplier {
                     overlay[resolved] = newContent
                 }
                 let isNoOp = newContent == original && effectiveMovePath == nil
-                ops.append(.updateFile(path: path, resolved: resolved, movePath: effectiveMovePath, moveResolved: moveResolved, chunkCount: chunks.count, original: original, newContent: newContent, isNoOp: isNoOp))
-           }
-       }
-       return ops
+                ops.append(
+                    .updateFile(
+                        path: path, resolved: resolved, movePath: effectiveMovePath, moveResolved: moveResolved,
+                        chunkCount: chunks.count, original: original, newContent: newContent, isNoOp: isNoOp))
+            }
+        }
+        return ops
     }
 }
 
@@ -511,7 +553,9 @@ enum PatchApplier {
 enum PlannedPatchOp {
     case addFile(path: String, resolved: String, contents: String)
     case deleteFile(path: String, resolved: String, original: String?)
-    case updateFile(path: String, resolved: String, movePath: String?, moveResolved: String?, chunkCount: Int, original: String, newContent: String, isNoOp: Bool)
+    case updateFile(
+        path: String, resolved: String, movePath: String?, moveResolved: String?, chunkCount: Int, original: String,
+        newContent: String, isNoOp: Bool)
 }
 
 // MARK: - SeekSequence (multi-pass sequence matching)
@@ -539,7 +583,8 @@ enum SeekSequence {
                 out.append("'")
             case "\u{201C}", "\u{201D}", "\u{201E}", "\u{201F}":
                 out.append("\"")
-            case "\u{00A0}", "\u{2002}", "\u{2003}", "\u{2004}", "\u{2005}", "\u{2006}", "\u{2007}", "\u{2008}", "\u{2009}", "\u{200A}", "\u{202F}", "\u{205F}", "\u{3000}":
+            case "\u{00A0}", "\u{2002}", "\u{2003}", "\u{2004}", "\u{2005}", "\u{2006}", "\u{2007}", "\u{2008}",
+                "\u{2009}", "\u{200A}", "\u{202F}", "\u{205F}", "\u{3000}":
                 out.append(" ")
             default:
                 out.append(c)
@@ -557,7 +602,8 @@ enum SeekSequence {
 
     static func trimEndMatch(_ lines: [String], _ pattern: [String], _ start: Int) -> Bool {
         for i in 0..<pattern.count {
-            if lines[start + i].trimmingCharacters(in: .whitespaces) != pattern[i].trimmingCharacters(in: .whitespaces) {
+            if lines[start + i].trimmingCharacters(in: .whitespaces) != pattern[i].trimmingCharacters(in: .whitespaces)
+            {
                 return false
             }
         }

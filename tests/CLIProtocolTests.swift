@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+
 @testable import iCanHazAI
 
 /// Tests for the CLI wire protocol ([`CLIProtocol`](src/CLI/CLIProtocol.swift))
@@ -23,25 +24,43 @@ extension AllAppTests {
                 .welcome(session: "sess-1", appVersion: "1.0.0", protocolVersion: 1),
                 .ping,
                 .pong(appVersion: "1.0.0", pid: 99),
-                .request(CLIRequest(id: "r1", method: CLIRequest.methodChatSend,
-                                    params: CLIRequestParams(message: "hi", role: "Assistant", connection: "openai/main", chat: "c.json", temporary: true))),
-                .request(CLIRequest(id: "r2", method: CLIRequest.methodChatSend,
-                                    params: CLIRequestParams(message: "hi"))),
-                .request(CLIRequest(id: "r3", method: CLIRequest.methodChatSend,
-                                    params: CLIRequestParams(message: "hi", workdir: "/tmp/proj", workdirExplicit: true, allowAll: true))),
-                .request(CLIRequest(id: "r4", method: CLIRequest.methodChatSend,
-                                    params: CLIRequestParams(message: "hi", interactive: true))),
-                .request(CLIRequest(id: "r5", method: CLIRequest.methodToolApprove,
-                                    params: CLIRequestParams(message: "", callID: "call-1", decision: "deny", reason: "too risky"))),
-                .request(CLIRequest(id: "r6", method: CLIRequest.methodToolApprove,
-                                    params: CLIRequestParams(message: "", callID: "call-2", decision: "allow_chat"))),
-                .request(CLIRequest(id: "r7", method: CLIRequest.methodChatStop,
-                                    params: CLIRequestParams(message: "", chat: "c.json", immediate: true))),
+                .request(
+                    CLIRequest(
+                        id: "r1", method: CLIRequest.methodChatSend,
+                        params: CLIRequestParams(
+                            message: "hi", role: "Assistant", connection: "openai/main", chat: "c.json", temporary: true
+                        ))),
+                .request(
+                    CLIRequest(
+                        id: "r2", method: CLIRequest.methodChatSend,
+                        params: CLIRequestParams(message: "hi"))),
+                .request(
+                    CLIRequest(
+                        id: "r3", method: CLIRequest.methodChatSend,
+                        params: CLIRequestParams(
+                            message: "hi", workdir: "/tmp/proj", workdirExplicit: true, allowAll: true))),
+                .request(
+                    CLIRequest(
+                        id: "r4", method: CLIRequest.methodChatSend,
+                        params: CLIRequestParams(message: "hi", interactive: true))),
+                .request(
+                    CLIRequest(
+                        id: "r5", method: CLIRequest.methodToolApprove,
+                        params: CLIRequestParams(message: "", callID: "call-1", decision: "deny", reason: "too risky"))),
+                .request(
+                    CLIRequest(
+                        id: "r6", method: CLIRequest.methodToolApprove,
+                        params: CLIRequestParams(message: "", callID: "call-2", decision: "allow_chat"))),
+                .request(
+                    CLIRequest(
+                        id: "r7", method: CLIRequest.methodChatStop,
+                        params: CLIRequestParams(message: "", chat: "c.json", immediate: true))),
                 .started(id: "r1", chat: "c.json"),
                 .delta(id: "r1", text: "Hello, {json} \"escaped\"\nnewlines"),
                 .tool(id: "r1", name: "read_file", args: "src/main.swift · offset: 10", status: nil),
-                .tool(id: "r1", name: "read_file", args: nil,
-                      status: CLIToolStatus(kind: "done", label: "done", description: "Read 50 lines.")),
+                .tool(
+                    id: "r1", name: "read_file", args: nil,
+                    status: CLIToolStatus(kind: "done", label: "done", description: "Read 50 lines.")),
                 .approve(id: "r1", callID: "call-1", name: "write_file", args: "src/main.swift · +12 -3"),
                 .approve(id: "r1", callID: "call-2", name: "sleep", args: nil),
                 .notice(id: "r1", text: "tool call \"rm\" requires confirmation — skipped"),
@@ -85,14 +104,15 @@ extension AllAppTests {
             #expect(throws: CLIProtocolError.self) { try CLIProtocol.decode(line: Data(#"{"v":1}"#.utf8)) }
             // A request without params.message is malformed.
             #expect(throws: CLIProtocolError.self) {
-                try CLIProtocol.decode(line: Data(#"{"v":1,"type":"request","id":"x","method":"chat.send","params":{}}"#.utf8))
+                try CLIProtocol.decode(
+                    line: Data(#"{"v":1,"type":"request","id":"x","method":"chat.send","params":{}}"#.utf8))
             }
         }
 
         @Test("encoded frames contain no literal newlines inside the JSON")
         func noInnerNewlines() throws {
             let data = try CLIProtocol.encode(.delta(id: "x", text: "line1\nline2\nline3"))
-            #expect(data.filter { $0 == 0x0A }.count == 1) // only the terminator
+            #expect(data.filter { $0 == 0x0A }.count == 1)  // only the terminator
         }
     }
 
@@ -109,7 +129,9 @@ extension AllAppTests {
 
         @Test("flags parse in any position")
         func flags() throws {
-            let opts = try CLIClient.CLIOptions.parse(["--role", "Developer", "hi", "--connection", "openai/main", "--chat", "c.json"])
+            let opts = try CLIClient.CLIOptions.parse([
+                "--role", "Developer", "hi", "--connection", "openai/main", "--chat", "c.json",
+            ])
             #expect(opts.role == "Developer")
             #expect(opts.connection == "openai/main")
             #expect(opts.chat == "c.json")
@@ -196,28 +218,33 @@ extension AllAppTests {
 
         @Test("tool frames render like collapsed tool blocks")
         func toolFrameRendering() {
-            let start = CLIClient.renderToolFrame(name: "read_file", args: "src/main.swift · offset: 10", status: nil, color: false)
+            let start = CLIClient.renderToolFrame(
+                name: "read_file", args: "src/main.swift · offset: 10", status: nil, color: false)
             #expect(start == "⚙ read_file src/main.swift · offset: 10\n")
 
             let noArgs = CLIClient.renderToolFrame(name: "pwd", args: "", status: nil, color: false)
             #expect(noArgs == "⚙ pwd\n")
 
-            let done = CLIClient.renderToolFrame(name: "read_file", args: nil,
-                                                 status: CLIToolStatus(kind: "done", label: "done", description: "Read 50 lines."), color: false)
+            let done = CLIClient.renderToolFrame(
+                name: "read_file", args: nil,
+                status: CLIToolStatus(kind: "done", label: "done", description: "Read 50 lines."), color: false)
             #expect(done == "  ✓ done — Read 50 lines.\n")
 
-            let err = CLIClient.renderToolFrame(name: "rm", args: nil,
-                                                status: CLIToolStatus(kind: "error", label: "error", description: "nope"), color: false)
+            let err = CLIClient.renderToolFrame(
+                name: "rm", args: nil,
+                status: CLIToolStatus(kind: "error", label: "error", description: "nope"), color: false)
             #expect(err == "  ✗ error — nope\n")
 
             // Cancelled carries no description — the label says it all.
-            let cancelled = CLIClient.renderToolFrame(name: "rm", args: nil,
-                                                      status: CLIToolStatus(kind: "cancelled", label: "cancelled", description: ""), color: false)
+            let cancelled = CLIClient.renderToolFrame(
+                name: "rm", args: nil,
+                status: CLIToolStatus(kind: "cancelled", label: "cancelled", description: ""), color: false)
             #expect(cancelled == "  ⚠ cancelled\n")
 
             // With color enabled the text is wrapped in ANSI escapes.
-            let colored = CLIClient.renderToolFrame(name: "ls", args: nil,
-                                                    status: CLIToolStatus(kind: "done", label: "done", description: "Listed 3 items."), color: true)
+            let colored = CLIClient.renderToolFrame(
+                name: "ls", args: nil,
+                status: CLIToolStatus(kind: "done", label: "done", description: "Listed 3 items."), color: true)
             #expect(colored.contains("\u{1B}[32m"))
             #expect(colored.hasSuffix("\u{1B}[0m\n") || colored.contains("Listed 3 items."))
         }
@@ -252,22 +279,29 @@ extension AllAppTests {
 
         @Test("chat-created line shows the filename without .json plus the chat name")
         func chatCreatedLineRendering() {
-            #expect(CLIClient.renderChatCreatedLine(chat: "2026-07-12 14-30-00.json", name: "How do I foo?")
-                == "Chat: 2026-07-12 14-30-00 (How do I foo?)")
+            #expect(
+                CLIClient.renderChatCreatedLine(chat: "2026-07-12 14-30-00.json", name: "How do I foo?")
+                    == "Chat: 2026-07-12 14-30-00 (How do I foo?)")
             // A missing name falls back to a placeholder.
-            #expect(CLIClient.renderChatCreatedLine(chat: "2026-07-12 14-30-00.json", name: nil)
-                == "Chat: 2026-07-12 14-30-00 (New chat)")
+            #expect(
+                CLIClient.renderChatCreatedLine(chat: "2026-07-12 14-30-00.json", name: nil)
+                    == "Chat: 2026-07-12 14-30-00 (New chat)")
             // Already extension-less filenames are used as-is.
-            #expect(CLIClient.renderChatCreatedLine(chat: "chat", name: "n")
-                == "Chat: chat (n)")
+            #expect(
+                CLIClient.renderChatCreatedLine(chat: "chat", name: "n")
+                    == "Chat: chat (n)")
         }
 
         @Test("--temporary and --chat cannot be combined")
         func temporaryConflictsWithChat() {
-            #expect(throws: CLIClient.CLIOptions.ParseError.conflictingOptions("--temporary cannot be combined with --chat")) {
+            #expect(
+                throws: CLIClient.CLIOptions.ParseError.conflictingOptions("--temporary cannot be combined with --chat")
+            ) {
                 try CLIClient.CLIOptions.parse(["-t", "-f", "c.json", "hi"])
             }
-            #expect(throws: CLIClient.CLIOptions.ParseError.conflictingOptions("--temporary cannot be combined with --chat")) {
+            #expect(
+                throws: CLIClient.CLIOptions.ParseError.conflictingOptions("--temporary cannot be combined with --chat")
+            ) {
                 try CLIClient.CLIOptions.parse(["--temporary", "--chat=c.json", "hi"])
             }
         }
@@ -301,9 +335,13 @@ extension AllAppTests {
         func modeDetection() {
             // Direct shell invocation → CLI.
             #expect(CLIClient.isCLIInvocation([], environment: [:], bundleID: "wtf.d7.icanhazai"))
-            #expect(CLIClient.isCLIInvocation(["hi"], environment: ["__CFBundleIdentifier": "com.apple.Terminal"], bundleID: "wtf.d7.icanhazai"))
+            #expect(
+                CLIClient.isCLIInvocation(
+                    ["hi"], environment: ["__CFBundleIdentifier": "com.apple.Terminal"], bundleID: "wtf.d7.icanhazai"))
             // LaunchServices sets __CFBundleIdentifier to our own bundle id → GUI.
-            #expect(!CLIClient.isCLIInvocation([], environment: ["__CFBundleIdentifier": "wtf.d7.icanhazai"], bundleID: "wtf.d7.icanhazai"))
+            #expect(
+                !CLIClient.isCLIInvocation(
+                    [], environment: ["__CFBundleIdentifier": "wtf.d7.icanhazai"], bundleID: "wtf.d7.icanhazai"))
             // Legacy -psn arg → GUI.
             #expect(!CLIClient.isCLIInvocation(["-psn_0_12345"], environment: [:], bundleID: nil))
             // Explicit headless flag → GUI.
@@ -387,7 +425,8 @@ extension AllAppTests {
         @Test("names without the extension resolve to the .json file")
         func extensionlessMatch() {
             #expect(ChatEngine.resolveChatFilename("my chat", among: filenames) == "my chat.json")
-            #expect(ChatEngine.resolveChatFilename("2026-08-05 20-00-00", among: filenames) == "2026-08-05 20-00-00.json")
+            #expect(
+                ChatEngine.resolveChatFilename("2026-08-05 20-00-00", among: filenames) == "2026-08-05 20-00-00.json")
         }
 
         @Test("unknown names don't resolve")

@@ -41,7 +41,10 @@ final class ChatCacheEntry {
     /// mod time would then mis-order chats relative to their real activity.
     var lastActivity: Date
 
-    init(filename: String, name: String?, role: String?, modificationTime: Date, archive: Bool = false, workingDirectory: String? = nil, lastActivity: Date = .distantPast) {
+    init(
+        filename: String, name: String?, role: String?, modificationTime: Date, archive: Bool = false,
+        workingDirectory: String? = nil, lastActivity: Date = .distantPast
+    ) {
         self.filename = filename
         self.name = name
         self.role = role

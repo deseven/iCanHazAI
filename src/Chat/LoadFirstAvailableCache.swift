@@ -115,10 +115,11 @@ final class LoadFirstAvailableCache {
         let path = resolve(candidate, base: base)
         let url = URL(fileURLWithPath: path)
         guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey]),
-              values.isRegularFile == true,
-              let data = try? Data(contentsOf: url),
-              !data.contains(0),
-              let text = String(data: data, encoding: .utf8) else { return nil }
+            values.isRegularFile == true,
+            let data = try? Data(contentsOf: url),
+            !data.contains(0),
+            let text = String(data: data, encoding: .utf8)
+        else { return nil }
         return Entry(
             candidateIndex: index,
             displayName: candidate,

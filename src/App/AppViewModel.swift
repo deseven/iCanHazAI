@@ -177,8 +177,8 @@ final class AppViewModel: ObservableObject {
     /// Whether the sidebar's role picker (for "By Role" mode) is shown.
     @Published var showSidebarRolePicker: Bool = false
     /// Whether the sidebar's directory picker (for "By Directory" mode) is
-   /// shown.
-   @Published var showSidebarDirectoryPicker: Bool = false
+    /// shown.
+    @Published var showSidebarDirectoryPicker: Bool = false
 
     /// Suppresses `saveChatListState` during initial load so restoring values
     /// from config doesn't trigger redundant writes.
@@ -279,15 +279,17 @@ final class AppViewModel: ObservableObject {
             // defaults when the stored role/directory no longer exists.
             isLoadingChatListState = true
             chatListMode = ChatListMode(rawValue: clm.mode ?? "all") ?? .all
-            chatListRole = clm.role.flatMap { name in
-                roles.contains(where: { $0.name == name }) ? name : nil
-            } ?? preferencesDefaultRole
+            chatListRole =
+                clm.role.flatMap { name in
+                    roles.contains(where: { $0.name == name }) ? name : nil
+                } ?? preferencesDefaultRole
             chatListDirectory = clm.directory ?? Self.homeDirectoryPath
             isLoadingChatListState = false
             // If the mode is "role" and the default role isn't available,
             // trigger the sidebar role picker so the user picks one.
             if chatListMode == .role, !roles.isEmpty,
-               !roles.contains(where: { $0.name == chatListRole }) {
+                !roles.contains(where: { $0.name == chatListRole })
+            {
                 showSidebarRolePicker = true
             }
             DebugLogger.setEnabled(ad)
@@ -295,10 +297,12 @@ final class AppViewModel: ObservableObject {
             // Clamp restored widths into the allowed ranges so a hand-edited
             // config can't squeeze a sidebar out of existence.
             if let lw {
-                chatListSidebarWidth = min(max(CGFloat(lw), SidebarSizing.chatListRange.lowerBound), SidebarSizing.chatListRange.upperBound)
+                chatListSidebarWidth = min(
+                    max(CGFloat(lw), SidebarSizing.chatListRange.lowerBound), SidebarSizing.chatListRange.upperBound)
             }
             if let iw {
-                chatInfoSidebarWidth = min(max(CGFloat(iw), SidebarSizing.chatInfoRange.lowerBound), SidebarSizing.chatInfoRange.upperBound)
+                chatInfoSidebarWidth = min(
+                    max(CGFloat(iw), SidebarSizing.chatInfoRange.lowerBound), SidebarSizing.chatInfoRange.upperBound)
             }
         }
     }
@@ -310,7 +314,8 @@ final class AppViewModel: ObservableObject {
         let listWidth = Double(chatListSidebarWidth)
         let infoWidth = Double(chatInfoSidebarWidth)
         Task {
-            await config.setSidebarState(chatInfoVisible: infoVisible, chatListWidth: listWidth, chatInfoWidth: infoWidth)
+            await config.setSidebarState(
+                chatInfoVisible: infoVisible, chatListWidth: listWidth, chatInfoWidth: infoWidth)
         }
     }
 
@@ -336,11 +341,12 @@ final class AppViewModel: ObservableObject {
         let role = chatListRole
         let directory = chatListDirectory
         Task {
-            await config.setChatListConfig(ChatListConfig(
-                mode: mode,
-                role: role,
-                directory: directory
-            ))
+            await config.setChatListConfig(
+                ChatListConfig(
+                    mode: mode,
+                    role: role,
+                    directory: directory
+                ))
         }
     }
 
@@ -360,13 +366,16 @@ final class AppViewModel: ObservableObject {
             let targetRole = chatListRole ?? ""
             return chatSummaries.filter { $0.roleName == targetRole }
         case .directory:
-            return chatSummaries.filter { Self.chatMatchesDirectory($0, directory: chatListDirectory ?? Self.homeDirectoryPath) }
+            return chatSummaries.filter {
+                Self.chatMatchesDirectory($0, directory: chatListDirectory ?? Self.homeDirectoryPath)
+            }
         }
     }
 
     /// Archived chats filtered by the current mode, for the archive picker.
     var visibleArchivedSummaries: [ChatSummary] {
-        let archived = chatItems
+        let archived =
+            chatItems
             .filter { $0.isArchived && !$0.isTemporary }
             .map(ChatSummary.init)
             .sorted { $0.sortKey > $1.sortKey }
@@ -377,7 +386,9 @@ final class AppViewModel: ObservableObject {
             let targetRole = chatListRole ?? ""
             return archived.filter { $0.roleName == targetRole }
         case .directory:
-            return archived.filter { Self.chatMatchesDirectory($0, directory: chatListDirectory ?? Self.homeDirectoryPath) }
+            return archived.filter {
+                Self.chatMatchesDirectory($0, directory: chatListDirectory ?? Self.homeDirectoryPath)
+            }
         }
     }
 
@@ -459,7 +470,8 @@ final class AppViewModel: ObservableObject {
         guard chatListMode != mode else { return }
         chatListMode = mode
         if mode == .role, !roles.isEmpty,
-           !roles.contains(where: { $0.name == chatListRole }) {
+            !roles.contains(where: { $0.name == chatListRole })
+        {
             showSidebarRolePicker = true
         }
         if mode == .directory, chatListDirectory == nil || chatListDirectory?.isEmpty == true {
@@ -572,54 +584,55 @@ final class AppViewModel: ObservableObject {
     }
 
     /// Creates a new chat with the chosen role (called from the role picker).
-   /// Mode-aware: in "role" mode the role is already picked so this isn't
-   /// called. In "directory" mode the picked directory is pre-set and the
-   /// workdir picker is skipped. In "all" mode the standard flow applies.
+    /// Mode-aware: in "role" mode the role is already picked so this isn't
+    /// called. In "directory" mode the picked directory is pre-set and the
+    /// workdir picker is skipped. In "all" mode the standard flow applies.
     func createNewChat(role roleName: String) {
-       showRolePicker = false
-       let needsWorkdir: Bool
-       let overrideWorkdir: String?
-       switch chatListMode {
-       case .directory:
-           overrideWorkdir = chatListDirectory
-           // Skip workdir picker — the directory is pre-set from the mode.
-           needsWorkdir = false
-       case .role, .all:
-           overrideWorkdir = nil
-           needsWorkdir = roleNeedsWorkdirPick(roleName)
-       }
-       Task {
-           let filename = await engine.createNewChat(role: roleName, workingDirectory: overrideWorkdir)
-           selectedChatID = filename
-           await engine.selectChat(filename: filename)
-           await engine.markViewed(filename: filename)
-           if needsWorkdir { showWorkdirPicker = true }
-       }
-   }
-
-   /// Creates a temporary chat with the chosen role (called from the role
-   /// picker in "New Temporary Chat" mode). Same mode-aware logic as
-   /// `createNewChat(role:)`.
-    func createNewTemporaryChat(role roleName: String) {
-       showRolePicker = false
-       let needsWorkdir: Bool
-       let overrideWorkdir: String?
-       switch chatListMode {
-       case .directory:
-           overrideWorkdir = chatListDirectory
-           needsWorkdir = false
-       case .role, .all:
-           overrideWorkdir = nil
-           needsWorkdir = roleNeedsWorkdirPick(roleName)
-       }
-       Task {
-           let filename = await engine.createNewChat(role: roleName, temporary: true, workingDirectory: overrideWorkdir)
+        showRolePicker = false
+        let needsWorkdir: Bool
+        let overrideWorkdir: String?
+        switch chatListMode {
+        case .directory:
+            overrideWorkdir = chatListDirectory
+            // Skip workdir picker — the directory is pre-set from the mode.
+            needsWorkdir = false
+        case .role, .all:
+            overrideWorkdir = nil
+            needsWorkdir = roleNeedsWorkdirPick(roleName)
+        }
+        Task {
+            let filename = await engine.createNewChat(role: roleName, workingDirectory: overrideWorkdir)
             selectedChatID = filename
             await engine.selectChat(filename: filename)
             await engine.markViewed(filename: filename)
             if needsWorkdir { showWorkdirPicker = true }
-       }
-   }
+        }
+    }
+
+    /// Creates a temporary chat with the chosen role (called from the role
+    /// picker in "New Temporary Chat" mode). Same mode-aware logic as
+    /// `createNewChat(role:)`.
+    func createNewTemporaryChat(role roleName: String) {
+        showRolePicker = false
+        let needsWorkdir: Bool
+        let overrideWorkdir: String?
+        switch chatListMode {
+        case .directory:
+            overrideWorkdir = chatListDirectory
+            needsWorkdir = false
+        case .role, .all:
+            overrideWorkdir = nil
+            needsWorkdir = roleNeedsWorkdirPick(roleName)
+        }
+        Task {
+            let filename = await engine.createNewChat(
+                role: roleName, temporary: true, workingDirectory: overrideWorkdir)
+            selectedChatID = filename
+            await engine.selectChat(filename: filename)
+            await engine.markViewed(filename: filename)
+            if needsWorkdir { showWorkdirPicker = true }
+        }
+    }
 
     /// True when a role requires the user to pick a working directory: it has
     /// directory-relevant tools (Filesystem/Code) and doesn't pre-set a
@@ -811,7 +824,8 @@ final class AppViewModel: ObservableObject {
             //    fields changed (flags, selection, titles, metadata); pure
             //    text/thinking appends are not, since SwiftUI never reads
             //    message content directly.
-            let newSummaries = records
+            let newSummaries =
+                records
                 .filter { !$0.isArchived && !$0.isTemporary }
                 .map(ChatSummary.init)
             if newSummaries != chatSummaries {
@@ -826,16 +840,19 @@ final class AppViewModel: ObservableObject {
             // During startup, report the chat-cache sync (total vs already
             // cached vs re-decoded) to the loader's chats row.
             if LoaderController.shared.mode == .startup,
-               let stats = ChatStore.shared.lastStartupSyncStats() {
-                LoaderController.shared.markChatsCompleted(total: stats.totalFiles, freshCached: stats.freshCached, failed: stats.failed)
+                let stats = ChatStore.shared.lastStartupSyncStats()
+            {
+                LoaderController.shared.markChatsCompleted(
+                    total: stats.totalFiles, freshCached: stats.freshCached, failed: stats.failed)
             }
             // Treat an archived (or deleted) selected chat as "no selection"
             // so the UI falls back to the first visible chat — except an
             // archived chat explicitly opened from the archived-chats picker,
             // which stays selected while remaining hidden from the sidebar.
-            let selectedStillVisible = selectedChatID.flatMap { id in
-                records.first(where: { $0.id == id })
-            }.map { Self.isSelectedChatVisible($0, archivedPreviewID: archivedPreviewID) } ?? false
+            let selectedStillVisible =
+                selectedChatID.flatMap { id in
+                    records.first(where: { $0.id == id })
+                }.map { Self.isSelectedChatVisible($0, archivedPreviewID: archivedPreviewID) } ?? false
             if selectedStillVisible, let selected = selectedChatID {
                 // Keep selection — if the chat is not loaded, load it so the
                 // UI can display its messages. This handles the initial
@@ -864,10 +881,11 @@ final class AppViewModel: ObservableObject {
             // Suppress the unread marker if the user is already viewing the
             // selected chat scrolled to the bottom.
             if selectedChatAtBottom,
-               let selected = selectedChatID,
-               let item = records.first(where: { $0.id == selected }),
-               item.hasUnreadActivity,
-               !item.isStreaming {
+                let selected = selectedChatID,
+                let item = records.first(where: { $0.id == selected }),
+                item.hasUnreadActivity,
+                !item.isStreaming
+            {
                 Task { await engine.markViewed(filename: selected) }
             }
             // Push the snapshot synchronously in the same main-actor turn so
@@ -1102,7 +1120,8 @@ final class AppViewModel: ObservableObject {
     var selectedChatConnectionID: String? {
         guard let chat = selectedChatItem?.chat, let role = selectedRole else { return nil }
         if role.connectionOverrideAllowed, let id = chat.connection,
-           connections.contains(where: { $0.id == id }) {
+            connections.contains(where: { $0.id == id })
+        {
             return id
         }
         if let id = role.connection, connections.contains(where: { $0.id == id }) {
@@ -1322,15 +1341,18 @@ final class AppViewModel: ObservableObject {
             if a.filename != b.filename { return true }
             // Record-level scalars.
             if a.isStreaming != b.isStreaming
-               || a.stopAfterIteration != b.stopAfterIteration
-               || a.hasUnreadActivity != b.hasUnreadActivity
-               || a.lastError != b.lastError
-               || a.cachedName != b.cachedName
-               || a.cachedRole != b.cachedRole
-               || a.cachedArchive != b.cachedArchive
+                || a.stopAfterIteration != b.stopAfterIteration
+                || a.hasUnreadActivity != b.hasUnreadActivity
+                || a.lastError != b.lastError
+                || a.cachedName != b.cachedName
+                || a.cachedRole != b.cachedRole
+                || a.cachedArchive != b.cachedArchive
                 || a.cachedWorkingDirectory != b.cachedWorkingDirectory
-               || a.cachedLastActivity != b.cachedLastActivity
-               || a.isTemporary != b.isTemporary { return true }
+                || a.cachedLastActivity != b.cachedLastActivity
+                || a.isTemporary != b.isTemporary
+            {
+                return true
+            }
             // Loaded-chat structure. We compare everything EXCEPT the message
             // text bodies (content/thinking), which stream in per token and
             // are only consumed by the webview.
@@ -1346,17 +1368,20 @@ final class AppViewModel: ObservableObject {
         switch (a, b) {
         case (nil, nil): return false
         case (nil, .some), (.some, nil): return true
-        case let (x?, y?):
+        case (let x?, let y?):
             if x.role != y.role
-     || x.title != y.title
-     || x.connection != y.connection
-     || x.prompt != y.prompt
-     || x.workingDirectory != y.workingDirectory
-     || x.mcps != y.mcps
-     || x.archive != y.archive
-     || x.autoAllow != y.autoAllow
-     || x.autoDeny != y.autoDeny
-     || x.outputRendering != y.outputRendering { return true }
+                || x.title != y.title
+                || x.connection != y.connection
+                || x.prompt != y.prompt
+                || x.workingDirectory != y.workingDirectory
+                || x.mcps != y.mcps
+                || x.archive != y.archive
+                || x.autoAllow != y.autoAllow
+                || x.autoDeny != y.autoDeny
+                || x.outputRendering != y.outputRendering
+            {
+                return true
+            }
             return messagesUIRelevantChanged(x.messages, y.messages)
         }
     }
@@ -1374,11 +1399,14 @@ final class AppViewModel: ObservableObject {
                 || m.toolCalls != n.toolCalls
                 || m.toolResults != n.toolResults
                 || m.tokenUsage != n.tokenUsage
-                || m.activeBranch != n.activeBranch { return true }
+                || m.activeBranch != n.activeBranch
+            {
+                return true
+            }
             switch (m.branches, n.branches) {
             case (nil, nil): break
             case (nil, .some), (.some, nil): return true
-            case let (mb?, nb?):
+            case (let mb?, let nb?):
                 guard mb.count == nb.count else { return true }
                 for (ba, bb) in zip(mb, nb) where messagesUIRelevantChanged(ba, bb) { return true }
             }
@@ -1416,10 +1444,13 @@ final class AppViewModel: ObservableObject {
     /// engine's `setActiveBranch`. No-op when the message has no siblings.
     func switchBranch(messageID: String, direction: Int) {
         guard let filename = selectedChatID,
-              let messageUUID = UUID(uuidString: messageID) else { return }
+            let messageUUID = UUID(uuidString: messageID)
+        else { return }
         Task {
-            if let siblingID = await engine.siblingForSwitch(filename: filename, messageID: messageUUID, direction: direction),
-               let parentID = await engine.record(for: filename)?.chat?.parent(of: messageUUID)?.id {
+            if let siblingID = await engine.siblingForSwitch(
+                filename: filename, messageID: messageUUID, direction: direction),
+                let parentID = await engine.record(for: filename)?.chat?.parent(of: messageUUID)?.id
+            {
                 await engine.setActiveBranch(filename: filename, parentID: parentID, childID: siblingID)
             }
         }
@@ -1459,7 +1490,8 @@ final class AppViewModel: ObservableObject {
     /// scrolls to the target message.
     func gotoMessage(messageID: String) {
         guard let filename = selectedChatID,
-              let targetUUID = UUID(uuidString: messageID) else { return }
+            let targetUUID = UUID(uuidString: messageID)
+        else { return }
         let wasOpen = treeOverviewOpen
         treeOverviewOpen = false
         Task {
@@ -1523,7 +1555,7 @@ final class AppViewModel: ObservableObject {
     func deleteMessage(messageID: UUID) {
         guard let filename = selectedChatID else { return }
         Task { await engine.deleteMessage(filename: filename, messageID: messageID) }
-   }
+    }
 
     /// Unified role-picker confirmation. Dispatches based on the current
     /// picker mode: creates a new chat (`.newChat`) or assigns the role to an
@@ -1545,7 +1577,8 @@ final class AppViewModel: ObservableObject {
             setRole(roleName)
             if roleNeedsWorkdirPick(roleName) {
                 // Don't auto-prompt if this chat already has a working directory.
-                let hasWorkdir = chatItems
+                let hasWorkdir =
+                    chatItems
                     .first(where: { $0.id == filename })?.chat?.workingDirectory?.isEmpty == false
                 if !hasWorkdir { showWorkdirPicker = true }
             }
@@ -1611,13 +1644,13 @@ final class AppViewModel: ObservableObject {
     }
 
     /// Deletes every archived chat (the archived-chats picker's "Delete All"
-   /// action). Deletions run sequentially through the engine.
-   func deleteAllArchivedChats() {
+    /// action). Deletions run sequentially through the engine.
+    func deleteAllArchivedChats() {
         let filenames = visibleArchivedSummaries.map(\.filename)
-       for filename in filenames { inputDrafts.remove(for: filename) }
-       if let preview = archivedPreviewID, filenames.contains(preview) { archivedPreviewID = nil }
-       Task { for filename in filenames { await engine.deleteChat(filename: filename) } }
-   }
+        for filename in filenames { inputDrafts.remove(for: filename) }
+        if let preview = archivedPreviewID, filenames.contains(preview) { archivedPreviewID = nil }
+        Task { for filename in filenames { await engine.deleteChat(filename: filename) } }
+    }
 
     /// Opens an archived chat in the chat view without unarchiving it: it
     /// stays hidden from the sidebar, like a temporary chat.
@@ -1695,7 +1728,9 @@ final class AppViewModel: ObservableObject {
 
     /// Pure MRU-list update behind `recordWorkingDirectory`: moves
     /// `normalized` to the front (deduped), capping the list at `limit`.
-    nonisolated static func recentDirectories(inserting normalized: String, into list: [String], limit: Int = workingDirectoryRecentLimit) -> [String] {
+    nonisolated static func recentDirectories(
+        inserting normalized: String, into list: [String], limit: Int = workingDirectoryRecentLimit
+    ) -> [String] {
         var result = list.filter { $0 != normalized }
         result.insert(normalized, at: 0)
         if result.count > limit { result = Array(result.prefix(limit)) }
@@ -1763,20 +1798,23 @@ final class AppViewModel: ObservableObject {
         ) { [weak self] event in
             guard let self else { return event }
             guard let window = event.window,
-                  window == NSApplication.shared.mainWindow else {
+                window == NSApplication.shared.mainWindow
+            else {
                 return event
             }
             switch event.type {
             case .keyDown:
-                if event.keyCode == 48, // Tab key
-                   event.modifierFlags.contains(.control),
-                   !event.modifierFlags.contains(.command) {
+                if event.keyCode == 48,  // Tab key
+                    event.modifierFlags.contains(.control),
+                    !event.modifierFlags.contains(.command)
+                {
                     self.handleCtrlTab()
-                    return nil // Swallow the event
+                    return nil  // Swallow the event
                 }
             case .flagsChanged:
                 if self.ctrlTabSessionActive,
-                   !event.modifierFlags.contains(.control) {
+                    !event.modifierFlags.contains(.control)
+                {
                     self.endCtrlTabSession()
                 }
             default:
@@ -1798,10 +1836,12 @@ final class AppViewModel: ObservableObject {
             ctrlTabOriginID = selectedChatID
 
             if let prev = previousChatID,
-               let idx = items.firstIndex(where: { $0.id == prev }) {
+                let idx = items.firstIndex(where: { $0.id == prev })
+            {
                 ctrlTabCurrentIndex = idx
             } else if let current = selectedChatID,
-                      let idx = items.firstIndex(where: { $0.id == current }) {
+                let idx = items.firstIndex(where: { $0.id == current })
+            {
                 ctrlTabCurrentIndex = (idx + 1) % items.count
             } else {
                 ctrlTabCurrentIndex = 0

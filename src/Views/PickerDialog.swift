@@ -1,8 +1,8 @@
 // Copyright (C) 2026 Ivan Novohatski <https://d7.wtf/>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import SwiftUI
 import AppKit
+import SwiftUI
 
 /// A reusable modal picker dialog used by the role picker, working-directory
 /// picker, MCP picker, and future pickers. Renders a header, a search field
@@ -220,13 +220,15 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
         .onContinuousHover(coordinateSpace: .local) { phase in
             if case .active = phase { hoverEnabled = true }
         }
-        .background(WindowAccessor { window in
-            if sheetWindow !== window {
-                sheetWindow = window
-                updateParentHeight()
-                positionSheet()
+        .background(
+            WindowAccessor { window in
+                if sheetWindow !== window {
+                    sheetWindow = window
+                    updateParentHeight()
+                    positionSheet()
+                }
             }
-        })
+        )
         .onChange(of: searchText) { _, _ in
             isKeyboardSelection = true
             hoverEnabled = false
@@ -245,8 +247,11 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
         }
         // Re-positions the sheet when the parent window moves or resizes and
         // when the sheet itself resizes (see `handleWindowMoveResize`).
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didMoveNotification), perform: handleWindowMoveResize)
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification), perform: handleWindowMoveResize)
+        .onReceive(
+            NotificationCenter.default.publisher(for: NSWindow.didMoveNotification), perform: handleWindowMoveResize
+        )
+        .onReceive(
+            NotificationCenter.default.publisher(for: NSWindow.didResizeNotification), perform: handleWindowMoveResize)
     }
 
     @ViewBuilder
@@ -285,7 +290,8 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
     /// from any notification.
     private func positionSheet() {
         guard let sheet = sheetWindow ?? NSApp.keyWindow,
-              let parent = sheet.sheetParent else { return }
+            let parent = sheet.sheetParent
+        else { return }
         let origin = PickerLayout.sheetOrigin(parentFrame: parent.frame, sheetSize: sheet.frame.size)
         let target = NSPoint(x: origin.x.rounded(), y: origin.y.rounded())
         // Sub-point tolerance: AppKit may hold the window at a pixel-rounded

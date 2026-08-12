@@ -1,8 +1,8 @@
 // Copyright (C) 2026 Ivan Novohatski <https://d7.wtf/>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import SwiftUI
 import AppKit
+import SwiftUI
 
 /// A multi-step wizard for creating a new connection. Runs in its own window
 /// and walks the user through provider selection, credentials, model selection,
@@ -31,12 +31,12 @@ struct ConnectionWizardView: View {
 
         var title: String {
             switch self {
-            case .provider:    return "Select LLM Provider"
+            case .provider: return "Select LLM Provider"
             case .credentials: return "Connection Credentials"
-            case .model:       return "Model Selection"
-            case .test:        return "Connection Test"
-            case .name:        return "Connection Name"
-            case .finish:      return "Finish"
+            case .model: return "Model Selection"
+            case .test: return "Connection Test"
+            case .name: return "Connection Name"
+            case .finish: return "Finish"
             }
         }
 
@@ -122,21 +122,22 @@ struct ConnectionWizardView: View {
 
         var displayName: String {
             switch self {
-            case .openai:     return "OpenAI"
-            case .anthropic:  return "Anthropic"
+            case .openai: return "OpenAI"
+            case .anthropic: return "Anthropic"
             case .openrouter: return "OpenRouter"
-            case .deepseek:   return "DeepSeek"
-            case .other:      return "Other (OpenAI-compatible)"
+            case .deepseek: return "DeepSeek"
+            case .other: return "Other (OpenAI-compatible)"
             }
         }
 
         var summary: String {
             switch self {
-            case .openai:     return "The official OpenAI API (api.openai.com)."
-            case .anthropic:  return "The official Anthropic API (api.anthropic.com). Uses the Anthropic connection type."
+            case .openai: return "The official OpenAI API (api.openai.com)."
+            case .anthropic:
+                return "The official Anthropic API (api.anthropic.com). Uses the Anthropic connection type."
             case .openrouter: return "A gateway to many models via openrouter.ai/api/v1."
-            case .deepseek:   return "The DeepSeek API (api.deepseek.com), OpenAI-compatible."
-            case .other:      return "Any OpenAI-compatible endpoint. You provide the base URL."
+            case .deepseek: return "The DeepSeek API (api.deepseek.com), OpenAI-compatible."
+            case .other: return "Any OpenAI-compatible endpoint. You provide the base URL."
             }
         }
 
@@ -149,11 +150,11 @@ struct ConnectionWizardView: View {
         /// hidden (uses the provider's default base URL).
         var defaultEndpoint: String? {
             switch self {
-            case .openai:     return nil
-            case .anthropic:  return nil
+            case .openai: return nil
+            case .anthropic: return nil
             case .openrouter: return "https://openrouter.ai/api/v1"
-            case .deepseek:   return "https://api.deepseek.com/v1"
-            case .other:      return ""
+            case .deepseek: return "https://api.deepseek.com/v1"
+            case .other: return ""
             }
         }
 
@@ -164,11 +165,11 @@ struct ConnectionWizardView: View {
         /// Keeps the provider's display capitalization (e.g. "OpenRouter").
         var namePrefix: String {
             switch self {
-            case .openai:     return "OpenAI"
-            case .anthropic:  return "Anthropic"
+            case .openai: return "OpenAI"
+            case .anthropic: return "Anthropic"
             case .openrouter: return "OpenRouter"
-            case .deepseek:   return "DeepSeek"
-            case .other:      return "Custom"
+            case .deepseek: return "DeepSeek"
+            case .other: return "Custom"
             }
         }
     }
@@ -186,12 +187,12 @@ struct ConnectionWizardView: View {
 
             Group {
                 switch step {
-                case .provider:    providerStep
+                case .provider: providerStep
                 case .credentials: credentialsStep
-                case .model:       modelStep
-                case .test:        testStep
-                case .name:        nameStep
-                case .finish:      finishStep
+                case .model: modelStep
+                case .test: testStep
+                case .name: nameStep
+                case .finish: finishStep
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -487,7 +488,8 @@ struct ConnectionWizardView: View {
 
         Task {
             do {
-                let models = try await ChatService.shared.listModels(provider: provider, baseUrl: endpointValue, apiKey: tokenValue)
+                let models = try await ChatService.shared.listModels(
+                    provider: provider, baseUrl: endpointValue, apiKey: tokenValue)
                 await MainActor.run {
                     self.availableModels = models
                     self.selectedModel = models.first?.id ?? ""
@@ -554,7 +556,8 @@ struct ConnectionWizardView: View {
                             ForEach(filteredModels, id: \.id) { model in
                                 HStack(spacing: 8) {
                                     Image(systemName: selectedModel == model.id ? "largecircle.fill.circle" : "circle")
-                                        .foregroundStyle(selectedModel == model.id ? Color.accentColor : Color.secondary)
+                                        .foregroundStyle(
+                                            selectedModel == model.id ? Color.accentColor : Color.secondary)
                                     Text(model.id)
                                         .font(.callout)
                                     Spacer()
@@ -600,9 +603,11 @@ struct ConnectionWizardView: View {
 
     private var testStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("We'll send a non-streaming “say hi” request to verify the connection works. The test must succeed before you can continue.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            Text(
+                "We'll send a non-streaming “say hi” request to verify the connection works. The test must succeed before you can continue."
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .firstTextBaseline, spacing: 0) {
@@ -660,7 +665,8 @@ struct ConnectionWizardView: View {
                 )
                 await MainActor.run {
                     if reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        self.testError = "The model returned an empty response. This usually means the API key is invalid or the selected model is unavailable."
+                        self.testError =
+                            "The model returned an empty response. This usually means the API key is invalid or the selected model is unavailable."
                     } else {
                         self.testResponse = reply
                     }
@@ -690,9 +696,11 @@ struct ConnectionWizardView: View {
                     .textFieldStyle(.roundedBorder)
                     .focused($focusedField, equals: .connectionName)
                     .onSubmit { goNext() }
-                Text("File: connections/\(providerPreset.connectionProvider.rawValue)/\(sanitizedFilename(connectionName)).jsonc")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "File: connections/\(providerPreset.connectionProvider.rawValue)/\(sanitizedFilename(connectionName)).jsonc"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
 
             Spacer()
@@ -792,7 +800,8 @@ struct ConnectionWizardView: View {
     private func sanitizedFilename(_ s: String) -> String {
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         let invalid = CharacterSet(charactersIn: "/\\:*?\"<>|")
-        return trimmed
+        return
+            trimmed
             .components(separatedBy: invalid)
             .joined(separator: "-")
     }

@@ -59,7 +59,10 @@ struct MCPServer: Identifiable, Equatable, Hashable, Sendable {
     /// callable. An empty array (or nil) means all tools are allowed.
     var tools: [String]?
 
-    init(name: String, prefix: String, transport: MCPTransport, runPolicy: MCPRunPolicy?, command: String?, endpoint: String?, token: String?, tools: [String]?) {
+    init(
+        name: String, prefix: String, transport: MCPTransport, runPolicy: MCPRunPolicy?, command: String?,
+        endpoint: String?, token: String?, tools: [String]?
+    ) {
         self.name = name
         self.prefix = prefix
         self.transport = transport
@@ -177,7 +180,10 @@ struct ToolCall: Codable, Identifiable, Equatable, Sendable {
         case id, name, arguments, pendingApproval, diff, requiredArgs, internalTool, summary
     }
 
-    init(id: String, name: String, arguments: String, pendingApproval: Bool = false, diff: String? = nil, requiredArgs: [String]? = nil, internalTool: Bool = false, summary: String? = nil) {
+    init(
+        id: String, name: String, arguments: String, pendingApproval: Bool = false, diff: String? = nil,
+        requiredArgs: [String]? = nil, internalTool: Bool = false, summary: String? = nil
+    ) {
         self.id = id
         self.name = name
         self.arguments = arguments
@@ -296,7 +302,10 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
         case image
     }
 
-    init(callID: String, content: String, isError: Bool, isStreaming: Bool = false, isDenied: Bool = false, isCancelled: Bool = false, summary: ToolSummary.Status? = nil, image: ToolResultImage? = nil) {
+    init(
+        callID: String, content: String, isError: Bool, isStreaming: Bool = false, isDenied: Bool = false,
+        isCancelled: Bool = false, summary: ToolSummary.Status? = nil, image: ToolResultImage? = nil
+    ) {
         self.callID = callID
         self.content = content
         self.isError = isError
@@ -367,8 +376,9 @@ struct ToolDefinition: Sendable, Equatable {
     /// callers should treat that as "unknown", not "none".
     var requiredArgs: [String]? {
         guard let data = inputSchema.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data),
-              let dict = obj as? [String: Any] else { return nil }
+            let obj = try? JSONSerialization.jsonObject(with: data),
+            let dict = obj as? [String: Any]
+        else { return nil }
         return dict["required"] as? [String]
     }
 }

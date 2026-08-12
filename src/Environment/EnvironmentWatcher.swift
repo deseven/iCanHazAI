@@ -1,8 +1,8 @@
 // Copyright (C) 2026 Ivan Novohatski <https://d7.wtf/>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import Foundation
 import FSEventsWrapper
+import Foundation
 
 /// Watches the app's environment tree (`~/iCanHazAI`) with a single FSEvents
 /// stream and forwards the full decoded `FSEvent` (path + type) to a callback.
@@ -29,14 +29,16 @@ final class EnvironmentWatcher: @unchecked Sendable {
         let flags = FSEventStreamCreateFlags(
             kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot
         )
-        guard let s = FSEventStream(
-            path: rootPath,
-            updateInterval: 0.1,
-            fsEventStreamFlags: flags,
-            callback: { _, event in
-                onEvent(event)
-            }
-        ) else {
+        guard
+            let s = FSEventStream(
+                path: rootPath,
+                updateInterval: 0.1,
+                fsEventStreamFlags: flags,
+                callback: { _, event in
+                    onEvent(event)
+                }
+            )
+        else {
             debugLog("FSEvents", "failed to create stream for \(rootPath)")
             return
         }

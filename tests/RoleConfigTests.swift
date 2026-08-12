@@ -1,7 +1,8 @@
-import Foundation
 import AppKit
-import Testing
+import Foundation
 import TOML
+import Testing
+
 @testable import iCanHazAI
 
 // Tests for the TOML-based role config, prompt loading, and default seeding.
@@ -11,27 +12,27 @@ extension AllAppTests {
         @Test("RoleConfig decodes all fields from TOML")
         func decodesFullConfig() throws {
             let toml = """
-            description = "A special developer role."
-            prompt = "Developer"
-            prompt_override_allowed = false
-            working_directory = "~/projects/MyProject"
-            connection = "openai/DeepSeek"
-            connection_override_allowed = true
-            mcps_override_allowed = true
-            directory_isolation = true
+                description = "A special developer role."
+                prompt = "Developer"
+                prompt_override_allowed = false
+                working_directory = "~/projects/MyProject"
+                connection = "openai/DeepSeek"
+                connection_override_allowed = true
+                mcps_override_allowed = true
+                directory_isolation = true
 
-            [utils]
-            tools = []
-            auto_allow_all = true
+                [utils]
+                tools = []
+                auto_allow_all = true
 
-            [filesystem]
-            auto_allow = ["ls", "read_file", "stat"]
+                [filesystem]
+                auto_allow = ["ls", "read_file", "stat"]
 
-            [[mcps]]
-            mcp = "Tavily"
-            tools = ["tavily_search", "tavily_extract"]
-            auto_allow = ["tavily_search"]
-            """
+                [[mcps]]
+                mcp = "Tavily"
+                tools = ["tavily_search", "tavily_extract"]
+                auto_allow = ["tavily_search"]
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             #expect(config.description == "A special developer role.")
             #expect(config.prompt == "Developer")
@@ -55,8 +56,8 @@ extension AllAppTests {
         @Test("RoleConfig applies defaults for omitted optional fields")
         func decodesMinimalConfig() throws {
             let toml = """
-            prompt = "Assistant"
-            """
+                prompt = "Assistant"
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Assistant", config: config)
             #expect(role.description == "No description.")
@@ -71,9 +72,9 @@ extension AllAppTests {
         @Test("RoleConfig decodes a custom icon and Role exposes it")
         func decodesIcon() throws {
             let toml = """
-            prompt = "Developer"
-            icon = "hammer"
-            """
+                prompt = "Developer"
+                icon = "hammer"
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
             #expect(config.icon == "hammer")
@@ -83,9 +84,9 @@ extension AllAppTests {
         @Test("RoleConfig decodes an accent alias and Role exposes it")
         func decodesAccent() throws {
             let toml = """
-            prompt = "Developer"
-            accent = "purple"
-            """
+                prompt = "Developer"
+                accent = "purple"
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
             #expect(config.accent == "purple")
@@ -95,13 +96,13 @@ extension AllAppTests {
         @Test("Role.hasWorkdirCapableMCP is true when a workdir-capable group is selected")
         func hasWorkdirCapableMCPTrue() throws {
             let toml = """
-            prompt = "Developer"
+                prompt = "Developer"
 
-            [utils]
-            auto_allow_all = true
+                [utils]
+                auto_allow_all = true
 
-            [filesystem]
-            """
+                [filesystem]
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
             #expect(role.hasWorkdirCapableMCP)
@@ -111,10 +112,10 @@ extension AllAppTests {
         func hasWorkdirCapableMCPCodeShell() throws {
             for group in ["code", "shell"] {
                 let toml = """
-                prompt = "Developer"
+                    prompt = "Developer"
 
-                [\(group)]
-                """
+                    [\(group)]
+                    """
                 let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
                 let role = Role(name: "Developer", config: config)
                 #expect(role.hasWorkdirCapableMCP, "expected hasWorkdirCapableMCP for [\(group)]")
@@ -125,11 +126,11 @@ extension AllAppTests {
         func hasWorkdirCapableMCPFalse() throws {
             // Utils is internal but doesn't use the working directory.
             let toml = """
-            prompt = "Developer"
+                prompt = "Developer"
 
-            [utils]
-            auto_allow_all = true
-            """
+                [utils]
+                auto_allow_all = true
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
             #expect(!role.hasWorkdirCapableMCP)
@@ -138,8 +139,8 @@ extension AllAppTests {
         @Test("Role.hasWorkdirCapableMCP is false when no groups are selected")
         func hasWorkdirCapableMCPFalseNoGroups() throws {
             let toml = """
-            prompt = "Developer"
-            """
+                prompt = "Developer"
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
             #expect(!role.hasWorkdirCapableMCP)
@@ -148,12 +149,12 @@ extension AllAppTests {
         @Test("Role.hasWorkdirCapableMCP is false for custom (non-group) MCPs only")
         func hasWorkdirCapableMCPFalseCustom() throws {
             let toml = """
-            prompt = "Developer"
+                prompt = "Developer"
 
-            [[mcps]]
-            mcp = "Tavily"
-            tools = ["tavily_search"]
-            """
+                [[mcps]]
+                mcp = "Tavily"
+                tools = ["tavily_search"]
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
             #expect(!role.hasWorkdirCapableMCP)
@@ -164,12 +165,12 @@ extension AllAppTests {
         @Test("Role.hasDirectoryIsolation is true when directory_isolation is set at the top level")
         func hasDirectoryIsolationTrue() throws {
             let toml = """
-            prompt = "Developer"
-            working_directory = "~/projects"
-            directory_isolation = true
+                prompt = "Developer"
+                working_directory = "~/projects"
+                directory_isolation = true
 
-            [filesystem]
-            """
+                [filesystem]
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
             #expect(role.hasDirectoryIsolation)
@@ -178,11 +179,11 @@ extension AllAppTests {
         @Test("Role.hasDirectoryIsolation is false when directory_isolation is not set")
         func hasDirectoryIsolationFalseWhenNotSet() throws {
             let toml = """
-            prompt = "Developer"
-            working_directory = "~/projects"
+                prompt = "Developer"
+                working_directory = "~/projects"
 
-            [filesystem]
-            """
+                [filesystem]
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
             #expect(!role.hasDirectoryIsolation)
@@ -193,12 +194,12 @@ extension AllAppTests {
             // Legacy placement: the key no longer exists on RoleToolGroup, so
             // the decoder simply skips it and the role stays non-isolated.
             let toml = """
-            prompt = "Developer"
-            working_directory = "~/projects"
+                prompt = "Developer"
+                working_directory = "~/projects"
 
-            [filesystem]
-            directory_isolation = true
-            """
+                [filesystem]
+                directory_isolation = true
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
             #expect(!role.hasDirectoryIsolation)
@@ -209,12 +210,12 @@ extension AllAppTests {
         @Test("Role validation rejects working_directory without workdir-capable group")
         func validationRejectsWorkdirWithoutCapableGroup() throws {
             let toml = """
-            prompt = "Developer"
-            working_directory = "~/projects"
+                prompt = "Developer"
+                working_directory = "~/projects"
 
-            [utils]
-            auto_allow_all = true
-            """
+                [utils]
+                auto_allow_all = true
+                """
             let data = Data(toml.utf8)
             #expect(throws: ConfigValidationError.self) {
                 try ConfigValidation.decodeRole(data)
@@ -224,11 +225,11 @@ extension AllAppTests {
         @Test("Role validation accepts working_directory with workdir-capable group")
         func validationAcceptsWorkdirWithCapableGroup() throws {
             let toml = """
-            prompt = "Developer"
-            working_directory = "~/projects"
+                prompt = "Developer"
+                working_directory = "~/projects"
 
-            [filesystem]
-            """
+                [filesystem]
+                """
             let data = Data(toml.utf8)
             let config = try ConfigValidation.decodeRole(data)
             #expect(config.workingDirectory == "~/projects")
@@ -240,11 +241,11 @@ extension AllAppTests {
         func validationRejectsIsolationWithoutCapableGroup() throws {
             for group in ["shell", "utils", "web"] {
                 let toml = """
-                prompt = "Developer"
-                directory_isolation = true
+                    prompt = "Developer"
+                    directory_isolation = true
 
-                [\(group)]
-                """
+                    [\(group)]
+                    """
                 let data = Data(toml.utf8)
                 #expect(throws: ConfigValidationError.self, "expected rejection for [\(group)]-only role") {
                     try ConfigValidation.decodeRole(data)
@@ -255,12 +256,12 @@ extension AllAppTests {
         @Test("Role validation accepts directory_isolation with Filesystem and a pre-set workdir")
         func validationAcceptsIsolationOnFilesystem() throws {
             let toml = """
-            prompt = "Developer"
-            working_directory = "~/projects"
-            directory_isolation = true
+                prompt = "Developer"
+                working_directory = "~/projects"
+                directory_isolation = true
 
-            [filesystem]
-            """
+                [filesystem]
+                """
             let data = Data(toml.utf8)
             let config = try ConfigValidation.decodeRole(data)
             #expect(config.directoryIsolation == true)
@@ -274,11 +275,11 @@ extension AllAppTests {
             // asked to pick one when the role doesn't pre-set it — isolation
             // without working_directory is fine.
             let toml = """
-            prompt = "Developer"
-            directory_isolation = true
+                prompt = "Developer"
+                directory_isolation = true
 
-            [filesystem]
-            """
+                [filesystem]
+                """
             let data = Data(toml.utf8)
             let config = try ConfigValidation.decodeRole(data)
             #expect(config.directoryIsolation == true)
@@ -287,11 +288,11 @@ extension AllAppTests {
         @Test("Role validation accepts directory_isolation with Code and without working_directory")
         func validationAcceptsIsolationOnCodeWithoutWorkdir() throws {
             let toml = """
-            prompt = "Developer"
-            directory_isolation = true
+                prompt = "Developer"
+                directory_isolation = true
 
-            [code]
-            """
+                [code]
+                """
             let data = Data(toml.utf8)
             let config = try ConfigValidation.decodeRole(data)
             #expect(config.directoryIsolation == true)
@@ -303,13 +304,13 @@ extension AllAppTests {
         func validationRejectsIsolationWithShell() throws {
             for group in ["filesystem", "code"] {
                 let toml = """
-                prompt = "Developer"
-                directory_isolation = true
+                    prompt = "Developer"
+                    directory_isolation = true
 
-                [\(group)]
+                    [\(group)]
 
-                [shell]
-                """
+                    [shell]
+                    """
                 let data = Data(toml.utf8)
                 #expect(throws: ConfigValidationError.self, "expected rejection for [\(group)] + [shell]") {
                     try ConfigValidation.decodeRole(data)
@@ -320,13 +321,13 @@ extension AllAppTests {
         @Test("directory_isolation + Shell error explains the escape risk")
         func validationIsolationWithShellMessage() throws {
             let toml = """
-            prompt = "Developer"
-            directory_isolation = true
+                prompt = "Developer"
+                directory_isolation = true
 
-            [filesystem]
+                [filesystem]
 
-            [shell]
-            """
+                [shell]
+                """
             let data = Data(toml.utf8)
             do {
                 _ = try ConfigValidation.decodeRole(data)
@@ -341,12 +342,12 @@ extension AllAppTests {
         @Test("Role validation accepts the Shell group without directory_isolation")
         func validationAcceptsShellWithoutIsolation() throws {
             let toml = """
-            prompt = "Developer"
+                prompt = "Developer"
 
-            [filesystem]
+                [filesystem]
 
-            [shell]
-            """
+                [shell]
+                """
             let data = Data(toml.utf8)
             let config = try ConfigValidation.decodeRole(data)
             #expect(config.shell != nil)
@@ -369,9 +370,9 @@ extension AllAppTests {
         func accentResolution() throws {
             // Known aliases resolve to the matching adaptive system color.
             #expect(RoleAccent.nsColor(for: "blue") == .systemBlue)
-            #expect(RoleAccent.nsColor(for: "Purple") == .systemPurple) // case-insensitive
+            #expect(RoleAccent.nsColor(for: "Purple") == .systemPurple)  // case-insensitive
             #expect(RoleAccent.nsColor(for: "teal") == .systemTeal)
-            #expect(RoleAccent.nsColor(for: "grey") == .systemGray) // grey → gray
+            #expect(RoleAccent.nsColor(for: "grey") == .systemGray)  // grey → gray
             // Absent or unrecognized aliases resolve to nil (caller falls back
             // to the macOS accent color).
             #expect(RoleAccent.nsColor(for: nil) == nil)
@@ -386,15 +387,15 @@ extension AllAppTests {
         func loadsRoleAndPrompt() throws {
             let env = try TempEnv()
             let roleTOML = """
-            description = "Tester"
-            prompt = "Tester"
+                description = "Tester"
+                prompt = "Tester"
 
-            [utils]
-            auto_allow_all = true
+                [utils]
+                auto_allow_all = true
 
-            [[mcps]]
-            mcp = "Tavily"
-            """
+                [[mcps]]
+                mcp = "Tavily"
+                """
             try Data(roleTOML.utf8).write(to: env.env.rolesURL.appendingPathComponent("Tester.toml"))
             try Data("# You are a tester".utf8).write(to: env.env.promptsURL.appendingPathComponent("Tester.md"))
             // Role reference validation requires the MCP config to exist.
@@ -508,10 +509,10 @@ extension AllAppTests {
         func roleNeedsWorkdirPickTrue() throws {
             for group in ["filesystem", "code"] {
                 let toml = """
-                prompt = "Developer"
+                    prompt = "Developer"
 
-                [\(group)]
-                """
+                    [\(group)]
+                    """
                 let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
                 let role = Role(name: "Developer", config: config)
                 #expect(AppViewModel.roleNeedsWorkdirPick(role), "expected pick needed for [\(group)]")
@@ -521,11 +522,11 @@ extension AllAppTests {
         @Test("roleNeedsWorkdirPick is false when a working directory is pre-set")
         func roleNeedsWorkdirPickFalsePresetDir() throws {
             let toml = """
-            prompt = "Developer"
-            working_directory = "~/projects"
+                prompt = "Developer"
+                working_directory = "~/projects"
 
-            [filesystem]
-            """
+                [filesystem]
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
             #expect(!AppViewModel.roleNeedsWorkdirPick(role))
@@ -534,10 +535,10 @@ extension AllAppTests {
         @Test("roleNeedsWorkdirPick is false for Shell-only roles (home is fine)")
         func roleNeedsWorkdirPickFalseShellOnly() throws {
             let toml = """
-            prompt = "Developer"
+                prompt = "Developer"
 
-            [shell]
-            """
+                [shell]
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
             #expect(!AppViewModel.roleNeedsWorkdirPick(role))
@@ -546,10 +547,10 @@ extension AllAppTests {
         @Test("roleNeedsWorkdirPick is false with no directory-relevant tools")
         func roleNeedsWorkdirPickFalseNoRelevantTools() throws {
             let toml = """
-            prompt = "Developer"
+                prompt = "Developer"
 
-            [utils]
-            """
+                [utils]
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
             #expect(!AppViewModel.roleNeedsWorkdirPick(role))
@@ -561,10 +562,10 @@ extension AllAppTests {
         func hasDirectoryRelevantToolsTrue() throws {
             for group in ["filesystem", "code"] {
                 let toml = """
-                prompt = "Developer"
+                    prompt = "Developer"
 
-                [\(group)]
-                """
+                    [\(group)]
+                    """
                 let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
                 let role = Role(name: "Developer", config: config)
                 #expect(role.hasDirectoryRelevantTools, "expected directory-relevant for [\(group)]")
@@ -575,10 +576,10 @@ extension AllAppTests {
         func hasDirectoryRelevantToolsFalse() throws {
             for group in ["shell", "utils"] {
                 let toml = """
-                prompt = "Developer"
+                    prompt = "Developer"
 
-                [\(group)]
-                """
+                    [\(group)]
+                    """
                 let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
                 let role = Role(name: "Developer", config: config)
                 #expect(!role.hasDirectoryRelevantTools, "expected not directory-relevant for [\(group)]")
@@ -591,10 +592,10 @@ extension AllAppTests {
         func bindsToDirectoryTrue() throws {
             for group in ["filesystem", "code", "shell"] {
                 let toml = """
-                prompt = "Developer"
+                    prompt = "Developer"
 
-                [\(group)]
-                """
+                    [\(group)]
+                    """
                 let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
                 let role = Role(name: "Developer", config: config)
                 #expect(role.bindsToDirectory, "expected bindsToDirectory for [\(group)]")
@@ -605,17 +606,17 @@ extension AllAppTests {
         func bindsToDirectoryFalse() throws {
             for group in ["utils", "web"] {
                 let toml = """
-                prompt = "Developer"
+                    prompt = "Developer"
 
-                [\(group)]
-                """
+                    [\(group)]
+                    """
                 let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
                 let role = Role(name: "Developer", config: config)
                 #expect(!role.bindsToDirectory, "expected not bindsToDirectory for [\(group)]")
             }
             let toml = """
-            prompt = "Developer"
-            """
+                prompt = "Developer"
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
             #expect(!role.bindsToDirectory)
@@ -624,79 +625,82 @@ extension AllAppTests {
         @Test("Role.hasShellTools is true only when the Shell group is enabled")
         func hasShellTools() throws {
             let withShell = """
-            prompt = "Developer"
+                prompt = "Developer"
 
-            [shell]
-            """
+                [shell]
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(withShell.utf8))
             #expect(Role(name: "Developer", config: config).hasShellTools)
 
             let withoutShell = """
-            prompt = "Developer"
+                prompt = "Developer"
 
-            [filesystem]
-            """
+                [filesystem]
+                """
             let config2 = try TOMLDecoder().decode(RoleConfig.self, from: Data(withoutShell.utf8))
             #expect(!Role(name: "Developer", config: config2).hasShellTools)
         }
 
         @Test("Role.hasWebTools is true only when the Web group is enabled")
-       func hasWebTools() throws {
-           let withWeb = """
-           prompt = "Developer"
+        func hasWebTools() throws {
+            let withWeb = """
+                prompt = "Developer"
 
-           [web]
-           """
-           let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(withWeb.utf8))
-           #expect(Role(name: "Developer", config: config).hasWebTools)
+                [web]
+                """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(withWeb.utf8))
+            #expect(Role(name: "Developer", config: config).hasWebTools)
 
-           let withoutWeb = """
-           prompt = "Developer"
+            let withoutWeb = """
+                prompt = "Developer"
 
-           [utils]
-           """
-           let config2 = try TOMLDecoder().decode(RoleConfig.self, from: Data(withoutWeb.utf8))
-           #expect(!Role(name: "Developer", config: config2).hasWebTools)
-       }
+                [utils]
+                """
+            let config2 = try TOMLDecoder().decode(RoleConfig.self, from: Data(withoutWeb.utf8))
+            #expect(!Role(name: "Developer", config: config2).hasWebTools)
+        }
 
-       // MARK: - shell_whitelist
+        // MARK: - shell_whitelist
 
-       @Test("RoleConfig decodes shell_whitelist under [shell]")
-       func decodesShellWhitelist() throws {
-           let toml = """
-           prompt = "Developer"
+        @Test("RoleConfig decodes shell_whitelist under [shell]")
+        func decodesShellWhitelist() throws {
+            let toml = """
+                prompt = "Developer"
 
-           [shell]
-           tools = ["shell"]
-           shell_whitelist = ["ls", "cat", "grep", "find", "stat", "file", "curl", "cd", "pwd", "head", "tail"]
-           """
-           let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
-           let shell = try #require(config.shell)
-           #expect(shell.shellWhitelist == ["ls", "cat", "grep", "find", "stat", "file", "curl", "cd", "pwd", "head", "tail"])
-       }
+                [shell]
+                tools = ["shell"]
+                shell_whitelist = ["ls", "cat", "grep", "find", "stat", "file", "curl", "cd", "pwd", "head", "tail"]
+                """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let shell = try #require(config.shell)
+            #expect(
+                shell.shellWhitelist == [
+                    "ls", "cat", "grep", "find", "stat", "file", "curl", "cd", "pwd", "head", "tail",
+                ])
+        }
 
-       @Test("RoleConfig decodes [shell] without shell_whitelist (nil default)")
-       func shellWhitelistNilDefault() throws {
-           let toml = """
-           prompt = "Developer"
+        @Test("RoleConfig decodes [shell] without shell_whitelist (nil default)")
+        func shellWhitelistNilDefault() throws {
+            let toml = """
+                prompt = "Developer"
 
-           [shell]
-           tools = ["shell"]
-           """
-           let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
-           let shell = try #require(config.shell)
-           #expect(shell.shellWhitelist == nil)
-       }
+                [shell]
+                tools = ["shell"]
+                """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            let shell = try #require(config.shell)
+            #expect(shell.shellWhitelist == nil)
+        }
 
-       // MARK: - workdirPickerEnabled (pick permanence)
+        // MARK: - workdirPickerEnabled (pick permanence)
 
         /// A role with directory-relevant tools and no pre-set directory.
         private func pickerRole() throws -> Role {
             let toml = """
-            prompt = "Developer"
+                prompt = "Developer"
 
-            [filesystem]
-            """
+                [filesystem]
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             return Role(name: "Developer", config: config)
         }
@@ -718,11 +722,11 @@ extension AllAppTests {
         @Test("workdirPickerEnabled is false when the role pre-sets a directory")
         func pickerDisabledForPresetRole() throws {
             let toml = """
-            prompt = "Developer"
-            working_directory = "~/projects"
+                prompt = "Developer"
+                working_directory = "~/projects"
 
-            [filesystem]
-            """
+                [filesystem]
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
             #expect(!AppViewModel.workdirPickerEnabled(role: role, chatWorkingDirectory: nil))
@@ -731,10 +735,10 @@ extension AllAppTests {
         @Test("workdirPickerEnabled is false for roles without directory-relevant tools")
         func pickerDisabledForShellOnly() throws {
             let toml = """
-            prompt = "Developer"
+                prompt = "Developer"
 
-            [shell]
-            """
+                [shell]
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
             #expect(!AppViewModel.workdirPickerEnabled(role: role, chatWorkingDirectory: nil))
@@ -745,11 +749,11 @@ extension AllAppTests {
         /// A Filesystem role with a pre-set working directory.
         private func presetRole(_ dir: String) throws -> Role {
             let toml = """
-            prompt = "Developer"
-            working_directory = "\(dir)"
+                prompt = "Developer"
+                working_directory = "\(dir)"
 
-            [filesystem]
-            """
+                [filesystem]
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             return Role(name: "Developer", config: config)
         }
@@ -776,10 +780,10 @@ extension AllAppTests {
         @Test("workdirPickerVisible is false without directory-relevant tools and no pre-set dir")
         func pickerVisibleForShellOnly() throws {
             let toml = """
-            prompt = "Developer"
+                prompt = "Developer"
 
-            [shell]
-            """
+                [shell]
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Developer", config: config)
             #expect(!AppViewModel.workdirPickerVisible(role: role))
@@ -820,13 +824,13 @@ extension AllAppTests {
         @Test("RoleConfig decodes a [features] table")
         func decodesFeatures() throws {
             let toml = """
-            prompt = "Assistant"
+                prompt = "Assistant"
 
-            [features]
-            with_attachments = true
-            with_response_regen = true
-            with_chat_trees = true
-            """
+                [features]
+                with_attachments = true
+                with_response_regen = true
+                with_chat_trees = true
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let features = try #require(config.features)
             #expect(features.withAttachments == true)
@@ -841,11 +845,11 @@ extension AllAppTests {
         @Test("RoleConfig decodes a partial [features] table (omitted keys default to nil)")
         func decodesPartialFeatures() throws {
             let toml = """
-            prompt = "Assistant"
+                prompt = "Assistant"
 
-            [features]
-            with_attachments = true
-            """
+                [features]
+                with_attachments = true
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let features = try #require(config.features)
             #expect(features.withAttachments == true)
@@ -860,8 +864,8 @@ extension AllAppTests {
         @Test("RoleConfig with no [features] table leaves all features off")
         func noFeaturesTable() throws {
             let toml = """
-            prompt = "Assistant"
-            """
+                prompt = "Assistant"
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             #expect(config.features == nil)
             let role = Role(name: "Assistant", config: config)
@@ -873,10 +877,10 @@ extension AllAppTests {
         @Test("An empty [features] table leaves all features off")
         func emptyFeaturesTable() throws {
             let toml = """
-            prompt = "Assistant"
+                prompt = "Assistant"
 
-            [features]
-            """
+                [features]
+                """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let features = try #require(config.features)
             #expect(features.withAttachments == nil)
@@ -891,11 +895,11 @@ extension AllAppTests {
         @Test("Role validation rejects with_chat_trees without with_response_regen")
         func validationRejectsTreesWithoutRegen() throws {
             let toml = """
-            prompt = "Assistant"
+                prompt = "Assistant"
 
-            [features]
-            with_chat_trees = true
-            """
+                [features]
+                with_chat_trees = true
+                """
             let data = Data(toml.utf8)
             #expect(throws: ConfigValidationError.self) {
                 try ConfigValidation.decodeRole(data)
@@ -905,12 +909,12 @@ extension AllAppTests {
         @Test("Role validation accepts with_chat_trees with with_response_regen")
         func validationAcceptsTreesWithRegen() throws {
             let toml = """
-            prompt = "Assistant"
+                prompt = "Assistant"
 
-            [features]
-            with_response_regen = true
-            with_chat_trees = true
-            """
+                [features]
+                with_response_regen = true
+                with_chat_trees = true
+                """
             let data = Data(toml.utf8)
             let config = try ConfigValidation.decodeRole(data)
             #expect(config.features?.withChatTrees == true)
@@ -920,11 +924,11 @@ extension AllAppTests {
         @Test("Role validation accepts with_response_regen without with_chat_trees")
         func validationAcceptsRegenWithoutTrees() throws {
             let toml = """
-            prompt = "Assistant"
+                prompt = "Assistant"
 
-            [features]
-            with_response_regen = true
-            """
+                [features]
+                with_response_regen = true
+                """
             let data = Data(toml.utf8)
             let config = try ConfigValidation.decodeRole(data)
             #expect(config.features?.withResponseRegen == true)
@@ -934,11 +938,11 @@ extension AllAppTests {
         @Test("trees-without-regen error explains the requirement")
         func treesWithoutRegenMessage() throws {
             let toml = """
-            prompt = "Assistant"
+                prompt = "Assistant"
 
-            [features]
-            with_chat_trees = true
-            """
+                [features]
+                with_chat_trees = true
+                """
             let data = Data(toml.utf8)
             do {
                 _ = try ConfigValidation.decodeRole(data)

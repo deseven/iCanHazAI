@@ -55,7 +55,12 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     /// added) branch.
     var activeBranch: Int?
 
-    init(id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil, error: String? = nil, timestamp: Date = Date(), connectionName: String? = nil, attachments: [Attachment]? = nil, toolCalls: [ToolCall]? = nil, toolResults: [ToolResult]? = nil, tokenUsage: TokenUsage? = nil, branches: [[ChatMessage]]? = nil, activeBranch: Int? = nil) {
+    init(
+        id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil, error: String? = nil,
+        timestamp: Date = Date(), connectionName: String? = nil, attachments: [Attachment]? = nil,
+        toolCalls: [ToolCall]? = nil, toolResults: [ToolResult]? = nil, tokenUsage: TokenUsage? = nil,
+        branches: [[ChatMessage]]? = nil, activeBranch: Int? = nil
+    ) {
         self.id = id
         self.role = role
         self.content = content
@@ -168,7 +173,8 @@ extension Array where Element == ChatMessage {
             removeLast()
         }
         guard let aIdx = indices.reversed().first(where: { self[$0].role == .assistant }),
-              var calls = self[aIdx].toolCalls, !calls.isEmpty else { return }
+            var calls = self[aIdx].toolCalls, !calls.isEmpty
+        else { return }
 
         // Drop calls that were cut off mid-stream and never became real.
         calls.removeAll { $0.id.isEmpty || $0.name.isEmpty }
@@ -187,7 +193,8 @@ extension Array where Element == ChatMessage {
             calls[i].pendingApproval = false
             if !answered.contains(calls[i].id) {
                 calls[i].diff = nil
-                var result = ToolResult(callID: calls[i].id, content: Self.cancelledToolResultContent, isError: true, isCancelled: true)
+                var result = ToolResult(
+                    callID: calls[i].id, content: Self.cancelledToolResultContent, isError: true, isCancelled: true)
                 // Synthesized results bypass the engine's stamping path, so
                 // stamp the persisted status summary here — otherwise no
                 // surface can show the "cancelled" badge.
@@ -263,7 +270,12 @@ struct Chat: Codable, Identifiable, Equatable {
     /// plain text (CLI-created chats). Completely optional — a chat file
     /// without this key decodes as rich.
     var outputRendering: ChatOutputRendering?
-    init(id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil, prompt: String? = nil, workingDirectory: String? = nil, mcps: [String]? = nil, title: String? = nil, archive: Bool? = nil, autoAllow: [String]? = nil, autoDeny: [String]? = nil, outputRendering: ChatOutputRendering? = nil) {
+    init(
+        id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil,
+        prompt: String? = nil, workingDirectory: String? = nil, mcps: [String]? = nil, title: String? = nil,
+        archive: Bool? = nil, autoAllow: [String]? = nil, autoDeny: [String]? = nil,
+        outputRendering: ChatOutputRendering? = nil
+    ) {
         self.id = id
         self.messages = messages
         self.connection = connection
@@ -516,7 +528,8 @@ extension Chat {
     }
 
     @discardableResult
-    private static func update(id: UUID, in msgs: inout [ChatMessage], _ transform: (inout ChatMessage) -> Void) -> Bool {
+    private static func update(id: UUID, in msgs: inout [ChatMessage], _ transform: (inout ChatMessage) -> Void) -> Bool
+    {
         for i in msgs.indices {
             if msgs[i].id == id {
                 transform(&msgs[i])
@@ -710,8 +723,7 @@ extension Chat {
                             // to the most recent survivor (nil = last); a
                             // removal before it shifts the index.
                             if let a = msgs[i].activeBranch {
-                                if a == b { msgs[i].activeBranch = nil }
-                                else if a > b { msgs[i].activeBranch = a - 1 }
+                                if a == b { msgs[i].activeBranch = nil } else if a > b { msgs[i].activeBranch = a - 1 }
                             }
                         }
                         msgs[i].branches = branches
@@ -783,7 +795,8 @@ extension Chat {
 
     private static func applyChoices(_ choices: [Int], in msgs: inout [ChatMessage]) {
         guard let choice = choices.first, var branches = msgs.last?.branches,
-              (0..<branches.count).contains(choice) else { return }
+            (0..<branches.count).contains(choice)
+        else { return }
         msgs[msgs.count - 1].activeBranch = choice
         applyChoices(Array(choices.dropFirst()), in: &branches[choice])
         msgs[msgs.count - 1].branches = branches
@@ -959,7 +972,12 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     /// irreversibly as soon as another chat is selected or created.
     var isTemporary: Bool
 
-    init(filename: String, chat: Chat? = nil, cachedName: String? = nil, cachedRole: String? = nil, cachedModificationTime: Date = Date(), cachedArchive: Bool = false, cachedWorkingDirectory: String? = nil, cachedLastActivity: Date = .distantPast, isStreaming: Bool = false, stopAfterIteration: Bool = false, hasUnreadActivity: Bool = false, lastError: String? = nil, createdAt: Date = Date(), isTemporary: Bool = false) {
+    init(
+        filename: String, chat: Chat? = nil, cachedName: String? = nil, cachedRole: String? = nil,
+        cachedModificationTime: Date = Date(), cachedArchive: Bool = false, cachedWorkingDirectory: String? = nil,
+        cachedLastActivity: Date = .distantPast, isStreaming: Bool = false, stopAfterIteration: Bool = false,
+        hasUnreadActivity: Bool = false, lastError: String? = nil, createdAt: Date = Date(), isTemporary: Bool = false
+    ) {
         self.filename = filename
         self.chat = chat
         self.cachedName = cachedName
@@ -1000,17 +1018,17 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     /// Cumulative token usage across all assistant responses in this chat.
     /// Nil when the chat is unloaded or has no usage data.
     var tokenUsage: TokenUsage? {
-    guard let chat = chat else { return nil }
-    let usages = chat.activeMessages.compactMap { $0.tokenUsage }
-    guard !usages.isEmpty else { return nil }
-    return TokenUsage(
-        tokensUsed: usages.reduce(0) { $0 + $1.tokensUsed },
-        inputTokens: usages.reduce(0) { $0 + $1.inputTokens },
-        outputTokens: usages.reduce(0) { $0 + $1.outputTokens },
-        cachedInputTokens: usages.reduce(0) { $0 + $1.cachedInputTokens },
-        cacheCreationTokens: usages.reduce(0) { $0 + $1.cacheCreationTokens }
-    )
-}
+        guard let chat = chat else { return nil }
+        let usages = chat.activeMessages.compactMap { $0.tokenUsage }
+        guard !usages.isEmpty else { return nil }
+        return TokenUsage(
+            tokensUsed: usages.reduce(0) { $0 + $1.tokensUsed },
+            inputTokens: usages.reduce(0) { $0 + $1.inputTokens },
+            outputTokens: usages.reduce(0) { $0 + $1.outputTokens },
+            cachedInputTokens: usages.reduce(0) { $0 + $1.cachedInputTokens },
+            cacheCreationTokens: usages.reduce(0) { $0 + $1.cacheCreationTokens }
+        )
+    }
 
     /// Total token count (input + output + cached) across all assistant
     /// responses. Convenience alias of `tokenUsage?.tokensUsed`.

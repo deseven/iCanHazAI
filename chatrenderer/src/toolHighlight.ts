@@ -10,29 +10,29 @@
 
 /** highlight.js language for a tool call's argument, by argument key. */
 const ARG_LANGS: Record<string, Record<string, string>> = {
-  write_connection: { content: "jsonc" },
-  write_mcp: { content: "toml" },
-  write_role: { content: "toml" },
-  write_config: { content: "toml" },
-  write_prompt: { content: "markdown" },
-  check_mcp_stdio: { command: "bash" },
+    write_connection: { content: "jsonc" },
+    write_mcp: { content: "toml" },
+    write_role: { content: "toml" },
+    write_config: { content: "toml" },
+    write_prompt: { content: "markdown" },
+    check_mcp_stdio: { command: "bash" },
 };
 
 /** highlight.js language for a tool result's whole content. */
 const RESULT_LANGS: Record<string, string> = {
-  read_connection: "jsonc",
-  read_mcp: "toml",
-  read_role: "toml",
-  read_config: "toml",
-  read_prompt: "markdown",
+    read_connection: "jsonc",
+    read_mcp: "toml",
+    read_role: "toml",
+    read_config: "toml",
+    read_prompt: "markdown",
 };
 
 /** Language for tool `tool`'s argument `key`, or null for plain text. */
 export function toolArgLang(tool: string, key: string): string | null {
-  return ARG_LANGS[tool]?.[key] ?? null;
+    return ARG_LANGS[tool]?.[key] ?? null;
 }
 
 /** Language for tool `tool`'s result content, or null for plain text. */
 export function toolResultLang(tool: string): string | null {
-  return RESULT_LANGS[tool] ?? null;
+    return RESULT_LANGS[tool] ?? null;
 }

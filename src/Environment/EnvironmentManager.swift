@@ -57,7 +57,10 @@ final class EnvironmentManager: @unchecked Sendable {
     /// Ensures the data directory structure exists, creating it if needed.
     func ensureDirectories() {
         let fm = FileManager.default
-        for url in [rootURL, chatsURL, rolesURL, promptsURL, connectionsURL, openaiConnectionsURL, anthropicConnectionsURL, mcpsURL] {
+        for url in [
+            rootURL, chatsURL, rolesURL, promptsURL, connectionsURL, openaiConnectionsURL, anthropicConnectionsURL,
+            mcpsURL,
+        ] {
             try? fm.createDirectory(at: url, withIntermediateDirectories: true)
         }
     }
@@ -120,7 +123,7 @@ final class EnvironmentManager: @unchecked Sendable {
         // package root) until a `default/<sub>` directory is found.
         let starts = [
             Bundle.main.bundleURL.deletingLastPathComponent(),
-            URL(fileURLWithPath: fm.currentDirectoryPath)
+            URL(fileURLWithPath: fm.currentDirectoryPath),
         ]
         for start in starts {
             var url = start
@@ -326,7 +329,8 @@ final class EnvironmentManager: @unchecked Sendable {
                 debugLog("FileRead", "reading \(relativePath(url))")
                 guard let content = try? String(contentsOf: url, encoding: .utf8) else {
                     debugLog("Env", "⚠️ failed to read prompt \"\(name)\"")
-                    errors.append(ConfigError(kind: .prompt, entityName: name, message: "prompt file could not be read"))
+                    errors.append(
+                        ConfigError(kind: .prompt, entityName: name, message: "prompt file could not be read"))
                     continue
                 }
                 let unknown = PromptVariables.unknownVariables(in: content)
@@ -406,11 +410,20 @@ final class EnvironmentManager: @unchecked Sendable {
         let box = Box()
         let group = DispatchGroup()
         group.enter()
-        DispatchQueue.global().async { box.connections = self.loadConnectionsReportingErrors(); group.leave() }
+        DispatchQueue.global().async {
+            box.connections = self.loadConnectionsReportingErrors()
+            group.leave()
+        }
         group.enter()
-        DispatchQueue.global().async { box.mcps = self.loadMCPsReportingErrors(); group.leave() }
+        DispatchQueue.global().async {
+            box.mcps = self.loadMCPsReportingErrors()
+            group.leave()
+        }
         group.enter()
-        DispatchQueue.global().async { box.prompts = self.loadAllPromptsReportingErrors(); group.leave() }
+        DispatchQueue.global().async {
+            box.prompts = self.loadAllPromptsReportingErrors()
+            group.leave()
+        }
         group.wait()
         let conns = box.connections ?? ([], [])
         let mcps = box.mcps ?? ([], [])
@@ -560,7 +573,8 @@ final class EnvironmentManager: @unchecked Sendable {
     }
 
     private func countFiles(in directory: URL, ext: String, excludingProtected: Bool = false) -> Int {
-        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        else {
             return 0
         }
         return files.filter { url in
@@ -596,7 +610,9 @@ final class EnvironmentManager: @unchecked Sendable {
         return (loaded.sorted { $0.displayName < $1.displayName }, errors)
     }
 
-    private func loadConnectionsReportingErrors(in directory: URL, provider: ConnectionProvider) -> (loaded: [Connection], errors: [ConfigError]) {
+    private func loadConnectionsReportingErrors(in directory: URL, provider: ConnectionProvider) -> (
+        loaded: [Connection], errors: [ConfigError]
+    ) {
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
             return ([], [])
@@ -609,7 +625,9 @@ final class EnvironmentManager: @unchecked Sendable {
             let entityName = "\(provider.rawValue)/\(name)"
             guard let data = try? Data(contentsOf: url) else {
                 debugLog("Env", "⚠️ failed to read \(provider.rawValue) connection \"\(name)\"")
-                errors.append(ConfigError(kind: .connection, entityName: entityName, message: "connection file could not be read"))
+                errors.append(
+                    ConfigError(kind: .connection, entityName: entityName, message: "connection file could not be read")
+                )
                 continue
             }
             do {
@@ -617,7 +635,8 @@ final class EnvironmentManager: @unchecked Sendable {
                 loaded.append(connection(from: config, url: url, provider: provider))
             } catch {
                 debugLog("Env", "⚠️ failed to decode \(provider.rawValue) connection \"\(name)\" — \(error)")
-                errors.append(ConfigError(kind: .connection, entityName: entityName, message: error.localizedDescription))
+                errors.append(
+                    ConfigError(kind: .connection, entityName: entityName, message: error.localizedDescription))
             }
         }
         return (loaded, errors)
@@ -687,7 +706,8 @@ final class EnvironmentManager: @unchecked Sendable {
             let name = url.deletingPathExtension().lastPathComponent
             guard let data = try? Data(contentsOf: url) else {
                 debugLog("MCP", "⚠️ failed to read MCP config \"\(name)\"")
-                errors.append(ConfigError(kind: .mcpConfig, entityName: name, message: "MCP config file could not be read"))
+                errors.append(
+                    ConfigError(kind: .mcpConfig, entityName: name, message: "MCP config file could not be read"))
                 continue
             }
             do {

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import iCanHazAI
 
 // Tests for per-connection custom HTTP headers: the provider `buildHeaders`
@@ -15,7 +16,9 @@ extension AllAppTests {
 
         @Test("Anthropic defaults are preserved without custom headers")
         func anthropicDefaultsPreserved() {
-            let conn = Connection(provider: .anthropic, name: "c", baseUrl: nil, apiKey: "sk-x", model: "m", imageInput: false, requestParameters: nil, headers: nil)
+            let conn = Connection(
+                provider: .anthropic, name: "c", baseUrl: nil, apiKey: "sk-x", model: "m", imageInput: false,
+                requestParameters: nil, headers: nil)
             let headers = AnthropicProvider().buildHeaders(connection: conn)
             #expect(headers["Content-Type"] == "application/json")
             #expect(headers["Accept"] == "text/event-stream")
@@ -26,7 +29,9 @@ extension AllAppTests {
 
         @Test("Anthropic custom header overrides User-Agent")
         func anthropicOverridesUserAgent() {
-            let conn = Connection(provider: .anthropic, name: "c", baseUrl: nil, apiKey: "sk-x", model: "m", imageInput: false, requestParameters: nil, headers: ["User-Agent": "claude-cli/2.0.30 (external, cli)"])
+            let conn = Connection(
+                provider: .anthropic, name: "c", baseUrl: nil, apiKey: "sk-x", model: "m", imageInput: false,
+                requestParameters: nil, headers: ["User-Agent": "claude-cli/2.0.30 (external, cli)"])
             let headers = AnthropicProvider().buildHeaders(connection: conn)
             #expect(headers["User-Agent"] == "claude-cli/2.0.30 (external, cli)")
             // Other defaults untouched.
@@ -36,14 +41,18 @@ extension AllAppTests {
 
         @Test("Anthropic custom header overrides auth (x-api-key)")
         func anthropicOverridesAuth() {
-            let conn = Connection(provider: .anthropic, name: "c", baseUrl: nil, apiKey: "sk-x", model: "m", imageInput: false, requestParameters: nil, headers: ["x-api-key": "custom-key"])
+            let conn = Connection(
+                provider: .anthropic, name: "c", baseUrl: nil, apiKey: "sk-x", model: "m", imageInput: false,
+                requestParameters: nil, headers: ["x-api-key": "custom-key"])
             let headers = AnthropicProvider().buildHeaders(connection: conn)
             #expect(headers["x-api-key"] == "custom-key")
         }
 
         @Test("Anthropic empty-string value removes a default header")
         func anthropicEmptyStringRemoves() {
-            let conn = Connection(provider: .anthropic, name: "c", baseUrl: nil, apiKey: "sk-x", model: "m", imageInput: false, requestParameters: nil, headers: ["User-Agent": ""])
+            let conn = Connection(
+                provider: .anthropic, name: "c", baseUrl: nil, apiKey: "sk-x", model: "m", imageInput: false,
+                requestParameters: nil, headers: ["User-Agent": ""])
             let headers = AnthropicProvider().buildHeaders(connection: conn)
             #expect(headers["User-Agent"] == nil)
             #expect(headers["x-api-key"] == "sk-x")
@@ -51,7 +60,9 @@ extension AllAppTests {
 
         @Test("Anthropic adds a brand-new header")
         func anthropicAddsNewHeader() {
-            let conn = Connection(provider: .anthropic, name: "c", baseUrl: nil, apiKey: "sk-x", model: "m", imageInput: false, requestParameters: nil, headers: ["X-Custom": "yes"])
+            let conn = Connection(
+                provider: .anthropic, name: "c", baseUrl: nil, apiKey: "sk-x", model: "m", imageInput: false,
+                requestParameters: nil, headers: ["X-Custom": "yes"])
             let headers = AnthropicProvider().buildHeaders(connection: conn)
             #expect(headers["X-Custom"] == "yes")
         }
@@ -60,7 +71,9 @@ extension AllAppTests {
 
         @Test("OpenAI defaults are preserved without custom headers")
         func openaiDefaultsPreserved() {
-            let conn = Connection(provider: .openai, name: "c", baseUrl: nil, apiKey: "sk-x", model: "m", imageInput: false, requestParameters: nil, headers: nil)
+            let conn = Connection(
+                provider: .openai, name: "c", baseUrl: nil, apiKey: "sk-x", model: "m", imageInput: false,
+                requestParameters: nil, headers: nil)
             let headers = OpenAIProvider().buildHeaders(connection: conn)
             #expect(headers["Content-Type"] == "application/json")
             #expect(headers["Accept"] == "text/event-stream")
@@ -70,7 +83,9 @@ extension AllAppTests {
 
         @Test("OpenAI custom header overrides User-Agent")
         func openaiOverridesUserAgent() {
-            let conn = Connection(provider: .openai, name: "c", baseUrl: nil, apiKey: "sk-x", model: "m", imageInput: false, requestParameters: nil, headers: ["User-Agent": "codex_cli_rs/0.1"])
+            let conn = Connection(
+                provider: .openai, name: "c", baseUrl: nil, apiKey: "sk-x", model: "m", imageInput: false,
+                requestParameters: nil, headers: ["User-Agent": "codex_cli_rs/0.1"])
             let headers = OpenAIProvider().buildHeaders(connection: conn)
             #expect(headers["User-Agent"] == "codex_cli_rs/0.1")
             #expect(headers["Authorization"] == "Bearer sk-x")
@@ -78,14 +93,18 @@ extension AllAppTests {
 
         @Test("OpenAI custom header overrides auth (Authorization)")
         func openaiOverridesAuth() {
-            let conn = Connection(provider: .openai, name: "c", baseUrl: nil, apiKey: "sk-x", model: "m", imageInput: false, requestParameters: nil, headers: ["Authorization": "ApiKey custom"])
+            let conn = Connection(
+                provider: .openai, name: "c", baseUrl: nil, apiKey: "sk-x", model: "m", imageInput: false,
+                requestParameters: nil, headers: ["Authorization": "ApiKey custom"])
             let headers = OpenAIProvider().buildHeaders(connection: conn)
             #expect(headers["Authorization"] == "ApiKey custom")
         }
 
         @Test("OpenAI empty-string value removes a default header")
         func openaiEmptyStringRemoves() {
-            let conn = Connection(provider: .openai, name: "c", baseUrl: nil, apiKey: "sk-x", model: "m", imageInput: false, requestParameters: nil, headers: ["Authorization": ""])
+            let conn = Connection(
+                provider: .openai, name: "c", baseUrl: nil, apiKey: "sk-x", model: "m", imageInput: false,
+                requestParameters: nil, headers: ["Authorization": ""])
             let headers = OpenAIProvider().buildHeaders(connection: conn)
             #expect(headers["Authorization"] == nil)
             #expect(headers["User-Agent"] == AppInfo.userAgent)
@@ -165,7 +184,8 @@ extension AllAppTests {
 
         @Test("ConnectionFileWriter includes a commented-out headers example")
         func fileTemplateIncludesHeadersExample() {
-            let jsonc = ConnectionFileWriter.generateJSONC(provider: .openai, baseUrl: nil, apiKey: nil, model: "gpt-4o", imageInput: false)
+            let jsonc = ConnectionFileWriter.generateJSONC(
+                provider: .openai, baseUrl: nil, apiKey: nil, model: "gpt-4o", imageInput: false)
             #expect(jsonc.contains("\"headers\""))
             #expect(jsonc.contains("User-Agent"))
             // The example must be commented out so it doesn't take effect by default.

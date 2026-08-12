@@ -64,9 +64,11 @@ struct WorkdirPickerView: View {
             return WorkdirItemsBuilder.build(query: query, recents: directories, typedDir: nil, children: [])
         case .local:
             let local = localResults
-            return WorkdirItemsBuilder.build(query: query, recents: directories, typedDir: local.typed, children: local.children)
+            return WorkdirItemsBuilder.build(
+                query: query, recents: directories, typedDir: local.typed, children: local.children)
         case .ssh:
-            return WorkdirItemsBuilder.build(query: query, recents: directories, typedDir: sshLister.typed, children: sshLister.specs)
+            return WorkdirItemsBuilder.build(
+                query: query, recents: directories, typedDir: sshLister.typed, children: sshLister.specs)
         }
     }
 
@@ -77,7 +79,8 @@ struct WorkdirPickerView: View {
     var body: some View {
         PickerDialog<WorkdirItem>(
             title: "Working directory",
-            subtitle: "Pick a directory for this chat — the choice is permanent. Recently picked directories are remembered; type a local path or host:/path to browse.",
+            subtitle:
+                "Pick a directory for this chat — the choice is permanent. Recently picked directories are remembered; type a local path or host:/path to browse.",
             searchText: $query,
             searchPlaceholder: "Type a path or host:/path",
             items: scrollItems,
@@ -87,10 +90,11 @@ struct WorkdirPickerView: View {
             emptySubtitle: "Type a local path or host:/path above",
             width: 420,
             rowContent: { item, _ in
-                AnyView(WorkdirRowContent(
-                    item: item,
-                    onRemove: { store.removeWorkingDirectory(item.path) }
-                ))
+                AnyView(
+                    WorkdirRowContent(
+                        item: item,
+                        onRemove: { store.removeWorkingDirectory(item.path) }
+                    ))
             },
             onSelect: { onPick($0.path) },
             onCancel: onCancel,
@@ -151,7 +155,8 @@ private struct WorkdirRowContent: View {
     private var title: String {
         let dir = item.path
         if SSHSpec.isSSH(dir),
-           case .success(let spec) = SSHSpec.parse(dir) {
+            case .success(let spec) = SSHSpec.parse(dir)
+        {
             if let path = spec.path {
                 return (path as NSString).lastPathComponent
             }

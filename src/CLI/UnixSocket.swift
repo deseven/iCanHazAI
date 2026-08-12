@@ -122,12 +122,13 @@ enum UnixSocket {
     /// be spoofed by the client.
     static func peerPID(of fd: Int32) -> pid_t? {
         // Darwin: SOL_LOCAL = 0, LOCAL_PEERPID = 0x002 (sys/un.h).
-        let SOL_LOCAL: Int32 = 0
-        let LOCAL_PEERPID: Int32 = 0x002
+        let solLocal: Int32 = 0
+        let localPeerPID: Int32 = 0x002
         var pid = pid_t(0)
         var len = socklen_t(MemoryLayout<pid_t>.size)
-        guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &len) == 0,
-              len == socklen_t(MemoryLayout<pid_t>.size) else { return nil }
+        guard getsockopt(fd, solLocal, localPeerPID, &pid, &len) == 0,
+            len == socklen_t(MemoryLayout<pid_t>.size)
+        else { return nil }
         return pid
     }
 }

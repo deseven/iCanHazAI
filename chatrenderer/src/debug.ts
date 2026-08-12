@@ -10,9 +10,7 @@
 // to guard calls with conditionals — the formatter itself checks the flag.
 
 /** Whether debug mode is enabled (the `withDebug` query param is present). */
-export const debugEnabled: boolean = new URLSearchParams(location.search).has(
-  "withDebug"
-);
+export const debugEnabled: boolean = new URLSearchParams(location.search).has("withDebug");
 
 const DEBUG_OVERLAY_ID = "__debug_overlay__";
 
@@ -26,19 +24,17 @@ const DEBUG_OVERLAY_ID = "__debug_overlay__";
  * @param message The human-readable message (or object) to log.
  */
 export function debugLog(topic: string, message: unknown): void {
-  if (!debugEnabled) return;
+    if (!debugEnabled) return;
 
-  const ts = new Date().toISOString().split("T")[1] ?? "";
-  const text =
-    typeof message === "string" ? message : JSON.stringify(message);
-  const line = `[${ts}] [${topic}] ${text}`;
+    const ts = new Date().toISOString().split("T")[1] ?? "";
+    const text = typeof message === "string" ? message : JSON.stringify(message);
+    const line = `[${ts}] [${topic}] ${text}`;
 
-
-  const overlay = document.getElementById(DEBUG_OVERLAY_ID);
-  if (overlay) {
-    overlay.textContent += line + "\n";
-    overlay.scrollTop = overlay.scrollHeight;
-  }
+    const overlay = document.getElementById(DEBUG_OVERLAY_ID);
+    if (overlay) {
+        overlay.textContent += line + "\n";
+        overlay.scrollTop = overlay.scrollHeight;
+    }
 }
 
 /**
@@ -49,42 +45,42 @@ export function debugLog(topic: string, message: unknown): void {
  * Called once at app boot (before rendering) so early log lines are captured.
  */
 export function setupDebugOverlay(): void {
-  if (!debugEnabled) return;
+    if (!debugEnabled) return;
 
-  let overlay = document.getElementById(DEBUG_OVERLAY_ID) as HTMLPreElement | null;
-  if (!overlay) {
-    overlay = document.createElement("pre");
-    overlay.id = DEBUG_OVERLAY_ID;
-    document.body.insertBefore(overlay, document.body.firstChild);
-  }
-
-  const wrapper = document.createElement("div");
-  wrapper.id = "__debug_wrapper__";
-  wrapper.className = "debug-wrapper";
-
-  const header = document.createElement("button");
-  header.type = "button";
-  header.className = "debug-header";
-  header.setAttribute("aria-expanded", "false");
-  header.textContent = "▸ Debug";
-
-  const content = document.createElement("div");
-  content.className = "debug-content debug-collapsed";
-
-  overlay.remove();
-  content.appendChild(overlay);
-  overlay.style.display = "block";
-
-  header.addEventListener("click", () => {
-    const collapsed = content.classList.toggle("debug-collapsed");
-    header.setAttribute("aria-expanded", collapsed ? "false" : "true");
-    header.textContent = (collapsed ? "▸" : "▾") + " Debug";
-    if (!collapsed) {
-      overlay.scrollTop = overlay.scrollHeight;
+    let overlay = document.getElementById(DEBUG_OVERLAY_ID) as HTMLPreElement | null;
+    if (!overlay) {
+        overlay = document.createElement("pre");
+        overlay.id = DEBUG_OVERLAY_ID;
+        document.body.insertBefore(overlay, document.body.firstChild);
     }
-  });
 
-  wrapper.appendChild(header);
-  wrapper.appendChild(content);
-  document.body.insertBefore(wrapper, document.body.firstChild);
+    const wrapper = document.createElement("div");
+    wrapper.id = "__debug_wrapper__";
+    wrapper.className = "debug-wrapper";
+
+    const header = document.createElement("button");
+    header.type = "button";
+    header.className = "debug-header";
+    header.setAttribute("aria-expanded", "false");
+    header.textContent = "▸ Debug";
+
+    const content = document.createElement("div");
+    content.className = "debug-content debug-collapsed";
+
+    overlay.remove();
+    content.appendChild(overlay);
+    overlay.style.display = "block";
+
+    header.addEventListener("click", () => {
+        const collapsed = content.classList.toggle("debug-collapsed");
+        header.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        header.textContent = (collapsed ? "▸" : "▾") + " Debug";
+        if (!collapsed) {
+            overlay.scrollTop = overlay.scrollHeight;
+        }
+    });
+
+    wrapper.appendChild(header);
+    wrapper.appendChild(content);
+    document.body.insertBefore(wrapper, document.body.firstChild);
 }

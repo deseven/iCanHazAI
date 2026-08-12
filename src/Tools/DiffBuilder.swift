@@ -1,8 +1,8 @@
 // Copyright (C) 2026 Ivan Novohatski <https://d7.wtf/>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import Foundation
 import Differ
+import Foundation
 
 /// Builds unified-diff text for `write_file` and `apply_patch` tool calls so
 /// the chat renderer can show a colorized diff instead of raw JSON arguments.
@@ -38,8 +38,9 @@ enum DiffBuilder {
     /// arguments are invalid (not JSON, missing `path` or `content`).
     static func diffForWriteFile(arguments: String, workdir: Workdir) -> String? {
         guard let args = parseArgs(arguments),
-              let path = args["path"] as? String,
-              let content = args["content"] as? String else { return nil }
+            let path = args["path"] as? String,
+            let content = args["content"] as? String
+        else { return nil }
         let resolved = (try? workdir.resolve(path)) ?? path
         let old = readFileAsString(resolved) ?? ""
         return unifiedDiff(old: old, new: content, oldPath: path, newPath: path)
@@ -158,14 +159,16 @@ enum DiffBuilder {
             case .delete(let at):
                 while oldIdx < at {
                     entries.append(.equal(oldIdx: oldIdx, newIdx: newIdx))
-                    oldIdx += 1; newIdx += 1
+                    oldIdx += 1
+                    newIdx += 1
                 }
                 entries.append(.delete(oldIdx: oldIdx, newIdx: newIdx))
                 oldIdx += 1
             case .insert(let at):
                 while newIdx < at {
                     entries.append(.equal(oldIdx: oldIdx, newIdx: newIdx))
-                    oldIdx += 1; newIdx += 1
+                    oldIdx += 1
+                    newIdx += 1
                 }
                 entries.append(.insert(oldIdx: oldIdx, newIdx: newIdx))
                 newIdx += 1
@@ -175,7 +178,8 @@ enum DiffBuilder {
         while oldIdx < oldLines.count || newIdx < newLines.count {
             if oldIdx < oldLines.count && newIdx < newLines.count {
                 entries.append(.equal(oldIdx: oldIdx, newIdx: newIdx))
-                oldIdx += 1; newIdx += 1
+                oldIdx += 1
+                newIdx += 1
             } else if oldIdx < oldLines.count {
                 entries.append(.delete(oldIdx: oldIdx, newIdx: newIdx))
                 oldIdx += 1
@@ -214,21 +218,33 @@ enum DiffBuilder {
 
     /// Formats a single hunk: the `@@` header followed by context/added/removed
     /// lines.
-    private static func formatHunk(entries: [Entry], range: (start: Int, end: Int), oldLines: [String], newLines: [String]) -> String {
+    private static func formatHunk(
+        entries: [Entry], range: (start: Int, end: Int), oldLines: [String], newLines: [String]
+    ) -> String {
         let slice = entries[range.start...range.end]
 
         // Compute hunk header: oldStart,oldCount +newStart,newCount (1-based).
         guard let first = slice.first else { return "" }
-        let oldStart: Int, newStart: Int
+        let oldStart: Int
+        let newStart: Int
         switch first {
-        case .equal(let o, let n): oldStart = o; newStart = n
-        case .delete(let o, let n): oldStart = o; newStart = n
-        case .insert(let o, let n): oldStart = o; newStart = n
+        case .equal(let o, let n):
+            oldStart = o
+            newStart = n
+        case .delete(let o, let n):
+            oldStart = o
+            newStart = n
+        case .insert(let o, let n):
+            oldStart = o
+            newStart = n
         }
-        var oldCount = 0, newCount = 0
+        var oldCount = 0
+        var newCount = 0
         for e in slice {
             switch e {
-            case .equal: oldCount += 1; newCount += 1
+            case .equal:
+                oldCount += 1
+                newCount += 1
             case .delete: oldCount += 1
             case .insert: newCount += 1
             }

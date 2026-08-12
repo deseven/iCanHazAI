@@ -91,7 +91,7 @@ final class CLIConnection: @unchecked Sendable {
             let current = currentFD
             guard current >= 0 else { break }
             let n = chunk.withUnsafeMutableBytes { Darwin.read(current, $0.baseAddress, $0.count) }
-            if n == 0 { break } // orderly EOF
+            if n == 0 { break }  // orderly EOF
             if n < 0 {
                 if errno == EINTR { continue }
                 break

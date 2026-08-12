@@ -179,14 +179,14 @@ enum ShellCommandExtractor {
     /// Patterns that, if present in the raw command, make it too complex to
     /// parse safely — bail (return nil) to require user confirmation.
     private static let bailPatterns: [String] = [
-        "$(",   // command substitution
-        "${",   // parameter expansion (can contain commands)
-        "`",    // backtick command substitution
-        "((",   // arithmetic expansion
+        "$(",  // command substitution
+        "${",  // parameter expansion (can contain commands)
+        "`",  // backtick command substitution
+        "((",  // arithmetic expansion
         "<<<",  // herestring
-        "<<",   // heredoc
-        "<(",   // process substitution
-        ">(",   // process substitution
+        "<<",  // heredoc
+        "<(",  // process substitution
+        ">(",  // process substitution
     ]
 
     /// Shell keywords that indicate a compound command we can't safely parse.
@@ -282,14 +282,30 @@ enum ShellCommandExtractor {
                 continue
             }
             if inDouble {
-                if char == "\\" { escaped = true; current.append(char); continue }
+                if char == "\\" {
+                    escaped = true
+                    current.append(char)
+                    continue
+                }
                 if char == "\"" { inDouble = false }
                 current.append(char)
                 continue
             }
-            if char == "'" { inSingle = true; current.append(char); continue }
-            if char == "\"" { inDouble = true; current.append(char); continue }
-            if char == "\\" { escaped = true; current.append(char); continue }
+            if char == "'" {
+                inSingle = true
+                current.append(char)
+                continue
+            }
+            if char == "\"" {
+                inDouble = true
+                current.append(char)
+                continue
+            }
+            if char == "\\" {
+                escaped = true
+                current.append(char)
+                continue
+            }
             if char == "\n" {
                 lines.append(current)
                 current = ""

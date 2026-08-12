@@ -1,9 +1,9 @@
 // Copyright (C) 2026 Ivan Novohatski <https://d7.wtf/>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import CoreGraphics
 import Foundation
 import ImageIO
-import CoreGraphics
 
 /// Synthesizes a text fallback for an image attachment, used when the active
 /// connection can't process images visually. macOS 15 has no on-device "describe
@@ -40,7 +40,8 @@ enum ImageFallbackSynthesizer {
     /// format). Returns a "no signals" fallback if the data can't be decoded.
     static func fallback(for data: Data) -> String {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else {
             return synthesize(labels: [], ocr: nil)
         }
         return fallback(for: cgImage)
@@ -56,7 +57,8 @@ enum ImageFallbackSynthesizer {
         if filtered.isEmpty {
             labelPart = "Image classification: none recognized."
         } else {
-            let joined = filtered
+            let joined =
+                filtered
                 .map { "\($0.identifier) (\(String(format: "%.2f", $0.confidence)))" }
                 .joined(separator: ", ")
             labelPart = "Image classification: \(joined)."

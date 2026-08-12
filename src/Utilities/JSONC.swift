@@ -63,8 +63,8 @@ enum JSONC {
                 i = source.index(after: i)
                 while i < end {
                     if source[i] == "*", source.index(after: i) < end, source[source.index(after: i)] == "/" {
-                        i = source.index(after: i) // past `*`
-                        i = source.index(after: i) // past `/`
+                        i = source.index(after: i)  // past `*`
+                        i = source.index(after: i)  // past `/`
                         break
                     }
                     i = source.index(after: i)
@@ -118,7 +118,7 @@ enum JSONC {
                 while j < end, source[j].isWhitespace {
                     j = source.index(after: j)
                 }
-                if j < end, (source[j] == "}" || source[j] == "]") {
+                if j < end, source[j] == "}" || source[j] == "]" {
                     i = next
                     continue
                 }

@@ -66,7 +66,10 @@ struct Attachment: Codable, Identifiable, Equatable, Hashable, Sendable {
     /// `.image` kinds.
     var isLossless: Bool { ext.lowercased() == "png" }
 
-    init(id: UUID = UUID(), kind: AttachmentKind, ext: String, filename: String? = nil, originalName: String?, text: String? = nil, status: AttachmentStatus = .ok, failureReason: String? = nil) {
+    init(
+        id: UUID = UUID(), kind: AttachmentKind, ext: String, filename: String? = nil, originalName: String?,
+        text: String? = nil, status: AttachmentStatus = .ok, failureReason: String? = nil
+    ) {
         self.id = id
         self.kind = kind
         self.ext = ext
@@ -245,7 +248,8 @@ enum ImageProcessor {
     /// Returns nil if the data cannot be decoded.
     static func process(_ data: Data) -> Processed? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let uti = CGImageSourceGetType(source) else {
+            let uti = CGImageSourceGetType(source)
+        else {
             return nil
         }
 
@@ -304,15 +308,17 @@ enum ImageProcessor {
         guard let colorSpace = cgImage.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB) else {
             return nil
         }
-        guard let ctx = CGContext(
-            data: nil,
-            width: Int(newW),
-            height: Int(newH),
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
+        guard
+            let ctx = CGContext(
+                data: nil,
+                width: Int(newW),
+                height: Int(newH),
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        else {
             return nil
         }
         ctx.interpolationQuality = .high

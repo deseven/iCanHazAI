@@ -1,9 +1,9 @@
 // Copyright (C) 2026 Ivan Novohatski <https://d7.wtf/>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import CoreGraphics
 import SwiftUI
 import WebKit
-import CoreGraphics
 
 // MARK: - EditMessageSheet
 
@@ -100,19 +100,34 @@ struct ChatWebView: View {
                     model.pushSnapshot()
                 }
                 .onChange(of: store.preferencesMermaidEnabled) { _, _ in
-                    model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
+                    model.reload(
+                        mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled,
+                        debug: store.preferencesChatRendererDebugEnabled,
+                        expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
                 }
                 .onChange(of: store.preferencesKatexEnabled) { _, _ in
-                    model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
+                    model.reload(
+                        mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled,
+                        debug: store.preferencesChatRendererDebugEnabled,
+                        expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
                 }
                 .onChange(of: store.preferencesChatRendererDebugEnabled) { _, _ in
-                    model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
+                    model.reload(
+                        mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled,
+                        debug: store.preferencesChatRendererDebugEnabled,
+                        expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
                 }
                 .onChange(of: store.preferencesExpandThinking) { _, _ in
-                    model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
+                    model.reload(
+                        mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled,
+                        debug: store.preferencesChatRendererDebugEnabled,
+                        expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
                 }
                 .onChange(of: store.preferencesExpandToolUse) { _, _ in
-                    model.reload(mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled, debug: store.preferencesChatRendererDebugEnabled, expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
+                    model.reload(
+                        mermaid: store.preferencesMermaidEnabled, katex: store.preferencesKatexEnabled,
+                        debug: store.preferencesChatRendererDebugEnabled,
+                        expandThinking: store.preferencesExpandThinking, expandToolUse: store.preferencesExpandToolUse)
                 }
                 .onChange(of: store.preferencesInterfaceScale) { _, scale in
                     model.setInterfaceScale(scale)
@@ -316,7 +331,8 @@ final class ChatWebViewModel: ObservableObject {
         observedWindow = window
         guard let window else { return }
         for name in Self.observedNotifications {
-            NotificationCenter.default.addObserver(self, selector: #selector(windowVisibilityChanged), name: name, object: window)
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(windowVisibilityChanged), name: name, object: window)
         }
         windowVisibilityChanged()
     }
@@ -343,7 +359,10 @@ final class ChatWebViewModel: ObservableObject {
         let isKeyOrMain = window.isKeyWindow || window.isMainWindow
         let isMinimized = window.isMiniaturized
         let isOccluded = !window.occlusionState.contains(.visible)
-        debugLog("Renderer", "visibility: key=\(window.isKeyWindow) main=\(window.isMainWindow) minimized=\(isMinimized) occluded=\(isOccluded) visible=\(window.isVisible)")
+        debugLog(
+            "Renderer",
+            "visibility: key=\(window.isKeyWindow) main=\(window.isMainWindow) minimized=\(isMinimized) occluded=\(isOccluded) visible=\(window.isVisible)"
+        )
 
         if isKeyOrMain {
             // Definitely visible: cancel any pending kill/coverage check.
@@ -429,7 +448,10 @@ final class ChatWebViewModel: ObservableObject {
         let coveredArea = intersection.isNull ? 0 : intersection.width * intersection.height
         let ratio = ourArea > 0 ? coveredArea / ourArea : 0
         let covered = ratio >= ChatWebViewModel.coverageThreshold
-        debugLog("Renderer", "coverage check: ourRect=\(ourRect) union=\(coveringUnion) ourArea=\(ourArea) coveredArea=\(coveredArea) ratio=\(ratio) covered=\(covered)")
+        debugLog(
+            "Renderer",
+            "coverage check: ourRect=\(ourRect) union=\(coveringUnion) ourArea=\(ourArea) coveredArea=\(coveredArea) ratio=\(ratio) covered=\(covered)"
+        )
         if covered {
             debugLog("Renderer", "fallback coverage check: window covered by windows above → killing webview")
             teardownWebView()
@@ -549,7 +571,10 @@ final class ChatWebViewModel: ObservableObject {
     /// Mermaid/KaTeX preferences change so the renderer loads (or skips) the
     /// corresponding bundles.
     func reload(mermaid: Bool, katex: Bool, debug: Bool, expandThinking: Bool, expandToolUse: Bool) {
-        debugLog("Renderer", "reload — mermaid=\(mermaid), katex=\(katex), debug=\(debug), expandThinking=\(expandThinking), expandToolUse=\(expandToolUse)")
+        debugLog(
+            "Renderer",
+            "reload — mermaid=\(mermaid), katex=\(katex), debug=\(debug), expandThinking=\(expandThinking), expandToolUse=\(expandToolUse)"
+        )
         mermaidEnabled = mermaid
         katexEnabled = katex
         debugEnabled = debug
@@ -621,16 +646,17 @@ final class ChatWebViewModel: ObservableObject {
             chatTrees: role?.hasChatTrees ?? false
         )
 
-        enqueueRenderJob(.snapshot(
-            chatId: item.id,
-            chat: chat,
-            isStreaming: item.isStreaming,
-            roleName: item.effectiveRoleName,
-            // The accent is appearance-dependent — never persisted; re-resolved
-            // on theme change (see `pushTheme`).
-            roleAccent: RoleAccent.hexColor(for: store.selectedRole?.config.accent),
-            features: features
-        ))
+        enqueueRenderJob(
+            .snapshot(
+                chatId: item.id,
+                chat: chat,
+                isStreaming: item.isStreaming,
+                roleName: item.effectiveRoleName,
+                // The accent is appearance-dependent — never persisted; re-resolved
+                // on theme change (see `pushTheme`).
+                roleAccent: RoleAccent.hexColor(for: store.selectedRole?.config.accent),
+                features: features
+            ))
     }
 
     /// Enqueues a render-queue job, preserving call order: unstructured tasks
@@ -803,8 +829,9 @@ final class ChatWebViewModel: ObservableObject {
 
     private func copyMessage(_ messageId: String) {
         guard let item = store?.selectedChatItem,
-              let uuid = UUID(uuidString: messageId),
-              let msg = item.chat?.message(id: uuid) else { return }
+            let uuid = UUID(uuidString: messageId),
+            let msg = item.chat?.message(id: uuid)
+        else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(msg.content, forType: .string)
@@ -825,8 +852,9 @@ private final class ChatWebViewNavigationDelegate: NSObject, WKNavigationDelegat
         decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
     ) {
         if let url = navigationAction.request.url,
-           let scheme = url.scheme?.lowercased(),
-           scheme == "http" || scheme == "https" {
+            let scheme = url.scheme?.lowercased(),
+            scheme == "http" || scheme == "https"
+        {
             NSWorkspace.shared.open(url)
             decisionHandler(.cancel)
             return
@@ -848,7 +876,8 @@ private final class MessageHandlerBridge: NSObject, WKScriptMessageHandler {
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any] else { return }
         guard let data = try? JSONSerialization.data(withJSONObject: body),
-              let parsed = try? JSONDecoder().decode(BridgeMessageData.self, from: data) else {
+            let parsed = try? JSONDecoder().decode(BridgeMessageData.self, from: data)
+        else {
             return
         }
         Task { @MainActor in
@@ -970,8 +999,9 @@ enum HostMessageData: Codable, Sendable {
         case "snapshot":
             self = .snapshot(snapshot: try c.decode(ChatSnapshotData.self, forKey: .snapshot))
         case "streaming":
-            self = .streaming(chatId: try c.decode(String.self, forKey: .chatId),
-                              isStreaming: try c.decode(Bool.self, forKey: .isStreaming))
+            self = .streaming(
+                chatId: try c.decode(String.self, forKey: .chatId),
+                isStreaming: try c.decode(Bool.self, forKey: .isStreaming))
         case "theme":
             self = .theme(theme: try c.decode(String.self, forKey: .theme))
         case "scrollToBottom":
@@ -981,15 +1011,18 @@ enum HostMessageData: Codable, Sendable {
         case "unload":
             self = .unload
         case "updateMessage":
-            self = .updateMessage(chatId: try c.decode(String.self, forKey: .chatId),
-                                  message: try c.decode(ChatMessageData.self, forKey: .message))
+            self = .updateMessage(
+                chatId: try c.decode(String.self, forKey: .chatId),
+                message: try c.decode(ChatMessageData.self, forKey: .message))
         case "addMessage":
-            self = .addMessage(chatId: try c.decode(String.self, forKey: .chatId),
-                               message: try c.decode(ChatMessageData.self, forKey: .message),
-                               index: try c.decode(Int.self, forKey: .index))
+            self = .addMessage(
+                chatId: try c.decode(String.self, forKey: .chatId),
+                message: try c.decode(ChatMessageData.self, forKey: .message),
+                index: try c.decode(Int.self, forKey: .index))
         case "deleteMessage":
-            self = .deleteMessage(chatId: try c.decode(String.self, forKey: .chatId),
-                                  messageId: try c.decode(String.self, forKey: .messageId))
+            self = .deleteMessage(
+                chatId: try c.decode(String.self, forKey: .chatId),
+                messageId: try c.decode(String.self, forKey: .messageId))
         case "treeOverview":
             self = .treeOverview(root: try c.decodeIfPresent(TreeNodeData.self, forKey: .root))
         case "exitTreeOverview":
@@ -1161,8 +1194,9 @@ enum BridgeMessageData: Codable, Sendable {
         case "openAttachment":
             self = .openAttachment(url: try c.decode(String.self, forKey: .url))
         case "switchBranch":
-            self = .switchBranch(messageId: try c.decode(String.self, forKey: .messageId),
-                                 direction: try c.decode(Int.self, forKey: .direction))
+            self = .switchBranch(
+                messageId: try c.decode(String.self, forKey: .messageId),
+                direction: try c.decode(Int.self, forKey: .direction))
         case "gotoMessage":
             self = .gotoMessage(messageId: try c.decode(String.self, forKey: .messageId))
         default:
@@ -1207,7 +1241,10 @@ struct ChatSnapshotData: Codable, Sendable {
     /// snapshots from before the field existed — decodes as all-false.
     let features: ChatSnapshotFeaturesData
 
-    init(chatId: String, messages: [ChatMessageData], isStreaming: Bool, roleName: String?, roleAccent: String?, features: ChatSnapshotFeaturesData = ChatSnapshotFeaturesData()) {
+    init(
+        chatId: String, messages: [ChatMessageData], isStreaming: Bool, roleName: String?, roleAccent: String?,
+        features: ChatSnapshotFeaturesData = ChatSnapshotFeaturesData()
+    ) {
         self.chatId = chatId
         self.messages = messages
         self.isStreaming = isStreaming
@@ -1312,7 +1349,10 @@ struct ChatMessageData: Codable, Equatable, Sendable {
         /// computes it locally then.
         let summary: String?
 
-        init(id: String, name: String, arguments: String, pendingApproval: Bool = false, diff: String? = nil, requiredArgs: [String]? = nil, internalTool: Bool = false, summary: String? = nil) {
+        init(
+            id: String, name: String, arguments: String, pendingApproval: Bool = false, diff: String? = nil,
+            requiredArgs: [String]? = nil, internalTool: Bool = false, summary: String? = nil
+        ) {
             self.id = id
             self.name = name
             self.arguments = arguments
@@ -1356,7 +1396,10 @@ struct ChatMessageData: Codable, Equatable, Sendable {
             let fallback: String
         }
 
-        init(callID: String, content: String, isError: Bool, isStreaming: Bool, isDenied: Bool = false, isCancelled: Bool = false, summary: ToolSummary.Status? = nil, image: ToolResultImageData? = nil) {
+        init(
+            callID: String, content: String, isError: Bool, isStreaming: Bool, isDenied: Bool = false,
+            isCancelled: Bool = false, summary: ToolSummary.Status? = nil, image: ToolResultImageData? = nil
+        ) {
             self.callID = callID
             self.content = content
             self.isError = isError
@@ -1388,11 +1431,17 @@ extension ChatMessage {
             )
         }
         let toolCalls = toolCalls?.map {
-            ChatMessageData.ToolCallData(id: $0.id, name: $0.name, arguments: $0.arguments, pendingApproval: $0.pendingApproval, diff: $0.diff, requiredArgs: $0.requiredArgs, internalTool: $0.internalTool, summary: $0.summary)
+            ChatMessageData.ToolCallData(
+                id: $0.id, name: $0.name, arguments: $0.arguments, pendingApproval: $0.pendingApproval, diff: $0.diff,
+                requiredArgs: $0.requiredArgs, internalTool: $0.internalTool, summary: $0.summary)
         }
         let toolResults = toolResults?.map {
-            let imageData = $0.image.map { ChatMessageData.ToolResultData.ToolResultImageData(mimeType: $0.mimeType, fallback: $0.fallback) }
-            return ChatMessageData.ToolResultData(callID: $0.callID, content: $0.content, isError: $0.isError, isStreaming: $0.isStreaming, isDenied: $0.isDenied, isCancelled: $0.isCancelled, summary: $0.summary, image: imageData)
+            let imageData = $0.image.map {
+                ChatMessageData.ToolResultData.ToolResultImageData(mimeType: $0.mimeType, fallback: $0.fallback)
+            }
+            return ChatMessageData.ToolResultData(
+                callID: $0.callID, content: $0.content, isError: $0.isError, isStreaming: $0.isStreaming,
+                isDenied: $0.isDenied, isCancelled: $0.isCancelled, summary: $0.summary, image: imageData)
         }
         return ChatMessageData(
             id: id.uuidString,

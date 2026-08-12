@@ -94,6 +94,6 @@ enum ConnectionFileWriter {
 
     private static func escapeString(_ s: String) -> String {
         s.replacingOccurrences(of: "\\", with: "\\\\")
-         .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 }

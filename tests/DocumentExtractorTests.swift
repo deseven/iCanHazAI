@@ -1,11 +1,12 @@
 // Copyright (C) 2026 Ivan Novohatski <https://d7.wtf/>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import Testing
-import Foundation
 import AppKit
+import Foundation
 import PDFKit
+import Testing
 import UniformTypeIdentifiers
+
 @testable import iCanHazAI
 
 /// Tests for the document extraction engine:
@@ -109,8 +110,9 @@ extension AllAppTests {
             try p.run()
             p.waitUntilExit()
             guard p.terminationStatus == 0 else {
-                throw NSError(domain: "DocFixtures", code: Int(p.terminationStatus),
-                              userInfo: [NSLocalizedDescriptionKey: "textutil failed"])
+                throw NSError(
+                    domain: "DocFixtures", code: Int(p.terminationStatus),
+                    userInfo: [NSLocalizedDescriptionKey: "textutil failed"])
             }
             return pipe.fileHandleForReading.readDataToEndOfFile()
         }
@@ -127,10 +129,12 @@ extension AllAppTests {
             (text as NSString).draw(at: NSPoint(x: 20, y: 30), withAttributes: attrs)
             image.unlockFocus()
             guard let tiff = image.tiffRepresentation,
-                  let rep = NSBitmapImageRep(data: tiff),
-                  let png = rep.representation(using: .png, properties: [:]) else {
-                throw NSError(domain: "DocFixtures", code: 1,
-                              userInfo: [NSLocalizedDescriptionKey: "PNG render failed"])
+                let rep = NSBitmapImageRep(data: tiff),
+                let png = rep.representation(using: .png, properties: [:])
+            else {
+                throw NSError(
+                    domain: "DocFixtures", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "PNG render failed"])
             }
             return png
         }
@@ -150,23 +154,27 @@ extension AllAppTests {
             (text as NSString).draw(at: NSPoint(x: 60, y: 360), withAttributes: attrs)
             image.unlockFocus()
             guard let tiff = image.tiffRepresentation,
-                  let rep = NSBitmapImageRep(data: tiff),
-                  let cgImage = rep.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-                throw NSError(domain: "DocFixtures", code: 1,
-                              userInfo: [NSLocalizedDescriptionKey: "image render failed"])
+                let rep = NSBitmapImageRep(data: tiff),
+                let cgImage = rep.cgImage(forProposedRect: nil, context: nil, hints: nil)
+            else {
+                throw NSError(
+                    domain: "DocFixtures", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "image render failed"])
             }
             // Draw the rasterized image into a single-page PDF via Core
             // Graphics. The page has no text layer — only pixels — so the
             // extractor's OCR fallback must fire.
             let pdfData = NSMutableData()
             guard let consumer = CGDataConsumer(data: pdfData as CFMutableData) else {
-                throw NSError(domain: "DocFixtures", code: 2,
-                              userInfo: [NSLocalizedDescriptionKey: "consumer failed"])
+                throw NSError(
+                    domain: "DocFixtures", code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "consumer failed"])
             }
             var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
             guard let ctx = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
-                throw NSError(domain: "DocFixtures", code: 3,
-                              userInfo: [NSLocalizedDescriptionKey: "ctx failed"])
+                throw NSError(
+                    domain: "DocFixtures", code: 3,
+                    userInfo: [NSLocalizedDescriptionKey: "ctx failed"])
             }
             let pageDict: CFDictionary? = nil
             ctx.beginPDFPage(pageDict)
@@ -188,7 +196,9 @@ extension AllAppTests {
             // HTML is plain text — never converted.
             #expect(DocumentClassifier.classify(data: f.html, hint: .init(filename: "page.html")) == .text)
             #expect(DocumentClassifier.classify(data: Data("{\"a\":1}".utf8), hint: .init(filename: "a.json")) == .text)
-            #expect(DocumentClassifier.classify(data: Data("<?xml version=\"1.0\"?><r/>".utf8), hint: .init(filename: "a.xml")) == .text)
+            #expect(
+                DocumentClassifier.classify(
+                    data: Data("<?xml version=\"1.0\"?><r/>".utf8), hint: .init(filename: "a.xml")) == .text)
             // Proprietary-but-textual format is accepted as-is.
             #expect(DocumentClassifier.classify(data: f.proprietaryText, hint: .init(filename: "weird.xyz")) == .text)
         }
@@ -265,7 +275,8 @@ extension AllAppTests {
             let f = try DocFixtures()
             let result = DocumentExtractor.extract(data: f.rtf, format: .rtf)
             guard case .success(let ext) = result else {
-                Issue.record("expected success, got \(result)"); return
+                Issue.record("expected success, got \(result)")
+                return
             }
             #expect(ext.text.contains("Hello RTF"))
             #expect(ext.text.contains("Second line of RTF text."))
@@ -277,7 +288,8 @@ extension AllAppTests {
             let f = try DocFixtures()
             let result = DocumentExtractor.extract(data: f.docx, format: .docx)
             guard case .success(let ext) = result else {
-                Issue.record("expected success, got \(result)"); return
+                Issue.record("expected success, got \(result)")
+                return
             }
             #expect(ext.text.contains("Hello RTF"))
         }
@@ -287,7 +299,8 @@ extension AllAppTests {
             let f = try DocFixtures()
             let result = DocumentExtractor.extract(data: f.odt, format: .odt)
             guard case .success(let ext) = result else {
-                Issue.record("expected success, got \(result)"); return
+                Issue.record("expected success, got \(result)")
+                return
             }
             #expect(ext.text.contains("Hello RTF"))
         }
@@ -297,7 +310,8 @@ extension AllAppTests {
             let f = try DocFixtures()
             let result = DocumentExtractor.extract(data: f.doc, format: .doc)
             guard case .success(let ext) = result else {
-                Issue.record("expected success, got \(result)"); return
+                Issue.record("expected success, got \(result)")
+                return
             }
             #expect(ext.text.contains("Hello RTF"))
         }
@@ -307,7 +321,8 @@ extension AllAppTests {
             let f = try DocFixtures()
             let result = DocumentExtractor.extract(data: f.pdfText, format: .pdf)
             guard case .success(let ext) = result else {
-                Issue.record("expected success, got \(result)"); return
+                Issue.record("expected success, got \(result)")
+                return
             }
             #expect(ext.text.contains("--- Page 1 ---"))
             #expect(ext.text.contains("Page one text content."))
@@ -321,7 +336,8 @@ extension AllAppTests {
             let f = try DocFixtures()
             let result = DocumentExtractor.extract(data: f.pdfMultiPage, format: .pdf)
             guard case .success(let ext) = result else {
-                Issue.record("expected success, got \(result)"); return
+                Issue.record("expected success, got \(result)")
+                return
             }
             #expect(ext.pageCount == 2)
             #expect(ext.text.contains("--- Page 1 ---"))
@@ -334,7 +350,8 @@ extension AllAppTests {
             let f = try DocFixtures()
             let result = DocumentExtractor.extract(data: f.pdfScanned, format: .pdf)
             guard case .success(let ext) = result else {
-                Issue.record("expected success, got \(result)"); return
+                Issue.record("expected success, got \(result)")
+                return
             }
             // The scanned page has no text layer, so the OCR fallback path
             // must fire: the marker is present and the page is counted as OCR.
@@ -357,7 +374,8 @@ extension AllAppTests {
             let f = try DocFixtures()
             let result = DocumentExtractor.ocrImage(f.pngWithText)
             guard case .success(let ext) = result else {
-                Issue.record("expected success, got \(result)"); return
+                Issue.record("expected success, got \(result)")
+                return
             }
             #expect(ext.ocrUsed == true)
             // Vision recognizes the rendered text when available. In the

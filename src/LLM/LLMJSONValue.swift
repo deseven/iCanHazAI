@@ -49,12 +49,12 @@ enum LLMJSONValue: Codable, Sendable, Equatable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         switch self {
-        case .string(let v):    try container.encode(v)
-        case .number(let v):    try container.encode(v)
-        case .bool(let v):      try container.encode(v)
-        case .null:              try container.encodeNil()
-        case .array(let v):     try container.encode(v)
-        case .object(let v):    try container.encode(v)
+        case .string(let v): try container.encode(v)
+        case .number(let v): try container.encode(v)
+        case .bool(let v): try container.encode(v)
+        case .null: try container.encodeNil()
+        case .array(let v): try container.encode(v)
+        case .object(let v): try container.encode(v)
         }
     }
 
@@ -63,12 +63,12 @@ enum LLMJSONValue: Codable, Sendable, Equatable {
     /// Converts this value to a plain `Any` suitable for `JSONSerialization`.
     var anyValue: Any {
         switch self {
-        case .string(let v):    return v
-        case .number(let v):    return v
-        case .bool(let v):      return v
-        case .null:              return NSNull()
-        case .array(let v):     return v.map { $0.anyValue }
-        case .object(let v):    return v.mapValues { $0.anyValue }
+        case .string(let v): return v
+        case .number(let v): return v
+        case .bool(let v): return v
+        case .null: return NSNull()
+        case .array(let v): return v.map { $0.anyValue }
+        case .object(let v): return v.mapValues { $0.anyValue }
         }
     }
 

@@ -1,8 +1,8 @@
 // Copyright (C) 2026 Ivan Novohatski <https://d7.wtf/>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import Foundation
 import CryptoKit
+import Foundation
 import ProcessExit
 
 // MARK: - SSH workdir spec
@@ -48,7 +48,9 @@ enum SSHSpec {
         } else if rest.hasPrefix("/") {
             path = rest
         } else {
-            return .failure(ParseFailure("path must be absolute — use \"\(host):/absolute/path\", or \"\(host):\" for the home directory"))
+            return .failure(
+                ParseFailure(
+                    "path must be absolute — use \"\(host):/absolute/path\", or \"\(host):\" for the home directory"))
         }
         if let path, path.contains("\0") {
             return .failure(ParseFailure("path must not contain null bytes"))
@@ -128,9 +130,10 @@ final class SSHManager: @unchecked Sendable {
 
     func socketPath(for ctx: SSHContext) -> String {
         let idPart = String(ctx.chatID.replacingOccurrences(of: "-", with: "").prefix(8))
-        let hostPart = String(ctx.host.map { ch in
-            ch.isLetter || ch.isNumber || ch == "." || ch == "_" || ch == "@" || ch == "-" ? ch : "_"
-        })
+        let hostPart = String(
+            ctx.host.map { ch in
+                ch.isLetter || ch.isNumber || ch == "." || ch == "_" || ch == "@" || ch == "-" ? ch : "_"
+            })
         let readable = (cacheDir as NSString).appendingPathComponent("ssh-\(idPart)-\(hostPart).sock")
         if readable.utf8.count <= Self.socketPathBudget { return readable }
 
@@ -155,7 +158,9 @@ final class SSHManager: @unchecked Sendable {
     /// login shell reading the script from stdin. Passing *no* command would
     /// make sshd run a login session that prints the MOTD/banner into our
     /// data channel — any explicit command suppresses it.
-    func exec(_ ctx: SSHContext, stdin: Data, hardTimeout: TimeInterval?, idleTimeout: TimeInterval?) async throws -> RunResult {
+    func exec(_ ctx: SSHContext, stdin: Data, hardTimeout: TimeInterval?, idleTimeout: TimeInterval?) async throws
+        -> RunResult
+    {
         try await ensureConnection(ctx)
         return try await runSSH(
             arguments: ["-T", "-C", "-S", socketPath(for: ctx), ctx.host, "exec $SHELL -l -s"],
@@ -208,7 +213,9 @@ final class SSHManager: @unchecked Sendable {
                 stdin: nil, hardTimeout: 5, idleTimeout: nil
             )
             if r.exitCode == 0 { return true }
-            debugLog("SSH", "control check failed for \(host): \(r.stderrString.trimmingCharacters(in: .whitespacesAndNewlines))")
+            debugLog(
+                "SSH",
+                "control check failed for \(host): \(r.stderrString.trimmingCharacters(in: .whitespacesAndNewlines))")
         } catch {
             debugLog("SSH", "control check failed for \(host): \(error.localizedDescription)")
         }
@@ -246,8 +253,9 @@ final class SSHManager: @unchecked Sendable {
             debugLog("SSH", "connect attempt \(attempt)/3 to \(host) failed: \(lastError)")
             try? await Task.sleep(nanoseconds: 300_000_000)
         }
-        throw BuiltinToolError("SSH connection to '\(host)' failed after 3 attempts (last exit code \(lastExitCode))"
-            + (lastError.isEmpty ? "." : ": \(lastError)"))
+        throw BuiltinToolError(
+            "SSH connection to '\(host)' failed after 3 attempts (last exit code \(lastExitCode))"
+                + (lastError.isEmpty ? "." : ": \(lastError)"))
     }
 
     // MARK: - Process runner
@@ -264,8 +272,18 @@ final class SSHManager: @unchecked Sendable {
         var stderr: Data { l.withLock { err } }
         var failure: Failure? { l.withLock { f } }
 
-        func appendStdout(_ d: Data) { l.withLock { out.append(d); activity = Date() } }
-        func appendStderr(_ d: Data) { l.withLock { err.append(d); activity = Date() } }
+        func appendStdout(_ d: Data) {
+            l.withLock {
+                out.append(d)
+                activity = Date()
+            }
+        }
+        func appendStderr(_ d: Data) {
+            l.withLock {
+                err.append(d)
+                activity = Date()
+            }
+        }
         func setFailure(_ x: Failure) { l.withLock { if f == nil { f = x } } }
     }
 
@@ -310,7 +328,9 @@ final class SSHManager: @unchecked Sendable {
         }
     }
 
-    private func runSSH(arguments: [String], stdin: Data?, hardTimeout: TimeInterval?, idleTimeout: TimeInterval?) async throws -> RunResult {
+    private func runSSH(arguments: [String], stdin: Data?, hardTimeout: TimeInterval?, idleTimeout: TimeInterval?)
+        async throws -> RunResult
+    {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         process.arguments = arguments
@@ -392,7 +412,10 @@ final class SSHManager: @unchecked Sendable {
         await awaitProcessExit(process)
         hardWatchdog?.cancel()
         idleWatchdog?.cancel()
-        debugLog("SSH", "ssh pid \(process.processIdentifier) exited (status \(process.terminationStatus), failure \(box.failure != nil))")
+        debugLog(
+            "SSH",
+            "ssh pid \(process.processIdentifier) exited (status \(process.terminationStatus), failure \(box.failure != nil))"
+        )
 
         // EOF on the pipes marks end-of-data and normally arrives with
         // process death, so awaiting the drains costs nothing in the common

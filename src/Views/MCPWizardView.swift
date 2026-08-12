@@ -1,8 +1,8 @@
 // Copyright (C) 2026 Ivan Novohatski <https://d7.wtf/>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import SwiftUI
 import AppKit
+import SwiftUI
 
 /// A multi-step wizard for creating a new MCP server config. Runs in its own
 /// window and walks the user through transport selection, parameters, a
@@ -30,11 +30,11 @@ struct MCPWizardView: View {
 
         var title: String {
             switch self {
-            case .type:       return "Transport"
+            case .type: return "Transport"
             case .parameters: return "Parameters"
-            case .tools:      return "Tools"
-            case .name:       return "Name"
-            case .finish:     return "Finish"
+            case .tools: return "Tools"
+            case .name: return "Name"
+            case .finish: return "Finish"
             }
         }
 
@@ -130,11 +130,11 @@ struct MCPWizardView: View {
 
             Group {
                 switch step {
-                case .type:       typeStep
+                case .type: typeStep
                 case .parameters: parametersStep
-                case .tools:      toolsStep
-                case .name:       nameStep
-                case .finish:     finishStep
+                case .tools: toolsStep
+                case .name: nameStep
+                case .finish: finishStep
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -386,11 +386,13 @@ struct MCPWizardView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(option == .stdio ? "stdio" : "Streamable HTTP")
                                 .fontWeight(.medium)
-                            Text(option == .stdio
-                                 ? "A local subprocess spawned by the app. Provide a command line."
-                                 : "A remote server reachable over HTTP. Provide an endpoint URL and optional bearer token.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            Text(
+                                option == .stdio
+                                    ? "A local subprocess spawned by the app. Provide a command line."
+                                    : "A remote server reachable over HTTP. Provide an endpoint URL and optional bearer token."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         }
                         Spacer()
                     }
@@ -412,11 +414,13 @@ struct MCPWizardView: View {
 
     private var parametersStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(transport == .stdio
-                 ? "Enter the command that launches the MCP server subprocess."
-                 : "Enter the streamable HTTP endpoint of the MCP server.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            Text(
+                transport == .stdio
+                    ? "Enter the command that launches the MCP server subprocess."
+                    : "Enter the streamable HTTP endpoint of the MCP server."
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
 
             switch transport {
             case .stdio:
@@ -430,10 +434,12 @@ struct MCPWizardView: View {
                         .textFieldStyle(.roundedBorder)
                         .focused($focusedField, equals: .command)
                         .onSubmit { goNext() }
-                    Text("The command is run via your login shell. If a command isn't found, make sure its directory is on PATH in your login profile (e.g. ~/.zprofile for zsh, ~/.bash_profile for bash).")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Text(
+                        "The command is run via your login shell. If a command isn't found, make sure its directory is on PATH in your login profile (e.g. ~/.zprofile for zsh, ~/.bash_profile for bash)."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
             case .http:
                 VStack(alignment: .leading, spacing: 4) {
@@ -477,12 +483,14 @@ struct MCPWizardView: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(option == .alwaysOn ? "Always on" : "On-demand")
                                         .fontWeight(.medium)
-                                    Text(option == .alwaysOn
-                                         ? "The server is started on app launch (or when this config is created), reloaded when its config changes, and stopped when its config is deleted."
-                                         : "The server is started only when a chat that has it active sends a request, and shut down after 600 seconds of inactivity. Reloaded on config change.")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
+                                    Text(
+                                        option == .alwaysOn
+                                            ? "The server is started on app launch (or when this config is created), reloaded when its config changes, and stopped when its config is deleted."
+                                            : "The server is started only when a chat that has it active sends a request, and shut down after 600 seconds of inactivity. Reloaded on config change."
+                                    )
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
                                 }
                                 Spacer()
                             }
@@ -644,9 +652,11 @@ struct MCPWizardView: View {
                         .stroke(Color.secondary.opacity(0.2))
                 )
 
-                Text("Selected \(selectedTools.count) tool\(selectedTools.count == 1 ? "" : "s") out of \(tools.count).")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "Selected \(selectedTools.count) tool\(selectedTools.count == 1 ? "" : "s") out of \(tools.count)."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
 
             Spacer()
@@ -672,7 +682,8 @@ struct MCPWizardView: View {
             if selectedTools.count == available.count {
                 tools = []
             } else {
-                tools = available
+                tools =
+                    available
                     .map { $0.name }
                     .filter { selectedTools.contains($0) }
             }
@@ -785,10 +796,12 @@ struct MCPWizardView: View {
 
             summaryRow("Transport", transport == .stdio ? "stdio" : "streamable http")
             summaryRow("Name", sanitizedFilename(serverName))
-            summaryRow("Prefix", {
-                let p = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
-                return p.isEmpty ? "(none)" : p
-            }())
+            summaryRow(
+                "Prefix",
+                {
+                    let p = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return p.isEmpty ? "(none)" : p
+                }())
             switch transport {
             case .stdio:
                 summaryRow("Command", command)
@@ -859,7 +872,8 @@ struct MCPWizardView: View {
     private func sanitizedFilename(_ s: String) -> String {
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         let invalid = CharacterSet(charactersIn: "/\\:*?\"<>|")
-        return trimmed
+        return
+            trimmed
             .components(separatedBy: invalid)
             .joined(separator: "-")
     }

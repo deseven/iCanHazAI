@@ -1,6 +1,7 @@
 import Foundation
-import Testing
 import TOML
+import Testing
+
 @testable import iCanHazAI
 
 // Tests for the built-in web tool group: provider request building, unified
@@ -12,8 +13,13 @@ extension AllAppTests {
 
         // MARK: - Helpers
 
-        private func config(_ provider: String, token: String = "tok", linkupRenderJS: Bool? = nil, tavilyAdvancedExtraction: Bool? = nil) -> WebSearchConfig {
-            WebSearchConfig(provider: provider, token: token, linkupRenderJS: linkupRenderJS, tavilyAdvancedExtraction: tavilyAdvancedExtraction)
+        private func config(
+            _ provider: String, token: String = "tok", linkupRenderJS: Bool? = nil,
+            tavilyAdvancedExtraction: Bool? = nil
+        ) -> WebSearchConfig {
+            WebSearchConfig(
+                provider: provider, token: token, linkupRenderJS: linkupRenderJS,
+                tavilyAdvancedExtraction: tavilyAdvancedExtraction)
         }
 
         private func body(of request: URLRequest) throws -> [String: Any] {
@@ -90,16 +96,21 @@ extension AllAppTests {
             let off = try body(of: BuiltinToolsWeb.extractRequest(config: config("linkup"), url: "https://example.com"))
             #expect(off["url"] as? String == "https://example.com")
             #expect(off["renderJs"] as? Bool == false)
-            let on = try body(of: BuiltinToolsWeb.extractRequest(config: config("linkup", linkupRenderJS: true), url: "https://example.com"))
+            let on = try body(
+                of: BuiltinToolsWeb.extractRequest(
+                    config: config("linkup", linkupRenderJS: true), url: "https://example.com"))
             #expect(on["renderJs"] as? Bool == true)
         }
 
         @Test("Tavily extract request follows tavily_advanced_extraction")
         func tavilyExtractRequest() throws {
-            let basic = try body(of: BuiltinToolsWeb.extractRequest(config: config("tavily"), url: "https://example.com"))
+            let basic = try body(
+                of: BuiltinToolsWeb.extractRequest(config: config("tavily"), url: "https://example.com"))
             #expect(basic["urls"] as? [String] == ["https://example.com"])
             #expect(basic["extract_depth"] as? String == "basic")
-            let advanced = try body(of: BuiltinToolsWeb.extractRequest(config: config("tavily", tavilyAdvancedExtraction: true), url: "https://example.com"))
+            let advanced = try body(
+                of: BuiltinToolsWeb.extractRequest(
+                    config: config("tavily", tavilyAdvancedExtraction: true), url: "https://example.com"))
             #expect(advanced["extract_depth"] as? String == "advanced")
         }
 
@@ -118,36 +129,50 @@ extension AllAppTests {
         @Test("Exa search hits map title/url/publishedDate/author/text")
         func exaSearchParsing() throws {
             let json = """
-            {"results": [{"title": "T", "url": "https://a.example", "publishedDate": "2023-11-16T01:36:32.547Z", "author": "Ann", "text": "snippet"}]}
-            """
+                {"results": [{"title": "T", "url": "https://a.example", "publishedDate": "2023-11-16T01:36:32.547Z", "author": "Ann", "text": "snippet"}]}
+                """
             let hits = try BuiltinToolsWeb.parseSearchHits(provider: .exa, data: Data(json.utf8))
-            #expect(hits == [.init(title: "T", url: "https://a.example", published: "2023-11-16", author: "Ann", snippet: "snippet")])
+            #expect(
+                hits == [
+                    .init(
+                        title: "T", url: "https://a.example", published: "2023-11-16", author: "Ann", snippet: "snippet"
+                    )
+                ])
         }
 
         @Test("Linkup search hits map name/url/content")
         func linkupSearchParsing() throws {
             let json = """
-            {"results": [{"type": "text", "name": "T", "url": "https://a.example", "content": "snippet"}]}
-            """
+                {"results": [{"type": "text", "name": "T", "url": "https://a.example", "content": "snippet"}]}
+                """
             let hits = try BuiltinToolsWeb.parseSearchHits(provider: .linkup, data: Data(json.utf8))
-            #expect(hits == [.init(title: "T", url: "https://a.example", published: nil, author: nil, snippet: "snippet")])
+            #expect(
+                hits == [.init(title: "T", url: "https://a.example", published: nil, author: nil, snippet: "snippet")])
         }
 
         @Test("Tavily search hits map title/url/published_date/content")
         func tavilySearchParsing() throws {
             let json = """
-            {"results": [{"title": "T", "url": "https://a.example", "content": "snippet", "score": 0.9, "published_date": "2026-01-01"}]}
-            """
+                {"results": [{"title": "T", "url": "https://a.example", "content": "snippet", "score": 0.9, "published_date": "2026-01-01"}]}
+                """
             let hits = try BuiltinToolsWeb.parseSearchHits(provider: .tavily, data: Data(json.utf8))
-            #expect(hits == [.init(title: "T", url: "https://a.example", published: "2026-01-01", author: nil, snippet: "snippet")])
+            #expect(
+                hits == [
+                    .init(
+                        title: "T", url: "https://a.example", published: "2026-01-01", author: nil, snippet: "snippet")
+                ])
         }
 
         @Test("Unified search output is provider-agnostic")
         func unifiedSearchOutput() {
-            let out = BuiltinToolsWeb.formatSearchOutput(query: "q", hits: [
-                .init(title: "T", url: "https://a.example", published: "2026-01-01", author: "Ann", snippet: "snippet"),
-                .init(title: "U", url: "https://b.example", published: nil, author: nil, snippet: nil),
-            ])
+            let out = BuiltinToolsWeb.formatSearchOutput(
+                query: "q",
+                hits: [
+                    .init(
+                        title: "T", url: "https://a.example", published: "2026-01-01", author: "Ann", snippet: "snippet"
+                    ),
+                    .init(title: "U", url: "https://b.example", published: nil, author: nil, snippet: nil),
+                ])
             #expect(out.hasPrefix("query: q\nresults: 2\n"))
             #expect(out.contains("[1] T\nURL: https://a.example\nPublished: 2026-01-01\nAuthor: Ann\nsnippet"))
             #expect(out.contains("[2] U\nURL: https://b.example\n"))
@@ -158,22 +183,28 @@ extension AllAppTests {
         @Test("Exa extract maps the first result and surfaces failed statuses")
         func exaExtractParsing() throws {
             let ok = """
-            {"results": [{"title": "T", "url": "https://a.example", "publishedDate": "2023-11-16T00:00:00Z", "author": "Ann", "text": "body"}], "statuses": [{"id": "x", "status": "success"}]}
-            """
-            let page = try BuiltinToolsWeb.parseExtractedPage(provider: .exa, data: Data(ok.utf8), url: "https://a.example")
-            #expect(page == .init(url: "https://a.example", title: "T", published: "2023-11-16", author: "Ann", content: "body"))
+                {"results": [{"title": "T", "url": "https://a.example", "publishedDate": "2023-11-16T00:00:00Z", "author": "Ann", "text": "body"}], "statuses": [{"id": "x", "status": "success"}]}
+                """
+            let page = try BuiltinToolsWeb.parseExtractedPage(
+                provider: .exa, data: Data(ok.utf8), url: "https://a.example")
+            #expect(
+                page
+                    == .init(
+                        url: "https://a.example", title: "T", published: "2023-11-16", author: "Ann", content: "body"))
 
             let failed = """
-            {"results": [], "statuses": [{"id": "x", "status": "error", "error": {"httpStatusCode": 404}}]}
-            """
+                {"results": [], "statuses": [{"id": "x", "status": "error", "error": {"httpStatusCode": 404}}]}
+                """
             #expect(throws: BuiltinToolError.self) {
-                _ = try BuiltinToolsWeb.parseExtractedPage(provider: .exa, data: Data(failed.utf8), url: "https://a.example")
+                _ = try BuiltinToolsWeb.parseExtractedPage(
+                    provider: .exa, data: Data(failed.utf8), url: "https://a.example")
             }
         }
 
         @Test("Linkup extract maps markdown")
         func linkupExtractParsing() throws {
-            let page = try BuiltinToolsWeb.parseExtractedPage(provider: .linkup, data: Data(#"{"markdown": "body"}"#.utf8), url: "https://a.example")
+            let page = try BuiltinToolsWeb.parseExtractedPage(
+                provider: .linkup, data: Data(#"{"markdown": "body"}"#.utf8), url: "https://a.example")
             #expect(page.content == "body")
             #expect(page.title == nil)
         }
@@ -181,16 +212,18 @@ extension AllAppTests {
         @Test("Tavily extract maps raw_content and surfaces failed_results errors")
         func tavilyExtractParsing() throws {
             let ok = """
-            {"results": [{"url": "https://a.example", "raw_content": "body"}], "failed_results": []}
-            """
-            let page = try BuiltinToolsWeb.parseExtractedPage(provider: .tavily, data: Data(ok.utf8), url: "https://a.example")
+                {"results": [{"url": "https://a.example", "raw_content": "body"}], "failed_results": []}
+                """
+            let page = try BuiltinToolsWeb.parseExtractedPage(
+                provider: .tavily, data: Data(ok.utf8), url: "https://a.example")
             #expect(page.content == "body")
 
             let failed = """
-            {"results": [], "failed_results": [{"url": "https://a.example", "error": "Usage limit reached"}]}
-            """
+                {"results": [], "failed_results": [{"url": "https://a.example", "error": "Usage limit reached"}]}
+                """
             do {
-                _ = try BuiltinToolsWeb.parseExtractedPage(provider: .tavily, data: Data(failed.utf8), url: "https://a.example")
+                _ = try BuiltinToolsWeb.parseExtractedPage(
+                    provider: .tavily, data: Data(failed.utf8), url: "https://a.example")
                 Issue.record("expected an error")
             } catch let error as BuiltinToolError {
                 #expect(error.description.contains("Usage limit reached"))
@@ -199,9 +232,10 @@ extension AllAppTests {
 
         @Test("Unified extract output carries the metadata header")
         func unifiedExtractOutput() {
-            let out = BuiltinToolsWeb.formatExtractOutput(page: .init(
-                url: "https://a.example", title: "T", published: "2026-01-01", author: nil, content: "body"
-            ))
+            let out = BuiltinToolsWeb.formatExtractOutput(
+                page: .init(
+                    url: "https://a.example", title: "T", published: "2026-01-01", author: nil, content: "body"
+                ))
             #expect(out == "URL: https://a.example\nTitle: T\nPublished: 2026-01-01\n\nbody")
         }
 
@@ -209,19 +243,24 @@ extension AllAppTests {
 
         @Test("web_search result summary reports the hit count")
         func searchResultSummary() {
-            let content = BuiltinToolsWeb.formatSearchOutput(query: "q", hits: [
-                .init(title: "T", url: "https://a.example", published: nil, author: nil, snippet: nil),
-            ])
-            let status = ToolSummary.resultStatus(name: "web_search", result: ToolResult(callID: "1", content: content, isError: false))
+            let content = BuiltinToolsWeb.formatSearchOutput(
+                query: "q",
+                hits: [
+                    .init(title: "T", url: "https://a.example", published: nil, author: nil, snippet: nil)
+                ])
+            let status = ToolSummary.resultStatus(
+                name: "web_search", result: ToolResult(callID: "1", content: content, isError: false))
             #expect(status?.description == "1 result.")
         }
 
         @Test("web_extract result summary reports the extracted character count")
         func extractResultSummary() {
-            let content = BuiltinToolsWeb.formatExtractOutput(page: .init(
-                url: "https://a.example", title: nil, published: nil, author: nil, content: "body"
-            ))
-            let status = ToolSummary.resultStatus(name: "web_extract", result: ToolResult(callID: "1", content: content, isError: false))
+            let content = BuiltinToolsWeb.formatExtractOutput(
+                page: .init(
+                    url: "https://a.example", title: nil, published: nil, author: nil, content: "body"
+                ))
+            let status = ToolSummary.resultStatus(
+                name: "web_extract", result: ToolResult(callID: "1", content: content, isError: false))
             #expect(status?.description == "Extracted 4 characters.")
         }
 
@@ -231,7 +270,8 @@ extension AllAppTests {
         func providerErrorMessages() {
             #expect(BuiltinToolsWeb.providerErrorMessage(from: Data(#"{"error": "bad key"}"#.utf8)) == "bad key")
             #expect(BuiltinToolsWeb.providerErrorMessage(from: Data(#"{"message": "nope"}"#.utf8)) == "nope")
-            #expect(BuiltinToolsWeb.providerErrorMessage(from: Data(#"{"detail": {"error": "limit"}}"#.utf8)) == "limit")
+            #expect(
+                BuiltinToolsWeb.providerErrorMessage(from: Data(#"{"detail": {"error": "limit"}}"#.utf8)) == "limit")
             #expect(BuiltinToolsWeb.providerErrorMessage(from: Data(#"{"detail": "plain"}"#.utf8)) == "plain")
             #expect(BuiltinToolsWeb.providerErrorMessage(from: Data("not json".utf8)) == "not json")
             #expect(BuiltinToolsWeb.providerErrorMessage(from: Data()) == "no details")
@@ -256,7 +296,8 @@ extension AllAppTests {
 
         @Test("web_fetch output includes response headers when present")
         func fetchOutputWithHeaders() {
-            let withHeaders = BuiltinToolsWeb.fetchOutput(httpCode: 200, content: "body", headers: ["Content-Type": "application/json", "X-Total": "42"])
+            let withHeaders = BuiltinToolsWeb.fetchOutput(
+                httpCode: 200, content: "body", headers: ["Content-Type": "application/json", "X-Total": "42"])
             #expect(withHeaders == "http_code: 200\nContent-Type: application/json\nX-Total: 42\n\nbody")
         }
 
@@ -299,7 +340,9 @@ extension AllAppTests {
 
         @Test("web_fetch request_type takes precedence over data default")
         func fetchMethodPrecedence() throws {
-            let params = try BuiltinToolsWeb.parseFetchParams(["url": "https://example.com", "request_type": "PATCH", "data": "body"])
+            let params = try BuiltinToolsWeb.parseFetchParams([
+                "url": "https://example.com", "request_type": "PATCH", "data": "body",
+            ])
             #expect(params.method == "PATCH")
             #expect(params.body == "body")
         }
@@ -346,11 +389,11 @@ extension AllAppTests {
         @Test("AppConfig decodes the web_search section with all keys")
         func decodesWebSearchSection() throws {
             let toml = """
-            [web_search]
-            provider = "linkup"
-            token = "secret"
-            linkup_render_js = true
-            """
+                [web_search]
+                provider = "linkup"
+                token = "secret"
+                linkup_render_js = true
+                """
             let config = try ConfigValidation.decodeAppConfig(Data(toml.utf8))
             #expect(config.webSearch.provider == "linkup")
             #expect(config.webSearch.token == "secret")
@@ -365,16 +408,18 @@ extension AllAppTests {
             #expect(config.webSearch.resolvedProvider == .none)
             #expect(!config.webSearch.isConfigured)
             // A token without a provider is not "configured" either.
-            #expect(!WebSearchConfig(provider: "none", token: "x", linkupRenderJS: nil, tavilyAdvancedExtraction: nil).isConfigured)
+            #expect(
+                !WebSearchConfig(provider: "none", token: "x", linkupRenderJS: nil, tavilyAdvancedExtraction: nil)
+                    .isConfigured)
         }
 
         @Test("An unknown provider string degrades to none instead of failing the decode")
         func unknownProviderDegrades() throws {
             let toml = """
-            [web_search]
-            provider = "bing"
-            token = "secret"
-            """
+                [web_search]
+                provider = "bing"
+                token = "secret"
+                """
             let config = try ConfigValidation.decodeAppConfig(Data(toml.utf8))
             #expect(config.webSearch.resolvedProvider == .none)
             #expect(!config.webSearch.isConfigured)
@@ -391,23 +436,27 @@ extension AllAppTests {
         func conditionalEncoding() throws {
             var config = AppConfig()
 
-            config.webSearch = WebSearchConfig(provider: "linkup", token: "t", linkupRenderJS: true, tavilyAdvancedExtraction: true)
+            config.webSearch = WebSearchConfig(
+                provider: "linkup", token: "t", linkupRenderJS: true, tavilyAdvancedExtraction: true)
             var toml = try encode(config)
             #expect(toml.contains("linkup_render_js = true"))
             #expect(!toml.contains("tavily_advanced_extraction"))
 
-            config.webSearch = WebSearchConfig(provider: "tavily", token: "t", linkupRenderJS: true, tavilyAdvancedExtraction: true)
+            config.webSearch = WebSearchConfig(
+                provider: "tavily", token: "t", linkupRenderJS: true, tavilyAdvancedExtraction: true)
             toml = try encode(config)
             #expect(!toml.contains("linkup_render_js"))
             #expect(toml.contains("tavily_advanced_extraction = true"))
 
-            config.webSearch = WebSearchConfig(provider: "exa", token: "t", linkupRenderJS: true, tavilyAdvancedExtraction: true)
+            config.webSearch = WebSearchConfig(
+                provider: "exa", token: "t", linkupRenderJS: true, tavilyAdvancedExtraction: true)
             toml = try encode(config)
             #expect(toml.contains("token = \"t\""))
             #expect(!toml.contains("linkup_render_js"))
             #expect(!toml.contains("tavily_advanced_extraction"))
 
-            config.webSearch = WebSearchConfig(provider: "none", token: "t", linkupRenderJS: true, tavilyAdvancedExtraction: true)
+            config.webSearch = WebSearchConfig(
+                provider: "none", token: "t", linkupRenderJS: true, tavilyAdvancedExtraction: true)
             toml = try encode(config)
             #expect(toml.contains("provider = \"none\""))
             #expect(!toml.contains("token"))
@@ -418,15 +467,18 @@ extension AllAppTests {
         @Test("A [web] table enables the Web group with all its tools")
         func roleWebGroup() throws {
             let toml = """
-            prompt = "Assistant"
+                prompt = "Assistant"
 
-            [web]
-            """
+                [web]
+                """
             let config = try ConfigValidation.decodeRole(Data(toml.utf8))
             let role = Role(name: "Assistant", config: config)
             #expect(role.enabledGroups == [BuiltinTools.webGroup])
             #expect(role.groupConfig(BuiltinTools.webGroup) != nil)
-            #expect(BuiltinTools.tools(for: BuiltinTools.webGroup).map(\.name) == ["web_search", "web_extract", "web_fetch"])
+            #expect(
+                BuiltinTools.tools(for: BuiltinTools.webGroup).map(\.name) == [
+                    "web_search", "web_extract", "web_fetch",
+                ])
             // Web is not workdir-related.
             #expect(!role.hasWorkdirCapableMCP)
             #expect(!role.hasDirectoryRelevantTools)
@@ -448,7 +500,8 @@ extension AllAppTests {
         func providerMissingNoticeAbsent() {
             #expect(BuiltinToolsWeb.providerMissingNotice(webGroupToolsFilter: nil, isConfigured: false) == nil)
             #expect(BuiltinToolsWeb.providerMissingNotice(webGroupToolsFilter: [], isConfigured: true) == nil)
-            #expect(BuiltinToolsWeb.providerMissingNotice(webGroupToolsFilter: ["web_fetch"], isConfigured: false) == nil)
+            #expect(
+                BuiltinToolsWeb.providerMissingNotice(webGroupToolsFilter: ["web_fetch"], isConfigured: false) == nil)
         }
 
         @Test("Notice reflects the role's tool allowlist")
@@ -464,11 +517,11 @@ extension AllAppTests {
             // Isolation is role-level but only Filesystem/Code consume it;
             // a web-only role has nothing to isolate.
             let toml = """
-            prompt = "Assistant"
-            directory_isolation = true
+                prompt = "Assistant"
+                directory_isolation = true
 
-            [web]
-            """
+                [web]
+                """
             #expect(throws: ConfigValidationError.self) {
                 _ = try ConfigValidation.decodeRole(Data(toml.utf8))
             }

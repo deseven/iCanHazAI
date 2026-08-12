@@ -46,63 +46,63 @@ import yaml from "highlight.js/lib/languages/yaml";
 
 // Register the curated language set. Aliases cover common fenced-code labels.
 const languages: Array<[string, (hljs: any) => any]> = [
-  ["bash", bash],
-  ["sh", bash],
-  ["c", c],
-  ["h", c],
-  ["cpp", cpp],
-  ["c++", cpp],
-  ["cc", cpp],
-  ["hpp", cpp],
-  ["csharp", csharp],
-  ["cs", csharp],
-  ["css", css],
-  ["diff", diff],
-  ["patch", diff],
-  ["go", go],
-  ["golang", go],
-  ["ini", ini],
-  ["toml", ini],
-  ["html", xml],
-  ["xml", xml],
-  ["svg", xml],
-  ["java", java],
-  ["javascript", javascript],
-  ["js", javascript],
-  ["jsx", javascript],
-  ["json", json],
-  ["jsonc", json],
-  ["kotlin", kotlin],
-  ["kt", kotlin],
-  ["lua", lua],
-  ["markdown", markdown],
-  ["md", markdown],
-  ["objectivec", objectivec],
-  ["objc", objectivec],
-  ["obj-c", objectivec],
-  ["perl", perl],
-  ["pl", perl],
-  ["php", php],
-  ["python", python],
-  ["py", python],
-  ["ruby", ruby],
-  ["rb", ruby],
-  ["rust", rust],
-  ["rs", rust],
-  ["scala", scala],
-  ["shell", shell],
-  ["console", shell],
-  ["terminal", shell],
-  ["sql", sql],
-  ["swift", swift],
-  ["typescript", typescript],
-  ["ts", typescript],
-  ["tsx", typescript],
-  ["yaml", yaml],
-  ["yml", yaml],
+    ["bash", bash],
+    ["sh", bash],
+    ["c", c],
+    ["h", c],
+    ["cpp", cpp],
+    ["c++", cpp],
+    ["cc", cpp],
+    ["hpp", cpp],
+    ["csharp", csharp],
+    ["cs", csharp],
+    ["css", css],
+    ["diff", diff],
+    ["patch", diff],
+    ["go", go],
+    ["golang", go],
+    ["ini", ini],
+    ["toml", ini],
+    ["html", xml],
+    ["xml", xml],
+    ["svg", xml],
+    ["java", java],
+    ["javascript", javascript],
+    ["js", javascript],
+    ["jsx", javascript],
+    ["json", json],
+    ["jsonc", json],
+    ["kotlin", kotlin],
+    ["kt", kotlin],
+    ["lua", lua],
+    ["markdown", markdown],
+    ["md", markdown],
+    ["objectivec", objectivec],
+    ["objc", objectivec],
+    ["obj-c", objectivec],
+    ["perl", perl],
+    ["pl", perl],
+    ["php", php],
+    ["python", python],
+    ["py", python],
+    ["ruby", ruby],
+    ["rb", ruby],
+    ["rust", rust],
+    ["rs", rust],
+    ["scala", scala],
+    ["shell", shell],
+    ["console", shell],
+    ["terminal", shell],
+    ["sql", sql],
+    ["swift", swift],
+    ["typescript", typescript],
+    ["ts", typescript],
+    ["tsx", typescript],
+    ["yaml", yaml],
+    ["yml", yaml],
 ];
 for (const [name, lang] of languages) {
-  hljs.registerLanguage(name, lang);
+    hljs.registerLanguage(name, lang);
 }
 
 // Feature flags passed by the native host via URL query parameters. Flags are
@@ -113,49 +113,45 @@ for (const [name, lang] of languages) {
 // The tree overview uses our own SVG renderer (TreeView), which is part of the
 // core bundle — no optional feature bundle is needed for it.
 interface ChatFeatures {
-  mermaid: boolean;
-  katex: boolean;
+    mermaid: boolean;
+    katex: boolean;
 }
 function readFeatures(): ChatFeatures {
-  const params = new URLSearchParams(location.search);
-  const f = {
-    mermaid: params.has("withMermaid"),
-    katex: params.has("withKatex"),
-  };
-  debugLog("markdown", "features: " + JSON.stringify(f) + " search: " + location.search);
-  return f;
+    const params = new URLSearchParams(location.search);
+    const f = {
+        mermaid: params.has("withMermaid"),
+        katex: params.has("withKatex"),
+    };
+    debugLog("markdown", "features: " + JSON.stringify(f) + " search: " + location.search);
+    return f;
 }
 const features: ChatFeatures = readFeatures();
 
 const md = new MarkdownIt({
-  // Allow raw HTML so KaTeX-rendered output and mermaid containers can be
-  // injected. The content originates from the host (trusted model output),
-  // not arbitrary user input on the web.
-  html: true,
-  breaks: false,
-  linkify: true,
-  typographer: true,
-  highlight(str: string, lang?: string): string {
-    if (features.mermaid && lang === "mermaid") {
-      return (
-        '<div class="mermaid" data-mermaid="' +
-        encodeURIComponent(str) +
-        '"></div>'
-      );
-    }
-    if (lang && hljs.getLanguage(lang)) {
-      try {
-        return (
-          '<pre class="hljs"><code>' +
-          hljs.highlight(str, { language: lang, ignoreIllegals: true }).value +
-          "</code></pre>"
-        );
-      } catch {
-        // fall through to plain escape
-      }
-    }
-    return '<pre class="hljs"><code>' + md.utils.escapeHtml(str) + "</code></pre>";
-  },
+    // Allow raw HTML so KaTeX-rendered output and mermaid containers can be
+    // injected. The content originates from the host (trusted model output),
+    // not arbitrary user input on the web.
+    html: true,
+    breaks: false,
+    linkify: true,
+    typographer: true,
+    highlight(str: string, lang?: string): string {
+        if (features.mermaid && lang === "mermaid") {
+            return '<div class="mermaid" data-mermaid="' + encodeURIComponent(str) + '"></div>';
+        }
+        if (lang && hljs.getLanguage(lang)) {
+            try {
+                return (
+                    '<pre class="hljs"><code>' +
+                    hljs.highlight(str, { language: lang, ignoreIllegals: true }).value +
+                    "</code></pre>"
+                );
+            } catch {
+                // fall through to plain escape
+            }
+        }
+        return '<pre class="hljs"><code>' + md.utils.escapeHtml(str) + "</code></pre>";
+    },
 });
 
 // Models emit raw `|` inside code spans in table cells, which GFM treats as a
@@ -171,34 +167,31 @@ installTablePipeEscape(md);
 // is stricter on options, but the runtime contract is compatible.
 let katexReady: Promise<void> | null = null;
 function loadKatex(): Promise<void> {
-  if (!katexReady) {
-    debugLog("katex", "Loading KaTeX bundle via <script> tag...");
-    katexReady = loadScript("./katex-bundle.js")
-      .then(() => {
-        debugLog("katex", "bundle loaded, registering plugin");
-        const w = window as any;
-        if (w.__katexPlugin) {
-          md.use(w.__katexPlugin as any);
-          debugLog("katex", "plugin registered");
-        } else {
-          debugLog("katex", "ERROR: plugin not found on window after script load");
-        }
-      })
-      .catch((err) => {
-        debugLog("katex", "load failed: " + (err instanceof Error ? err.message : String(err)));
-        reportFeatureError(
-          "KaTeX",
-          err instanceof Error ? err.message : String(err)
-        );
-      });
-  }
-  return katexReady;
+    if (!katexReady) {
+        debugLog("katex", "Loading KaTeX bundle via <script> tag...");
+        katexReady = loadScript("./katex-bundle.js")
+            .then(() => {
+                debugLog("katex", "bundle loaded, registering plugin");
+                const w = window as any;
+                if (w.__katexPlugin) {
+                    md.use(w.__katexPlugin as any);
+                    debugLog("katex", "plugin registered");
+                } else {
+                    debugLog("katex", "ERROR: plugin not found on window after script load");
+                }
+            })
+            .catch((err) => {
+                debugLog("katex", "load failed: " + (err instanceof Error ? err.message : String(err)));
+                reportFeatureError("KaTeX", err instanceof Error ? err.message : String(err));
+            });
+    }
+    return katexReady;
 }
 if (features.katex) {
-  debugLog("katex", "feature enabled, starting load");
-  loadKatex();
+    debugLog("katex", "feature enabled, starting load");
+    loadKatex();
 } else {
-  debugLog("katex", "feature disabled");
+    debugLog("katex", "feature disabled");
 }
 
 /**
@@ -207,15 +200,13 @@ if (features.katex) {
  * plugins registered (e.g. KaTeX). When no features are enabled, resolves
  * immediately.
  */
-export const featuresReady: Promise<void> = Promise.all([
-  features.katex ? loadKatex() : Promise.resolve(),
-]).then(() => {
-  debugLog("markdown", "all features ready");
+export const featuresReady: Promise<void> = Promise.all([features.katex ? loadKatex() : Promise.resolve()]).then(() => {
+    debugLog("markdown", "all features ready");
 });
 
 /** Reports a feature-loading error so it's visible to the user. */
 function reportFeatureError(feature: string, message: string): void {
-  debugLog("markdown", `ERROR: Failed to load ${feature}: ${message}`);
+    debugLog("markdown", `ERROR: Failed to load ${feature}: ${message}`);
 }
 
 /**
@@ -223,43 +214,37 @@ function reportFeatureError(feature: string, message: string): void {
  * error. More reliable than dynamic import() in WKWebView with file:// URLs.
  */
 function loadScript(src: string): Promise<void> {
-  debugLog("script", `Loading: ${src}`);
-  return new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = src;
-    script.onload = () => {
-      debugLog("script", `Loaded: ${src}`);
-      resolve();
-    };
-    script.onerror = () => {
-      debugLog("script", `Failed to load: ${src}`);
-      reject(new Error(`Failed to load ${src}`));
-    };
-    document.head.appendChild(script);
-  });
+    debugLog("script", `Loading: ${src}`);
+    return new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = src;
+        script.onload = () => {
+            debugLog("script", `Loaded: ${src}`);
+            resolve();
+        };
+        script.onerror = () => {
+            debugLog("script", `Failed to load: ${src}`);
+            reject(new Error(`Failed to load ${src}`));
+        };
+        document.head.appendChild(script);
+    });
 }
 
 const defaultLinkOpen = md.renderer.rules.link_open;
 
-md.renderer.rules.link_open = function (
-  tokens: Token[],
-  idx: number,
-  options,
-  env,
-  self
-) {
-  const token = tokens[idx];
-  const targetIndex = token.attrIndex("target");
-  if (targetIndex < 0) {
-    token.attrPush(["target", "_blank"]);
-    token.attrPush(["rel", "noopener noreferrer"]);
-  } else {
-    token.attrs![targetIndex][1] = "_blank";
-  }
-  if (defaultLinkOpen) {
-    return defaultLinkOpen(tokens, idx, options, env, self);
-  }
-  return self.renderToken(tokens, idx, options);
+md.renderer.rules.link_open = function (tokens: Token[], idx: number, options, env, self) {
+    const token = tokens[idx];
+    const targetIndex = token.attrIndex("target");
+    if (targetIndex < 0) {
+        token.attrPush(["target", "_blank"]);
+        token.attrPush(["rel", "noopener noreferrer"]);
+    } else {
+        token.attrs![targetIndex][1] = "_blank";
+    }
+    if (defaultLinkOpen) {
+        return defaultLinkOpen(tokens, idx, options, env, self);
+    }
+    return self.renderToken(tokens, idx, options);
 };
 
 /**
@@ -271,22 +256,19 @@ md.renderer.rules.link_open = function (
  * does not ship a built-in task-list rule.
  */
 export function renderMarkdown(src: string): string {
-  const trimmed = src.trim();
-  if (!trimmed) return "";
-  let html = md.render(src);
-  html = html.replace(
-    /<li>\s*\[([ xX])\]\s*/g,
-    (_m, check: string) => {
-      const checked = check === "x" || check === "X";
-      return (
-        '<li class="task-list-item">' +
-        '<input type="checkbox" class="task-list-checkbox" disabled' +
-        (checked ? " checked" : "") +
-        "> "
-      );
-    }
-  );
-  return html;
+    const trimmed = src.trim();
+    if (!trimmed) return "";
+    let html = md.render(src);
+    html = html.replace(/<li>\s*\[([ xX])\]\s*/g, (_m, check: string) => {
+        const checked = check === "x" || check === "X";
+        return (
+            '<li class="task-list-item">' +
+            '<input type="checkbox" class="task-list-checkbox" disabled' +
+            (checked ? " checked" : "") +
+            "> "
+        );
+    });
+    return html;
 }
 
 /**
@@ -295,7 +277,7 @@ export function renderMarkdown(src: string): string {
  * completed blocks.
  */
 export function renderInline(src: string): string {
-  return md.renderInline(src);
+    return md.renderInline(src);
 }
 
 /**
@@ -304,12 +286,12 @@ export function renderInline(src: string): string {
  * registered or highlighting fails — callers should fall back to plain text.
  */
 export function highlightCode(src: string, lang: string): string | null {
-  if (!hljs.getLanguage(lang)) return null;
-  try {
-    return hljs.highlight(src, { language: lang, ignoreIllegals: true }).value;
-  } catch {
-    return null;
-  }
+    if (!hljs.getLanguage(lang)) return null;
+    try {
+        return hljs.highlight(src, { language: lang, ignoreIllegals: true }).value;
+    } catch {
+        return null;
+    }
 }
 
 /**
@@ -320,17 +302,17 @@ export function highlightCode(src: string, lang: string): string | null {
  * plain escaped `<pre>` if the diff language isn't available.
  */
 export function renderDiff(src: string): string {
-  const trimmed = src.trim();
-  if (!trimmed) return "";
-  try {
-    return (
-      '<pre class="hljs tool-diff"><code>' +
-      hljs.highlight(trimmed, { language: "diff", ignoreIllegals: true }).value +
-      "</code></pre>"
-    );
-  } catch {
-    return '<pre class="hljs tool-diff"><code>' + md.utils.escapeHtml(trimmed) + "</code></pre>";
-  }
+    const trimmed = src.trim();
+    if (!trimmed) return "";
+    try {
+        return (
+            '<pre class="hljs tool-diff"><code>' +
+            hljs.highlight(trimmed, { language: "diff", ignoreIllegals: true }).value +
+            "</code></pre>"
+        );
+    } catch {
+        return '<pre class="hljs tool-diff"><code>' + md.utils.escapeHtml(trimmed) + "</code></pre>";
+    }
 }
 
 // ── Mermaid post-render ──────────────────────────────────────────────
@@ -344,56 +326,51 @@ export function renderDiff(src: string): string {
 let mermaidReady: Promise<void> | null = null;
 
 function loadMermaid(): Promise<void> {
-  if (!mermaidReady) {
-    debugLog("mermaid", "Loading bundle via <script> tag...");
-    mermaidReady = loadScript("./mermaid-bundle.js")
-      .then(() => {
-        debugLog("mermaid", "bundle loaded, initializing");
-        const w = window as any;
-        if (w.__mermaid) {
-          w.__mermaid.initialize({
-            startOnLoad: false,
-            theme: document.documentElement.getAttribute("data-theme") === "light"
-              ? "default"
-              : "dark",
-            securityLevel: "strict",
-          });
-          debugLog("mermaid", "initialized");
-        } else {
-          debugLog("mermaid", "ERROR: not found on window after script load");
-        }
-      })
-      .catch((err) => {
-        debugLog("mermaid", "load failed: " + (err instanceof Error ? err.message : String(err)));
-        reportFeatureError(
-          "Mermaid",
-          err instanceof Error ? err.message : String(err)
-        );
-      });
-  }
-  return mermaidReady;
+    if (!mermaidReady) {
+        debugLog("mermaid", "Loading bundle via <script> tag...");
+        mermaidReady = loadScript("./mermaid-bundle.js")
+            .then(() => {
+                debugLog("mermaid", "bundle loaded, initializing");
+                const w = window as any;
+                if (w.__mermaid) {
+                    w.__mermaid.initialize({
+                        startOnLoad: false,
+                        theme: document.documentElement.getAttribute("data-theme") === "light" ? "default" : "dark",
+                        securityLevel: "strict",
+                    });
+                    debugLog("mermaid", "initialized");
+                } else {
+                    debugLog("mermaid", "ERROR: not found on window after script load");
+                }
+            })
+            .catch((err) => {
+                debugLog("mermaid", "load failed: " + (err instanceof Error ? err.message : String(err)));
+                reportFeatureError("Mermaid", err instanceof Error ? err.message : String(err));
+            });
+    }
+    return mermaidReady;
 }
 
 /** Re-theme mermaid when the app theme changes. No-op if mermaid is disabled. */
 export async function setMermaidTheme(theme: "light" | "dark") {
-  if (!features.mermaid) return;
-  await loadMermaid();
-  const m = (window as any).__mermaid;
-  if (m) {
-    m.initialize({
-      startOnLoad: false,
-      theme: theme === "light" ? "default" : "dark",
-      securityLevel: "strict",
+    if (!features.mermaid) return;
+    await loadMermaid();
+    const m = (window as any).__mermaid;
+    if (m) {
+        m.initialize({
+            startOnLoad: false,
+            theme: theme === "light" ? "default" : "dark",
+            securityLevel: "strict",
+        });
+    }
+    // Cached SVGs are theme-specific: drop them and force a re-render so
+    // already-drawn diagrams pick up the new theme.
+    mermaidSvgCache.clear();
+    document.querySelectorAll<HTMLElement>(".mermaid[data-mermaid-done]").forEach((n) => {
+        n.removeAttribute("data-mermaid-done");
+        n.classList.remove("mermaid-error");
     });
-  }
-  // Cached SVGs are theme-specific: drop them and force a re-render so
-  // already-drawn diagrams pick up the new theme.
-  mermaidSvgCache.clear();
-  document.querySelectorAll<HTMLElement>(".mermaid[data-mermaid-done]").forEach((n) => {
-    n.removeAttribute("data-mermaid-done");
-    n.classList.remove("mermaid-error");
-  });
-  renderMermaidIn(document.body);
+    renderMermaidIn(document.body);
 }
 
 // Cache of rendered mermaid SVGs keyed by `${theme}\0${source}`. Streaming
@@ -409,9 +386,7 @@ const mermaidSvgCache = new Map<string, string>();
 let renderChain: Promise<void> = Promise.resolve();
 
 function currentMermaidTheme(): string {
-  return document.documentElement.getAttribute("data-theme") === "light"
-    ? "default"
-    : "dark";
+    return document.documentElement.getAttribute("data-theme") === "light" ? "default" : "dark";
 }
 
 /**
@@ -421,24 +396,24 @@ function currentMermaidTheme(): string {
  * `.mermaid` div is an incomplete diagram that must not be rendered yet.
  */
 export function endsWithUnclosedMermaid(text: string): boolean {
-  const lines = text.split("\n");
-  let open: { marker: string; len: number; lang: string } | null = null;
-  for (const line of lines) {
-    const openMatch = /^\s{0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-    if (!open) {
-      if (openMatch) {
-        open = {
-          marker: openMatch[1][0],
-          len: openMatch[1].length,
-          lang: openMatch[2].trim(),
-        };
-      }
-    } else {
-      const closeRe = new RegExp("^" + open.marker + "{" + open.len + ",}\\s*$");
-      if (closeRe.test(line)) open = null;
+    const lines = text.split("\n");
+    let open: { marker: string; len: number; lang: string } | null = null;
+    for (const line of lines) {
+        const openMatch = /^\s{0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+        if (!open) {
+            if (openMatch) {
+                open = {
+                    marker: openMatch[1][0],
+                    len: openMatch[1].length,
+                    lang: openMatch[2].trim(),
+                };
+            }
+        } else {
+            const closeRe = new RegExp("^" + open.marker + "{" + open.len + ",}\\s*$");
+            if (closeRe.test(line)) open = null;
+        }
     }
-  }
-  return open !== null && open.lang === "mermaid";
+    return open !== null && open.lang === "mermaid";
 }
 
 /**
@@ -451,73 +426,60 @@ export function endsWithUnclosedMermaid(text: string): boolean {
  *
  * No-op if mermaid is disabled (no `.mermaid` containers are emitted).
  */
-export function renderMermaidIn(
-  root: HTMLElement,
-  opts?: { skipLast?: boolean }
-): Promise<void> {
-  if (!features.mermaid) return Promise.resolve();
-  const skipLast = opts?.skipLast === true;
-  const run = renderChain.then(() => doRenderMermaidIn(root, skipLast));
-  // Keep the chain alive regardless of rejection so a failed render doesn't
-  // block subsequent ones.
-  renderChain = run.then(
-    () => {},
-    () => {}
-  );
-  return run;
+export function renderMermaidIn(root: HTMLElement, opts?: { skipLast?: boolean }): Promise<void> {
+    if (!features.mermaid) return Promise.resolve();
+    const skipLast = opts?.skipLast === true;
+    const run = renderChain.then(() => doRenderMermaidIn(root, skipLast));
+    // Keep the chain alive regardless of rejection so a failed render doesn't
+    // block subsequent ones.
+    renderChain = run.then(
+        () => {},
+        () => {},
+    );
+    return run;
 }
 
 async function doRenderMermaidIn(root: HTMLElement, skipLast: boolean) {
-  const nodes = root.querySelectorAll<HTMLElement>(
-    ".mermaid:not([data-mermaid-done])"
-  );
-  if (nodes.length === 0) return;
-  const theme = currentMermaidTheme();
-  await loadMermaid();
-  const m = (window as any).__mermaid;
-  if (!m) return;
-  let rendered = 0;
-  let restored = 0;
-  const lastIdx = nodes.length - 1;
-  for (let i = 0; i < nodes.length; i++) {
-    if (skipLast && i === lastIdx) continue;
-    const node = nodes[i];
-    const src = node.getAttribute("data-mermaid");
-    if (!src) continue;
-    const content = decodeURIComponent(src);
-    const cacheKey = theme + "\0" + content;
-    node.setAttribute("data-mermaid-done", "1");
-    const hit = mermaidSvgCache.get(cacheKey);
-    if (hit !== undefined) {
-      node.innerHTML = hit;
-      restored++;
-      continue;
+    const nodes = root.querySelectorAll<HTMLElement>(".mermaid:not([data-mermaid-done])");
+    if (nodes.length === 0) return;
+    const theme = currentMermaidTheme();
+    await loadMermaid();
+    const m = (window as any).__mermaid;
+    if (!m) return;
+    let rendered = 0;
+    let restored = 0;
+    const lastIdx = nodes.length - 1;
+    for (let i = 0; i < nodes.length; i++) {
+        if (skipLast && i === lastIdx) continue;
+        const node = nodes[i];
+        const src = node.getAttribute("data-mermaid");
+        if (!src) continue;
+        const content = decodeURIComponent(src);
+        const cacheKey = theme + "\0" + content;
+        node.setAttribute("data-mermaid-done", "1");
+        const hit = mermaidSvgCache.get(cacheKey);
+        if (hit !== undefined) {
+            node.innerHTML = hit;
+            restored++;
+            continue;
+        }
+        try {
+            const { svg } = await m.render("mermaid-" + Math.random().toString(36).slice(2), content);
+            mermaidSvgCache.set(cacheKey, svg);
+            node.innerHTML = svg;
+            rendered++;
+        } catch (err) {
+            node.classList.add("mermaid-error");
+            node.textContent = "Mermaid error: " + (err instanceof Error ? err.message : String(err));
+            debugLog("mermaid", "render error: " + (err instanceof Error ? err.message : String(err)));
+        }
     }
-    try {
-      const { svg } = await m.render(
-        "mermaid-" + Math.random().toString(36).slice(2),
-        content
-      );
-      mermaidSvgCache.set(cacheKey, svg);
-      node.innerHTML = svg;
-      rendered++;
-    } catch (err) {
-      node.classList.add("mermaid-error");
-      node.textContent =
-        "Mermaid error: " + (err instanceof Error ? err.message : String(err));
-      debugLog(
-        "mermaid",
-        "render error: " + (err instanceof Error ? err.message : String(err))
-      );
+    if (rendered || restored) {
+        debugLog(
+            "mermaid",
+            `rendered ${rendered} new, restored ${restored} cached` + (skipLast ? ", skipped 1 incomplete" : ""),
+        );
     }
-  }
-  if (rendered || restored) {
-    debugLog(
-      "mermaid",
-      `rendered ${rendered} new, restored ${restored} cached` +
-        (skipLast ? ", skipped 1 incomplete" : "")
-    );
-  }
 }
 
 /**
@@ -529,27 +491,25 @@ async function doRenderMermaidIn(root: HTMLElement, skipLast: boolean) {
  * re-commits. Returns the number of divs restored. No-op if mermaid is off.
  */
 export function restoreCachedMermaid(root: HTMLElement, skipLast = false): number {
-  if (!features.mermaid) return 0;
-  const theme = currentMermaidTheme();
-  const nodes = root.querySelectorAll<HTMLElement>(
-    ".mermaid:not([data-mermaid-done])"
-  );
-  if (nodes.length === 0) return 0;
-  const lastIdx = nodes.length - 1;
-  let restored = 0;
-  for (let i = 0; i < nodes.length; i++) {
-    if (skipLast && i === lastIdx) continue;
-    const node = nodes[i];
-    const src = node.getAttribute("data-mermaid");
-    if (!src) continue;
-    const hit = mermaidSvgCache.get(theme + "\0" + decodeURIComponent(src));
-    if (hit !== undefined) {
-      node.setAttribute("data-mermaid-done", "1");
-      node.innerHTML = hit;
-      restored++;
+    if (!features.mermaid) return 0;
+    const theme = currentMermaidTheme();
+    const nodes = root.querySelectorAll<HTMLElement>(".mermaid:not([data-mermaid-done])");
+    if (nodes.length === 0) return 0;
+    const lastIdx = nodes.length - 1;
+    let restored = 0;
+    for (let i = 0; i < nodes.length; i++) {
+        if (skipLast && i === lastIdx) continue;
+        const node = nodes[i];
+        const src = node.getAttribute("data-mermaid");
+        if (!src) continue;
+        const hit = mermaidSvgCache.get(theme + "\0" + decodeURIComponent(src));
+        if (hit !== undefined) {
+            node.setAttribute("data-mermaid-done", "1");
+            node.innerHTML = hit;
+            restored++;
+        }
     }
-  }
-  return restored;
+    return restored;
 }
 
 // Set up the debug overlay as early as possible so log lines emitted during

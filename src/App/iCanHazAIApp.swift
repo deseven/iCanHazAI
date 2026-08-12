@@ -1,8 +1,8 @@
 // Copyright (C) 2026 Ivan Novohatski <https://d7.wtf/>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import SwiftUI
 import AppKit
+import SwiftUI
 
 /// App delegate used to hook into application termination so we can tear down
 /// MCP server connections (especially stdio subprocesses) cleanly. Without this,
@@ -167,7 +167,8 @@ final class MainWindowController {
                     forContentRect: NSRect(origin: .zero, size: Self.minWindowSize)
                 ).size
                 window.setFrame(
-                    Self.restoredFrame(from: savedWindow, minimumFrameSize: minimumFrameSize, fallbackOrigin: window.frame.origin),
+                    Self.restoredFrame(
+                        from: savedWindow, minimumFrameSize: minimumFrameSize, fallbackOrigin: window.frame.origin),
                     display: false
                 )
             } else {
@@ -188,7 +189,9 @@ final class MainWindowController {
     /// config. Sizes are clamped up to the minimum frame size; missing or
     /// invalid (non-finite, non-positive) sizes fall back to the minimum,
     /// missing/invalid positions keep `fallbackOrigin`.
-    nonisolated static func restoredFrame(from saved: WindowConfig, minimumFrameSize: NSSize, fallbackOrigin: NSPoint) -> NSRect {
+    nonisolated static func restoredFrame(from saved: WindowConfig, minimumFrameSize: NSSize, fallbackOrigin: NSPoint)
+        -> NSRect
+    {
         var frame = NSRect(origin: fallbackOrigin, size: minimumFrameSize)
         if let x = saved.x, x.isFinite { frame.origin.x = x }
         if let y = saved.y, y.isFinite { frame.origin.y = y }
@@ -214,8 +217,9 @@ final class MainWindowController {
             debounceTask = Task {
                 try? await Task.sleep(for: .milliseconds(500))
                 guard !Task.isCancelled else { return }
-                let wc = WindowConfig(x: frame.origin.x, y: frame.origin.y,
-                                      width: frame.size.width, height: frame.size.height)
+                let wc = WindowConfig(
+                    x: frame.origin.x, y: frame.origin.y,
+                    width: frame.size.width, height: frame.size.height)
                 await config.setWindow(wc)
             }
         }

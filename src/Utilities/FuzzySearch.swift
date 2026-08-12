@@ -18,7 +18,8 @@ enum FuzzySearch {
         guard !q.isEmpty else { return candidates }
         let fuse = Fuse(distance: 1000, threshold: 0.4, maxPatternLength: 256)
         let pattern = fuse.createPattern(from: q)
-        return candidates
+        return
+            candidates
             .compactMap { candidate -> (String, Double)? in
                 guard let result = fuse.search(pattern, in: candidate) else { return nil }
                 return (candidate, result.score)
@@ -36,7 +37,8 @@ enum FuzzySearch {
         guard !q.isEmpty else { return items }
         let fuse = Fuse(distance: 1000, threshold: 0.4, maxPatternLength: 256)
         let pattern = fuse.createPattern(from: q)
-        return items
+        return
+            items
             .compactMap { item -> (Item, Double)? in
                 let best = keys(item).compactMap { fuse.search(pattern, in: $0)?.score }.min()
                 guard let best else { return nil }

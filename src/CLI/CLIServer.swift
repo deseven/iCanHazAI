@@ -75,7 +75,10 @@ final class CLIServer: @unchecked Sendable {
     private var listenerFD: Int32 = -1
     private var clients: [ObjectIdentifier: ClientContext] = [:]
 
-    init(socketPath: String, oneShotHandler: @escaping OneShotHandler, temporaryChatCleanup: TemporaryChatCleanup? = nil, toolApprovalHandler: ToolApprovalHandler? = nil, stopHandler: StopHandler? = nil) {
+    init(
+        socketPath: String, oneShotHandler: @escaping OneShotHandler, temporaryChatCleanup: TemporaryChatCleanup? = nil,
+        toolApprovalHandler: ToolApprovalHandler? = nil, stopHandler: StopHandler? = nil
+    ) {
         self.socketPath = socketPath
         self.oneShotHandler = oneShotHandler
         self.temporaryChatCleanup = temporaryChatCleanup
@@ -102,7 +105,10 @@ final class CLIServer: @unchecked Sendable {
 
     func start() {
         lock.lock()
-        guard listenerFD < 0 else { lock.unlock(); return }
+        guard listenerFD < 0 else {
+            lock.unlock()
+            return
+        }
         do {
             listenerFD = try UnixSocket.listen(path: socketPath)
         } catch {
@@ -148,7 +154,7 @@ final class CLIServer: @unchecked Sendable {
             let clientFD = accept(fd, nil, nil)
             if clientFD < 0 {
                 if errno == EINTR { continue }
-                return // listener closed by stop()
+                return  // listener closed by stop()
             }
             handleClient(fd: clientFD)
         }
@@ -258,14 +264,18 @@ final class CLIServer: @unchecked Sendable {
                 let session = UUID().uuidString
                 ctx.sessionID = session
                 debugLog("CLI", "hello from \(client) (pid \(pid), protocol v\(protocolVersion)) — session \(session)")
-                send(.welcome(session: session, appVersion: Self.appVersion,
-                              protocolVersion: min(protocolVersion, CLIProtocol.version)), to: ctx)
+                send(
+                    .welcome(
+                        session: session, appVersion: Self.appVersion,
+                        protocolVersion: min(protocolVersion, CLIProtocol.version)), to: ctx)
             case .ping:
                 send(.pong(appVersion: Self.appVersion, pid: getpid()), to: ctx)
             case .request(let request):
                 handleRequest(request, ctx: ctx)
             case .welcome, .pong, .started, .delta, .tool, .approve, .notice, .done, .error:
-                send(.error(id: nil, code: "unexpected_frame", message: "server-side frame received from a client"), to: ctx)
+                send(
+                    .error(id: nil, code: "unexpected_frame", message: "server-side frame received from a client"),
+                    to: ctx)
             }
         }
     }
@@ -276,20 +286,26 @@ final class CLIServer: @unchecked Sendable {
             handleChatSend(request, ctx: ctx)
         case CLIRequest.methodToolApprove:
             guard let callID = request.params.callID, let decision = request.params.decision,
-                  let handler = toolApprovalHandler else {
-                send(.error(id: request.id, code: "bad_params", message: "tool.approve requires call_id and decision"), to: ctx)
+                let handler = toolApprovalHandler
+            else {
+                send(
+                    .error(id: request.id, code: "bad_params", message: "tool.approve requires call_id and decision"),
+                    to: ctx)
                 return
             }
             Task { await handler(callID, decision, request.params.reason) }
         case CLIRequest.methodChatStop:
             guard let chat = request.params.chat, !chat.isEmpty,
-                  let handler = stopHandler else {
+                let handler = stopHandler
+            else {
                 send(.error(id: request.id, code: "bad_params", message: "chat.stop requires a chat"), to: ctx)
                 return
             }
             Task { await handler(chat, request.params.immediate) }
         default:
-            send(.error(id: request.id, code: "unknown_method", message: "unknown method \"\(request.method)\""), to: ctx)
+            send(
+                .error(id: request.id, code: "unknown_method", message: "unknown method \"\(request.method)\""), to: ctx
+            )
         }
     }
 
@@ -326,7 +342,12 @@ final class CLIServer: @unchecked Sendable {
                         case .toolCall(let name, let summary):
                             try ctx.connection.send(.tool(id: requestID, name: name, args: summary, status: nil))
                         case .toolResult(let name, let summary):
-                            try ctx.connection.send(.tool(id: requestID, name: name, args: nil, status: CLIToolStatus(kind: summary.kind.rawValue, label: summary.label, description: summary.description)))
+                            try ctx.connection.send(
+                                .tool(
+                                    id: requestID, name: name, args: nil,
+                                    status: CLIToolStatus(
+                                        kind: summary.kind.rawValue, label: summary.label,
+                                        description: summary.description)))
                         case .toolApprovalRequest(let callID, let name, let summary):
                             try ctx.connection.send(.approve(id: requestID, callID: callID, name: name, args: summary))
                         case .notice(let text):

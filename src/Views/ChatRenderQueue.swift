@@ -17,7 +17,9 @@ enum RenderJob: Sendable {
     /// processed) snapshot, so only the latest one is kept. The full `Chat`
     /// is passed so the queue can project the active path and compute
     /// per-message sibling metadata for branch switching.
-    case snapshot(chatId: String, chat: Chat, isStreaming: Bool, roleName: String?, roleAccent: String?, features: ChatSnapshotFeaturesData)
+    case snapshot(
+        chatId: String, chat: Chat, isStreaming: Bool, roleName: String?, roleAccent: String?,
+        features: ChatSnapshotFeaturesData)
 }
 
 /// Serializes and off-loads the expensive part of the Swift → renderer bridge:
@@ -88,7 +90,9 @@ actor ChatRenderQueue {
             clearDiffState()
             await send(.unload)
         case .snapshot(let chatId, let chat, let isStreaming, let roleName, let roleAccent, let features):
-            await processSnapshot(chatId: chatId, chat: chat, isStreaming: isStreaming, roleName: roleName, roleAccent: roleAccent, features: features)
+            await processSnapshot(
+                chatId: chatId, chat: chat, isStreaming: isStreaming, roleName: roleName, roleAccent: roleAccent,
+                features: features)
         }
     }
 
@@ -107,7 +111,10 @@ actor ChatRenderQueue {
     /// possible. Falls back to a full snapshot on chat switch, role/accent
     /// change, feature-flag change, or streaming end. Projects the active
     /// path (for forked chats) and computes per-message sibling metadata.
-    private func processSnapshot(chatId: String, chat: Chat, isStreaming: Bool, roleName: String?, roleAccent: String?, features: ChatSnapshotFeaturesData) async {
+    private func processSnapshot(
+        chatId: String, chat: Chat, isStreaming: Bool, roleName: String?, roleAccent: String?,
+        features: ChatSnapshotFeaturesData
+    ) async {
         let currentMessages = Self.projectActiveMessages(chat)
 
         // A role/accent/features change affects things the renderer derives
@@ -117,14 +124,20 @@ actor ChatRenderQueue {
         // delete/add diffing handles it, but verify efficiency on deep chats
         // and fall back to a forced full snapshot on switches if the diff
         // gets pathological.
-        if chatId != renderedChatId || roleName != lastRoleName || roleAccent != lastRoleAccent || features != lastFeatures {
+        if chatId != renderedChatId || roleName != lastRoleName || roleAccent != lastRoleAccent
+            || features != lastFeatures
+        {
             renderedChatId = chatId
             lastStreamingState = isStreaming
             lastRoleName = roleName
             lastRoleAccent = roleAccent
             lastFeatures = features
             remember(currentMessages, ids: currentMessages.map(\.id))
-            await send(.snapshot(snapshot: ChatSnapshotData(chatId: chatId, messages: currentMessages, isStreaming: isStreaming, roleName: roleName, roleAccent: roleAccent, features: features)))
+            await send(
+                .snapshot(
+                    snapshot: ChatSnapshotData(
+                        chatId: chatId, messages: currentMessages, isStreaming: isStreaming, roleName: roleName,
+                        roleAccent: roleAccent, features: features)))
             return
         }
 
@@ -132,7 +145,11 @@ actor ChatRenderQueue {
             lastStreamingState = isStreaming
             if !isStreaming {
                 remember(currentMessages, ids: currentMessages.map(\.id))
-                await send(.snapshot(snapshot: ChatSnapshotData(chatId: chatId, messages: currentMessages, isStreaming: false, roleName: roleName, roleAccent: roleAccent, features: features)))
+                await send(
+                    .snapshot(
+                        snapshot: ChatSnapshotData(
+                            chatId: chatId, messages: currentMessages, isStreaming: false, roleName: roleName,
+                            roleAccent: roleAccent, features: features)))
                 return
             } else {
                 await send(.streaming(chatId: chatId, isStreaming: true))
@@ -175,7 +192,8 @@ actor ChatRenderQueue {
     /// main actor directly via this helper.
     static func encodeToJS(_ message: HostMessageData) -> String? {
         guard let json = try? JSONEncoder().encode(message),
-              let jsonString = String(data: json, encoding: .utf8) else { return nil }
+            let jsonString = String(data: json, encoding: .utf8)
+        else { return nil }
         let escaped = jsonString.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "'", with: "\\'")
         return "window.chatHost && window.chatHost.postMessage('\(escaped)');"
@@ -200,11 +218,20 @@ actor ChatRenderQueue {
                 if let aIdx = lastAssistantOutIndex {
                     var folded = out[aIdx].toolResults ?? []
                     for r in results {
-                        let imageData = r.image.map { ChatMessageData.ToolResultData.ToolResultImageData(mimeType: $0.mimeType, fallback: $0.fallback) }
+                        let imageData = r.image.map {
+                            ChatMessageData.ToolResultData.ToolResultImageData(
+                                mimeType: $0.mimeType, fallback: $0.fallback)
+                        }
                         if let i = folded.firstIndex(where: { $0.callID == r.callID }) {
-                            folded[i] = ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming, isDenied: r.isDenied, isCancelled: r.isCancelled, summary: r.summary, image: imageData)
+                            folded[i] = ChatMessageData.ToolResultData(
+                                callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming,
+                                isDenied: r.isDenied, isCancelled: r.isCancelled, summary: r.summary, image: imageData)
                         } else {
-                            folded.append(ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming, isDenied: r.isDenied, isCancelled: r.isCancelled, summary: r.summary, image: imageData))
+                            folded.append(
+                                ChatMessageData.ToolResultData(
+                                    callID: r.callID, content: r.content, isError: r.isError,
+                                    isStreaming: r.isStreaming, isDenied: r.isDenied, isCancelled: r.isCancelled,
+                                    summary: r.summary, image: imageData))
                         }
                     }
                     out[aIdx].toolResults = folded
@@ -251,7 +278,10 @@ actor ChatRenderQueue {
         var splitMsg: ChatMessage? = nil
         for m in msgs {
             count += 1
-            if m.branches != nil { splitMsg = m; break }
+            if m.branches != nil {
+                splitMsg = m
+                break
+            }
         }
         let split = splitMsg?.branches.map { branches in
             TreeSplitData(branches: branches.map { node(forSegment: $0, activeIDSet: activeIDSet) })
@@ -290,11 +320,20 @@ actor ChatRenderQueue {
                 if let aIdx = lastAssistantOutIndex {
                     var folded = out[aIdx].toolResults ?? []
                     for r in results {
-                        let imageData = r.image.map { ChatMessageData.ToolResultData.ToolResultImageData(mimeType: $0.mimeType, fallback: $0.fallback) }
+                        let imageData = r.image.map {
+                            ChatMessageData.ToolResultData.ToolResultImageData(
+                                mimeType: $0.mimeType, fallback: $0.fallback)
+                        }
                         if let i = folded.firstIndex(where: { $0.callID == r.callID }) {
-                            folded[i] = ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming, isDenied: r.isDenied, isCancelled: r.isCancelled, summary: r.summary, image: imageData)
+                            folded[i] = ChatMessageData.ToolResultData(
+                                callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming,
+                                isDenied: r.isDenied, isCancelled: r.isCancelled, summary: r.summary, image: imageData)
                         } else {
-                            folded.append(ChatMessageData.ToolResultData(callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming, isDenied: r.isDenied, isCancelled: r.isCancelled, summary: r.summary, image: imageData))
+                            folded.append(
+                                ChatMessageData.ToolResultData(
+                                    callID: r.callID, content: r.content, isError: r.isError,
+                                    isStreaming: r.isStreaming, isDenied: r.isDenied, isCancelled: r.isCancelled,
+                                    summary: r.summary, image: imageData))
                         }
                     }
                     out[aIdx].toolResults = folded

@@ -1,8 +1,8 @@
 // Copyright (C) 2026 Ivan Novohatski <https://d7.wtf/>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import SwiftUI
 import AppKit
+import SwiftUI
 
 /// Width constraints for the main window's sidebars (points). Nonisolated so
 /// the split view delegate (AppKit callbacks) can read them without hopping
@@ -18,9 +18,13 @@ enum SidebarSizing {
 /// proportionally scale the sidebars, but every layout pass clamps them to
 /// their supported ranges and assigns whatever remains to the detail pane.
 enum MainSplitLayout {
-    static func paneWidths(totalWidth: CGFloat, dividerThickness: CGFloat, listWidth: CGFloat, infoWidth: CGFloat?) -> (list: CGFloat, detail: CGFloat, info: CGFloat?) {
+    static func paneWidths(totalWidth: CGFloat, dividerThickness: CGFloat, listWidth: CGFloat, infoWidth: CGFloat?) -> (
+        list: CGFloat, detail: CGFloat, info: CGFloat?
+    ) {
         let list = min(max(listWidth, SidebarSizing.chatListRange.lowerBound), SidebarSizing.chatListRange.upperBound)
-        let info = infoWidth.map { min(max($0, SidebarSizing.chatInfoRange.lowerBound), SidebarSizing.chatInfoRange.upperBound) }
+        let info = infoWidth.map {
+            min(max($0, SidebarSizing.chatInfoRange.lowerBound), SidebarSizing.chatInfoRange.upperBound)
+        }
         let infoReserve = info.map { $0 + dividerThickness } ?? 0
         let detail = max(totalWidth - list - dividerThickness - infoReserve, 0)
         return (list, detail, info)
@@ -78,7 +82,8 @@ struct MainSplitView: NSViewRepresentable {
     }
 
     func updateNSView(_ split: NSSplitView, context: Context) {
-        context.coordinator.syncInfoPane(visible: store.chatInfoSidebarVisible && store.selectedChatItem != nil, store: store)
+        context.coordinator.syncInfoPane(
+            visible: store.chatInfoSidebarVisible && store.selectedChatItem != nil, store: store)
     }
 
     // MARK: - Coordinator
@@ -106,7 +111,8 @@ struct MainSplitView: NSViewRepresentable {
                 // own restore hook covers this instead.
                 Task { @MainActor [weak self, weak splitView] in
                     guard let self, let splitView, splitView.bounds.width > 0,
-                          splitView.arrangedSubviews.count > 2 else { return }
+                        splitView.arrangedSubviews.count > 2
+                    else { return }
                     self.setInfoWidth(store.chatInfoSidebarWidth, in: splitView)
                 }
             } else {
@@ -165,9 +171,13 @@ struct MainSplitView: NSViewRepresentable {
 
         /// Clamps divider positions so both sidebars stay within their width
         /// ranges regardless of how the user drags.
-        func splitView(_ splitView: NSSplitView, constrainSplitPosition proposedPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        func splitView(
+            _ splitView: NSSplitView, constrainSplitPosition proposedPosition: CGFloat, ofSubviewAt dividerIndex: Int
+        ) -> CGFloat {
             if dividerIndex == 0 {
-                return min(max(proposedPosition, SidebarSizing.chatListRange.lowerBound), SidebarSizing.chatListRange.upperBound)
+                return min(
+                    max(proposedPosition, SidebarSizing.chatListRange.lowerBound),
+                    SidebarSizing.chatListRange.upperBound)
             }
             let minPos = splitView.bounds.width - SidebarSizing.chatInfoRange.upperBound
             let maxPos = splitView.bounds.width - SidebarSizing.chatInfoRange.lowerBound
@@ -210,12 +220,13 @@ private final class RoomySplitView: NSSplitView {
             }
             didApplyInitialLayout = true
         }
-        layoutPanes(MainSplitLayout.paneWidths(
-            totalWidth: bounds.width,
-            dividerThickness: dividerThickness,
-            listWidth: listWidth,
-            infoWidth: infoWidth
-        ))
+        layoutPanes(
+            MainSplitLayout.paneWidths(
+                totalWidth: bounds.width,
+                dividerThickness: dividerThickness,
+                listWidth: listWidth,
+                infoWidth: infoWidth
+            ))
     }
 
     private func layoutPanes(_ widths: (list: CGFloat, detail: CGFloat, info: CGFloat?)) {

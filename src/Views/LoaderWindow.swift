@@ -1,8 +1,8 @@
 // Copyright (C) 2026 Ivan Novohatski <https://d7.wtf/>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import SwiftUI
 import AppKit
+import SwiftUI
 
 /// Owns the borderless floating window that shows the loader during app
 /// startup. Created and presented synchronously from `AppDelegate` right after
@@ -80,12 +80,16 @@ final class LoaderWindowController {
         panel.center()
         panel.alphaValue = 1
         panel.orderFrontRegardless()
-        debugLog("Loader", "present — frame=\(panel.frame), isVisible=\(panel.isVisible), level=\(panel.level.rawValue)")
+        debugLog(
+            "Loader", "present — frame=\(panel.frame), isVisible=\(panel.isVisible), level=\(panel.level.rawValue)")
     }
 
     private func handleVisibility(_ visible: Bool) {
         guard let panel else { return }
-        debugLog("Loader", "handleVisibility — visible=\(visible), panelVisible=\(panel.isVisible), mode=\(LoaderController.shared.mode)")
+        debugLog(
+            "Loader",
+            "handleVisibility — visible=\(visible), panelVisible=\(panel.isVisible), mode=\(LoaderController.shared.mode)"
+        )
         if !visible && panel.isVisible {
             fadeOut()
         }

@@ -109,7 +109,10 @@ final class ChatStore: @unchecked Sendable {
     @discardableResult
     func startupSync() -> [ChatCacheInfo] {
         let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(at: env.chatsURL, includingPropertiesForKeys: [.contentModificationDateKey]) else {
+        guard
+            let files = try? fm.contentsOfDirectory(
+                at: env.chatsURL, includingPropertiesForKeys: [.contentModificationDateKey])
+        else {
             queue.sync {
                 clearAllCacheEntries()
                 _lastSyncStats = ChatSyncStats(totalFiles: 0, freshCached: 0, decoded: 0, failed: 0)
@@ -134,13 +137,19 @@ final class ChatStore: @unchecked Sendable {
                     if cached.modificationTime == diskModTime {
                         return true
                     }
-                    debugLog("ChatStore", "stale: \(filename) — cached=\(cached.modificationTime.timeIntervalSince1970) disk=\(diskModTime.timeIntervalSince1970)")
+                    debugLog(
+                        "ChatStore",
+                        "stale: \(filename) — cached=\(cached.modificationTime.timeIntervalSince1970) disk=\(diskModTime.timeIntervalSince1970)"
+                    )
                     return false
                 }
                 debugLog("ChatStore", "no cache entry: \(filename)")
                 return false
             }
-            if isFresh { freshCached += 1; continue }
+            if isFresh {
+                freshCached += 1
+                continue
+            }
 
             // Cache is stale or missing — load the chat to extract metadata.
             debugLog("ChatStore", "startup sync — loading \(env.relativePath(file)) (stale or new cache entry)")
@@ -157,7 +166,8 @@ final class ChatStore: @unchecked Sendable {
 
         // Remove cache entries for files that no longer exist on disk.
         let allEntries = queue.sync { fetchAllEntries() }
-        debugLog("ChatStore", "startup sync — \(allEntries.count) entries in context, \(diskFilenames.count) files on disk")
+        debugLog(
+            "ChatStore", "startup sync — \(allEntries.count) entries in context, \(diskFilenames.count) files on disk")
         for entry in allEntries where !diskFilenames.contains(entry.filename) {
             debugLog("ChatStore", "startup sync — removing stale cache entry \(entry.filename)")
             queue.sync { removeCacheEntry(filename: entry.filename) }
@@ -166,9 +176,13 @@ final class ChatStore: @unchecked Sendable {
         let final = queue.sync { fetchAllEntries() }
         let totalFiles = chatFiles.count
         let decoded = max(0, totalFiles - freshCached - failedDecodes)
-        let stats = ChatSyncStats(totalFiles: totalFiles, freshCached: freshCached, decoded: decoded, failed: failedDecodes)
+        let stats = ChatSyncStats(
+            totalFiles: totalFiles, freshCached: freshCached, decoded: decoded, failed: failedDecodes)
         queue.sync { _lastSyncStats = stats }
-        debugLog("ChatStore", "startup sync — done, \(final.count) entries, \(stats.freshCached) fresh, \(stats.decoded) decoded, \(stats.failed) failed")
+        debugLog(
+            "ChatStore",
+            "startup sync — done, \(final.count) entries, \(stats.freshCached) fresh, \(stats.decoded) decoded, \(stats.failed) failed"
+        )
         return final
     }
 
@@ -188,7 +202,9 @@ final class ChatStore: @unchecked Sendable {
     func getEntry(filename: String) -> ChatCacheInfo? {
         queue.sync {
             guard let entry = fetchEntry(filename: filename) else { return nil }
-            return ChatCacheInfo(filename: entry.filename, name: entry.name, role: entry.role, modificationTime: entry.modificationTime, archive: entry.archive, workingDirectory: entry.workingDirectory, lastActivity: entry.lastActivity)
+            return ChatCacheInfo(
+                filename: entry.filename, name: entry.name, role: entry.role, modificationTime: entry.modificationTime,
+                archive: entry.archive, workingDirectory: entry.workingDirectory, lastActivity: entry.lastActivity)
         }
     }
 
@@ -259,7 +275,11 @@ final class ChatStore: @unchecked Sendable {
         let descriptor = FetchDescriptor<ChatCacheEntry>(sortBy: [SortDescriptor(\.lastActivity, order: .reverse)])
         do {
             let entries = try context.fetch(descriptor)
-            return entries.map { ChatCacheInfo(filename: $0.filename, name: $0.name, role: $0.role, modificationTime: $0.modificationTime, archive: $0.archive, workingDirectory: $0.workingDirectory, lastActivity: $0.lastActivity) }
+            return entries.map {
+                ChatCacheInfo(
+                    filename: $0.filename, name: $0.name, role: $0.role, modificationTime: $0.modificationTime,
+                    archive: $0.archive, workingDirectory: $0.workingDirectory, lastActivity: $0.lastActivity)
+            }
         } catch {
             debugLog("ChatStore", "⚠️ fetchAllEntries failed: \(error)")
             return []
@@ -289,7 +309,9 @@ final class ChatStore: @unchecked Sendable {
             existing.workingDirectory = chat.workingDirectory
             existing.lastActivity = activity
         } else {
-            let entry = ChatCacheEntry(filename: filename, name: chat.cacheName, role: chat.role, modificationTime: modificationTime, archive: chat.archive ?? false, workingDirectory: chat.workingDirectory, lastActivity: activity)
+            let entry = ChatCacheEntry(
+                filename: filename, name: chat.cacheName, role: chat.role, modificationTime: modificationTime,
+                archive: chat.archive ?? false, workingDirectory: chat.workingDirectory, lastActivity: activity)
             context.insert(entry)
         }
         do {
@@ -352,11 +374,11 @@ extension Chat {
 
 // MARK: - URL modification date helper
 
-private extension URL {
+extension URL {
     /// Returns the file's content modification date, rounded to the nearest
     /// second to avoid precision mismatches between SwiftData's SQLite
     /// storage and `FileManager.attributesOfItem`. Nil if it can't be read.
-    var modificationDate: Date? {
+    fileprivate var modificationDate: Date? {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: path) else { return nil }
         guard let date = attrs[.modificationDate] as? Date else { return nil }
         return Date(timeIntervalSince1970: date.timeIntervalSince1970.rounded())

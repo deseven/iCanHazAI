@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import iCanHazAI
 
 // Tests for provider-reported token usage parsing, including Anthropic's
@@ -54,14 +55,14 @@ extension AllAppTests {
             let data = try JSONSerialization.data(withJSONObject: [
                 "type": "message_delta",
                 "delta": [
-                    "stop_reason": "end_turn",
+                    "stop_reason": "end_turn"
                 ],
                 "usage": [
-                    "output_tokens": 46_000,
+                    "output_tokens": 46_000
                 ],
             ])
             let chunks = provider.parseStreamChunk(data, accumulator: acc)
-            #expect(chunks.count == 2) // finishReason + usage
+            #expect(chunks.count == 2)  // finishReason + usage
             guard case .usage(let usage) = chunks[1] else {
                 Issue.record("Expected usage chunk at index 1")
                 return
@@ -112,7 +113,7 @@ extension AllAppTests {
             let data = try JSONSerialization.data(withJSONObject: [
                 "id": "chatcmpl-123",
                 "object": "chat.completion.chunk",
-                "created": 1700000000,
+                "created": 1_700_000_000,
                 "model": "gpt-5",
                 "choices": [],
                 "usage": [
@@ -140,7 +141,7 @@ extension AllAppTests {
             let data = try JSONSerialization.data(withJSONObject: [
                 "id": "chatcmpl-456",
                 "object": "chat.completion.chunk",
-                "created": 1700000000,
+                "created": 1_700_000_000,
                 "model": "gpt-5",
                 "choices": [],
                 "usage": [
@@ -148,7 +149,7 @@ extension AllAppTests {
                     "completion_tokens": 200,
                     "total_tokens": 700,
                     "prompt_tokens_details": [
-                        "cached_tokens": 400,
+                        "cached_tokens": 400
                     ],
                 ],
             ])
@@ -171,16 +172,16 @@ extension AllAppTests {
             let data = try JSONSerialization.data(withJSONObject: [
                 "id": "chatcmpl-789",
                 "object": "chat.completion.chunk",
-                "created": 1700000000,
+                "created": 1_700_000_000,
                 "model": "gpt-5",
                 "choices": [
                     [
                         "index": 0,
                         "delta": [
-                            "content": "Hello",
+                            "content": "Hello"
                         ],
                         "finish_reason": NSNull(),
-                    ],
+                    ]
                 ],
             ])
             let chunks = provider.parseStreamChunk(data, accumulator: ToolCallAccumulator())

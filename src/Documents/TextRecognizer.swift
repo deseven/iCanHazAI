@@ -1,10 +1,10 @@
 // Copyright (C) 2026 Ivan Novohatski <https://d7.wtf/>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import Foundation
-import Vision
-import ImageIO
 import CoreGraphics
+import Foundation
+import ImageIO
+import Vision
 
 /// A classification label from `VNClassifyImageRequest` — the built-in
 /// ~1000-category multi-label image classifier.
@@ -61,7 +61,8 @@ enum TextRecognizer {
     /// Returns nil if the data can't be decoded or Vision produces nothing.
     static func recognize(data: Data) -> String? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else {
             return nil
         }
         return recognize(cgImage: cgImage)
@@ -94,7 +95,8 @@ enum TextRecognizer {
     /// an empty array if the data can't be decoded.
     static func classifyImage(data: Data) -> [ImageLabel] {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else {
             return []
         }
         return classifyImage(cgImage: cgImage)

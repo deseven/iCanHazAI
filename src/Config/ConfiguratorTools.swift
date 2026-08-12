@@ -47,72 +47,116 @@ enum ConfiguratorTools {
     static let toolNames: Set<String> = Set(tools.map(\.name))
 
     private static let tools: [(name: String, description: String, schema: String)] = [
-        ("list_connections",
-         "List configured Connections as ids (\"type/name\").",
-         #"{"type":"object","properties":{}}"#),
-        ("list_mcps",
-         "List configured MCP servers. Built-in servers are not listed.",
-         #"{"type":"object","properties":{}}"#),
-        ("list_roles",
-         "List configured Roles",
-         #"{"type":"object","properties":{}}"#),
-        ("list_prompts",
-         "List available Prompts.",
-         #"{"type":"object","properties":{}}"#),
-        ("read_connection",
-         "Read the Connection config. `id` is the connection id \"type/name\" (e.g. \"openai/gpt-4o\").",
-         #"{"type":"object","properties":{"id":{"type":"string","description":"Connection id \"type/name\"."}},"required":["id"]}"#),
-        ("read_mcp",
-         "Read the MCP server config by name.",
-         #"{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}"#),
-        ("read_role",
-         "Read the Role config by name.",
-         #"{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}"#),
-        ("read_prompt",
-         "Read the Prompt by name.",
-         #"{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}"#),
-        ("read_config",
-         "Read the main application config.",
-         #"{"type":"object","properties":{}}"#),
-        ("read_log",
-         "Read the current session's application log (last 1000 lines).",
-         #"{"type":"object","properties":{}}"#),
-        ("write_connection",
-         "Validate then write a Connection configuration. `id` is the Connection id \"type/name\"; `content` is JSONC text.",
-         #"{"type":"object","properties":{"id":{"type":"string","description":"Connection id \"type/name\"."},"content":{"type":"string","description":"JSONC Connection config text."}},"required":["id","content"]}"#),
-        ("write_mcp",
-         "Validate then write an MCP server configuration. `content` is TOML text.",
-         #"{"type":"object","properties":{"name":{"type":"string"},"content":{"type":"string","description":"TOML MCP config text."}},"required":["name","content"]}"#),
-        ("write_role",
-         "Validate then write a Role configuration. `content` is TOML text.",
-         #"{"type":"object","properties":{"name":{"type":"string"},"content":{"type":"string","description":"TOML Role config text."}},"required":["name","content"]}"#),
-        ("write_prompt",
-         "Validate then write a Prompt. `content` is the prompt Markdown; it must be non-empty and optionally contain valid variables in `{var}` format.",
-         #"{"type":"object","properties":{"name":{"type":"string"},"content":{"type":"string","description":"Prompt Markdown text."}},"required":["name","content"]}"#),
-        ("write_config",
-         "Validate then write main application config. `content` is TOML text.",
-         #"{"type":"object","properties":{"content":{"type":"string","description":"TOML app config text."}},"required":["content"]}"#),
-        ("delete_connection",
-         "Delete a Connection by id (\"type/name\").",
-         #"{"type":"object","properties":{"id":{"type":"string","description":"Connection id \"type/name\"."}},"required":["id"]}"#),
-        ("delete_mcp",
-         "Delete an MCP server by name.",
-         #"{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}"#),
-        ("delete_role",
-         "Delete a Role by name.",
-         #"{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}"#),
-        ("delete_prompt",
-         "Delete a Prompt by name.",
-         #"{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}"#),
-        ("check_mcp_stdio",
-         "Check a stdio MCP server: run `command`, list the tools it reports, then terminate the server. Returns the tools as a Markdown list, or a relevant error.",
-         #"{"type":"object","properties":{"command":{"type":"string","description":"Full command line to launch the stdio MCP server, including args."}},"required":["command"]}"#),
-        ("check_mcp_http",
-         "Check a streamable HTTP MCP server: connect to `endpoint`, list the tools it reports, then disconnect. Returns the tools as a Markdown list, or a relevant error.",
-         #"{"type":"object","properties":{"endpoint":{"type":"string","description":"The streamable HTTP endpoint URL."},"token":{"type":"string","description":"Optional bearer token."}},"required":["endpoint"]}"#),
-        ("check_connection",
-         "Check a configured Connection by sending the prompt 'say hi'. Returns the model's answer, or a relevant error. `id` is the connection id \"type/name\".",
-         #"{"type":"object","properties":{"id":{"type":"string","description":"Connection id \"type/name\"."}},"required":["id"]}"#),
+        (
+            "list_connections",
+            "List configured Connections as ids (\"type/name\").",
+            #"{"type":"object","properties":{}}"#
+        ),
+        (
+            "list_mcps",
+            "List configured MCP servers. Built-in servers are not listed.",
+            #"{"type":"object","properties":{}}"#
+        ),
+        (
+            "list_roles",
+            "List configured Roles",
+            #"{"type":"object","properties":{}}"#
+        ),
+        (
+            "list_prompts",
+            "List available Prompts.",
+            #"{"type":"object","properties":{}}"#
+        ),
+        (
+            "read_connection",
+            "Read the Connection config. `id` is the connection id \"type/name\" (e.g. \"openai/gpt-4o\").",
+            #"{"type":"object","properties":{"id":{"type":"string","description":"Connection id \"type/name\"."}},"required":["id"]}"#
+        ),
+        (
+            "read_mcp",
+            "Read the MCP server config by name.",
+            #"{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}"#
+        ),
+        (
+            "read_role",
+            "Read the Role config by name.",
+            #"{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}"#
+        ),
+        (
+            "read_prompt",
+            "Read the Prompt by name.",
+            #"{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}"#
+        ),
+        (
+            "read_config",
+            "Read the main application config.",
+            #"{"type":"object","properties":{}}"#
+        ),
+        (
+            "read_log",
+            "Read the current session's application log (last 1000 lines).",
+            #"{"type":"object","properties":{}}"#
+        ),
+        (
+            "write_connection",
+            "Validate then write a Connection configuration. `id` is the Connection id \"type/name\"; `content` is JSONC text.",
+            #"{"type":"object","properties":{"id":{"type":"string","description":"Connection id \"type/name\"."},"content":{"type":"string","description":"JSONC Connection config text."}},"required":["id","content"]}"#
+        ),
+        (
+            "write_mcp",
+            "Validate then write an MCP server configuration. `content` is TOML text.",
+            #"{"type":"object","properties":{"name":{"type":"string"},"content":{"type":"string","description":"TOML MCP config text."}},"required":["name","content"]}"#
+        ),
+        (
+            "write_role",
+            "Validate then write a Role configuration. `content` is TOML text.",
+            #"{"type":"object","properties":{"name":{"type":"string"},"content":{"type":"string","description":"TOML Role config text."}},"required":["name","content"]}"#
+        ),
+        (
+            "write_prompt",
+            "Validate then write a Prompt. `content` is the prompt Markdown; it must be non-empty and optionally contain valid variables in `{var}` format.",
+            #"{"type":"object","properties":{"name":{"type":"string"},"content":{"type":"string","description":"Prompt Markdown text."}},"required":["name","content"]}"#
+        ),
+        (
+            "write_config",
+            "Validate then write main application config. `content` is TOML text.",
+            #"{"type":"object","properties":{"content":{"type":"string","description":"TOML app config text."}},"required":["content"]}"#
+        ),
+        (
+            "delete_connection",
+            "Delete a Connection by id (\"type/name\").",
+            #"{"type":"object","properties":{"id":{"type":"string","description":"Connection id \"type/name\"."}},"required":["id"]}"#
+        ),
+        (
+            "delete_mcp",
+            "Delete an MCP server by name.",
+            #"{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}"#
+        ),
+        (
+            "delete_role",
+            "Delete a Role by name.",
+            #"{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}"#
+        ),
+        (
+            "delete_prompt",
+            "Delete a Prompt by name.",
+            #"{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}"#
+        ),
+        (
+            "check_mcp_stdio",
+            "Check a stdio MCP server: run `command`, list the tools it reports, then terminate the server. Returns the tools as a Markdown list, or a relevant error.",
+            #"{"type":"object","properties":{"command":{"type":"string","description":"Full command line to launch the stdio MCP server, including args."}},"required":["command"]}"#
+        ),
+        (
+            "check_mcp_http",
+            "Check a streamable HTTP MCP server: connect to `endpoint`, list the tools it reports, then disconnect. Returns the tools as a Markdown list, or a relevant error.",
+            #"{"type":"object","properties":{"endpoint":{"type":"string","description":"The streamable HTTP endpoint URL."},"token":{"type":"string","description":"Optional bearer token."}},"required":["endpoint"]}"#
+        ),
+        (
+            "check_connection",
+            "Check a configured Connection by sending the prompt 'say hi'. Returns the model's answer, or a relevant error. `id` is the connection id \"type/name\".",
+            #"{"type":"object","properties":{"id":{"type":"string","description":"Connection id \"type/name\"."}},"required":["id"]}"#
+        ),
     ]
 
     // MARK: - Dispatch
@@ -143,7 +187,9 @@ enum ConfiguratorTools {
 
     /// Routes a parsed argument map to the matching tool implementation.
     /// Returns the result text and whether it represents an error.
-    private static func dispatch(name: String, args: [String: Any], env: EnvironmentManager) async throws -> (content: String, isError: Bool) {
+    private static func dispatch(name: String, args: [String: Any], env: EnvironmentManager) async throws -> (
+        content: String, isError: Bool
+    ) {
         switch name {
         case "list_connections":
             return (listConnections(env: env), false)
@@ -158,15 +204,24 @@ enum ConfiguratorTools {
             return (try readConnection(id: id, env: env), false)
         case "read_mcp":
             let n = try validated(try stringArg(args, "name"))
-            return (try read(url: env.mcpsURL.appendingPathComponent("\(n).toml"), env: env, label: "MCP \"\(n)\""), false)
+            return (
+                try read(url: env.mcpsURL.appendingPathComponent("\(n).toml"), env: env, label: "MCP \"\(n)\""), false
+            )
         case "read_role":
             let n = try validated(try stringArg(args, "name"))
-            return (try read(url: env.rolesURL.appendingPathComponent("\(n).toml"), env: env, label: "Role \"\(n)\""), false)
+            return (
+                try read(url: env.rolesURL.appendingPathComponent("\(n).toml"), env: env, label: "Role \"\(n)\""), false
+            )
         case "read_prompt":
             let n = try validated(try stringArg(args, "name"))
-            return (try read(url: env.promptsURL.appendingPathComponent("\(n).md"), env: env, label: "Prompt \"\(n)\""), false)
+            return (
+                try read(url: env.promptsURL.appendingPathComponent("\(n).md"), env: env, label: "Prompt \"\(n)\""),
+                false
+            )
         case "read_config":
-            return (try read(url: env.rootURL.appendingPathComponent("config.toml"), env: env, label: "App config"), false)
+            return (
+                try read(url: env.rootURL.appendingPathComponent("config.toml"), env: env, label: "App config"), false
+            )
         case "read_log":
             return (readLog(env: env), false)
         case "write_connection":
@@ -193,13 +248,21 @@ enum ConfiguratorTools {
             return (try deleteConnection(id: id, env: env), false)
         case "delete_mcp":
             let n = try validated(try stringArg(args, "name"))
-            return (try delete(url: env.mcpsURL.appendingPathComponent("\(n).toml"), label: "MCP \"\(n)\"", env: env), false)
+            return (
+                try delete(url: env.mcpsURL.appendingPathComponent("\(n).toml"), label: "MCP \"\(n)\"", env: env), false
+            )
         case "delete_role":
             let n = try validated(try stringArg(args, "name"), protected: true)
-            return (try delete(url: env.rolesURL.appendingPathComponent("\(n).toml"), label: "Role \"\(n)\"", env: env), false)
+            return (
+                try delete(url: env.rolesURL.appendingPathComponent("\(n).toml"), label: "Role \"\(n)\"", env: env),
+                false
+            )
         case "delete_prompt":
             let n = try validated(try stringArg(args, "name"), protected: true)
-            return (try delete(url: env.promptsURL.appendingPathComponent("\(n).md"), label: "Prompt \"\(n)\"", env: env), false)
+            return (
+                try delete(url: env.promptsURL.appendingPathComponent("\(n).md"), label: "Prompt \"\(n)\"", env: env),
+                false
+            )
         case "check_mcp_stdio":
             let command = try stringArg(args, "command")
             return (try await mcpStdioCheck(command: command), false)
@@ -222,7 +285,8 @@ enum ConfiguratorTools {
         guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else {
             return "(none)"
         }
-        let names = files
+        let names =
+            files
             .filter { $0.pathExtension == ext }
             .map { $0.deletingPathExtension().lastPathComponent }
             .sorted()
@@ -253,7 +317,8 @@ enum ConfiguratorTools {
     private static func read(url: URL, env: EnvironmentManager, label: String) throws -> String {
         debugLog("FileRead", "configurator read \(env.relativePath(url))")
         guard let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .utf8) else {
+            let text = String(data: data, encoding: .utf8)
+        else {
             throw ConfiguratorToolError("\(label) not found.")
         }
         return text
@@ -317,7 +382,7 @@ enum ConfiguratorTools {
         if !unknown.isEmpty {
             throw ConfiguratorToolError(
                 "\(PromptVariables.unknownVariablesMessage(unknown)). Known variables: \(PromptVariables.knownVariablesList). "
-                + "Use \\{...} to escape a literal brace."
+                    + "Use \\{...} to escape a literal brace."
             )
         }
         let url = env.promptsURL.appendingPathComponent("\(name).md")
@@ -417,8 +482,9 @@ enum ConfiguratorTools {
             throw ConfiguratorToolError("endpoint must not be empty.")
         }
         guard let url = URL(string: endpoint),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https" else {
+            let scheme = url.scheme?.lowercased(),
+            scheme == "http" || scheme == "https"
+        else {
             throw ConfiguratorToolError("endpoint is not a valid http(s) URL: \"\(endpoint)\".")
         }
         let name = checkServerName()

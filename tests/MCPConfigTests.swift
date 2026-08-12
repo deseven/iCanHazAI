@@ -1,7 +1,8 @@
 import Foundation
-import Testing
-import TOML
 import Logging
+import TOML
+import Testing
+
 @testable import iCanHazAI
 
 // Tests for the TOML-based MCP server config (`MCPConfig` / `MCPServer`).
@@ -13,12 +14,12 @@ extension AllAppTests {
         @Test("MCPConfig decodes snake_case run_policy key and values")
         func decodesRunPolicy() throws {
             let toml = """
-            transport = "stdio"
-            prefix = ""
-            run_policy = "on_demand"
-            command = "node /srv/index.js"
-            tools = ["search"]
-            """
+                transport = "stdio"
+                prefix = ""
+                run_policy = "on_demand"
+                command = "node /srv/index.js"
+                tools = ["search"]
+                """
             let config = try TOMLDecoder().decode(MCPConfig.self, from: Data(toml.utf8))
             let server = MCPServer(name: "Tavily", config: config)
             #expect(server.transport == .stdio)
@@ -30,11 +31,11 @@ extension AllAppTests {
         @Test("unknown run_policy value falls back to always_on")
         func unknownRunPolicyFallsBack() throws {
             let toml = """
-            transport = "stdio"
-            prefix = ""
-            run_policy = "bogus"
-            command = "x"
-            """
+                transport = "stdio"
+                prefix = ""
+                run_policy = "bogus"
+                command = "x"
+                """
             let config = try TOMLDecoder().decode(MCPConfig.self, from: Data(toml.utf8))
             let server = MCPServer(name: "S", config: config)
             #expect(server.runPolicy == .alwaysOn)
@@ -45,10 +46,10 @@ extension AllAppTests {
             // A hand-written config that omits `prefix` (e.g. the Tavily HTTP
             // config) must decode cleanly rather than being silently dropped.
             let toml = """
-            transport = "http"
-            endpoint = "https://mcp.tavily.com/mcp/?tavilyApiKey=secret"
-            tools = ["tavily_search", "tavily_extract"]
-            """
+                transport = "http"
+                endpoint = "https://mcp.tavily.com/mcp/?tavilyApiKey=secret"
+                tools = ["tavily_search", "tavily_extract"]
+                """
             let config = try TOMLDecoder().decode(MCPConfig.self, from: Data(toml.utf8))
             let server = MCPServer(name: "Tavily", config: config)
             #expect(server.transport == .http)
@@ -60,11 +61,11 @@ extension AllAppTests {
         @Test("http server omits run_policy and decodes endpoint/token")
         func decodesHttpServer() throws {
             let toml = """
-            transport = "http"
-            prefix = "remote"
-            endpoint = "https://example.com/mcp"
-            token = "secret"
-            """
+                transport = "http"
+                prefix = "remote"
+                endpoint = "https://example.com/mcp"
+                token = "secret"
+                """
             let config = try TOMLDecoder().decode(MCPConfig.self, from: Data(toml.utf8))
             let server = MCPServer(name: "Remote", config: config)
             #expect(server.transport == .http)

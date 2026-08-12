@@ -42,13 +42,13 @@ struct MainWindow: View {
                 )
             }
             .sheet(isPresented: $store.showRolePicker) {
-               RolePickerView(
-                   mode: store.rolePickerMode,
-                   onCancel: { store.rolePickerCancelled() },
-                   onPick: { store.rolePickerPicked(role: $0) },
-                   diskAccessOnly: store.chatListMode == .directory
-               )
-           }
+                RolePickerView(
+                    mode: store.rolePickerMode,
+                    onCancel: { store.rolePickerCancelled() },
+                    onPick: { store.rolePickerPicked(role: $0) },
+                    diskAccessOnly: store.chatListMode == .directory
+                )
+            }
             .sheet(isPresented: $store.showSidebarRolePicker) {
                 RolePickerView(
                     mode: .newChat,
@@ -62,9 +62,9 @@ struct MainWindow: View {
                     onPick: { store.sidebarDirectoryPickerPicked($0) }
                 )
             }
-           .onChange(of: store.chatInfoSidebarVisible) { _, _ in
-               store.saveSidebarState()
-               MainWindowController.shared.applyMinSize()
-           }
+            .onChange(of: store.chatInfoSidebarVisible) { _, _ in
+                store.saveSidebarState()
+                MainWindowController.shared.applyMinSize()
+            }
     }
 }

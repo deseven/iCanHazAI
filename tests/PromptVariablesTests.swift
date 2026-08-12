@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import iCanHazAI
 
 // Unit tests for the prompt variable helper ([`PromptVariables`](src/Chat/PromptVariables.swift)):
@@ -111,7 +112,8 @@ extension AllAppTests {
 
         @Test("unknownVariables accepts load_first_available with a file list")
         func unknownLoadFirstAvailableValid() {
-            #expect(PromptVariables.unknownVariables(in: "{load_first_available:AGENTS.md,CLAUDE.md,.roorules}").isEmpty)
+            #expect(
+                PromptVariables.unknownVariables(in: "{load_first_available:AGENTS.md,CLAUDE.md,.roorules}").isEmpty)
             #expect(PromptVariables.unknownVariables(in: "{load_first_available: /abs/path , rel.md }").isEmpty)
         }
 
@@ -129,8 +131,9 @@ extension AllAppTests {
 
         @Test("unknownVariablesMessage shows the correct form for load_first_available")
         func messageLoadFirstAvailable() {
-            #expect(PromptVariables.unknownVariablesMessage(["load_first_available"])
-                == "unknown prompt variable {load_first_available:file1,file2,...}")
+            #expect(
+                PromptVariables.unknownVariablesMessage(["load_first_available"])
+                    == "unknown prompt variable {load_first_available:file1,file2,...}")
         }
 
         @Test("knownVariablesList includes load_first_available")
@@ -183,7 +186,8 @@ extension AllAppTests {
         @Test("currentDirectory is / when isolated")
         func currentDirectoryIsolated() {
             #expect(PromptVariables.currentDirectory(workdirCapable: true, isolated: true, directory: nil) == "/")
-            #expect(PromptVariables.currentDirectory(workdirCapable: true, isolated: true, directory: "/some/path") == "/")
+            #expect(
+                PromptVariables.currentDirectory(workdirCapable: true, isolated: true, directory: "/some/path") == "/")
         }
 
         @Test("currentDirectory is ~ when no directory is set")
@@ -194,7 +198,9 @@ extension AllAppTests {
 
         @Test("currentDirectory is the path when set")
         func currentDirectorySet() {
-            #expect(PromptVariables.currentDirectory(workdirCapable: true, isolated: false, directory: "/some/path") == "/some/path")
+            #expect(
+                PromptVariables.currentDirectory(workdirCapable: true, isolated: false, directory: "/some/path")
+                    == "/some/path")
         }
 
         @Test("current_directory is a known variable")
@@ -268,7 +274,8 @@ extension AllAppTests {
         func skipsNonText() throws {
             try withTempDir { dir in
                 try Data([0x68, 0x69, 0x00, 0x21]).write(to: dir.appendingPathComponent("bin.md"))
-                try FileManager.default.createDirectory(at: dir.appendingPathComponent("dir.md"), withIntermediateDirectories: false)
+                try FileManager.default.createDirectory(
+                    at: dir.appendingPathComponent("dir.md"), withIntermediateDirectories: false)
                 try write("ok.md", "text", in: dir)
                 let cache = LoadFirstAvailableCache()
                 #expect(cache.resolve(args: "bin.md,dir.md,ok.md", baseDirectory: dir.path) == "(ok.md)\ntext\n")

@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+
 @testable import iCanHazAI
 
 /// Tests for the role-assignment decision logic: when a chat's role is missing

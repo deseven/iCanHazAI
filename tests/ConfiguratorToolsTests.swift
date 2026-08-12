@@ -1,6 +1,7 @@
 import Foundation
-import Testing
 import TOML
+import Testing
+
 @testable import iCanHazAI
 
 // Tests for the in-process configurator tools ([`ConfiguratorTools`](src/Config/ConfiguratorTools.swift)).
@@ -14,7 +15,9 @@ extension AllAppTests {
             (try? String(data: JSONSerialization.data(withJSONObject: dict), encoding: .utf8)) ?? "{}"
         }
 
-        private func call(_ name: String, _ env: EnvironmentManager, _ dict: [String: String], callID: String = "c") async -> ToolResult {
+        private func call(_ name: String, _ env: EnvironmentManager, _ dict: [String: String], callID: String = "c")
+            async -> ToolResult
+        {
             await ConfiguratorTools.call(name: name, arguments: args(dict), callID: callID, env: env)
         }
 
@@ -28,10 +31,12 @@ extension AllAppTests {
                 #expect(def.prefix.isEmpty)
                 #expect(ConfiguratorTools.toolNames.contains(def.name))
             }
-            for expected in ["list_connections", "list_mcps", "list_roles", "list_prompts",
-                             "read_config", "write_config", "read_log",
-                             "delete_connection", "delete_mcp", "delete_role", "delete_prompt",
-                             "check_mcp_stdio", "check_mcp_http", "check_connection"] {
+            for expected in [
+                "list_connections", "list_mcps", "list_roles", "list_prompts",
+                "read_config", "write_config", "read_log",
+                "delete_connection", "delete_mcp", "delete_role", "delete_prompt",
+                "check_mcp_stdio", "check_mcp_http", "check_connection",
+            ] {
                 #expect(ConfiguratorTools.toolNames.contains(expected), "missing \(expected)")
             }
         }
@@ -43,7 +48,9 @@ extension AllAppTests {
             let env = try TempEnv().env
             let invalid = await call("write_connection", env, ["id": "openai/bad", "content": "{ not jsonc"])
             #expect(invalid.isError)
-            #expect(!FileManager.default.fileExists(atPath: env.openaiConnectionsURL.appendingPathComponent("bad.jsonc").path))
+            #expect(
+                !FileManager.default.fileExists(
+                    atPath: env.openaiConnectionsURL.appendingPathComponent("bad.jsonc").path))
 
             let valid = await call("write_connection", env, ["id": "openai/gpt", "content": "{\"model\":\"gpt-4o\"}"])
             #expect(!valid.isError)
@@ -72,7 +79,8 @@ extension AllAppTests {
             let invalid = await call("write_mcp", env, ["name": "bad", "content": "not = = toml"])
             #expect(invalid.isError)
 
-            let valid = await call("write_mcp", env, ["name": "Tavily", "content": "transport = \"stdio\"\ncommand = \"npx -y x\"\n"])
+            let valid = await call(
+                "write_mcp", env, ["name": "Tavily", "content": "transport = \"stdio\"\ncommand = \"npx -y x\"\n"])
             #expect(!valid.isError)
 
             let listed = await call("list_mcps", env, [:])
@@ -98,7 +106,8 @@ extension AllAppTests {
             #expect(badConn.content.contains("Ghost"))
 
             // Once the referenced MCP exists, the same write succeeds.
-            _ = await call("write_mcp", env, ["name": "Real", "content": "transport = \"stdio\"\ncommand = \"echo hi\"\n"])
+            _ = await call(
+                "write_mcp", env, ["name": "Real", "content": "transport = \"stdio\"\ncommand = \"echo hi\"\n"])
             let ok = await call("write_role", env, ["name": "x", "content": "[[mcps]]\nmcp = \"Real\"\n"])
             #expect(!ok.isError)
         }
@@ -114,7 +123,8 @@ extension AllAppTests {
             let valid = await call("write_role", env, ["name": "Coder", "content": "prompt = \"Assistant\"\n"])
             #expect(!valid.isError)
 
-            let protected = await call("write_role", env, ["name": "Configurator", "content": "prompt = \"Assistant\"\n"])
+            let protected = await call(
+                "write_role", env, ["name": "Configurator", "content": "prompt = \"Assistant\"\n"])
             #expect(protected.isError)
         }
 
@@ -181,22 +191,22 @@ extension AllAppTests {
         @Test("AppConfig decodes working_directories from TOML")
         func decodesWorkingDirectories() throws {
             let toml = """
-            [general]
-            default_role = "Assistant"
-            working_directories = ["/Users/me/proj1", "/Users/me/proj2"]
+                [general]
+                default_role = "Assistant"
+                working_directories = ["/Users/me/proj1", "/Users/me/proj2"]
 
-            [chat_behaviour]
-            expand_thinking = false
-            expand_tool_use = false
+                [chat_behaviour]
+                expand_thinking = false
+                expand_tool_use = false
 
-            [chat_features]
-            mermaid_enabled = false
-            katex_enabled = false
+                [chat_features]
+                mermaid_enabled = false
+                katex_enabled = false
 
-            [debug]
-            app_debug_enabled = false
-            chat_renderer_debug_enabled = false
-            """
+                [debug]
+                app_debug_enabled = false
+                chat_renderer_debug_enabled = false
+                """
             let config = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
             #expect(config.general.workingDirectories == ["/Users/me/proj1", "/Users/me/proj2"])
         }
@@ -207,21 +217,21 @@ extension AllAppTests {
             // still decode cleanly — the field is optional so a missing key
             // yields nil rather than a decode failure.
             let toml = """
-            [general]
-            default_role = "Assistant"
+                [general]
+                default_role = "Assistant"
 
-            [chat_behaviour]
-            expand_thinking = false
-            expand_tool_use = false
+                [chat_behaviour]
+                expand_thinking = false
+                expand_tool_use = false
 
-            [chat_features]
-            mermaid_enabled = false
-            katex_enabled = false
+                [chat_features]
+                mermaid_enabled = false
+                katex_enabled = false
 
-            [debug]
-            app_debug_enabled = false
-            chat_renderer_debug_enabled = false
-            """
+                [debug]
+                app_debug_enabled = false
+                chat_renderer_debug_enabled = false
+                """
             let config = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
             #expect(config.general.workingDirectories == nil)
         }
@@ -257,9 +267,9 @@ extension AllAppTests {
         @Test("Interface scale defaults to 100 and clamps to the supported range")
         func normalizesInterfaceScale() throws {
             let toml = """
-            [chat_features]
-            interface_scale = 125.5
-            """
+                [chat_features]
+                interface_scale = 125.5
+                """
             let decoded = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
             #expect(decoded.chatFeatures.interfaceScale == 125.5)
             #expect(ChatFeaturesConfig.normalizedInterfaceScale(nil) == 100)
@@ -292,9 +302,9 @@ extension AllAppTests {
             // Only [general] is present — the other groups are missing and
             // must fall back to defaults without throwing.
             let toml = """
-            [general]
-            default_role = "Assistant"
-            """
+                [general]
+                default_role = "Assistant"
+                """
             let config = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
             #expect(config.general.defaultRole == "Assistant")
             #expect(config.chatBehaviour.expandThinking == nil)
@@ -307,9 +317,9 @@ extension AllAppTests {
             // [chat_behaviour] exists but only has expand_thinking — the
             // missing expand_tool_use must default to nil rather than throwing.
             let toml = """
-            [chat_behaviour]
-            expand_thinking = true
-            """
+                [chat_behaviour]
+                expand_thinking = true
+                """
             let config = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
             #expect(config.chatBehaviour.expandThinking == true)
             #expect(config.chatBehaviour.expandToolUse == nil)
@@ -342,10 +352,12 @@ extension AllAppTests {
         func namesWithSpacesAndSpecialChars() async throws {
             let env = try TempEnv().env
             // A name with spaces and '&' — the case from the bug report.
-            let res = await call("write_mcp", env, [
-                "name": "Ultimate Google Docs & Sheets MCP Server",
-                "content": "transport = \"stdio\"\ncommand = \"echo\"\n"
-            ])
+            let res = await call(
+                "write_mcp", env,
+                [
+                    "name": "Ultimate Google Docs & Sheets MCP Server",
+                    "content": "transport = \"stdio\"\ncommand = \"echo\"\n",
+                ])
             #expect(!res.isError, "error: \(res.content)")
 
             // It should be listable and readable under that exact name.
@@ -437,7 +449,8 @@ extension AllAppTests {
         func validationMessagesAreSpecific() async throws {
             let env = try TempEnv().env
             // Missing required "model" → message must mention "model".
-            let conn = await call("write_connection", env, ["id": "openai/x", "content": "{\"baseUrl\":\"https://x\"}"])
+            let conn = await call(
+                "write_connection", env, ["id": "openai/x", "content": "{\"baseUrl\":\"https://x\"}"])
             #expect(conn.isError)
             #expect(conn.content.lowercased().contains("model"))
 

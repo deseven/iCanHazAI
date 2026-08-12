@@ -75,7 +75,9 @@ struct AnthropicProvider: LLMProvider {
 
         var body: [String: Any] = [
             "model": connection.model,
-            "messages": conversationMessages.map { anthropicMessage($0, chatFilename: chatFilename, imageInput: connection.imageInput) },
+            "messages": conversationMessages.map {
+                anthropicMessage($0, chatFilename: chatFilename, imageInput: connection.imageInput)
+            },
         ]
         if let systemText { body["system"] = systemText }
 
@@ -84,7 +86,8 @@ struct AnthropicProvider: LLMProvider {
                 var tool: [String: Any] = ["name": def.namespacedName]
                 if let desc = def.description { tool["description"] = desc }
                 if let schemaData = def.inputSchema.data(using: .utf8),
-                   let schema = try? JSONSerialization.jsonObject(with: schemaData) {
+                    let schema = try? JSONSerialization.jsonObject(with: schemaData)
+                {
                     tool["input_schema"] = schema
                 } else {
                     tool["input_schema"] = ["type": "object"] as [String: Any]
@@ -116,7 +119,8 @@ struct AnthropicProvider: LLMProvider {
         let role = (msg.role == .user || msg.role == .tool) ? "user" : "assistant"
 
         if msg.role == .user, let attachments = msg.attachments, !attachments.isEmpty {
-            return anthropicAttachmentMessage(msg, attachments: attachments, role: role, chatFilename: chatFilename, imageInput: imageInput)
+            return anthropicAttachmentMessage(
+                msg, attachments: attachments, role: role, chatFilename: chatFilename, imageInput: imageInput)
         }
         if msg.role == .assistant, let calls = msg.toolCalls, !calls.isEmpty {
             var blocks: [[String: Any]] = []
@@ -126,15 +130,17 @@ struct AnthropicProvider: LLMProvider {
             for call in calls {
                 var input: Any = [String: Any]()
                 if let data = call.arguments.data(using: .utf8),
-                   let parsed = try? JSONSerialization.jsonObject(with: data) {
+                    let parsed = try? JSONSerialization.jsonObject(with: data)
+                {
                     input = parsed
                 }
-                blocks.append([
-                    "type": "tool_use",
-                    "id": call.id,
-                    "name": call.name,
-                    "input": input,
-                ] as [String: Any])
+                blocks.append(
+                    [
+                        "type": "tool_use",
+                        "id": call.id,
+                        "name": call.name,
+                        "input": input,
+                    ] as [String: Any])
             }
             return ["role": role, "content": blocks] as [String: Any]
         }
@@ -147,31 +153,36 @@ struct AnthropicProvider: LLMProvider {
                 // vision-incapable ones — exactly like user-attached images.
                 if let image = r.image {
                     if imageInput {
-                        blocks.append([
-                            "type": "tool_result",
-                            "tool_use_id": r.callID,
-                            "content": [[
-                                "type": "image",
-                                "source": [
-                                    "type": "base64",
-                                    "media_type": image.mimeType,
-                                    "data": image.data,
-                                ] as [String: Any],
-                            ] as [String: Any]],
-                        ] as [String: Any])
+                        blocks.append(
+                            [
+                                "type": "tool_result",
+                                "tool_use_id": r.callID,
+                                "content": [
+                                    [
+                                        "type": "image",
+                                        "source": [
+                                            "type": "base64",
+                                            "media_type": image.mimeType,
+                                            "data": image.data,
+                                        ] as [String: Any],
+                                    ] as [String: Any]
+                                ],
+                            ] as [String: Any])
                     } else {
-                        blocks.append([
-                            "type": "tool_result",
-                            "tool_use_id": r.callID,
-                            "content": image.fallback,
-                        ] as [String: Any])
+                        blocks.append(
+                            [
+                                "type": "tool_result",
+                                "tool_use_id": r.callID,
+                                "content": image.fallback,
+                            ] as [String: Any])
                     }
                 } else {
-                    blocks.append([
-                        "type": "tool_result",
-                        "tool_use_id": r.callID,
-                        "content": r.content,
-                    ] as [String: Any])
+                    blocks.append(
+                        [
+                            "type": "tool_result",
+                            "tool_use_id": r.callID,
+                            "content": r.content,
+                        ] as [String: Any])
                 }
             }
             return ["role": role, "content": blocks] as [String: Any]
@@ -199,7 +210,9 @@ struct AnthropicProvider: LLMProvider {
             switch attachment.kind {
             case .image:
                 if imageInput {
-                    guard let data = EnvironmentManager.shared.loadAttachmentData(attachment, chatFilename: chatFilename) else { continue }
+                    guard
+                        let data = EnvironmentManager.shared.loadAttachmentData(attachment, chatFilename: chatFilename)
+                    else { continue }
                     blocks.append([
                         "type": "image",
                         "source": [
@@ -213,7 +226,8 @@ struct AnthropicProvider: LLMProvider {
                 }
             case .text, .document:
                 if let text = attachment.text, !text.isEmpty,
-                   let block = AttachmentRequestBuilder.block(for: attachment) {
+                    let block = AttachmentRequestBuilder.block(for: attachment)
+                {
                     blocks.append(["type": "text", "text": block])
                 }
             }
@@ -225,17 +239,19 @@ struct AnthropicProvider: LLMProvider {
 
     func parseStreamChunk(_ data: Data, accumulator: ToolCallAccumulator) -> [StreamChunk] {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = json["type"] as? String else {
+            let type = json["type"] as? String
+        else {
             return []
         }
         var chunks: [StreamChunk] = []
         switch type {
         case "content_block_start":
             if let block = json["content_block"] as? [String: Any],
-               (block["type"] as? String) == "tool_use",
-               let index = json["index"] as? Int,
-               let id = block["id"] as? String,
-               let name = block["name"] as? String {
+                (block["type"] as? String) == "tool_use",
+                let index = json["index"] as? Int,
+                let id = block["id"] as? String,
+                let name = block["name"] as? String
+            {
                 accumulator.addDelta(index: index, id: id, name: name, argumentsDelta: nil)
                 chunks.append(.toolCallDelta(index: index, id: id, name: name, argumentsDelta: ""))
             }
@@ -255,38 +271,45 @@ struct AnthropicProvider: LLMProvider {
             }
         case "message_start":
             if let message = json["message"] as? [String: Any],
-               let input = message["usage"] as? [String: Any],
-               let inputTokens = input["input_tokens"] as? Int,
-               let outputTokens = input["output_tokens"] as? Int {
+                let input = message["usage"] as? [String: Any],
+                let inputTokens = input["input_tokens"] as? Int,
+                let outputTokens = input["output_tokens"] as? Int
+            {
                 let cached = input["cache_read_input_tokens"] as? Int ?? 0
                 let creation = input["cache_creation_input_tokens"] as? Int ?? 0
                 let total = inputTokens + cached + outputTokens
                 accumulator.setInputTokens(inputTokens, cached: cached, creation: creation)
                 // Anthropic sometimes reports full usage in message_start already.
-                chunks.append(.usage(TokenUsage(
-                    tokensUsed: total,
-                    inputTokens: inputTokens,
-                    outputTokens: outputTokens,
-                    cachedInputTokens: cached,
-                    cacheCreationTokens: creation
-                )))
+                chunks.append(
+                    .usage(
+                        TokenUsage(
+                            tokensUsed: total,
+                            inputTokens: inputTokens,
+                            outputTokens: outputTokens,
+                            cachedInputTokens: cached,
+                            cacheCreationTokens: creation
+                        )))
             }
         case "message_delta":
             if let delta = json["delta"] as? [String: Any],
-               let reason = delta["stop_reason"] as? String {
+                let reason = delta["stop_reason"] as? String
+            {
                 chunks.append(.finishReason(reason))
             }
             if let usage = json["usage"] as? [String: Any],
-               let outputTokens = usage["output_tokens"] as? Int {
+                let outputTokens = usage["output_tokens"] as? Int
+            {
                 let (input, cached, creation) = accumulator.getInputTokens()
                 let total = input + cached + outputTokens
-                chunks.append(.usage(TokenUsage(
-                    tokensUsed: total,
-                    inputTokens: input,
-                    outputTokens: outputTokens,
-                    cachedInputTokens: cached,
-                    cacheCreationTokens: creation
-                )))
+                chunks.append(
+                    .usage(
+                        TokenUsage(
+                            tokensUsed: total,
+                            inputTokens: input,
+                            outputTokens: outputTokens,
+                            cachedInputTokens: cached,
+                            cacheCreationTokens: creation
+                        )))
             }
         default:
             break
@@ -298,7 +321,8 @@ struct AnthropicProvider: LLMProvider {
 
     func parseCompleteResponse(_ data: Data) -> String {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let content = json["content"] as? [[String: Any]] else {
+            let content = json["content"] as? [[String: Any]]
+        else {
             return ""
         }
         for block in content {
@@ -313,7 +337,8 @@ struct AnthropicProvider: LLMProvider {
 
     func parseModelsResponse(_ data: Data) -> [ModelInfo] {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let models = json["data"] as? [[String: Any]] else {
+            let models = json["data"] as? [[String: Any]]
+        else {
             return []
         }
         // Anthropic returns `{"data":[{"id":"...","capabilities":{"image_input":{"supported":true}}}, ...]}`.
@@ -321,8 +346,9 @@ struct AnthropicProvider: LLMProvider {
             guard let id = entry["id"] as? String else { return nil }
             var imageInput: Bool?
             if let caps = entry["capabilities"] as? [String: Any],
-               let imageCap = caps["image_input"] as? [String: Any],
-               let supported = imageCap["supported"] as? Bool {
+                let imageCap = caps["image_input"] as? [String: Any],
+                let supported = imageCap["supported"] as? Bool
+            {
                 imageInput = supported
             }
             return ModelInfo(id: id, imageInput: imageInput)

@@ -86,11 +86,11 @@ struct ChatSidebar: View {
 
             Divider()
 
-           // Filter field: fuzzy-matches chat titles and exactly matches
-           // (case-insensitive substring) filenames; contents are never
-           // touched, so filtering stays instant. ↑/↓ move the highlight,
-           // ↵ opens the highlighted chat, Esc clears the filter. Sits below
-           // the divider so it reads as part of the list, not the header.
+            // Filter field: fuzzy-matches chat titles and exactly matches
+            // (case-insensitive substring) filenames; contents are never
+            // touched, so filtering stays instant. ↑/↓ move the highlight,
+            // ↵ opens the highlighted chat, Esc clears the filter. Sits below
+            // the divider so it reads as part of the list, not the header.
             // Mode bar: three tab-like buttons for All / By Role / By Directory,
             // with an optional role/directory picker control following them.
             HStack(spacing: 4) {
@@ -148,15 +148,15 @@ struct ChatSidebar: View {
                                 }
                             }
                         } else {
-                           // A single flat ForEach, NOT nested ForEach(sections) {
-                           // ForEach(items) }: with nesting, a chat moving between
-                           // sections (e.g. "Today" -> "Yesterday" at day rollover)
-                           // jumps between two different ForEach containers, and
-                           // LazyVStack reuses the cached row view with its stale
-                           // selection highlight. Flat entries with stable ids turn
-                           // the move into a plain reorder, which diffs correctly.
+                            // A single flat ForEach, NOT nested ForEach(sections) {
+                            // ForEach(items) }: with nesting, a chat moving between
+                            // sections (e.g. "Today" -> "Yesterday" at day rollover)
+                            // jumps between two different ForEach containers, and
+                            // LazyVStack reuses the cached row view with its stale
+                            // selection highlight. Flat entries with stable ids turn
+                            // the move into a plain reorder, which diffs correctly.
                             ForEach(ChatSidebar.sidebarEntries(for: store.visibleChatSummaries)) { entry in
-                               switch entry {
+                                switch entry {
                                 case .header(let title):
                                     PickerSectionHeader(title: title)
                                 case .row(let item, let showsDivider):
@@ -184,10 +184,12 @@ struct ChatSidebar: View {
             }
         }
         .background(.regularMaterial)
-        .sheet(item: Binding(
-            get: { renamingFilename.map(ChatRenameTarget.init) },
-            set: { newValue in renamingFilename = newValue?.filename }
-        )) { target in
+        .sheet(
+            item: Binding(
+                get: { renamingFilename.map(ChatRenameTarget.init) },
+                set: { newValue in renamingFilename = newValue?.filename }
+            )
+        ) { target in
             RenameChatSheet(
                 initialText: renameText,
                 onCancel: { renamingFilename = nil },
@@ -200,10 +202,12 @@ struct ChatSidebar: View {
         .sheet(isPresented: $showArchivedPicker) {
             ArchivedChatsPickerView(onCancel: { showArchivedPicker = false })
         }
-        .sheet(item: Binding(
-            get: { deletingFilename.map(ChatDeleteTarget.init) },
-            set: { newValue in deletingFilename = newValue?.filename }
-        )) { target in
+        .sheet(
+            item: Binding(
+                get: { deletingFilename.map(ChatDeleteTarget.init) },
+                set: { newValue in deletingFilename = newValue?.filename }
+            )
+        ) { target in
             ConfirmActionSheet(
                 title: "Delete this chat?",
                 message: "This action cannot be undone.",
@@ -222,10 +226,10 @@ struct ChatSidebar: View {
     private var isFiltering: Bool { !filterText.isEmpty }
 
     /// The chat list filtered by `filterText` (identity when the filter is
-   /// empty).
-   private var filteredChats: [ChatSummary] {
+    /// empty).
+    private var filteredChats: [ChatSummary] {
         ChatSidebar.filterChats(store.visibleChatSummaries, query: filterText)
-   }
+    }
 
     /// Filters the chat list: fuzzy matching on the display title plus exact
     /// (case-insensitive substring) matching on the filename. Chat contents
@@ -265,7 +269,8 @@ struct ChatSidebar: View {
     private func moveFilterSelection(by delta: Int) {
         let items = filteredChats
         guard !items.isEmpty else { return }
-        let current = filterSelection.flatMap { sel in items.firstIndex(where: { $0.id == sel.id }) }
+        let current =
+            filterSelection.flatMap { sel in items.firstIndex(where: { $0.id == sel.id }) }
             ?? (delta > 0 ? -1 : 0)
         let newIndex = min(max(current + delta, 0), items.count - 1)
         filterKeyboardScroll = true
@@ -275,8 +280,10 @@ struct ChatSidebar: View {
     /// ↵ action: opens the highlighted chat (falling back to the first match).
     private func confirmFilterSelection() {
         let items = filteredChats
-        guard let target = filterSelection.flatMap({ sel in items.first(where: { $0.id == sel.id }) })
-            ?? items.first else { return }
+        guard
+            let target = filterSelection.flatMap({ sel in items.first(where: { $0.id == sel.id }) })
+                ?? items.first
+        else { return }
         openChat(target.id)
     }
 
@@ -295,20 +302,20 @@ struct ChatSidebar: View {
     }
 
     @ViewBuilder
-   private func chatRow(for item: ChatSummary) -> some View {
-       let role = item.roleName.flatMap { name in
-           store.roles.first(where: { $0.name == name })
-       }
-       ChatRow(
-           item: item,
-           roleIcon: role?.icon ?? Role.defaultIcon,
-           roleAccent: role?.accentColor ?? .accentColor,
-           isSelected: isFiltering ? item.id == filterSelection?.id : item.id == store.selectedChatID,
-           isUnread: item.hasUnreadActivity && item.id != store.selectedChatID,
-           isStreaming: item.isStreaming,
+    private func chatRow(for item: ChatSummary) -> some View {
+        let role = item.roleName.flatMap { name in
+            store.roles.first(where: { $0.name == name })
+        }
+        ChatRow(
+            item: item,
+            roleIcon: role?.icon ?? Role.defaultIcon,
+            roleAccent: role?.accentColor ?? .accentColor,
+            isSelected: isFiltering ? item.id == filterSelection?.id : item.id == store.selectedChatID,
+            isUnread: item.hasUnreadActivity && item.id != store.selectedChatID,
+            isStreaming: item.isStreaming,
             isBlinking: store.blinkingChatIDs.contains(item.id),
             hidesRoleBadge: store.chatListMode == .role
-       )
+        )
         .contentShape(Rectangle())
         .onTapGesture {
             openChat(item.id)
@@ -316,7 +323,10 @@ struct ChatSidebar: View {
         .contextMenu {
             Button("Rename") {
                 renamingFilename = item.id
-                renameText = store.chatItems.first(where: { $0.id == item.id })?.chat?.title ?? store.chatItems.first(where: { $0.id == item.id })?.cachedName ?? ""
+                renameText =
+                    store.chatItems.first(where: { $0.id == item.id })?.chat?.title ?? store.chatItems.first(where: {
+                        $0.id == item.id
+                    })?.cachedName ?? ""
             }
             Button("Archive") {
                 store.setChatArchived(item.id, archived: true)
@@ -333,9 +343,9 @@ struct ChatSidebar: View {
 
     /// Opens the chat JSON file in Finder, selecting it.
     private func revealInFinder(filename: String) {
-       let url = EnvironmentManager.shared.chatsURL.appendingPathComponent(filename)
-       NSWorkspace.shared.activateFileViewerSelecting([url])
-   }
+        let url = EnvironmentManager.shared.chatsURL.appendingPathComponent(filename)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
 
     // MARK: - Mode bar
 
@@ -433,9 +443,10 @@ struct ChatSidebar: View {
     /// unit-tested without the main actor.
     nonisolated static func sidebarEntries(for summaries: [ChatSummary]) -> [SidebarEntry] {
         dateSections(for: summaries).flatMap { section -> [SidebarEntry] in
-            [.header(section.title)] + section.items.enumerated().map { index, item in
-                .row(item, showsDivider: index != section.items.indices.last)
-            }
+            [.header(section.title)]
+                + section.items.enumerated().map { index, item in
+                    .row(item, showsDivider: index != section.items.indices.last)
+                }
         }
     }
 }
@@ -466,24 +477,24 @@ private struct ChatRow: View {
     var isUnread: Bool = false
     var isStreaming: Bool = false
     /// Pulses the row to flag a tool call awaiting approval in this chat.
-   var isBlinking: Bool = false
+    var isBlinking: Bool = false
 
     /// When true, the role badge is hidden (used in "By Role" mode where the
     /// role is already picked and showing it on every row is redundant).
     var hidesRoleBadge: Bool = false
 
-   @State private var blink: Bool = false
+    @State private var blink: Bool = false
 
-   var body: some View {
-       HStack {
-           VStack(alignment: .leading, spacing: 2) {
-               Text(item.displayTitle)
-                   .font(.callout)
-                   .lineLimit(1)
-               HStack(spacing: 5) {
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.displayTitle)
+                    .font(.callout)
+                    .lineLimit(1)
+                HStack(spacing: 5) {
                     if !hidesRoleBadge, let roleName = item.roleName, !roleName.isEmpty {
-                       RoleBadge(name: roleName, icon: roleIcon, accent: roleAccent)
-                   }
+                        RoleBadge(name: roleName, icon: roleIcon, accent: roleAccent)
+                    }
                     Text(item.filename)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -512,7 +523,10 @@ private struct ChatRow: View {
         // false the task is cancelled and `blink` resets, so the pulsing stops
         // immediately (unlike `repeatForever`, which lingers).
         .task(id: isBlinking) {
-            guard isBlinking else { blink = false; return }
+            guard isBlinking else {
+                blink = false
+                return
+            }
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(600))
                 if Task.isCancelled { break }

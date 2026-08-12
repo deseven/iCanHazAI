@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import iCanHazAI
 
 // Tests for the configuration-error gathering flow: the `ConfigError` model,
@@ -34,8 +35,11 @@ extension AllAppTests {
             #expect(role.configuratorLine == #"Role `MyRole` is invalid (error: "Prompt MyPrompt not found")."#)
             let mcpCfg = ConfigError(kind: .mcpConfig, entityName: "MyMCP", message: "bad toml")
             #expect(mcpCfg.configuratorLine == #"MCP server `MyMCP` has an invalid config (error: "bad toml")."#)
-            let mcpFail = ConfigError(kind: .mcpFailure, entityName: "MyMCP", message: "zsh: command not found: nodefdg")
-            #expect(mcpFail.configuratorLine == #"MCP server `MyMCP` failed on startup (error: "zsh: command not found: nodefdg")."#)
+            let mcpFail = ConfigError(
+                kind: .mcpFailure, entityName: "MyMCP", message: "zsh: command not found: nodefdg")
+            #expect(
+                mcpFail.configuratorLine
+                    == #"MCP server `MyMCP` failed on startup (error: "zsh: command not found: nodefdg")."#)
         }
 
         @Test("configuratorMessage numbers errors with a header")
@@ -46,12 +50,13 @@ extension AllAppTests {
                 ConfigError(kind: .mcpFailure, entityName: "MyMCP", message: "zsh: command not found: nodefdg"),
             ]
             let message = AppViewModel.configuratorMessage(for: errors)
-            #expect(message == """
-            Please investigate the following problems and propose solutions:
-            1. Connection `openai/gpt-5` is invalid (error: "Missing model").
-            2. Role `MyRole` is invalid (error: "Prompt MyPrompt not found").
-            3. MCP server `MyMCP` failed on startup (error: "zsh: command not found: nodefdg").
-            """)
+            #expect(
+                message == """
+                    Please investigate the following problems and propose solutions:
+                    1. Connection `openai/gpt-5` is invalid (error: "Missing model").
+                    2. Role `MyRole` is invalid (error: "Prompt MyPrompt not found").
+                    3. MCP server `MyMCP` failed on startup (error: "zsh: command not found: nodefdg").
+                    """)
         }
 
         // MARK: - Reporting loaders

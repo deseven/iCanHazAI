@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+
 @testable import iCanHazAI
 
 /// Tests for the per-chat tool auto-approval overrides: the effective-state

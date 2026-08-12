@@ -250,15 +250,17 @@ enum CLIProtocol {
         switch type {
         case FrameType.hello.rawValue:
             guard let pid = obj[Key.pid.rawValue] as? Int,
-                  let client = obj[Key.client.rawValue] as? String,
-                  let protocolVersion = obj[Key.protocolVersion.rawValue] as? Int else {
+                let client = obj[Key.client.rawValue] as? String,
+                let protocolVersion = obj[Key.protocolVersion.rawValue] as? Int
+            else {
                 throw CLIProtocolError.malformedFrame("hello frame missing pid/client/protocol_version")
             }
             return .hello(pid: Int32(pid), client: client, protocolVersion: protocolVersion)
         case FrameType.welcome.rawValue:
             guard let session = obj[Key.session.rawValue] as? String,
-                  let appVersion = obj[Key.appVersion.rawValue] as? String,
-                  let protocolVersion = obj[Key.protocolVersion.rawValue] as? Int else {
+                let appVersion = obj[Key.appVersion.rawValue] as? String,
+                let protocolVersion = obj[Key.protocolVersion.rawValue] as? Int
+            else {
                 throw CLIProtocolError.malformedFrame("welcome frame missing session/app_version/protocol_version")
             }
             return .welcome(session: session, appVersion: appVersion, protocolVersion: protocolVersion)
@@ -266,9 +268,10 @@ enum CLIProtocol {
             return .ping
         case FrameType.request.rawValue:
             guard let id = obj[Key.id.rawValue] as? String,
-                  let method = obj[Key.method.rawValue] as? String,
-                  let paramsObj = obj[Key.params.rawValue] as? [String: Any],
-                  let message = paramsObj["message"] as? String else {
+                let method = obj[Key.method.rawValue] as? String,
+                let paramsObj = obj[Key.params.rawValue] as? [String: Any],
+                let message = paramsObj["message"] as? String
+            else {
                 throw CLIProtocolError.malformedFrame("request frame missing id/method/params.message")
             }
             let params = CLIRequestParams(
@@ -289,39 +292,45 @@ enum CLIProtocol {
             return .request(CLIRequest(id: id, method: method, params: params))
         case FrameType.pong.rawValue:
             guard let appVersion = obj[Key.appVersion.rawValue] as? String,
-                  let pid = obj[Key.pid.rawValue] as? Int else {
+                let pid = obj[Key.pid.rawValue] as? Int
+            else {
                 throw CLIProtocolError.malformedFrame("pong frame missing app_version/pid")
             }
             return .pong(appVersion: appVersion, pid: Int32(pid))
         case FrameType.started.rawValue:
             guard let id = obj[Key.id.rawValue] as? String,
-                  let chat = obj[Key.chat.rawValue] as? String else {
+                let chat = obj[Key.chat.rawValue] as? String
+            else {
                 throw CLIProtocolError.malformedFrame("started frame missing id/chat")
             }
             return .started(id: id, chat: chat)
         case FrameType.delta.rawValue:
             guard let id = obj[Key.id.rawValue] as? String,
-                  let text = obj[Key.text.rawValue] as? String else {
+                let text = obj[Key.text.rawValue] as? String
+            else {
                 throw CLIProtocolError.malformedFrame("delta frame missing id/text")
             }
             return .delta(id: id, text: text)
         case FrameType.tool.rawValue:
             guard let id = obj[Key.id.rawValue] as? String,
-                  let name = obj[Key.name.rawValue] as? String else {
+                let name = obj[Key.name.rawValue] as? String
+            else {
                 throw CLIProtocolError.malformedFrame("tool frame missing id/name")
             }
             var status: CLIToolStatus?
             if let s = obj[Key.status.rawValue] as? [String: Any],
-               let kind = s[Key.kind.rawValue] as? String,
-               let label = s[Key.label.rawValue] as? String,
-               let description = s[Key.description.rawValue] as? String {
+                let kind = s[Key.kind.rawValue] as? String,
+                let label = s[Key.label.rawValue] as? String,
+                let description = s[Key.description.rawValue] as? String
+            {
                 status = CLIToolStatus(kind: kind, label: label, description: description)
             }
             return .tool(id: id, name: name, args: obj[Key.summary.rawValue] as? String, status: status)
         case FrameType.approve.rawValue:
             guard let id = obj[Key.id.rawValue] as? String,
-                  let callID = obj[Key.callID.rawValue] as? String,
-                  let name = obj[Key.name.rawValue] as? String else {
+                let callID = obj[Key.callID.rawValue] as? String,
+                let name = obj[Key.name.rawValue] as? String
+            else {
                 throw CLIProtocolError.malformedFrame("approve frame missing id/call_id/name")
             }
             return .approve(id: id, callID: callID, name: name, args: obj[Key.summary.rawValue] as? String)
@@ -332,13 +341,15 @@ enum CLIProtocol {
             return .notice(id: obj[Key.id.rawValue] as? String, text: text)
         case FrameType.done.rawValue:
             guard let id = obj[Key.id.rawValue] as? String,
-                  let chat = obj[Key.chat.rawValue] as? String else {
+                let chat = obj[Key.chat.rawValue] as? String
+            else {
                 throw CLIProtocolError.malformedFrame("done frame missing id/chat")
             }
             return .done(id: id, chat: chat, name: obj[Key.name.rawValue] as? String)
         case FrameType.error.rawValue:
             guard let code = obj[Key.code.rawValue] as? String,
-                  let message = obj[Key.message.rawValue] as? String else {
+                let message = obj[Key.message.rawValue] as? String
+            else {
                 throw CLIProtocolError.malformedFrame("error frame missing code/message")
             }
             return .error(id: obj[Key.id.rawValue] as? String, code: code, message: message)

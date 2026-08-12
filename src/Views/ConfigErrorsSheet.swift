@@ -17,10 +17,13 @@ struct ConfigErrorsSheet: View {
             Text("Configuration problems")
                 .font(.headline)
 
-            Text(verbatim: "The failed entities have been disabled. You can fix them manually in Finder, or let the Configurator propose solutions.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(
+                verbatim:
+                    "The failed entities have been disabled. You can fix them manually in Finder, or let the Configurator propose solutions."
+            )
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {

@@ -1,8 +1,8 @@
 // Copyright (C) 2026 Ivan Novohatski <https://d7.wtf/>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import Foundation
 import CoreFoundation
+import Foundation
 
 /// Single-line, human-readable summaries of tool calls and their results —
 /// the backend counterpart of the chat renderer's collapsed tool-call block.
@@ -96,11 +96,11 @@ enum ToolSummary {
 
 // MARK: - Value formatting
 
-private extension ToolSummary {
+extension ToolSummary {
 
     /// Collapse newlines so a value fits the single-line summary. Whitespace
     /// around the break is dropped; the break itself becomes a visible marker.
-    static func oneLine(_ s: String) -> String {
+    fileprivate static func oneLine(_ s: String) -> String {
         var out = ""
         var i = s.startIndex
         var pendingBreak = false
@@ -126,12 +126,12 @@ private extension ToolSummary {
         return out.trimmingCharacters(in: .whitespaces)
     }
 
-    static func isBool(_ n: NSNumber) -> Bool {
+    fileprivate static func isBool(_ n: NSNumber) -> Bool {
         CFGetTypeID(n) == CFBooleanGetTypeID()
     }
 
     /// Display string for a scalar argument value; nil for objects/arrays.
-    static func scalar(_ v: Any) -> String? {
+    fileprivate static func scalar(_ v: Any) -> String? {
         if let s = v as? String { return oneLine(s) }
         if let n = v as? NSNumber {
             if isBool(n) { return n.boolValue ? "true" : "false" }
@@ -142,7 +142,7 @@ private extension ToolSummary {
 
     /// Display string for any argument value: scalars verbatim, arrays of
     /// scalars joined, anything else compact JSON.
-    static func anyValue(_ v: Any) -> String {
+    fileprivate static func anyValue(_ v: Any) -> String {
         if let s = scalar(v) { return s }
         if let arr = v as? [Any], arr.allSatisfy({ scalar($0) != nil }) {
             return arr.compactMap { scalar($0) }.joined(separator: " ")
@@ -150,33 +150,36 @@ private extension ToolSummary {
         return compactJSON(v)
     }
 
-    static func compactJSON(_ v: Any) -> String {
+    fileprivate static func compactJSON(_ v: Any) -> String {
         guard JSONSerialization.isValidJSONObject(v),
-              let data = try? JSONSerialization.data(withJSONObject: v),
-              let s = String(data: data, encoding: .utf8) else { return "\(v)" }
+            let data = try? JSONSerialization.data(withJSONObject: v),
+            let s = String(data: data, encoding: .utf8)
+        else { return "\(v)" }
         return s
     }
 
-    static func prettyJSON(_ v: Any) -> String {
+    fileprivate static func prettyJSON(_ v: Any) -> String {
         guard JSONSerialization.isValidJSONObject(v),
-              let data = try? JSONSerialization.data(withJSONObject: v, options: [.prettyPrinted]),
-              let s = String(data: data, encoding: .utf8) else { return "\(v)" }
+            let data = try? JSONSerialization.data(withJSONObject: v, options: [.prettyPrinted]),
+            let s = String(data: data, encoding: .utf8)
+        else { return "\(v)" }
         return s
     }
 
     /// Parses the arguments string into a JSON object, or nil when it isn't
     /// one (malformed JSON, or a valid non-object value).
-    static func parseJSONObject(_ args: String) -> [String: Any]? {
+    fileprivate static func parseJSONObject(_ args: String) -> [String: Any]? {
         guard let data = args.data(using: .utf8),
-              let raw = try? JSONSerialization.jsonObject(with: data),
-              let obj = raw as? [String: Any] else { return nil }
+            let raw = try? JSONSerialization.jsonObject(with: data),
+            let obj = raw as? [String: Any]
+        else { return nil }
         return obj
     }
 
     /// Top-level key order of a JSON object string, recovered by a lightweight
     /// scan (`JSONSerialization` dictionaries don't preserve order). Only used
     /// to keep the generic fallback summary's argument order stable.
-    static func topLevelKeys(of json: String) -> [String] {
+    fileprivate static func topLevelKeys(of json: String) -> [String] {
         var keys: [String] = []
         var depth = 0
         var inString = false
@@ -222,7 +225,7 @@ private extension ToolSummary {
         return keys
     }
 
-    struct ArgEntry {
+    fileprivate struct ArgEntry {
         let key: String
         let value: String
         let multiline: Bool
@@ -230,7 +233,7 @@ private extension ToolSummary {
 
     /// Port of the renderer's `parseToolArgs`: one display entry per top-level
     /// key, values pre-formatted (strings verbatim, containers pretty-printed).
-    static func parseArgs(_ args: String, object obj: [String: Any]) -> [ArgEntry] {
+    fileprivate static func parseArgs(_ args: String, object obj: [String: Any]) -> [ArgEntry] {
         let scanned = topLevelKeys(of: args).filter { obj[$0] != nil }
         let missing = obj.keys.filter { !scanned.contains($0) }.sorted()
         return (scanned + missing).map { key in
@@ -242,7 +245,8 @@ private extension ToolSummary {
                 return ArgEntry(key: key, value: "null", multiline: false)
             }
             if let n = v as? NSNumber {
-                return ArgEntry(key: key, value: isBool(n) ? (n.boolValue ? "true" : "false") : n.stringValue, multiline: false)
+                return ArgEntry(
+                    key: key, value: isBool(n) ? (n.boolValue ? "true" : "false") : n.stringValue, multiline: false)
             }
             let json = prettyJSON(v)
             return ArgEntry(key: key, value: json, multiline: json.contains("\n"))
@@ -252,9 +256,9 @@ private extension ToolSummary {
 
 // MARK: - Internal (known) tools
 
-private extension ToolSummary {
+extension ToolSummary {
 
-    struct KnownToolSpec {
+    fileprivate struct KnownToolSpec {
         /// Arg keys rendered bare (no `key:` prefix), in order.
         var primary: [String]
         /// Arg keys rendered as `key: value` after the primary ones, in order.
@@ -263,13 +267,15 @@ private extension ToolSummary {
 
     /// Per-tool argument importance for internal (built-in + configurator)
     /// tools. Tools with no meaningful arguments map to an empty primary list.
-    static let knownTools: [String: KnownToolSpec] = [
+    fileprivate static let knownTools: [String: KnownToolSpec] = [
         // Built-in: Filesystem
         "read_file": KnownToolSpec(primary: ["path"], secondary: ["offset", "limit"]),
         "write_file": KnownToolSpec(primary: ["path"]),
         "ls": KnownToolSpec(primary: ["path"], secondary: ["recursive", "include_hidden"]),
-        "find_file": KnownToolSpec(primary: ["pattern"], secondary: ["path", "exclude_paths", "case_insensitive", "include_hidden"]),
-        "find_text": KnownToolSpec(primary: ["regex"], secondary: ["path", "file_pattern", "exclude_paths", "case_insensitive", "context"]),
+        "find_file": KnownToolSpec(
+            primary: ["pattern"], secondary: ["path", "exclude_paths", "case_insensitive", "include_hidden"]),
+        "find_text": KnownToolSpec(
+            primary: ["regex"], secondary: ["path", "file_pattern", "exclude_paths", "case_insensitive", "context"]),
         "mkdir": KnownToolSpec(primary: ["path"]),
         "rm": KnownToolSpec(primary: ["path"], secondary: ["recursive"]),
         "stat": KnownToolSpec(primary: ["path"]),
@@ -283,10 +289,10 @@ private extension ToolSummary {
         "base64_encode": KnownToolSpec(primary: ["input"]),
         "base64_decode": KnownToolSpec(primary: ["input"]),
         "sleep": KnownToolSpec(primary: ["seconds"]),
-       "datetime": KnownToolSpec(primary: []),
-       "uuid": KnownToolSpec(primary: []),
-       "rand": KnownToolSpec(primary: [], secondary: ["min", "max"]),
-       // Built-in: Web
+        "datetime": KnownToolSpec(primary: []),
+        "uuid": KnownToolSpec(primary: []),
+        "rand": KnownToolSpec(primary: [], secondary: ["min", "max"]),
+        // Built-in: Web
         "web_search": KnownToolSpec(primary: ["query"], secondary: ["num_results", "date_start", "date_end"]),
         "web_extract": KnownToolSpec(primary: ["url"]),
         "web_fetch": KnownToolSpec(primary: ["url"], secondary: ["request_type", "headers", "data", "return_headers"]),
@@ -317,7 +323,7 @@ private extension ToolSummary {
 
     /// Extract the affected paths from an apply_patch patch text. A `Move to`
     /// renames the previously listed path into `old → new`.
-    static func extractPatchPaths(_ patch: String) -> [String] {
+    fileprivate static func extractPatchPaths(_ patch: String) -> [String] {
         var paths: [String] = []
         for line in patch.split(separator: "\n", omittingEmptySubsequences: false) {
             let s = String(line)
@@ -332,18 +338,19 @@ private extension ToolSummary {
         return paths
     }
 
-    static func firstMatch(of pattern: String, in s: String) -> String? {
+    fileprivate static func firstMatch(of pattern: String, in s: String) -> String? {
         guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
         let range = NSRange(s.startIndex..., in: s)
         guard let m = re.firstMatch(in: s, range: range), m.numberOfRanges > 1,
-              let r = Range(m.range(at: 1), in: s) else { return nil }
+            let r = Range(m.range(at: 1), in: s)
+        else { return nil }
         return String(s[r])
     }
 
     /// Custom summaries for internal tools whose primary value isn't a plain
     /// argument lookup. Returns nil when the expected arguments are missing,
     /// so the caller falls back to the generic spec-based rendering.
-    static func customKnownSummary(name: String, obj: [String: Any]) -> [Entry]? {
+    fileprivate static func customKnownSummary(name: String, obj: [String: Any]) -> [Entry]? {
         switch name {
         case "mv":
             guard let src = obj["src"].flatMap(scalar), let dst = obj["dst"].flatMap(scalar) else { return nil }
@@ -357,10 +364,10 @@ private extension ToolSummary {
         }
     }
 
-    static let customKnownTools: Set<String> = ["mv", "apply_patch"]
+    fileprivate static let customKnownTools: Set<String> = ["mv", "apply_patch"]
 
     /// Summary for an internal tool, or nil when the tool isn't known.
-    static func knownToolSummary(name: String, obj: [String: Any]) -> [Entry]? {
+    fileprivate static func knownToolSummary(name: String, obj: [String: Any]) -> [Entry]? {
         if customKnownTools.contains(name), let custom = customKnownSummary(name: name, obj: obj) {
             return custom
         }
@@ -378,15 +385,16 @@ private extension ToolSummary {
 
 // MARK: - Generic (unknown tools)
 
-private extension ToolSummary {
+extension ToolSummary {
 
     /// Single-line value for a parsed argument entry. Multi-line structured
     /// values (arrays/objects) are compacted; multi-line strings get ⏎ marks.
-    static func inlineEntryValue(_ e: ArgEntry) -> String {
+    fileprivate static func inlineEntryValue(_ e: ArgEntry) -> String {
         guard e.multiline else { return e.value }
         if let data = e.value.data(using: .utf8),
-           let v = try? JSONSerialization.jsonObject(with: data),
-           let arr = v as? [Any], arr.allSatisfy({ scalar($0) != nil }) {
+            let v = try? JSONSerialization.jsonObject(with: data),
+            let arr = v as? [Any], arr.allSatisfy({ scalar($0) != nil })
+        {
             return arr.compactMap { scalar($0) }.joined(separator: " ")
         }
         return oneLine(e.value)
@@ -395,7 +403,7 @@ private extension ToolSummary {
     /// Fallback summary for tools we have no per-tool knowledge of: required
     /// arguments first (alphabetical), then optional ones (alphabetical).
     /// Without a `requiredArgs` list the JSON key order is preserved as-is.
-    static func genericSummary(entries: [ArgEntry], requiredArgs: [String]?) -> [Entry] {
+    fileprivate static func genericSummary(entries: [ArgEntry], requiredArgs: [String]?) -> [Entry] {
         let mapped = entries.map { Entry(key: $0.key, value: inlineEntryValue($0)) }
         guard let requiredArgs else { return mapped }
         let required = Set(requiredArgs)
@@ -408,10 +416,10 @@ private extension ToolSummary {
 
 // MARK: - Result descriptions
 
-private extension ToolSummary {
+extension ToolSummary {
 
     /// First non-empty line of a (possibly multi-line) text, trimmed.
-    static func firstLine(_ text: String) -> String {
+    fileprivate static func firstLine(_ text: String) -> String {
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let t = line.trimmingCharacters(in: .whitespaces)
             if !t.isEmpty { return t }
@@ -420,7 +428,7 @@ private extension ToolSummary {
     }
 
     /// Last non-empty line of a (possibly multi-line) text, trimmed.
-    static func lastLine(_ text: String) -> String {
+    fileprivate static func lastLine(_ text: String) -> String {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
         for line in lines.reversed() {
             let t = line.trimmingCharacters(in: .whitespaces)
@@ -430,7 +438,7 @@ private extension ToolSummary {
     }
 
     /// Count of non-empty lines, excluding truncation markers ("... (truncated…)").
-    static func countResultLines(_ text: String) -> Int {
+    fileprivate static func countResultLines(_ text: String) -> Int {
         var n = 0
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
             let t = line.trimmingCharacters(in: .whitespaces)
@@ -440,7 +448,7 @@ private extension ToolSummary {
     }
 
     /// Count of "- " markdown bullet lines (configurator list/check output).
-    static func countBulletLines(_ text: String) -> Int {
+    fileprivate static func countBulletLines(_ text: String) -> Int {
         var n = 0
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
             var s = line
@@ -451,7 +459,7 @@ private extension ToolSummary {
     }
 
     /// Line count of a plain-text document; a single trailing newline is ignored.
-    static func countTextLines(_ text: String) -> Int {
+    fileprivate static func countTextLines(_ text: String) -> Int {
         var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
         if let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
         return lines.count
@@ -461,7 +469,7 @@ private extension ToolSummary {
     /// tools whose output is a structured list we can count or a log whose
     /// tail (the exit-code line) is the informative part. Falls back to the
     /// first output line for everything else.
-    static func doneDescription(name: String, content: String) -> String {
+    fileprivate static func doneDescription(name: String, content: String) -> String {
         switch name {
         case "read_file":
             // Text output lines carry the "N|content" gutter; anything else
@@ -481,12 +489,18 @@ private extension ToolSummary {
             return "Found \(n) \(n == 1 ? "item" : "items")."
         case "apply_patch":
             // The result is one "Added:/Updated:/Deleted: path" line per file op.
-            var added = 0, updated = 0, deleted = 0
+            var added = 0
+            var updated = 0
+            var deleted = 0
             for line in content.split(separator: "\n", omittingEmptySubsequences: false) {
                 let t = line.trimmingCharacters(in: .whitespaces)
-                if t.hasPrefix("Added:") { added += 1 }
-                else if t.hasPrefix("Updated:") { updated += 1 }
-                else if t.hasPrefix("Deleted:") { deleted += 1 }
+                if t.hasPrefix("Added:") {
+                    added += 1
+                } else if t.hasPrefix("Updated:") {
+                    updated += 1
+                } else if t.hasPrefix("Deleted:") {
+                    deleted += 1
+                }
             }
             let total = added + updated + deleted
             if total == 0 { return firstLine(content) }
@@ -500,7 +514,8 @@ private extension ToolSummary {
             return lastLine(content)
         case "web_search":
             // The header carries the hit count ("results: N").
-            for line in content.split(separator: "\n", omittingEmptySubsequences: false) where line.hasPrefix("results: ") {
+            for line in content.split(separator: "\n", omittingEmptySubsequences: false)
+            where line.hasPrefix("results: ") {
                 let n = line.dropFirst("results: ".count)
                 return "\(n) \(n == "1" ? "result" : "results")."
             }
@@ -537,7 +552,7 @@ private extension ToolSummary {
 
     /// The denial reason without the boilerplate prefix; empty for a generic
     /// (reason-less) denial.
-    static func denialReason(_ content: String) -> String {
+    fileprivate static func denialReason(_ content: String) -> String {
         let prefix = "User denied this tool call with the following reason: "
         let generic = "User denied this tool call"
         if content.hasPrefix(prefix) {

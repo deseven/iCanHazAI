@@ -165,12 +165,13 @@ struct ChunkCoalescer {
         for (index, entry) in toolCallBuffers {
             let shouldEmit = force || due || entry.arguments.count >= minChars
             if shouldEmit && !entry.arguments.isEmpty {
-                await onChunk(.toolCallDelta(
-                    index: index,
-                    id: entry.id,
-                    name: entry.name,
-                    argumentsDelta: entry.arguments
-                ))
+                await onChunk(
+                    .toolCallDelta(
+                        index: index,
+                        id: entry.id,
+                        name: entry.name,
+                        argumentsDelta: entry.arguments
+                    ))
                 toolCallBuffers.removeValue(forKey: index)
             }
         }
@@ -221,7 +222,10 @@ final class ChatService: @unchecked Sendable {
         onChunk: @escaping @Sendable (StreamChunk) async -> Void
     ) async throws -> StreamResult {
         let toolCount = tools?.count ?? 0
-        debugLog("LLM", "request start — provider=\(connection.provider.rawValue), model=\(connection.model), messages=\(messages.count), tools=\(toolCount), chat=\(chatFilename)")
+        debugLog(
+            "LLM",
+            "request start — provider=\(connection.provider.rawValue), model=\(connection.model), messages=\(messages.count), tools=\(toolCount), chat=\(chatFilename)"
+        )
         let started = Date()
 
         let box = CoalescerBox(onChunk: onChunk)
@@ -242,7 +246,10 @@ final class ChatService: @unchecked Sendable {
             throw CancellationError()
         } catch let error as LLMError {
             let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
-            debugLog("LLM", "request failed — status=\(error.statusCode), body=\(error.rawBody ?? "nil"), elapsed=\(elapsed)s, chat=\(chatFilename)")
+            debugLog(
+                "LLM",
+                "request failed — status=\(error.statusCode), body=\(error.rawBody ?? "nil"), elapsed=\(elapsed)s, chat=\(chatFilename)"
+            )
             throw error
         } catch {
             let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
@@ -251,7 +258,10 @@ final class ChatService: @unchecked Sendable {
         }
 
         let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
-        debugLog("LLM", "request finish — finishReason=\(result.finishReason ?? "nil"), contentSize=\(result.content.count), toolCalls=\(result.toolCalls.count), elapsed=\(elapsed)s, chat=\(chatFilename)")
+        debugLog(
+            "LLM",
+            "request finish — finishReason=\(result.finishReason ?? "nil"), contentSize=\(result.content.count), toolCalls=\(result.toolCalls.count), elapsed=\(elapsed)s, chat=\(chatFilename)"
+        )
         return result
     }
 
@@ -260,7 +270,9 @@ final class ChatService: @unchecked Sendable {
     /// `image_input`); OpenAI-compatible endpoints return ids only. `headers`
     /// is threaded through so callers that need to match a saved connection's
     /// header set (e.g. header-gated gateways) can do so.
-    func listModels(provider: ConnectionProvider, baseUrl: String?, apiKey: String?, headers: [String: String]? = nil) async throws -> [ModelInfo] {
+    func listModels(provider: ConnectionProvider, baseUrl: String?, apiKey: String?, headers: [String: String]? = nil)
+        async throws -> [ModelInfo]
+    {
         try await LLMTransport.listModels(provider: provider, baseUrl: baseUrl, apiKey: apiKey, headers: headers)
     }
 

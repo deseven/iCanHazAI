@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+
 @testable import iCanHazAI
 
 // Tests for `MCPManager`'s connection-establishment safeguards. A server that

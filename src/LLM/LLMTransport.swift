@@ -42,7 +42,7 @@ enum LLMTransport {
     /// Returns the strategy for a given connection's provider.
     static func provider(for connection: Connection) -> any LLMProvider {
         switch connection.provider {
-        case .openai:    return OpenAIProvider()
+        case .openai: return OpenAIProvider()
         case .anthropic: return AnthropicProvider()
         }
     }
@@ -137,7 +137,8 @@ enum LLMTransport {
             guard let payload = SSEParser.parsePayload(line) else { continue }
             if case .done = payload { break }
             guard case .data(let jsonString) = payload,
-                  let data = jsonString.data(using: .utf8) else { continue }
+                let data = jsonString.data(using: .utf8)
+            else { continue }
             let chunks = provider.parseStreamChunk(data, accumulator: accumulator)
             for chunk in chunks {
                 switch chunk {
@@ -211,7 +212,7 @@ enum LLMTransport {
     ) async throws -> [ModelInfo] {
         let strategy: any LLMProvider
         switch provider {
-        case .openai:    strategy = OpenAIProvider()
+        case .openai: strategy = OpenAIProvider()
         case .anthropic: strategy = AnthropicProvider()
         }
         guard let path = strategy.modelsPath else {
@@ -223,16 +224,18 @@ enum LLMTransport {
         }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        for (key, value) in strategy.buildHeaders(connection: Connection(
-            provider: provider,
-            name: "_models",
-            baseUrl: baseUrl,
-            apiKey: apiKey,
-            model: "",
-            imageInput: false,
-            requestParameters: nil,
-            headers: headers
-        )) {
+        for (key, value) in strategy.buildHeaders(
+            connection: Connection(
+                provider: provider,
+                name: "_models",
+                baseUrl: baseUrl,
+                apiKey: apiKey,
+                model: "",
+                imageInput: false,
+                requestParameters: nil,
+                headers: headers
+            ))
+        {
             request.setValue(value, forHTTPHeaderField: key)
         }
 

@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+
 @testable import iCanHazAI
 
 /// Tests for the shell command lexer and command extractor used by the shell

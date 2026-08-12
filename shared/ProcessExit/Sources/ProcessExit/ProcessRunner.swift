@@ -138,8 +138,9 @@ public enum ProcessRunner {
         breaker.cancel()
 
         if timedOut {
-            return ProcessResult(exitCode: -1, stdout: box.stdout, stderr: Data((box.failureMessage ?? "timed out").utf8))
-       }
+            return ProcessResult(
+                exitCode: -1, stdout: box.stdout, stderr: Data((box.failureMessage ?? "timed out").utf8))
+        }
         return ProcessResult(
             exitCode: process.terminationStatus,
             stdout: box.stdout,
@@ -157,10 +158,10 @@ private final class IOBox: @unchecked Sendable {
     private var failure: String?
 
     var stdout: Data { lock.withLock { out } }
-   var stderr: Data { lock.withLock { err } }
+    var stderr: Data { lock.withLock { err } }
 
-   func appendStdout(_ d: Data) { lock.withLock { out.append(d) } }
-   func appendStderr(_ d: Data) { lock.withLock { err.append(d) } }
+    func appendStdout(_ d: Data) { lock.withLock { out.append(d) } }
+    func appendStderr(_ d: Data) { lock.withLock { err.append(d) } }
     func setFailure(_ msg: String) { lock.withLock { if failure == nil { failure = msg } } }
     var failureMessage: String? { lock.withLock { failure } }
 }

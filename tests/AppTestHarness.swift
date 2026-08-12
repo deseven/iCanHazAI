@@ -1,6 +1,7 @@
+import FSEventsWrapper
 import Foundation
 import Testing
-import FSEventsWrapper
+
 @testable import iCanHazAI
 
 // `AllAppTests` (the `.serialized` parent suite for every test in this target)
@@ -84,7 +85,9 @@ final class TempEnv: @unchecked Sendable {
     }
 
     func diskFilenames() -> [String] {
-        guard let files = try? fm.contentsOfDirectory(at: env.chatsURL, includingPropertiesForKeys: nil) else { return [] }
+        guard let files = try? fm.contentsOfDirectory(at: env.chatsURL, includingPropertiesForKeys: nil) else {
+            return []
+        }
         return files.filter { $0.pathExtension == "json" }.map(\.lastPathComponent).sorted()
     }
 
@@ -93,7 +96,8 @@ final class TempEnv: @unchecked Sendable {
     /// up with the SwiftData-cached value.
     func modificationDate(_ filename: String) -> Date? {
         guard let attrs = try? fm.attributesOfItem(atPath: chatURL(filename).path),
-              let date = attrs[.modificationDate] as? Date else { return nil }
+            let date = attrs[.modificationDate] as? Date
+        else { return nil }
         return Date(timeIntervalSince1970: date.timeIntervalSince1970.rounded())
     }
 
@@ -115,9 +119,21 @@ final class FSEventBox: @unchecked Sendable {
     private let lock = NSLock()
     private var events: [FSEvent] = []
 
-    func append(_ event: FSEvent) { lock.lock(); events.append(event); lock.unlock() }
-    func snapshot() -> [FSEvent] { lock.lock(); defer { lock.unlock() }; return events }
-    func clear() { lock.lock(); events.removeAll(keepingCapacity: false); lock.unlock() }
+    func append(_ event: FSEvent) {
+        lock.lock()
+        events.append(event)
+        lock.unlock()
+    }
+    func snapshot() -> [FSEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return events
+    }
+    func clear() {
+        lock.lock()
+        events.removeAll(keepingCapacity: false)
+        lock.unlock()
+    }
 }
 
 /// Wraps an `EnvironmentWatcher` for a root path, collecting every delivered
@@ -165,19 +181,19 @@ final class FSEventCollector: @unchecked Sendable {
 func eventPath(_ event: FSEvent) -> String? {
     switch event {
     case .generic(let p, _, _),
-         .mustScanSubDirs(let p, _),
-         .rootChanged(let p, _),
-         .volumeMounted(let p, _, _),
-         .volumeUnmounted(let p, _, _),
-         .itemCreated(let p, _, _, _),
-         .itemRemoved(let p, _, _, _),
-         .itemInodeMetadataModified(let p, _, _, _),
-         .itemRenamed(let p, _, _, _),
-         .itemDataModified(let p, _, _, _),
-         .itemFinderInfoModified(let p, _, _, _),
-         .itemOwnershipModified(let p, _, _, _),
-         .itemXattrModified(let p, _, _, _),
-         .itemClonedAtPath(let p, _, _, _):
+        .mustScanSubDirs(let p, _),
+        .rootChanged(let p, _),
+        .volumeMounted(let p, _, _),
+        .volumeUnmounted(let p, _, _),
+        .itemCreated(let p, _, _, _),
+        .itemRemoved(let p, _, _, _),
+        .itemInodeMetadataModified(let p, _, _, _),
+        .itemRenamed(let p, _, _, _),
+        .itemDataModified(let p, _, _, _),
+        .itemFinderInfoModified(let p, _, _, _),
+        .itemOwnershipModified(let p, _, _, _),
+        .itemXattrModified(let p, _, _, _),
+        .itemClonedAtPath(let p, _, _, _):
         return p
     case .eventIdsWrapped, .streamHistoryDone:
         return nil
@@ -222,7 +238,9 @@ enum Fixtures {
         archive: Bool? = nil,
         autoAllow: [String]? = nil
     ) -> Chat {
-        Chat(id: id, messages: messages, connection: connection, role: role, prompt: prompt, workingDirectory: workingDirectory, mcps: mcps, title: title, archive: archive, autoAllow: autoAllow)
+        Chat(
+            id: id, messages: messages, connection: connection, role: role, prompt: prompt,
+            workingDirectory: workingDirectory, mcps: mcps, title: title, archive: archive, autoAllow: autoAllow)
     }
 
     /// Attaches fork branches to a message, making it a fork owner. The owner
@@ -239,8 +257,9 @@ enum Fixtures {
         chat(
             messages: [
                 message(role: .user, content: "What is 2+2?", timestamp: Date(timeIntervalSince1970: 1_700_000_000)),
-                message(role: .assistant, content: "4", timestamp: Date(timeIntervalSince1970: 1_700_000_010),
-                        connectionName: "openai/test", tokenUsage: TokenUsage(tokensUsed: 42))
+                message(
+                    role: .assistant, content: "4", timestamp: Date(timeIntervalSince1970: 1_700_000_010),
+                    connectionName: "openai/test", tokenUsage: TokenUsage(tokensUsed: 42)),
             ],
             title: title
         )

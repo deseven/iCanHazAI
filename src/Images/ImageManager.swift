@@ -1,8 +1,8 @@
 // Copyright (C) 2026 Ivan Novohatski <https://d7.wtf/>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import Foundation
 import AppKit
+import Foundation
 
 /// An attachment the user has added to a message but not yet sent. Holds the
 /// raw source bytes in memory plus the classifier's detected kind; nothing is
@@ -43,7 +43,7 @@ enum AttachmentManager {
     /// illegal ones on macOS, but we also drop control characters and leading
     /// dots (which make files invisible).
     private static let illegalFilenameChars: Set<Character> = [
-        "\0", "/", ":", "\n", "\r", "\t"
+        "\0", "/", ":", "\n", "\r", "\t",
     ]
 
     /// Sanitizes a filename for filesystem use: strips illegal characters,
@@ -143,9 +143,12 @@ enum AttachmentManager {
         let proposed = sanitize(filename: baseName)
         let ext = (proposed as NSString).pathExtension.lowercased()
         let filename = deduplicatedFilename(proposed: proposed, chatFilename: chatFilename)
-        _ = EnvironmentManager.shared.saveAttachment(data: processed.data, filename: filename, chatFilename: chatFilename)
+        _ = EnvironmentManager.shared.saveAttachment(
+            data: processed.data, filename: filename, chatFilename: chatFilename)
         let fallback = ImageFallbackSynthesizer.fallback(for: pending.data)
-        return Attachment(id: id, kind: .image, ext: ext, filename: filename, originalName: pending.originalName, text: fallback, status: .ok)
+        return Attachment(
+            id: id, kind: .image, ext: ext, filename: filename, originalName: pending.originalName, text: fallback,
+            status: .ok)
     }
 
     /// Copies a plain-text file as-is; the text is embedded on the record.
@@ -158,11 +161,15 @@ enum AttachmentManager {
         let filename = deduplicatedFilename(proposed: proposed, chatFilename: chatFilename)
         _ = EnvironmentManager.shared.saveAttachment(data: pending.data, filename: filename, chatFilename: chatFilename)
         let text = String(data: pending.data, encoding: .utf8) ?? ""
-        return Attachment(id: id, kind: .text, ext: safeExt, filename: filename, originalName: pending.originalName, text: text, status: .ok)
+        return Attachment(
+            id: id, kind: .text, ext: safeExt, filename: filename, originalName: pending.originalName, text: text,
+            status: .ok)
     }
 
     /// Copies a document's original bytes and extracts its text.
-    private static func commitDocument(_ pending: PendingAttachment, chatFilename: String, format: DocumentFormat) -> Attachment? {
+    private static func commitDocument(_ pending: PendingAttachment, chatFilename: String, format: DocumentFormat)
+        -> Attachment?
+    {
         let id = UUID()
         let ext = format.fileExtensions.first ?? "bin"
         let baseName = pending.originalName ?? "\(id.uuidString).\(ext)"

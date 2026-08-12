@@ -30,7 +30,7 @@ struct ChatView: View {
     static let lineHeight: CGFloat = {
         let font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
         let lm = NSLayoutManager()
-        return lm.defaultLineHeight(for: font) + 8 // textContainerInset.height * 2
+        return lm.defaultLineHeight(for: font) + 8  // textContainerInset.height * 2
     }()
     /// Five-line cap. Beyond this the text view scrolls internally.
     static let maxHeight: CGFloat = lineHeight * 5
@@ -108,25 +108,32 @@ struct ChatView: View {
                         .padding(.top, 6)
                 } else {
                     Button(action: handleSendOrStop) {
-                        Image(systemName: store.isStreaming ? (optionHeld ? "stopwatch" : "stop.circle.fill") : "arrow.up.circle.fill")
-                            .font(.system(size: 22))
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(sendDisabled ? Color.secondary : Color.accentColor)
-                            .frame(width: 30, height: ChatView.lineHeight)
-                            .contentShape(Rectangle())
+                        Image(
+                            systemName: store.isStreaming
+                                ? (optionHeld ? "stopwatch" : "stop.circle.fill") : "arrow.up.circle.fill"
+                        )
+                        .font(.system(size: 22))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(sendDisabled ? Color.secondary : Color.accentColor)
+                        .frame(width: 30, height: ChatView.lineHeight)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.borderless)
                     .disabled(sendDisabled)
-                    .help(store.isStreaming ? (optionHeld ? "Stop After Streaming" : "Stop (hold ⌥ to stop after streaming)") : "Send")
+                    .help(
+                        store.isStreaming
+                            ? (optionHeld ? "Stop After Streaming" : "Stop (hold ⌥ to stop after streaming)") : "Send"
+                    )
                     .padding(.trailing, 4)
                     .padding(.top, 6)
                 }
             }
             .background(
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(isDropTargeted
-                          ? Color.accentColor.opacity(0.07)
-                          : Color(nsColor: .controlBackgroundColor))
+                    .fill(
+                        isDropTargeted
+                            ? Color.accentColor.opacity(0.07)
+                            : Color(nsColor: .controlBackgroundColor))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
@@ -186,12 +193,15 @@ struct ChatView: View {
                 break
             }
         }
-        .sheet(item: Binding(
-            get: { store.pendingEditMessageID.map { PendingID(id: $0) } },
-            set: { if $0 == nil { store.pendingEditMessageID = nil } }
-        )) { pending in
+        .sheet(
+            item: Binding(
+                get: { store.pendingEditMessageID.map { PendingID(id: $0) } },
+                set: { if $0 == nil { store.pendingEditMessageID = nil } }
+            )
+        ) { pending in
             if let item = store.selectedChatItem,
-               let msg = item.chat?.message(id: pending.id) {
+                let msg = item.chat?.message(id: pending.id)
+            {
                 let followOn = Self.followOnMessageCount(for: pending.id, in: item.chat)
                 EditMessageSheet(
                     initialText: msg.content,
@@ -206,10 +216,12 @@ struct ChatView: View {
                 )
             }
         }
-        .sheet(item: Binding(
-            get: { store.pendingDeleteMessageID.map { PendingID(id: $0) } },
-            set: { if $0 == nil { store.pendingDeleteMessageID = nil } }
-        )) { pending in
+        .sheet(
+            item: Binding(
+                get: { store.pendingDeleteMessageID.map { PendingID(id: $0) } },
+                set: { if $0 == nil { store.pendingDeleteMessageID = nil } }
+            )
+        ) { pending in
             if let item = store.selectedChatItem {
                 let followOn = Self.followOnMessageCount(for: pending.id, in: item.chat)
                 ConfirmActionSheet(
@@ -226,10 +238,12 @@ struct ChatView: View {
                 )
             }
         }
-        .sheet(item: Binding(
-            get: { store.pendingDenyToolCallID.map { ToolCallIDTarget(callID: $0) } },
-            set: { if $0 == nil { store.pendingDenyToolCallID = nil } }
-        )) { target in
+        .sheet(
+            item: Binding(
+                get: { store.pendingDenyToolCallID.map { ToolCallIDTarget(callID: $0) } },
+                set: { if $0 == nil { store.pendingDenyToolCallID = nil } }
+            )
+        ) { target in
             DenyToolCallSheet(
                 onCancel: { store.pendingDenyToolCallID = nil },
                 onConfirm: { reason in
@@ -301,10 +315,13 @@ struct ChatView: View {
         var body: some View {
             HStack(spacing: 8) {
                 if store.selectedChatConnectionPickerVisible {
-                    Picker("Connection", selection: Binding(
-                        get: { store.selectedChatConnectionID ?? "" },
-                        set: { store.setConnection($0) }
-                    )) {
+                    Picker(
+                        "Connection",
+                        selection: Binding(
+                            get: { store.selectedChatConnectionID ?? "" },
+                            set: { store.setConnection($0) }
+                        )
+                    ) {
                         Text("No connection").tag("")
                         ForEach(store.connections) { connection in
                             Text(connection.displayName).tag(connection.id)
@@ -316,10 +333,13 @@ struct ChatView: View {
                 }
 
                 if store.selectedChatPromptPickerVisible {
-                    Picker("Prompt", selection: Binding(
-                        get: { store.selectedChatPromptName ?? "" },
-                        set: { store.setPrompt($0.isEmpty ? nil : $0) }
-                    )) {
+                    Picker(
+                        "Prompt",
+                        selection: Binding(
+                            get: { store.selectedChatPromptName ?? "" },
+                            set: { store.setPrompt($0.isEmpty ? nil : $0) }
+                        )
+                    ) {
                         Text("No prompt").tag("")
                         ForEach(store.prompts) { prompt in
                             Text(prompt.name).tag(prompt.name)
@@ -340,10 +360,11 @@ struct ChatView: View {
                         store.showWorkdirPicker = true
                     } label: {
                         HStack(spacing: 4) {
-                            Image(systemName: AppViewModel.workdirIcon(
-                                directory: store.selectedChatWorkingDirectory,
-                                isolated: store.selectedChatWorkdirIsolated
-                            ))
+                            Image(
+                                systemName: AppViewModel.workdirIcon(
+                                    directory: store.selectedChatWorkingDirectory,
+                                    isolated: store.selectedChatWorkdirIsolated
+                                ))
                             toolbarTag(workdirLabel)
                         }
                         .font(.callout)
@@ -563,12 +584,14 @@ struct ChatView: View {
         }
 
         if let tiff = pb.data(forType: .tiff),
-           let attachment = AttachmentManager.intake(data: tiff, originalName: nil) {
+            let attachment = AttachmentManager.intake(data: tiff, originalName: nil)
+        {
             pendingAttachments.append(attachment)
             return true
         }
         if let png = pb.data(forType: .png),
-           let attachment = AttachmentManager.intake(data: png, originalName: nil) {
+            let attachment = AttachmentManager.intake(data: png, originalName: nil)
+        {
             pendingAttachments.append(attachment)
             return true
         }
@@ -849,8 +872,9 @@ final class ChatInputTextView: NSTextView {
         // images first; if found, consume. Otherwise let super handle the
         // normal text paste.
         if event.type == .keyDown,
-           event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-           event.keyCode == 9 {
+            event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+            event.keyCode == 9
+        {
             if imagePasteHandler?() == true {
                 return true
             }

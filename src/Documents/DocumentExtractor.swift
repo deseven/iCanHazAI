@@ -1,10 +1,10 @@
 // Copyright (C) 2026 Ivan Novohatski <https://d7.wtf/>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import Foundation
 import AppKit
-import PDFKit
 import CoreGraphics
+import Foundation
+import PDFKit
 
 /// Stateless document-to-text extractor. One entry point for the document
 /// bucket only; returns a typed result (never throws into callers) so the UI
@@ -18,7 +18,7 @@ enum DocumentExtractor {
 
     /// Hard ceiling on input size before parsing. AppKit/PDFKit can be made
     /// to allocate absurd amounts on hostile inputs; refuse up front.
-    static let maxInputBytes: Int = 256 * 1024 * 1024 // 256 MB
+    static let maxInputBytes: Int = 256 * 1024 * 1024  // 256 MB
 
     /// Maximum PDF pages processed (text + OCR). Beyond this the document is
     /// truncated with a note, so a 5000-page scan can't hang the chat.
@@ -101,13 +101,14 @@ enum DocumentExtractor {
             blocks.append("... (truncated at \(maxPDFPages) pages of \(total))")
         }
         let text = blocks.joined(separator: "\n")
-        return .success(Extraction(
-            text: text,
-            pageCount: total,
-            ocrUsed: ocrUsed,
-            ocrPageCount: ocrPages,
-            truncated: truncated
-        ))
+        return .success(
+            Extraction(
+                text: text,
+                pageCount: total,
+                ocrUsed: ocrUsed,
+                ocrPageCount: ocrPages,
+                truncated: truncated
+            ))
     }
 
     /// Renders a PDFPage to a thumbnail and OCRs it. Returns nil on any
@@ -120,8 +121,9 @@ enum DocumentExtractor {
         // steps are the TIFF/bitmap conversion.
         let nsImage = page.thumbnail(of: bounds.size, for: .mediaBox)
         guard let tiff = nsImage.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let cgImage = rep.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            let rep = NSBitmapImageRep(data: tiff),
+            let cgImage = rep.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        else {
             return nil
         }
         // The thumbnail is rendered at the bounds size; rescale to the OCR
@@ -138,12 +140,13 @@ enum DocumentExtractor {
         let newH = Int((CGFloat(image.height) * scale).rounded())
         guard newW > 0, newH > 0 else { return nil }
         guard let cs = image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB),
-              let ctx = CGContext(
+            let ctx = CGContext(
                 data: nil, width: newW, height: newH,
                 bitsPerComponent: 8, bytesPerRow: 0,
                 space: cs,
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-              ) else { return nil }
+            )
+        else { return nil }
         ctx.interpolationQuality = .high
         ctx.draw(image, in: CGRect(x: 0, y: 0, width: newW, height: newH))
         return ctx.makeImage()
@@ -167,19 +170,21 @@ enum DocumentExtractor {
         } catch {
             // AppKit failed — try the textutil fallback before giving up.
             if let text = textutilFallback(data: data, format: format) {
-                return .success(Extraction(
-                    text: text, pageCount: nil,
-                    ocrUsed: false, ocrPageCount: 0, truncated: false
-                ))
+                return .success(
+                    Extraction(
+                        text: text, pageCount: nil,
+                        ocrUsed: false, ocrPageCount: 0, truncated: false
+                    ))
             }
             return .failed(reason: "AppKit could not parse \(format.rawValue): \(error.localizedDescription)")
         }
         guard let attributed else {
             if let text = textutilFallback(data: data, format: format) {
-                return .success(Extraction(
-                    text: text, pageCount: nil,
-                    ocrUsed: false, ocrPageCount: 0, truncated: false
-                ))
+                return .success(
+                    Extraction(
+                        text: text, pageCount: nil,
+                        ocrUsed: false, ocrPageCount: 0, truncated: false
+                    ))
             }
             return .failed(reason: "AppKit returned no content for \(format.rawValue)")
         }
@@ -188,21 +193,25 @@ enum DocumentExtractor {
             // AppKit parsed but produced nothing — try textutil before
             // reporting an empty extraction.
             if let fallback = textutilFallback(data: data, format: format),
-               !fallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return .success(Extraction(
-                    text: fallback, pageCount: nil,
+                !fallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            {
+                return .success(
+                    Extraction(
+                        text: fallback, pageCount: nil,
+                        ocrUsed: false, ocrPageCount: 0, truncated: false
+                    ))
+            }
+            return .success(
+                Extraction(
+                    text: text, pageCount: nil,
                     ocrUsed: false, ocrPageCount: 0, truncated: false
                 ))
-            }
-            return .success(Extraction(
+        }
+        return .success(
+            Extraction(
                 text: text, pageCount: nil,
                 ocrUsed: false, ocrPageCount: 0, truncated: false
             ))
-        }
-        return .success(Extraction(
-            text: text, pageCount: nil,
-            ocrUsed: false, ocrPageCount: 0, truncated: false
-        ))
     }
 
     /// `textutil -convert txt -stdout` fallback, used only when AppKit proves
@@ -247,18 +256,22 @@ enum DocumentExtractor {
             return .failed(reason: "image is \(data.count) bytes; exceeds the \(maxInputBytes) byte limit")
         }
         guard ImageProcessor.isSupported(data) else {
-            return .unsupported(format: ImageProcessor.typeIdentifier(for: data), reason: "not a supported image format for OCR")
+            return .unsupported(
+                format: ImageProcessor.typeIdentifier(for: data), reason: "not a supported image format for OCR")
         }
         guard let text = TextRecognizer.recognize(data: data),
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return .success(Extraction(
-                text: "(no text recognized in image)",
-                pageCount: nil, ocrUsed: true, ocrPageCount: 0, truncated: false
-            ))
+            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return .success(
+                Extraction(
+                    text: "(no text recognized in image)",
+                    pageCount: nil, ocrUsed: true, ocrPageCount: 0, truncated: false
+                ))
         }
-        return .success(Extraction(
-            text: text, pageCount: nil,
-            ocrUsed: true, ocrPageCount: 1, truncated: false
-        ))
+        return .success(
+            Extraction(
+                text: text, pageCount: nil,
+                ocrUsed: true, ocrPageCount: 1, truncated: false
+            ))
     }
 }

@@ -7,11 +7,7 @@
 // is purely a render default and is never written back to the chat file.
 
 /** Whether Thinking blocks should be expanded by default. */
-export const expandThinking: boolean = new URLSearchParams(
-  location.search,
-).has("withExpandedThinking");
+export const expandThinking: boolean = new URLSearchParams(location.search).has("withExpandedThinking");
 
 /** Whether Tool Use blocks should be expanded by default. */
-export const expandToolUse: boolean = new URLSearchParams(
-  location.search,
-).has("withExpandedToolUse");
+export const expandToolUse: boolean = new URLSearchParams(location.search).has("withExpandedToolUse");

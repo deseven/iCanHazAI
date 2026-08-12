@@ -29,19 +29,30 @@ enum ConfigValidation {
             throw ConfigValidationError("connection config is not valid JSONC (expected a JSON object)")
         }
         guard let model = obj["model"] as? String,
-              !model.trimmingCharacters(in: .whitespaces).isEmpty else {
-            throw ConfigValidationError("connection config is missing the required \"model\" field (a non-empty model string)")
+            !model.trimmingCharacters(in: .whitespaces).isEmpty
+        else {
+            throw ConfigValidationError(
+                "connection config is missing the required \"model\" field (a non-empty model string)")
         }
-        if let v = obj["baseUrl"], !(v is String) { throw ConfigValidationError("connection field \"baseUrl\" must be a string") }
-        if let v = obj["apiKey"], !(v is String) { throw ConfigValidationError("connection field \"apiKey\" must be a string") }
-        if let v = obj["imageInput"], !(v is Bool) { throw ConfigValidationError("connection field \"imageInput\" must be a boolean") }
-        if let v = obj["requestParameters"], !(v is [String: Any]) { throw ConfigValidationError("connection field \"requestParameters\" must be an object") }
+        if let v = obj["baseUrl"], !(v is String) {
+            throw ConfigValidationError("connection field \"baseUrl\" must be a string")
+        }
+        if let v = obj["apiKey"], !(v is String) {
+            throw ConfigValidationError("connection field \"apiKey\" must be a string")
+        }
+        if let v = obj["imageInput"], !(v is Bool) {
+            throw ConfigValidationError("connection field \"imageInput\" must be a boolean")
+        }
+        if let v = obj["requestParameters"], !(v is [String: Any]) {
+            throw ConfigValidationError("connection field \"requestParameters\" must be an object")
+        }
         if let v = obj["headers"] {
             guard let dict = v as? [String: Any] else {
                 throw ConfigValidationError("connection field \"headers\" must be an object of strings")
             }
             for (k, val) in dict where !(val is String) {
-                throw ConfigValidationError("connection field \"headers\" must be an object of strings (value for \"\(k)\" is not a string)")
+                throw ConfigValidationError(
+                    "connection field \"headers\" must be an object of strings (value for \"\(k)\" is not a string)")
             }
         }
         do {
@@ -103,13 +114,13 @@ enum ConfigValidation {
             if let connection = config.connection, !connection.isEmpty, !references.connectionIDs.contains(connection) {
                 throw ConfigValidationError(
                     "role config references unknown connection \"\(connection)\" "
-                    + "(no matching config in the Connections directory)"
+                        + "(no matching config in the Connections directory)"
                 )
             }
             if let prompt = config.prompt, !prompt.isEmpty, !references.promptNames.contains(prompt) {
                 throw ConfigValidationError(
                     "role config references unknown prompt \"\(prompt)\" "
-                    + "(no matching file in the Prompts directory)"
+                        + "(no matching file in the Prompts directory)"
                 )
             }
             if let mcps = config.mcps {
@@ -120,7 +131,7 @@ enum ConfigValidation {
                 if !unknown.isEmpty {
                     throw ConfigValidationError(
                         "role config references unknown MCP server(s): \(unknown.map { "\"\($0)\"" }.joined(separator: ", ")) "
-                        + "(no matching config in the MCPs directory)"
+                            + "(no matching config in the MCPs directory)"
                     )
                 }
             }
@@ -144,7 +155,7 @@ enum ConfigValidation {
         if config.workingDirectory?.isEmpty == false && !hasWorkdirCapableGroup {
             throw ConfigValidationError(
                 "role config sets working_directory "
-                + "but selects no workdir-capable built-in group (Filesystem, Code, or Shell)"
+                    + "but selects no workdir-capable built-in group (Filesystem, Code, or Shell)"
             )
         }
 
@@ -157,13 +168,13 @@ enum ConfigValidation {
             if !hasIsolationCapableGroup {
                 throw ConfigValidationError(
                     "role config enables directory_isolation "
-                    + "but selects no isolation-capable built-in group (Filesystem or Code)"
+                        + "but selects no isolation-capable built-in group (Filesystem or Code)"
                 )
             }
             if config.shell != nil {
                 throw ConfigValidationError(
                     "role config enables directory_isolation but also selects the Shell group; "
-                    + "shell tools are NOT directory-isolated, so the model could escape the confinement"
+                        + "shell tools are NOT directory-isolated, so the model could escape the confinement"
                 )
             }
         }
@@ -173,7 +184,7 @@ enum ConfigValidation {
         if config.features?.withChatTrees == true && config.features?.withResponseRegen != true {
             throw ConfigValidationError(
                 "role config enables with_chat_trees but not with_response_regen; "
-                + "chat trees only exist via response regeneration, so both must be enabled together"
+                    + "chat trees only exist via response regeneration, so both must be enabled together"
             )
         }
     }

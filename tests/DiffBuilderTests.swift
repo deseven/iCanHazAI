@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+
 @testable import iCanHazAI
 
 /// Tests for [`DiffBuilder`](src/Tools/DiffBuilder.swift), which builds unified diffs
@@ -72,7 +73,8 @@ extension AllAppTests {
 
         @Test("modification shows both - and + lines")
         func modification() async throws {
-            let d = DiffBuilder.unifiedDiff(old: "one\ntwo\nthree\n", new: "one\nTWO\nthree\n", oldPath: "f", newPath: "f")
+            let d = DiffBuilder.unifiedDiff(
+                old: "one\ntwo\nthree\n", new: "one\nTWO\nthree\n", oldPath: "f", newPath: "f")
             #expect(!d.isEmpty)
             #expect(d.contains("-two"))
             #expect(d.contains("+TWO"))
@@ -108,7 +110,8 @@ extension AllAppTests {
 
         @Test("context lines are prefixed with a space")
         func contextPrefix() async throws {
-            let d = DiffBuilder.unifiedDiff(old: "keep\nchange\nkeep2\n", new: "keep\nCHANGED\nkeep2\n", oldPath: "f", newPath: "f")
+            let d = DiffBuilder.unifiedDiff(
+                old: "keep\nchange\nkeep2\n", new: "keep\nCHANGED\nkeep2\n", oldPath: "f", newPath: "f")
             #expect(d.contains(" keep"))
             #expect(d.contains(" keep2"))
         }
@@ -117,7 +120,7 @@ extension AllAppTests {
         func separateHunks() async throws {
             let old = (0..<20).map { "line\($0)" }.joined(separator: "\n") + "\n"
             let new = old.replacingOccurrences(of: "line1", with: "LINE1")
-                         .replacingOccurrences(of: "line18", with: "LINE18")
+                .replacingOccurrences(of: "line18", with: "LINE18")
             let d = DiffBuilder.unifiedDiff(old: old, new: new, oldPath: "f", newPath: "f")
             let hunkCount = d.components(separatedBy: "@@").count - 1
             #expect(hunkCount >= 2, "expected >= 2 hunks, got \(hunkCount)\n\(d)")
@@ -198,12 +201,12 @@ extension AllAppTests {
             let tmp = try TestDir()
             let path = tmp.sub("added.txt")
             let patch = """
-            *** Begin Patch
-            *** Add File: \(path)
-            +hello
-            +world
-            *** End Patch
-            """
+                *** Begin Patch
+                *** Add File: \(path)
+                +hello
+                +world
+                *** End Patch
+                """
             let args = Self.argsJSON(["patch": patch])
             let d = DiffBuilder.diffForApplyPatch(arguments: args, workdir: .none)
             #expect(d != nil)
@@ -218,10 +221,10 @@ extension AllAppTests {
             let path = tmp.sub("kill.txt")
             try tmp.write("kill.txt", content: "bye\nnow\n")
             let patch = """
-            *** Begin Patch
-            *** Delete File: \(path)
-            *** End Patch
-            """
+                *** Begin Patch
+                *** Delete File: \(path)
+                *** End Patch
+                """
             let args = Self.argsJSON(["patch": patch])
             let d = DiffBuilder.diffForApplyPatch(arguments: args, workdir: .none)
             #expect(d != nil)
@@ -236,15 +239,15 @@ extension AllAppTests {
             let path = tmp.sub("edit.txt")
             try tmp.write("edit.txt", content: "line one\nline two\nline three\n")
             let patch = """
-            *** Begin Patch
-            *** Update File: \(path)
-            @@
-             line one
-            -line two
-            +line TWO
-             line three
-            *** End Patch
-            """
+                *** Begin Patch
+                *** Update File: \(path)
+                @@
+                 line one
+                -line two
+                +line TWO
+                 line three
+                *** End Patch
+                """
             let args = Self.argsJSON(["patch": patch])
             let d = DiffBuilder.diffForApplyPatch(arguments: args, workdir: .none)
             #expect(d != nil, "expected a diff for a valid update patch")
@@ -274,17 +277,17 @@ extension AllAppTests {
             try tmp.write("a.txt", content: "a1\n")
             try tmp.write("b.txt", content: "b1\n")
             let patch = """
-            *** Begin Patch
-            *** Update File: \(pathA)
-            @@
-            -a1
-            +a2
-            *** Update File: \(pathB)
-            @@
-            -b1
-            +b2
-            *** End Patch
-            """
+                *** Begin Patch
+                *** Update File: \(pathA)
+                @@
+                -a1
+                +a2
+                *** Update File: \(pathB)
+                @@
+                -b1
+                +b2
+                *** End Patch
+                """
             let args = Self.argsJSON(["patch": patch])
             let d = DiffBuilder.diffForApplyPatch(arguments: args, workdir: .none)
             #expect(d != nil)
@@ -311,12 +314,12 @@ extension AllAppTests {
             let path = tmp.sub("noop.txt")
             try tmp.write("noop.txt", content: "unchanged\n")
             let patch = """
-            *** Begin Patch
-            *** Update File: \(path)
-            @@
-             unchanged
-            *** End Patch
-            """
+                *** Begin Patch
+                *** Update File: \(path)
+                @@
+                 unchanged
+                *** End Patch
+                """
             let args = Self.argsJSON(["patch": patch])
             guard case .ok(let diff) = DiffBuilder.preflightApplyPatch(arguments: args, workdir: .none) else {
                 Issue.record("expected preflight to succeed for a no-op patch")
@@ -331,13 +334,13 @@ extension AllAppTests {
             let path = tmp.sub("mismatch.txt")
             try tmp.write("mismatch.txt", content: "actual\n")
             let patch = """
-            *** Begin Patch
-            *** Update File: \(path)
-            @@
-            -expected
-            +changed
-            *** End Patch
-            """
+                *** Begin Patch
+                *** Update File: \(path)
+                @@
+                -expected
+                +changed
+                *** End Patch
+                """
             let args = Self.argsJSON(["patch": patch])
             guard case .error(let message) = DiffBuilder.preflightApplyPatch(arguments: args, workdir: .none) else {
                 Issue.record("expected preflight to fail")
@@ -353,13 +356,13 @@ extension AllAppTests {
             let path = tmp.sub("keep.txt")
             try tmp.write("keep.txt", content: "before\n")
             let patch = """
-            *** Begin Patch
-            *** Update File: \(path)
-            @@
-            -before
-            +after
-            *** End Patch
-            """
+                *** Begin Patch
+                *** Update File: \(path)
+                @@
+                -before
+                +after
+                *** End Patch
+                """
             let args = Self.argsJSON(["patch": patch])
             guard case .ok(let diff) = DiffBuilder.preflightApplyPatch(arguments: args, workdir: .none) else {
                 Issue.record("expected preflight to succeed")

@@ -52,7 +52,7 @@ enum DocumentFormat: String, Sendable {
     /// fallback (textutil keys its input detection off the extension).
     var textutilExtension: String {
         switch self {
-        case .wordml: return "xml" // textutil detects WordML from .xml content
+        case .wordml: return "xml"  // textutil detects WordML from .xml content
         default: return fileExtensions.first ?? "txt"
         }
     }
@@ -69,7 +69,7 @@ enum DocumentFormat: String, Sendable {
         case .rtfd: return .rtfd
         case .wordml: return .wordML
         case .webarchive: return .webArchive
-        case .pdf: return .plain // PDF has its own extractor; never reaches here
+        case .pdf: return .plain  // PDF has its own extractor; never reaches here
         }
     }
 }

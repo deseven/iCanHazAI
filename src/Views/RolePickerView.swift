@@ -17,18 +17,18 @@ import SwiftUI
 /// starts a chat with the default role. Layout and keyboard navigation are
 /// shared with other pickers via [`PickerDialog`](src/Views/PickerDialog.swift:14).
 struct RolePickerView: View {
-   @EnvironmentObject var store: AppViewModel
-   /// The mode the picker operates in: creating a new chat or assigning a
-   /// role to an existing chat whose role is missing.
-   let mode: AppViewModel.RolePickerMode
-   let onCancel: () -> Void
-   let onPick: (String) -> Void
+    @EnvironmentObject var store: AppViewModel
+    /// The mode the picker operates in: creating a new chat or assigning a
+    /// role to an existing chat whose role is missing.
+    let mode: AppViewModel.RolePickerMode
+    let onCancel: () -> Void
+    let onPick: (String) -> Void
 
     /// When true, only roles with disk access (bind to a directory) are
     /// shown. Used in "By Directory" mode where the directory is pre-picked.
     var diskAccessOnly: Bool = false
 
-   @State private var query: String = ""
+    @State private var query: String = ""
 
     private var availableRoles: [Role] {
         diskAccessOnly ? store.roles.filter { $0.bindsToDirectory } : store.roles
@@ -38,8 +38,8 @@ struct RolePickerView: View {
     }
     private var builtinRoles: [Role] {
         FuzzySearch.rank(availableRoles.filter { $0.isBuiltin }, query: query) { [$0.name, $0.description] }
-   }
-   private var defaultRoleName: String? { store.preferencesDefaultRole }
+    }
+    private var defaultRoleName: String? { store.preferencesDefaultRole }
 
     private var headerTitle: String {
         switch mode {
@@ -61,7 +61,9 @@ struct RolePickerView: View {
     }
 
     private var initialSelection: Role? {
-        if let dr = defaultRoleName, userRoles.contains(where: { $0.name == dr }) || builtinRoles.contains(where: { $0.name == dr }) {
+        if let dr = defaultRoleName,
+            userRoles.contains(where: { $0.name == dr }) || builtinRoles.contains(where: { $0.name == dr })
+        {
             return (userRoles + builtinRoles).first { $0.name == dr }
         }
         return (userRoles + builtinRoles).first

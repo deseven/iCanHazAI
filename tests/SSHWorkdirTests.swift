@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+
 @testable import iCanHazAI
 
 /// Unit tests for the SSH working-directory support: spec parsing, remote
@@ -93,7 +94,9 @@ extension AllAppTests {
             let wd = Workdir(root: "h:rel/path", isolated: false)
             #expect(wd.ssh == nil)
             #expect(wd.sshSpecError != nil)
-            let result = await BuiltinTools.call(name: "ls", arguments: #"{"path":"/"}"#, callID: "t", group: BuiltinTools.filesystemGroup, workdir: wd, chatFilename: "test.json")
+            let result = await BuiltinTools.call(
+                name: "ls", arguments: #"{"path":"/"}"#, callID: "t", group: BuiltinTools.filesystemGroup, workdir: wd,
+                chatFilename: "test.json")
             #expect(result.isError)
             #expect(result.content.contains("invalid SSH working directory"))
         }
@@ -230,7 +233,8 @@ extension AllAppTests {
         @Test("contains chat id prefix and sanitized host")
         func naming() {
             let mgr = SSHManager(cacheDir: "/tmp/ichai-sock-test")
-            let path = mgr.socketPath(for: SSHContext(host: "user@some host", chatID: "abcdef12-3456-7890-abcd-ef1234567890"))
+            let path = mgr.socketPath(
+                for: SSHContext(host: "user@some host", chatID: "abcdef12-3456-7890-abcd-ef1234567890"))
             #expect(path.hasPrefix("/tmp/ichai-sock-test/ssh-abcdef12-"))
             #expect(path.hasSuffix(".sock"))
             #expect(!path.contains(" "))
@@ -252,7 +256,8 @@ extension AllAppTests {
         func deepCacheDirFallback() {
             let deep = "/var/folders/99/dtjm1r114blf6b3bsp9lv57m0000gn/T/ichai-test-socks"
             let mgr = SSHManager(cacheDir: deep)
-            let path = mgr.socketPath(for: SSHContext(host: "ichai-test", chatID: "0339D0B0-3456-7890-abcd-ef1234567890"))
+            let path = mgr.socketPath(
+                for: SSHContext(host: "ichai-test", chatID: "0339D0B0-3456-7890-abcd-ef1234567890"))
             #expect(path.utf8.count + 17 <= 104)
             #expect(path.hasPrefix("/tmp/"))
         }
@@ -274,13 +279,13 @@ extension AllAppTests {
         func updateViaProvider() throws {
             let wd = Workdir(root: "/remote", isolated: false)
             let patch = """
-            *** Begin Patch
-            *** Update File: f.txt
-            @@
-            -old
-            +new
-            *** End Patch
-            """
+                *** Begin Patch
+                *** Update File: f.txt
+                @@
+                -old
+                +new
+                *** End Patch
+                """
             let parsed = try PatchParser.parse(patch)
             let ops = try PatchApplier.plan(
                 hunks: parsed.hunks,
@@ -299,11 +304,11 @@ extension AllAppTests {
         func addExistingFails() throws {
             let wd = Workdir(root: "/remote", isolated: false)
             let patch = """
-            *** Begin Patch
-            *** Add File: f.txt
-            +content
-            *** End Patch
-            """
+                *** Begin Patch
+                *** Add File: f.txt
+                +content
+                *** End Patch
+                """
             let parsed = try PatchParser.parse(patch)
             #expect(throws: ApplyPatchError.self) {
                 try PatchApplier.plan(
@@ -319,10 +324,10 @@ extension AllAppTests {
         func deleteMissingFails() throws {
             let wd = Workdir(root: "/remote", isolated: false)
             let patch = """
-            *** Begin Patch
-            *** Delete File: gone.txt
-            *** End Patch
-            """
+                *** Begin Patch
+                *** Delete File: gone.txt
+                *** End Patch
+                """
             let parsed = try PatchParser.parse(patch)
             #expect(throws: ApplyPatchError.self) {
                 try PatchApplier.plan(
@@ -370,8 +375,8 @@ extension AllAppTests {
     }
 }
 
-private extension Result {
-    var isFailure: Bool {
+extension Result {
+    fileprivate var isFailure: Bool {
         if case .failure = self { return true }
         return false
     }

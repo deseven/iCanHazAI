@@ -282,10 +282,14 @@ actor ConfigManager {
         private let lock = NSLock()
         private var _payload: (config: AppConfig, decodeFailed: Bool)?
         func get() -> (config: AppConfig, decodeFailed: Bool)? {
-            lock.lock(); defer { lock.unlock() }; return _payload
+            lock.lock()
+            defer { lock.unlock() }
+            return _payload
         }
         func set(_ config: AppConfig, decodeFailed: Bool) {
-            lock.lock(); defer { lock.unlock() }; _payload = (config, decodeFailed)
+            lock.lock()
+            defer { lock.unlock() }
+            _payload = (config, decodeFailed)
         }
     }
     private static let bootstrapBox = BootstrapBox()
@@ -327,7 +331,9 @@ actor ConfigManager {
         // debugLog call (including those inside the actor's load()) is captured.
         DebugLogger.setEnabled(decoded.debug.appDebugEnabled ?? false)
         if decodeFailed {
-            debugLog("Config", "⚠️ failed to decode app config on startup — using defaults; the broken file will be overwritten")
+            debugLog(
+                "Config",
+                "⚠️ failed to decode app config on startup — using defaults; the broken file will be overwritten")
         }
         bootstrapBox.set(decoded, decodeFailed: decodeFailed)
     }
@@ -358,7 +364,10 @@ actor ConfigManager {
     func load() {
         guard !didLoad else { return }
         if let stashed = ConfigManager.bootstrapBox.get() {
-            debugLog("Config", "consuming synchronously-bootstrapped config (app_debug=\(stashed.config.debug.appDebugEnabled ?? false), chat_renderer_debug=\(stashed.config.debug.chatRendererDebugEnabled ?? false))")
+            debugLog(
+                "Config",
+                "consuming synchronously-bootstrapped config (app_debug=\(stashed.config.debug.appDebugEnabled ?? false), chat_renderer_debug=\(stashed.config.debug.chatRendererDebugEnabled ?? false))"
+            )
             config = stashed.config
             didLoad = true
             if stashed.decodeFailed {
@@ -376,7 +385,8 @@ actor ConfigManager {
         debugLog("FileRead", "reading config.toml")
         let fm = FileManager.default
         guard fm.fileExists(atPath: fileURL.path),
-              let data = try? Data(contentsOf: fileURL) else {
+            let data = try? Data(contentsOf: fileURL)
+        else {
             debugLog("Config", "no config file found — using defaults")
             config = AppConfig()
             didLoad = true
@@ -384,7 +394,10 @@ actor ConfigManager {
         }
         do {
             config = try ConfigValidation.decodeAppConfig(data)
-            debugLog("Config", "loaded successfully (app_debug=\(config.debug.appDebugEnabled ?? false), chat_renderer_debug=\(config.debug.chatRendererDebugEnabled ?? false))")
+            debugLog(
+                "Config",
+                "loaded successfully (app_debug=\(config.debug.appDebugEnabled ?? false), chat_renderer_debug=\(config.debug.chatRendererDebugEnabled ?? false))"
+            )
         } catch {
             debugLog("Config", "⚠️ failed to decode config: \(error) — using defaults and overwriting the file")
             config = AppConfig()
@@ -406,7 +419,8 @@ actor ConfigManager {
         debugLog("FileRead", "reading config.toml")
         let fm = FileManager.default
         guard fm.fileExists(atPath: fileURL.path),
-              let data = try? Data(contentsOf: fileURL) else {
+            let data = try? Data(contentsOf: fileURL)
+        else {
             // The config file was removed or can't be read while the app is
             // running (external edit). Restore the current live configuration
             // to disk so the app keeps a working config file.
@@ -417,7 +431,10 @@ actor ConfigManager {
         }
         do {
             config = try ConfigValidation.decodeAppConfig(data)
-            debugLog("Config", "reloaded successfully (app_debug=\(config.debug.appDebugEnabled ?? false), chat_renderer_debug=\(config.debug.chatRendererDebugEnabled ?? false))")
+            debugLog(
+                "Config",
+                "reloaded successfully (app_debug=\(config.debug.appDebugEnabled ?? false), chat_renderer_debug=\(config.debug.chatRendererDebugEnabled ?? false))"
+            )
         } catch {
             // The external edit produced an undecodable config. Keep the
             // in-memory `config` (the live state) and persist it back so the

@@ -277,7 +277,8 @@ private struct WebSearchTab: View {
         VStack(alignment: .leading, spacing: 20) {
             PrefRow(
                 title: "Provider",
-                description: "The backend used by the web_search and web_extract tools. Without a provider those tools fail when called; only the raw web_fetch tool works."
+                description:
+                    "The backend used by the web_search and web_extract tools. Without a provider those tools fail when called; only the raw web_fetch tool works."
             ) {
                 Picker("", selection: store.bindingWebSearchProvider) {
                     Text("None").tag("none")
@@ -315,7 +316,8 @@ private struct WebSearchTab: View {
             if store.preferencesWebSearchProvider == "tavily" {
                 PrefRow(
                     title: "Advanced Extraction",
-                    description: "Retrieve more data, including tables and embedded content, at higher latency and cost."
+                    description:
+                        "Retrieve more data, including tables and embedded content, at higher latency and cost."
                 ) {
                     Toggle("", isOn: store.bindingTavilyAdvancedExtraction)
                         .labelsHidden()
@@ -339,7 +341,8 @@ private struct DebugTab: View {
         VStack(alignment: .leading, spacing: 20) {
             PrefRow(
                 title: "App Debug",
-                description: "Mirror timestamped debug logs to stdout for app startup, config loading, FSEvents, wizards, LLM requests, streaming, MCP servers, and tool calls. Logs are always written to ~/iCanHazAI/app.log regardless."
+                description:
+                    "Mirror timestamped debug logs to stdout for app startup, config loading, FSEvents, wizards, LLM requests, streaming, MCP servers, and tool calls. Logs are always written to ~/iCanHazAI/app.log regardless."
             ) {
                 Toggle("", isOn: store.bindingAppDebugEnabled)
                     .labelsHidden()
@@ -348,7 +351,8 @@ private struct DebugTab: View {
 
             PrefRow(
                 title: "Chat Renderer Debug",
-                description: "Show an on-screen debug overlay in the chat renderer with timestamps for message loads, edits, deletions, and streaming events."
+                description:
+                    "Show an on-screen debug overlay in the chat renderer with timestamps for message loads, edits, deletions, and streaming events."
             ) {
                 Toggle("", isOn: store.bindingChatRendererDebugEnabled)
                     .labelsHidden()

@@ -35,7 +35,7 @@ struct LLMError: Error, LocalizedError, Sendable {
     /// A friendly label for the provider, used in error messages.
     private var providerLabel: String {
         switch provider {
-        case .openai:    return "OpenAI"
+        case .openai: return "OpenAI"
         case .anthropic: return "Anthropic"
         }
     }
@@ -50,7 +50,8 @@ struct LLMError: Error, LocalizedError, Sendable {
         var message: String?
         var type: String?
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let error = json["error"] as? [String: Any] {
+            let error = json["error"] as? [String: Any]
+        {
             message = error["message"] as? String
             type = error["type"] as? String
         }
@@ -71,7 +72,8 @@ struct LLMError: Error, LocalizedError, Sendable {
         var message: String?
         var type: String?
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let error = json["error"] as? [String: Any] {
+            let error = json["error"] as? [String: Any]
+        {
             message = error["message"] as? String
             type = error["type"] as? String
         }

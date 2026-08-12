@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+
 @testable import iCanHazAI
 
 /// Probe for the `ichai-test` ssh host used by the integration suite. When
@@ -50,9 +51,13 @@ extension AllAppTests {
             BuiltinToolsSSH.manager = SSHManager(cacheDir: "/tmp/ichai-test-socks")
         }
 
-        private static func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir) async -> (text: String, isError: Bool) {
+        private static func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir) async -> (
+            text: String, isError: Bool
+        ) {
             let arguments = (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
-            let result = await BuiltinTools.call(name: name, arguments: arguments, callID: "test", group: group, workdir: workdir, chatFilename: "test.json")
+            let result = await BuiltinTools.call(
+                name: name, arguments: arguments, callID: "test", group: group, workdir: workdir,
+                chatFilename: "test.json")
             return (result.content, result.isError)
         }
 
@@ -76,7 +81,8 @@ extension AllAppTests {
         @Test("write_file creates parents and read_file round-trips")
         func writeReadRoundtrip() async {
             let (wd, remote) = Self.makeContext()
-            let (wText, wErr) = await Self.call("write_file", Self.fs, ["path": "sub/dir/hello.txt", "content": "line1\nline2\n"], workdir: wd)
+            let (wText, wErr) = await Self.call(
+                "write_file", Self.fs, ["path": "sub/dir/hello.txt", "content": "line1\nline2\n"], workdir: wd)
             #expect(!wErr)
             #expect(wText.contains("Wrote 12 bytes"))
 
@@ -95,7 +101,8 @@ extension AllAppTests {
             let (wd, remote) = Self.makeContext()
             _ = await Self.call("write_file", Self.fs, ["path": "f.txt", "content": "a\nb\nc\nd\ne\n"], workdir: wd)
 
-            let (text, isError) = await Self.call("read_file", Self.fs, ["path": "f.txt", "offset": 2, "limit": 2], workdir: wd)
+            let (text, isError) = await Self.call(
+                "read_file", Self.fs, ["path": "f.txt", "offset": 2, "limit": 2], workdir: wd)
             #expect(!isError)
             #expect(text.contains("2|b"))
             #expect(text.contains("3|c"))
@@ -138,7 +145,8 @@ extension AllAppTests {
             // include_hidden opts back in, in both modes.
             let (flatH, _) = await Self.call("ls", Self.fs, ["path": ".", "include_hidden": true], workdir: wd)
             #expect(flatH.contains(".hidden"))
-            let (recH, _) = await Self.call("ls", Self.fs, ["path": ".", "recursive": true, "include_hidden": true], workdir: wd)
+            let (recH, _) = await Self.call(
+                "ls", Self.fs, ["path": ".", "recursive": true, "include_hidden": true], workdir: wd)
             #expect(recH.contains(".hidden"))
 
             let (missing, missingErr) = await Self.call("ls", Self.fs, ["path": "no-such-dir"], workdir: wd)
@@ -206,7 +214,8 @@ extension AllAppTests {
         @Test("find_file matches globs and find_text greps contents")
         func findTools() async {
             let (wd, remote) = Self.makeContext()
-            _ = await Self.call("write_file", Self.fs, ["path": "f1.swift", "content": "let needle = 1\n"], workdir: wd)
+            _ = await Self.call(
+                "write_file", Self.fs, ["path": "f1.swift", "content": "let needle = 1\n"], workdir: wd)
             _ = await Self.call("write_file", Self.fs, ["path": "f2.md", "content": "nothing here\n"], workdir: wd)
 
             let (found, foundErr) = await Self.call("find_file", Self.fs, ["pattern": "*.swift"], workdir: wd)
@@ -229,7 +238,8 @@ extension AllAppTests {
             _ = await Self.call("write_file", Self.fs, ["path": "d/ctx.txt", "content": "a\nmatch\nb\n"], workdir: wd)
 
             // ERE-only constructs: {n} intervals, alternation, +, groups.
-            let (interval, intervalErr) = await Self.call("find_text", Self.fs, ["path": "d", "regex": "we{2}d"], workdir: wd)
+            let (interval, intervalErr) = await Self.call(
+                "find_text", Self.fs, ["path": "d", "regex": "we{2}d"], workdir: wd)
             #expect(!intervalErr)
             #expect(interval.contains("weed.txt"))
             #expect(!interval.contains("wed.txt"))
@@ -244,7 +254,8 @@ extension AllAppTests {
             #expect(!bad.isEmpty)
 
             // Context groups survive intact.
-            let (ctx, ctxErr) = await Self.call("find_text", Self.fs, ["path": "d", "regex": "match", "context": 1], workdir: wd)
+            let (ctx, ctxErr) = await Self.call(
+                "find_text", Self.fs, ["path": "d", "regex": "match", "context": 1], workdir: wd)
             #expect(!ctxErr)
             #expect(ctx.contains("-1-a"))
             #expect(ctx.contains(":2:match"))
@@ -253,9 +264,11 @@ extension AllAppTests {
             // max_results drops the lexicographically last matches, not
             // arbitrary traversal-order ones.
             for i in 1...5 {
-                _ = await Self.call("write_file", Self.fs, ["path": "many/many_\(i).txt", "content": "needle\n"], workdir: wd)
+                _ = await Self.call(
+                    "write_file", Self.fs, ["path": "many/many_\(i).txt", "content": "needle\n"], workdir: wd)
             }
-            let (capped, cappedErr) = await Self.call("find_text", Self.fs, ["path": "many", "regex": "needle", "max_results": 2], workdir: wd)
+            let (capped, cappedErr) = await Self.call(
+                "find_text", Self.fs, ["path": "many", "regex": "needle", "max_results": 2], workdir: wd)
             #expect(!cappedErr)
             #expect(capped.contains("many_1.txt"))
             #expect(capped.contains("many_2.txt"))
@@ -272,16 +285,19 @@ extension AllAppTests {
             _ = await Self.call("write_file", Self.fs, ["path": "build/b.swift", "content": "needle\n"], workdir: wd)
             _ = await Self.call("write_file", Self.fs, ["path": "notes.txt", "content": "needle\n"], workdir: wd)
 
-            let (ff, ffErr) = await Self.call("find_file", Self.fs, ["pattern": "*.swift", "exclude_paths": ["build"]], workdir: wd)
+            let (ff, ffErr) = await Self.call(
+                "find_file", Self.fs, ["pattern": "*.swift", "exclude_paths": ["build"]], workdir: wd)
             #expect(!ffErr)
             #expect(ff.contains("src/a.swift"))
             #expect(!ff.contains("build"))
 
             // A trailing slash still excludes the whole directory.
-            let (ffT, _) = await Self.call("find_file", Self.fs, ["pattern": "*", "exclude_paths": ["build/"]], workdir: wd)
+            let (ffT, _) = await Self.call(
+                "find_file", Self.fs, ["pattern": "*", "exclude_paths": ["build/"]], workdir: wd)
             #expect(!ffT.contains("build"))
 
-            let (ft, ftErr) = await Self.call("find_text", Self.fs, ["regex": "needle", "exclude_paths": ["build", "notes.txt"]], workdir: wd)
+            let (ft, ftErr) = await Self.call(
+                "find_text", Self.fs, ["regex": "needle", "exclude_paths": ["build", "notes.txt"]], workdir: wd)
             #expect(!ftErr)
             #expect(ft.contains("src/a.swift"))
             #expect(!ft.contains("build"))
@@ -297,12 +313,14 @@ extension AllAppTests {
             _ = await Self.call("write_file", Self.fs, ["path": "build/b.txt", "content": "needle\n"], workdir: wd)
 
             let jail = Workdir(root: "\(Self.host):\(remote)", isolated: true, chatID: Self.chatID)
-            let (ft, ftErr) = await Self.call("find_text", Self.fs, ["regex": "needle", "exclude_paths": ["/build"]], workdir: jail)
+            let (ft, ftErr) = await Self.call(
+                "find_text", Self.fs, ["regex": "needle", "exclude_paths": ["/build"]], workdir: jail)
             #expect(!ftErr)
             #expect(ft.contains("/src/a.txt"))
             #expect(!ft.contains("build"))
             // Escaping the jail is rejected like any other path.
-            let (escape, escapeErr) = await Self.call("find_text", Self.fs, ["regex": "needle", "exclude_paths": ["../.."]], workdir: jail)
+            let (escape, escapeErr) = await Self.call(
+                "find_text", Self.fs, ["regex": "needle", "exclude_paths": ["../.."]], workdir: jail)
             #expect(escapeErr)
             #expect(escape.contains("escapes"))
 
@@ -315,15 +333,15 @@ extension AllAppTests {
             _ = await Self.call("write_file", Self.fs, ["path": "orig.txt", "content": "alpha\nbeta\n"], workdir: wd)
 
             let patch = """
-            *** Begin Patch
-            *** Update File: orig.txt
-            @@
-            -beta
-            +gamma
-            *** Add File: added.txt
-            +fresh
-            *** End Patch
-            """
+                *** Begin Patch
+                *** Update File: orig.txt
+                @@
+                -beta
+                +gamma
+                *** Add File: added.txt
+                +fresh
+                *** End Patch
+                """
             let (text, isError) = await Self.call("apply_patch", Self.code, ["patch": patch], workdir: wd)
             #expect(!isError)
             #expect(text.contains("Updated: orig.txt"))
@@ -335,7 +353,9 @@ extension AllAppTests {
             let (added, _) = await Self.call("read_file", Self.fs, ["path": "added.txt"], workdir: wd)
             #expect(added.contains("fresh"))
 
-            let (fail, failErr) = await Self.call("apply_patch", Self.code, ["patch": "*** Begin Patch\n*** Update File: ghost.txt\n@@\n-x\n+y\n*** End Patch\n"], workdir: wd)
+            let (fail, failErr) = await Self.call(
+                "apply_patch", Self.code,
+                ["patch": "*** Begin Patch\n*** Update File: ghost.txt\n@@\n-x\n+y\n*** End Patch\n"], workdir: wd)
             #expect(failErr)
             #expect(fail.contains("ghost.txt does not exist"))
 
@@ -381,15 +401,15 @@ extension AllAppTests {
             _ = await Self.call("write_file", Self.fs, ["path": "orig.txt", "content": "alpha\nbeta\n"], workdir: wd)
 
             let patch = """
-            *** Begin Patch
-            *** Update File: orig.txt
-            @@
-            -beta
-            +gamma
-            *** Add File: added.txt
-            +fresh
-            *** End Patch
-            """
+                *** Begin Patch
+                *** Update File: orig.txt
+                @@
+                -beta
+                +gamma
+                *** Add File: added.txt
+                +fresh
+                *** End Patch
+                """
             let arguments = String(data: try JSONSerialization.data(withJSONObject: ["patch": patch]), encoding: .utf8)!
             switch try await BuiltinToolsSSH.preflightApplyPatch(arguments: arguments, workdir: wd, ssh: ssh) {
             case .ok(let diff):
@@ -484,8 +504,11 @@ extension AllAppTests {
             let remote = "/tmp/ichai-tests-\(UUID().uuidString.prefix(8))"
             let wd = Workdir(root: "\(Self.host):\(remote)", isolated: true, chatID: Self.chatID)
 
-            _ = await Self.call("write_file", Self.fs, ["path": "/sub/note.txt", "content": "before\nhello ssh jail\nafter\n"], workdir: wd)
-            _ = await Self.call("write_file", Self.fs, ["path": "/top.txt", "content": "hello from the top\n"], workdir: wd)
+            _ = await Self.call(
+                "write_file", Self.fs, ["path": "/sub/note.txt", "content": "before\nhello ssh jail\nafter\n"],
+                workdir: wd)
+            _ = await Self.call(
+                "write_file", Self.fs, ["path": "/top.txt", "content": "hello from the top\n"], workdir: wd)
 
             // Default search root (the jail "/").
             let (text, err) = await Self.call("find_text", Self.fs, ["regex": "hello"], workdir: wd)
@@ -502,19 +525,22 @@ extension AllAppTests {
             #expect(!ctx.contains(remote))
 
             // A single file as the search root.
-            let (file, fileErr) = await Self.call("find_text", Self.fs, ["regex": "hello", "path": "/sub/note.txt"], workdir: wd)
+            let (file, fileErr) = await Self.call(
+                "find_text", Self.fs, ["regex": "hello", "path": "/sub/note.txt"], workdir: wd)
             #expect(!fileErr)
             #expect(file.contains("/sub/note.txt:2:hello ssh jail"))
             #expect(!file.contains(remote))
 
             // grep's own errors (missing search root) are scrubbed too.
-            let (missing, missingErr) = await Self.call("find_text", Self.fs, ["regex": "x", "path": "/no-such-dir"], workdir: wd)
+            let (missing, missingErr) = await Self.call(
+                "find_text", Self.fs, ["regex": "x", "path": "/no-such-dir"], workdir: wd)
             #expect(missingErr)
             #expect(missing.contains("/no-such-dir"))
             #expect(!missing.contains(remote))
 
             // Lexical escapes are rejected before anything runs remotely.
-            let (escape, escapeErr) = await Self.call("find_text", Self.fs, ["regex": "x", "path": "/../.."], workdir: wd)
+            let (escape, escapeErr) = await Self.call(
+                "find_text", Self.fs, ["regex": "x", "path": "/../.."], workdir: wd)
             #expect(escapeErr)
             #expect(escape.contains("escapes the workdir"))
 
@@ -566,24 +592,24 @@ extension AllAppTests {
             let wd = Workdir(root: "\(Self.host):\(remote)", isolated: true, chatID: Self.chatID)
 
             let add = """
-            *** Begin Patch
-            *** Add File: /p.txt
-            +patched
-            *** End Patch
-            """
+                *** Begin Patch
+                *** Add File: /p.txt
+                +patched
+                *** End Patch
+                """
             let (addText, addErr) = await Self.call("apply_patch", Self.code, ["patch": add], workdir: wd)
             #expect(!addErr)
             #expect(addText.contains("Added: /p.txt"))
             #expect(!addText.contains(remote))
 
             let updateMissing = """
-            *** Begin Patch
-            *** Update File: /missing.txt
-            @@
-            -x
-            +y
-            *** End Patch
-            """
+                *** Begin Patch
+                *** Update File: /missing.txt
+                @@
+                -x
+                +y
+                *** End Patch
+                """
             let (missText, missErr) = await Self.call("apply_patch", Self.code, ["patch": updateMissing], workdir: wd)
             #expect(missErr)
             #expect(missText.contains("/missing.txt does not exist"))
@@ -595,13 +621,13 @@ extension AllAppTests {
             let shellWD = Workdir(root: "\(Self.host):\(remote)", isolated: false, chatID: Self.chatID)
             _ = await Self.call("shell", Self.sh, ["command": "printf '\\377\\330\\377' > bin.dat"], workdir: shellWD)
             let updateBinary = """
-            *** Begin Patch
-            *** Update File: /bin.dat
-            @@
-            -x
-            +y
-            *** End Patch
-            """
+                *** Begin Patch
+                *** Update File: /bin.dat
+                @@
+                -x
+                +y
+                *** End Patch
+                """
             let (binText, binErr) = await Self.call("apply_patch", Self.code, ["patch": updateBinary], workdir: wd)
             #expect(binErr)
             #expect(binText.contains("/bin.dat is not readable as UTF-8"))
@@ -623,7 +649,8 @@ extension AllAppTests {
         func idleTimeout() async throws {
             let mgr = SSHManager(cacheDir: "/tmp/ichai-test-socks-idle")
             let ctx = SSHContext(host: Self.host, chatID: UUID().uuidString)
-            let r = try await mgr.exec(ctx, stdin: Data("sleep 30\n".utf8), hardTimeout: TimeInterval?.none, idleTimeout: TimeInterval(1))
+            let r = try await mgr.exec(
+                ctx, stdin: Data("sleep 30\n".utf8), hardTimeout: TimeInterval?.none, idleTimeout: TimeInterval(1))
             guard case .idleTimeout = r.failure else {
                 Issue.record("expected an idle-timeout kill, got \(String(describing: r.failure))")
                 return
@@ -634,7 +661,8 @@ extension AllAppTests {
         func hardTimeout() async throws {
             let mgr = SSHManager(cacheDir: "/tmp/ichai-test-socks-hard")
             let ctx = SSHContext(host: Self.host, chatID: UUID().uuidString)
-            let r = try await mgr.exec(ctx, stdin: Data("yes\n".utf8), hardTimeout: TimeInterval(1), idleTimeout: TimeInterval?.none)
+            let r = try await mgr.exec(
+                ctx, stdin: Data("yes\n".utf8), hardTimeout: TimeInterval(1), idleTimeout: TimeInterval?.none)
             guard case .hardTimeout = r.failure else {
                 Issue.record("expected a hard-timeout kill, got \(String(describing: r.failure))")
                 return

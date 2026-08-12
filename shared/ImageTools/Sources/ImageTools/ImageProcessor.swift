@@ -17,8 +17,6 @@ public struct ImageAttachment: Codable, Identifiable, Equatable, Hashable, Senda
     /// for pasted images.
     public var originalName: String?
 
-    public var id_uuid: UUID { id }
-
     /// The filename on disk, e.g. "A1B2...-....png".
     public var filename: String { "\(id.uuidString).\(ext)" }
 
@@ -122,7 +120,8 @@ public enum ImageProcessor {
     /// Returns nil if the data cannot be decoded.
     public static func process(_ data: Data) -> Processed? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let uti = CGImageSourceGetType(source) else {
+            let uti = CGImageSourceGetType(source)
+        else {
             return nil
         }
 
@@ -177,15 +176,17 @@ public enum ImageProcessor {
         guard let colorSpace = cgImage.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB) else {
             return nil
         }
-        guard let ctx = CGContext(
-            data: nil,
-            width: Int(newW),
-            height: Int(newH),
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
+        guard
+            let ctx = CGContext(
+                data: nil,
+                width: Int(newW),
+                height: Int(newH),
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        else {
             return nil
         }
         ctx.interpolationQuality = .high

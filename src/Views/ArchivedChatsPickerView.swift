@@ -23,8 +23,8 @@ struct ArchivedChatsPickerView: View {
     @State private var confirmingDeleteAll = false
 
     /// All archived chats, unfiltered — drives the Delete All button so it
-   /// stays available (and correctly counted) while a search query hides
-   /// part of the list.
+    /// stays available (and correctly counted) while a search query hides
+    /// part of the list.
     private var allArchived: [ChatSummary] {
         FuzzySearch.rank(store.visibleArchivedSummaries, query: "") { [$0.displayTitle, $0.filename] }
     }
@@ -36,7 +36,8 @@ struct ArchivedChatsPickerView: View {
     /// (newest first), fuzzy-filtered by display title and filename.
     /// `nonisolated` so it can be unit-tested without the main actor.
     nonisolated static func filter(_ records: [ChatRecord], query: String) -> [ChatSummary] {
-        let archived = records
+        let archived =
+            records
             .filter { $0.isArchived && !$0.isTemporary }
             .map(ChatSummary.init)
             .sorted { $0.sortKey > $1.sortKey }
@@ -64,12 +65,13 @@ struct ArchivedChatsPickerView: View {
             width: 420,
             rowContent: { item, _ in
                 let role = item.roleName.flatMap { name in store.roles.first(where: { $0.name == name }) }
-                return AnyView(ArchivedChatRowContent(
-                    item: item,
-                    role: role,
-                    onRestore: { store.setChatArchived(item.id, archived: false) },
-                    onDelete: { deletingChat = item }
-                ))
+                return AnyView(
+                    ArchivedChatRowContent(
+                        item: item,
+                        role: role,
+                        onRestore: { store.setChatArchived(item.id, archived: false) },
+                        onDelete: { deletingChat = item }
+                    ))
             },
             onSelect: { item in
                 store.openArchivedChat(item.id)

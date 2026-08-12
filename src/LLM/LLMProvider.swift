@@ -101,7 +101,8 @@ final class ToolCallAccumulator: @unchecked Sendable {
     /// Records a delta for the given index. `id`/`name` are applied when
     /// non-empty (first delta carries them); `argumentsDelta` is appended.
     func addDelta(index: Int, id: String?, name: String?, argumentsDelta: String?) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         var entry = entries[index] ?? Entry()
         if let id, !id.isEmpty { entry.id = id }
         if let name, !name.isEmpty { entry.name = name }
@@ -112,7 +113,8 @@ final class ToolCallAccumulator: @unchecked Sendable {
     /// Stashes the input token count for later combination with the output
     /// count (Anthropic splits usage across two events).
     func setInputTokens(_ count: Int, cached: Int = 0, creation: Int = 0) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         inputTokens = count
         cachedInputTokens = cached
         cacheCreationTokens = creation
@@ -120,14 +122,16 @@ final class ToolCallAccumulator: @unchecked Sendable {
 
     /// Returns the stashed input token counts.
     func getInputTokens() -> (input: Int, cached: Int, creation: Int) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return (inputTokens, cachedInputTokens, cacheCreationTokens)
     }
 
     /// Materialize the accumulated tool calls into [`ToolCall`](src/MCP/MCPModels.swift)
     /// objects, ordered by index. Missing ids are synthesised as `call_{index}`.
     func materialize() -> [ToolCall] {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return entries.keys.sorted().map { index in
             let e = entries[index]!
             let id = e.id.isEmpty ? "call_\(index)" : e.id

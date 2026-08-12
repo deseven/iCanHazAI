@@ -8,59 +8,46 @@ import { transientToolStatus, localToolStatus } from "../src/toolSummary";
 // persisted in the chat data — only the transient states are derived here.
 
 test("pending approval beats everything", () => {
-  const s = transientToolStatus(undefined, false, true);
-  assert.deepEqual(s, { kind: "pending", label: "approval", description: "" });
+    const s = transientToolStatus(undefined, false, true);
+    assert.deepEqual(s, { kind: "pending", label: "approval", description: "" });
 });
 
 test("pending beats a streaming result", () => {
-  const s = transientToolStatus(
-    { content: "partial", isError: false, isStreaming: true },
-    true,
-    true,
-  );
-  assert.deepEqual(s, { kind: "pending", label: "approval", description: "" });
+    const s = transientToolStatus({ content: "partial", isError: false, isStreaming: true }, true, true);
+    assert.deepEqual(s, { kind: "pending", label: "approval", description: "" });
 });
 
 test("running without a result yet", () => {
-  const s = transientToolStatus(undefined, true, false);
-  assert.deepEqual(s, { kind: "running", label: "running", description: "" });
+    const s = transientToolStatus(undefined, true, false);
+    assert.deepEqual(s, { kind: "running", label: "running", description: "" });
 });
 
 test("streaming result shows the first line so far", () => {
-  const s = transientToolStatus(
-    { content: "line one\nline two", isError: false, isStreaming: true },
-    true,
-    false,
-  );
-  assert.deepEqual(s, { kind: "running", label: "running", description: "line one" });
+    const s = transientToolStatus({ content: "line one\nline two", isError: false, isStreaming: true }, true, false);
+    assert.deepEqual(s, { kind: "running", label: "running", description: "line one" });
 });
 
 test("no result and not running/pending → null", () => {
-  assert.equal(transientToolStatus(undefined, false, false), null);
+    assert.equal(transientToolStatus(undefined, false, false), null);
 });
 
 test("a final result has no transient status (the persisted summary is used)", () => {
-  assert.equal(transientToolStatus({ content: "done output", isError: false }, false, false), null);
-  assert.equal(transientToolStatus({ content: "boom", isError: true }, false, false), null);
-  assert.equal(
-    transientToolStatus({ content: "denied", isError: true, isDenied: true }, false, false),
-    null,
-  );
+    assert.equal(transientToolStatus({ content: "done output", isError: false }, false, false), null);
+    assert.equal(transientToolStatus({ content: "boom", isError: true }, false, false), null);
+    assert.equal(transientToolStatus({ content: "denied", isError: true, isDenied: true }, false, false), null);
 });
 
 test("localToolStatus derives cancelled for results without a persisted summary", () => {
-  assert.deepEqual(
-    localToolStatus({ content: "Tool call was cancelled…", isError: true, isCancelled: true }),
-    { kind: "cancelled", label: "cancelled", description: "" },
-  );
+    assert.deepEqual(localToolStatus({ content: "Tool call was cancelled…", isError: true, isCancelled: true }), {
+        kind: "cancelled",
+        label: "cancelled",
+        description: "",
+    });
 });
 
 test("localToolStatus stays out of every other state", () => {
-  assert.equal(localToolStatus(undefined), null);
-  assert.equal(localToolStatus({ content: "done output", isError: false }), null);
-  assert.equal(localToolStatus({ content: "boom", isError: true }), null);
-  assert.equal(
-    localToolStatus({ content: "partial", isError: false, isStreaming: true, isCancelled: true }),
-    null,
-  );
+    assert.equal(localToolStatus(undefined), null);
+    assert.equal(localToolStatus({ content: "done output", isError: false }), null);
+    assert.equal(localToolStatus({ content: "boom", isError: true }), null);
+    assert.equal(localToolStatus({ content: "partial", isError: false, isStreaming: true, isCancelled: true }), null);
 });

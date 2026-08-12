@@ -56,7 +56,9 @@ struct OpenAIProvider: LLMProvider {
     ) -> [String: Any] {
         var body: [String: Any] = [
             "model": connection.model,
-            "messages": messages.map { openAIMessage($0, chatFilename: chatFilename, imageInput: connection.imageInput) },
+            "messages": messages.map {
+                openAIMessage($0, chatFilename: chatFilename, imageInput: connection.imageInput)
+            },
         ]
 
         if let tools, !tools.isEmpty {
@@ -64,7 +66,8 @@ struct OpenAIProvider: LLMProvider {
                 var function: [String: Any] = ["name": def.namespacedName]
                 if let desc = def.description { function["description"] = desc }
                 if let schemaData = def.inputSchema.data(using: .utf8),
-                   let schema = try? JSONSerialization.jsonObject(with: schemaData) {
+                    let schema = try? JSONSerialization.jsonObject(with: schemaData)
+                {
                     function["parameters"] = schema
                 }
                 return [
@@ -94,7 +97,8 @@ struct OpenAIProvider: LLMProvider {
     /// Maps a [`ChatMessage`](src/Chat/Models.swift) to the OpenAI message JSON shape.
     private func openAIMessage(_ msg: ChatMessage, chatFilename: String, imageInput: Bool) -> [String: Any] {
         if msg.role == .user, let attachments = msg.attachments, !attachments.isEmpty {
-            return openAIAttachmentMessage(msg, attachments: attachments, chatFilename: chatFilename, imageInput: imageInput)
+            return openAIAttachmentMessage(
+                msg, attachments: attachments, chatFilename: chatFilename, imageInput: imageInput)
         }
         if msg.role == .assistant, let calls = msg.toolCalls, !calls.isEmpty {
             var dict: [String: Any] = ["role": "assistant"]
@@ -126,10 +130,12 @@ struct OpenAIProvider: LLMProvider {
                     let url = "data:\(image.mimeType);base64,\(image.data)"
                     return [
                         "role": "tool",
-                        "content": [[
-                            "type": "image_url",
-                            "image_url": ["url": url, "detail": "auto"] as [String: Any],
-                        ] as [String: Any]],
+                        "content": [
+                            [
+                                "type": "image_url",
+                                "image_url": ["url": url, "detail": "auto"] as [String: Any],
+                            ] as [String: Any]
+                        ],
                         "tool_call_id": r.callID,
                     ] as [String: Any]
                 } else {
@@ -171,7 +177,9 @@ struct OpenAIProvider: LLMProvider {
             switch attachment.kind {
             case .image:
                 if imageInput {
-                    guard let data = EnvironmentManager.shared.loadAttachmentData(attachment, chatFilename: chatFilename) else { continue }
+                    guard
+                        let data = EnvironmentManager.shared.loadAttachmentData(attachment, chatFilename: chatFilename)
+                    else { continue }
                     let url = "data:\(attachment.mimeType);base64,\(data.base64EncodedString())"
                     parts.append([
                         "type": "image_url",
@@ -182,7 +190,8 @@ struct OpenAIProvider: LLMProvider {
                 }
             case .text, .document:
                 if let text = attachment.text, !text.isEmpty,
-                   let block = AttachmentRequestBuilder.block(for: attachment) {
+                    let block = AttachmentRequestBuilder.block(for: attachment)
+                {
                     parts.append(["type": "text", "text": block])
                 }
             }
@@ -197,17 +206,21 @@ struct OpenAIProvider: LLMProvider {
             return []
         }
         if let usage = json["usage"] as? [String: Any],
-           let total = usage["total_tokens"] as? Int,
-           let promptTokens = usage["prompt_tokens"] as? Int,
-           let completionTokens = usage["completion_tokens"] as? Int {
+            let total = usage["total_tokens"] as? Int,
+            let promptTokens = usage["prompt_tokens"] as? Int,
+            let completionTokens = usage["completion_tokens"] as? Int
+        {
             let cached = (usage["prompt_tokens_details"] as? [String: Any])?["cached_tokens"] as? Int ?? 0
-            return [.usage(TokenUsage(
-                tokensUsed: total,
-                inputTokens: promptTokens - cached,
-                outputTokens: completionTokens,
-                cachedInputTokens: cached,
-                cacheCreationTokens: 0
-            ))]
+            return [
+                .usage(
+                    TokenUsage(
+                        tokensUsed: total,
+                        inputTokens: promptTokens - cached,
+                        outputTokens: completionTokens,
+                        cachedInputTokens: cached,
+                        cacheCreationTokens: 0
+                    ))
+            ]
         }
         guard let choices = json["choices"] as? [[String: Any]] else {
             return []
@@ -253,9 +266,10 @@ struct OpenAIProvider: LLMProvider {
 
     func parseCompleteResponse(_ data: Data) -> String {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
-              let first = choices.first,
-              let message = first["message"] as? [String: Any] else {
+            let choices = json["choices"] as? [[String: Any]],
+            let first = choices.first,
+            let message = first["message"] as? [String: Any]
+        else {
             return ""
         }
         return (message["content"] as? String) ?? ""
@@ -265,7 +279,8 @@ struct OpenAIProvider: LLMProvider {
 
     func parseModelsResponse(_ data: Data) -> [ModelInfo] {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let models = json["data"] as? [[String: Any]] else {
+            let models = json["data"] as? [[String: Any]]
+        else {
             return []
         }
         // OpenAI-compatible endpoints return `{"data":[{"id":"..."}, ...]}`.

@@ -1,8 +1,8 @@
 // Copyright (C) 2026 Ivan Novohatski <https://d7.wtf/>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import Foundation
 import FSEventsWrapper
+import Foundation
 
 /// The UI-free core of the app. Owns all chat/connection/role state and
 /// orchestrates streaming requests. It is a singleton `actor` so it outlives
@@ -115,7 +115,7 @@ actor ChatEngine {
     /// dirty. This collapses dozens of events per second into ~20.
     private var pendingEmitTask: Task<Void, Never>?
     private var emitDirty = false
-    private let emitCoalesceInterval: UInt64 = 50_000_000 // 50ms in nanoseconds
+    private let emitCoalesceInterval: UInt64 = 50_000_000  // 50ms in nanoseconds
 
     /// Filenames of chats for which a name-generation request is in flight.
     /// Prevents duplicate concurrent naming attempts for the same chat.
@@ -143,7 +143,7 @@ actor ChatEngine {
     private var pendingReloadTask: Task<Void, Never>?
     /// Settle interval for debouncing of external FSEvents: 1s after the last
     /// event, all unique files that changed are reloaded together.
-    private let reloadDebounceInterval: UInt64 = 1_000_000_000 // 1s
+    private let reloadDebounceInterval: UInt64 = 1_000_000_000  // 1s
     /// Paths for which we've already logged a self-write suppression line in
     /// the current burst. Prevents the atomic-write event storm (temp create,
     /// temp rename, target rename, target modify, …) from producing one
@@ -195,32 +195,42 @@ actor ChatEngine {
         // are registered in the per-path suppression registry before the
         // atomic-write burst hits FSEvents.
         let configPath = env.rootURL.appendingPathComponent("config.toml").path
-        Task { await ConfigManager.shared.setWillWriteConfigHook { [configPath] in
-            // The hook runs on the ConfigManager actor; hop into the engine to
-            // register the suppressed path. We use a non-isolated registration
-            // method so we don't deadlock waiting on the engine actor.
-            ChatEngine.shared.registerSelfWrite(path: configPath)
-        } }
+        Task {
+            await ConfigManager.shared.setWillWriteConfigHook { [configPath] in
+                // The hook runs on the ConfigManager actor; hop into the engine to
+                // register the suppressed path. We use a non-isolated registration
+                // method so we don't deadlock waiting on the engine actor.
+                ChatEngine.shared.registerSelfWrite(path: configPath)
+            }
+        }
         // Wire MCPManager errors into the engine's error event bus so the UI
         // can surface connection failures without crashing the stream.
-        Task { await MCPManager.shared.setErrorHandler { [weak self] message in
-            Task { await self?.emit(.error(message)) }
-        } }
+        Task {
+            await MCPManager.shared.setErrorHandler { [weak self] message in
+                Task { await self?.emit(.error(message)) }
+            }
+        }
         // Wire MCPManager progress notifications into the engine so streaming
         // tool output is folded onto the live `tool`-role message in the
         // originating chat (identified by chatFilename + callID) and pushed to
         // the renderer as it arrives. No global scan: the sink carries the
         // chatFilename so we update one message in one chat directly.
-        Task { await MCPManager.shared.setProgressHandler { [weak self] chatFilename, callID, partial in
-            Task { await self?.updateStreamingToolResult(chatFilename: chatFilename, callID: callID, partial: partial) }
-        } }
+        Task {
+            await MCPManager.shared.setProgressHandler { [weak self] chatFilename, callID, partial in
+                Task {
+                    await self?.updateStreamingToolResult(chatFilename: chatFilename, callID: callID, partial: partial)
+                }
+            }
+        }
         // Wire MCPManager configuration-status updates into the engine so the
         // UI overlay can reflect each server's connect/listTools progress. The
         // handler hops back into the engine actor to update `mcpConfiguration`
         // and emit the snapshot.
-        Task { await MCPManager.shared.setStatusHandler { [weak self] state in
-            Task { await self?.handleMCPConfigurationState(state) }
-        } }
+        Task {
+            await MCPManager.shared.setStatusHandler { [weak self] state in
+                Task { await self?.handleMCPConfigurationState(state) }
+            }
+        }
         // Load in dependency order: connections / MCPs / prompts first, then
         // roles (validated against them), then chats from the cache.
         let snapshot = env.loadEnvironment()
@@ -234,7 +244,10 @@ actor ChatEngine {
         }
         loadFromCache()
         startWatching()
-        debugLog("Engine", "start complete — \(records.count) chats, \(connections.count) connections, \(mcps.count) MCP servers, \(roles.count) roles, \(prompts.count) prompts")
+        debugLog(
+            "Engine",
+            "start complete — \(records.count) chats, \(connections.count) connections, \(mcps.count) MCP servers, \(roles.count) roles, \(prompts.count) prompts"
+        )
         emit(.chatsChanged(records))
         emit(.rolesChanged(roles))
         emit(.promptsChanged(prompts))
@@ -329,7 +342,9 @@ actor ChatEngine {
     private func handleFSEvent(_ event: FSEvent) {
         switch event {
         case .mustScanSubDirs(let path, let reason):
-            debugLog("FSEvents", "mustScanSubDirs at \(env.relativePath(URL(fileURLWithPath: path))) — reason=\(reason) → full rescan")
+            debugLog(
+                "FSEvents",
+                "mustScanSubDirs at \(env.relativePath(URL(fileURLWithPath: path))) — reason=\(reason) → full rescan")
             fullRescan()
             return
         case .rootChanged(let path, _):
@@ -338,16 +353,16 @@ actor ChatEngine {
             return
         // Ignore these event types entirely — they don't affect content.
         case .itemInodeMetadataModified, .itemXattrModified,
-             .itemOwnershipModified, .itemFinderInfoModified,
-             .volumeMounted, .volumeUnmounted,
-             .eventIdsWrapped, .streamHistoryDone, .generic:
+            .itemOwnershipModified, .itemFinderInfoModified,
+            .volumeMounted, .volumeUnmounted,
+            .eventIdsWrapped, .streamHistoryDone, .generic:
             return
         // Content-affecting events — classify and route below.
         case .itemCreated(_, let itemType, _, _),
-             .itemRemoved(_, let itemType, _, _),
-             .itemDataModified(_, let itemType, _, _),
-             .itemRenamed(_, let itemType, _, _),
-             .itemClonedAtPath(_, let itemType, _, _):
+            .itemRemoved(_, let itemType, _, _),
+            .itemDataModified(_, let itemType, _, _),
+            .itemRenamed(_, let itemType, _, _),
+            .itemClonedAtPath(_, let itemType, _, _):
             // Ignore directory events — we only care about files.
             guard itemType == .file else { return }
             break
@@ -356,10 +371,10 @@ actor ChatEngine {
         let path: String
         switch event {
         case .itemCreated(let p, _, _, _),
-             .itemRemoved(let p, _, _, _),
-             .itemDataModified(let p, _, _, _),
-             .itemRenamed(let p, _, _, _),
-             .itemClonedAtPath(let p, _, _, _):
+            .itemRemoved(let p, _, _, _),
+            .itemDataModified(let p, _, _, _),
+            .itemRenamed(let p, _, _, _),
+            .itemClonedAtPath(let p, _, _, _):
             path = p
         default:
             return
@@ -535,7 +550,9 @@ actor ChatEngine {
             guard !Task.isCancelled else { return }
             await self?.flushPendingReloads()
         }
-        debugLog("FSEvents", "armed debounce for \(env.relativePath(URL(fileURLWithPath: path))) (\(pendingReloads.count) pending)")
+        debugLog(
+            "FSEvents",
+            "armed debounce for \(env.relativePath(URL(fileURLWithPath: path))) (\(pendingReloads.count) pending)")
     }
 
     /// Drains all accumulated reloads once the debounce settles. Each unique
@@ -662,16 +679,17 @@ actor ChatEngine {
                     records[idx].lastError = nil
                 } else {
                     // New chat appeared on disk — never loaded.
-                    records.append(ChatRecord(
-                        filename: filename,
-                        chat: nil,
-                        cachedName: info.name,
-                        cachedRole: info.role,
-                        cachedModificationTime: info.modificationTime,
-                        cachedArchive: info.archive,
-                        cachedWorkingDirectory: info.workingDirectory,
-                        cachedLastActivity: info.lastActivity
-                    ))
+                    records.append(
+                        ChatRecord(
+                            filename: filename,
+                            chat: nil,
+                            cachedName: info.name,
+                            cachedRole: info.role,
+                            cachedModificationTime: info.modificationTime,
+                            cachedArchive: info.archive,
+                            cachedWorkingDirectory: info.workingDirectory,
+                            cachedLastActivity: info.lastActivity
+                        ))
                 }
             }
             sortAndEmit()
@@ -884,11 +902,13 @@ actor ChatEngine {
     private func fullRescan() {
         // A full rescan reloads every Application resource; surface it to the
         // loader so the user sees what's being reconciled.
-        emit(.loaderActivity(LoaderActivity(counts: [
-            .connections: env.connectionCount(),
-            .prompts: env.promptCount(),
-            .roles: env.roleCount(),
-        ])))
+        emit(
+            .loaderActivity(
+                LoaderActivity(counts: [
+                    .connections: env.connectionCount(),
+                    .prompts: env.promptCount(),
+                    .roles: env.roleCount(),
+                ])))
         // Load in dependency order: connections / MCPs / prompts first, then
         // roles (validated against them), then chats.
         let snapshot = env.loadEnvironment()
@@ -1095,21 +1115,22 @@ actor ChatEngine {
         var newRecords: [ChatRecord] = []
         for info in entries {
             let existing = records.first(where: { $0.filename == info.filename })
-            newRecords.append(ChatRecord(
-                filename: info.filename,
-                chat: existing?.chat,
-                cachedName: info.name,
-                cachedRole: info.role,
-                cachedModificationTime: info.modificationTime,
-                cachedArchive: info.archive,
-                cachedWorkingDirectory: info.workingDirectory,
-                cachedLastActivity: info.lastActivity,
-                isStreaming: existing?.isStreaming ?? false,
-                stopAfterIteration: existing?.stopAfterIteration ?? false,
-                hasUnreadActivity: existing?.hasUnreadActivity ?? false,
-                lastError: existing?.lastError,
-                createdAt: existing?.createdAt ?? info.lastActivity
-            ))
+            newRecords.append(
+                ChatRecord(
+                    filename: info.filename,
+                    chat: existing?.chat,
+                    cachedName: info.name,
+                    cachedRole: info.role,
+                    cachedModificationTime: info.modificationTime,
+                    cachedArchive: info.archive,
+                    cachedWorkingDirectory: info.workingDirectory,
+                    cachedLastActivity: info.lastActivity,
+                    isStreaming: existing?.isStreaming ?? false,
+                    stopAfterIteration: existing?.stopAfterIteration ?? false,
+                    hasUnreadActivity: existing?.hasUnreadActivity ?? false,
+                    lastError: existing?.lastError,
+                    createdAt: existing?.createdAt ?? info.lastActivity
+                ))
         }
         sortRecordsByActivity(&newRecords)
         records = newRecords
@@ -1127,21 +1148,22 @@ actor ChatEngine {
         var newRecords: [ChatRecord] = []
         for info in entries {
             let existing = records.first(where: { $0.filename == info.filename })
-            newRecords.append(ChatRecord(
-                filename: info.filename,
-                chat: existing?.chat,
-                cachedName: info.name,
-                cachedRole: info.role,
-                cachedModificationTime: info.modificationTime,
-                cachedArchive: info.archive,
-                cachedWorkingDirectory: info.workingDirectory,
-                cachedLastActivity: info.lastActivity,
-                isStreaming: existing?.isStreaming ?? false,
-                stopAfterIteration: existing?.stopAfterIteration ?? false,
-                hasUnreadActivity: existing?.hasUnreadActivity ?? false,
-                lastError: existing?.lastError,
-                createdAt: existing?.createdAt ?? info.lastActivity
-            ))
+            newRecords.append(
+                ChatRecord(
+                    filename: info.filename,
+                    chat: existing?.chat,
+                    cachedName: info.name,
+                    cachedRole: info.role,
+                    cachedModificationTime: info.modificationTime,
+                    cachedArchive: info.archive,
+                    cachedWorkingDirectory: info.workingDirectory,
+                    cachedLastActivity: info.lastActivity,
+                    isStreaming: existing?.isStreaming ?? false,
+                    stopAfterIteration: existing?.stopAfterIteration ?? false,
+                    hasUnreadActivity: existing?.hasUnreadActivity ?? false,
+                    lastError: existing?.lastError,
+                    createdAt: existing?.createdAt ?? info.lastActivity
+                ))
         }
         sortRecordsByActivity(&newRecords)
         records = newRecords
@@ -1179,7 +1201,10 @@ actor ChatEngine {
     /// selected or created. Any existing temporary chat is destroyed first —
     /// at most one temporary chat can exist at a time.
     @discardableResult
-    func createNewChat(role roleName: String, temporary: Bool = false, outputRendering: ChatOutputRendering? = nil, workingDirectory overrideWorkdir: String? = nil) async -> String {
+    func createNewChat(
+        role roleName: String, temporary: Bool = false, outputRendering: ChatOutputRendering? = nil,
+        workingDirectory overrideWorkdir: String? = nil
+    ) async -> String {
         pruneEmptyChats(except: nil)
         destroyAllTemporaryChats()
         let filename = temporary ? env.newTemporaryChatFilename() : store.newChatFilename()
@@ -1394,7 +1419,8 @@ actor ChatEngine {
     /// UI reflects the change (e.g. a picked working directory).
     private func saveChat(_ chat: Chat, filename: String) {
         if let idx = records.firstIndex(where: { $0.filename == filename }),
-           records[idx].isTemporary {
+            records[idx].isTemporary
+        {
             records[idx].chat = chat
             return
         }
@@ -1502,11 +1528,13 @@ actor ChatEngine {
     private func effectiveConnection(for chat: Chat) -> Connection? {
         let role = self.role(for: chat)
         if role?.connectionOverrideAllowed == true, let id = chat.connection,
-           let conn = connections.first(where: { $0.id == id }) {
+            let conn = connections.first(where: { $0.id == id })
+        {
             return conn
         }
         if let roleConn = role?.connection, !roleConn.isEmpty,
-           let conn = connections.first(where: { $0.id == roleConn }) {
+            let conn = connections.first(where: { $0.id == roleConn })
+        {
             return conn
         }
         if let id = chat.connection, let conn = connections.first(where: { $0.id == id }) {
@@ -1543,7 +1571,8 @@ actor ChatEngine {
         let role = self.role(for: chat)
         // The rendering target is sticky per chat: whichever surface created
         // the chat (GUI vs CLI) decides what capabilities are advertised.
-        let outputRendering = chat.outputRendering == .plain
+        let outputRendering =
+            chat.outputRendering == .plain
             ? PromptVariables.plainTextRendering()
             : PromptVariables.renderingCapabilities(mermaid: mermaid, katex: katex)
         let workdir = effectiveWorkingDirectory(for: chat)
@@ -1566,7 +1595,9 @@ actor ChatEngine {
         let webFilter = resolvedToolSources(for: chat)
             .first(where: { $0.isBuiltinGroup && $0.name == BuiltinTools.webGroup })?.toolsFilter
         let webConfigured = await ConfigManager.shared.getWebSearchConfig().isConfigured
-        if let notice = BuiltinToolsWeb.providerMissingNotice(webGroupToolsFilter: webFilter, isConfigured: webConfigured) {
+        if let notice = BuiltinToolsWeb.providerMissingNotice(
+            webGroupToolsFilter: webFilter, isConfigured: webConfigured)
+        {
             content += "\n\n" + notice
         }
         return ChatMessage(role: .system, content: content)
@@ -1582,18 +1613,19 @@ actor ChatEngine {
         // Built-in groups: enabled when their `[group]` table is present.
         for group in role.enabledGroups {
             let cfg = role.groupConfig(group) ?? RoleToolGroup()
-            sources.append(ResolvedToolSource(
-                name: group,
-                isBuiltinGroup: true,
-                toolsFilter: cfg.tools ?? [],
-                autoAllow: Set(cfg.autoAllow ?? []),
-                autoAllowAll: cfg.autoAllowAll ?? false,
-                // Isolation is a role-level switch applied to the
-                // isolation-capable groups (Filesystem/Code).
-                directoryIsolation: role.hasDirectoryIsolation
-                    && BuiltinTools.isolationCapableGroups.contains(group),
-                shellWhitelist: Set(cfg.shellWhitelist ?? [])
-            ))
+            sources.append(
+                ResolvedToolSource(
+                    name: group,
+                    isBuiltinGroup: true,
+                    toolsFilter: cfg.tools ?? [],
+                    autoAllow: Set(cfg.autoAllow ?? []),
+                    autoAllowAll: cfg.autoAllowAll ?? false,
+                    // Isolation is a role-level switch applied to the
+                    // isolation-capable groups (Filesystem/Code).
+                    directoryIsolation: role.hasDirectoryIsolation
+                        && BuiltinTools.isolationCapableGroups.contains(group),
+                    shellWhitelist: Set(cfg.shellWhitelist ?? [])
+                ))
         }
         // Custom MCP servers: the chat's own selection (seeded from the role,
         // possibly overridden per chat). Chats that predate the per-chat
@@ -1610,15 +1642,16 @@ actor ChatEngine {
         var seen: Set<String> = []
         for name in selectedNames where customNames.contains(name) && seen.insert(name).inserted {
             let entry = roleEntries[name]
-            sources.append(ResolvedToolSource(
-                name: name,
-                isBuiltinGroup: false,
-                toolsFilter: entry?.tools ?? [],
-                autoAllow: Set(entry?.autoAllow ?? []),
-                autoAllowAll: entry?.autoAllowAll ?? false,
-                directoryIsolation: false,
-                shellWhitelist: []
-            ))
+            sources.append(
+                ResolvedToolSource(
+                    name: name,
+                    isBuiltinGroup: false,
+                    toolsFilter: entry?.tools ?? [],
+                    autoAllow: Set(entry?.autoAllow ?? []),
+                    autoAllowAll: entry?.autoAllowAll ?? false,
+                    directoryIsolation: false,
+                    shellWhitelist: []
+                ))
         }
         return sources
     }
@@ -1664,7 +1697,9 @@ actor ChatEngine {
     /// written.
     @discardableResult
     func sendMessage(filename: String, text: String, pendingAttachments: [PendingAttachment] = []) async -> Bool {
-        debugLog("Chat", "sendMessage — chat=\(filename), text length=\(text.count), attachments=\(pendingAttachments.count)")
+        debugLog(
+            "Chat", "sendMessage — chat=\(filename), text length=\(text.count), attachments=\(pendingAttachments.count)"
+        )
         // Ensure the chat is loaded before sending.
         await ensureChatLoaded(filename: filename)
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return false }
@@ -1679,9 +1714,10 @@ actor ChatEngine {
         // new user message follows the previous message directly. An errored
         // placeholder that never received content is not preserved as a branch.
         if let leafID = baseChat.activeLeafID,
-           let leaf = baseChat.message(id: leafID),
-           leaf.role == .assistant,
-           leaf.error != nil {
+            let leaf = baseChat.message(id: leafID),
+            leaf.role == .assistant,
+            leaf.error != nil
+        {
             removeMessageAndSubtree(messageID: leafID, from: &baseChat, filename: filename)
         }
 
@@ -1766,7 +1802,11 @@ actor ChatEngine {
     /// disconnects. For regular chats the chat itself stays visible and
     /// continuable in the GUI, but a client disconnecting mid-stream stops
     /// the stream — nobody is consuming it anymore.
-    func performOneShot(message: String, role requestedRole: String?, connection requestedConnection: String?, chatName: String?, temporary: Bool = false, workdir: String? = nil, workdirExplicit: Bool = false, allowAll: Bool = false, interactive: Bool = false) async -> OneShotStart {
+    func performOneShot(
+        message: String, role requestedRole: String?, connection requestedConnection: String?, chatName: String?,
+        temporary: Bool = false, workdir: String? = nil, workdirExplicit: Bool = false, allowAll: Bool = false,
+        interactive: Bool = false
+    ) async -> OneShotStart {
         let filename: String
         if let chatName {
             guard !temporary else {
@@ -1811,18 +1851,25 @@ actor ChatEngine {
         if let workdir, !workdir.isEmpty {
             await ensureChatLoaded(filename: filename)
             if let idx = records.firstIndex(where: { $0.filename == filename }),
-               var chat = records[idx].chat {
+                var chat = records[idx].chat
+            {
                 let role = role(for: chat)
                 if role?.workingDirectory?.isEmpty == false {
                     if workdirExplicit {
-                        notifyOneShot(filename: filename, .notice("--workdir has no effect: role \"\(chat.role ?? "?")\" fixes the working directory"))
+                        notifyOneShot(
+                            filename: filename,
+                            .notice("--workdir has no effect: role \"\(chat.role ?? "?")\" fixes the working directory")
+                        )
                     }
                 } else if role?.hasWorkdirCapableMCP == true {
                     chat.workingDirectory = workdir
                     records[idx].chat = chat
                     // Persisted by finishStream once the stream settles.
                 } else if workdirExplicit {
-                    notifyOneShot(filename: filename, .notice("--workdir has no effect: role \"\(chat.role ?? "?")\" does not use a working directory"))
+                    notifyOneShot(
+                        filename: filename,
+                        .notice(
+                            "--workdir has no effect: role \"\(chat.role ?? "?")\" does not use a working directory"))
                 }
             }
         }
@@ -1831,7 +1878,8 @@ actor ChatEngine {
         // leaf with the most recent timestamp and make it the active path
         // (ignoring the GUI's `activeChild` choices). The CLI appends there.
         if let idx = records.firstIndex(where: { $0.filename == filename }),
-           var chat = records[idx].chat, chat.hasForks {
+            var chat = records[idx].chat, chat.hasForks
+        {
             chat.setActivePathToMostRecentLeaf()
             records[idx].chat = chat
         }
@@ -1926,7 +1974,8 @@ actor ChatEngine {
         let treesEnabled = hasChatTrees(for: updatedChat)
         // An errored placeholder that never received content is NOT preserved
         // as a branch — there's nothing worth keeping. Replace it in place.
-        let isNeverStreamedError = target.error != nil
+        let isNeverStreamedError =
+            target.error != nil
             && target.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && (target.thinking?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
             && (target.toolCalls?.isEmpty ?? true)
@@ -1973,9 +2022,10 @@ actor ChatEngine {
         guard let chat = records[idx].chat else { return }
         // If the active leaf is an assistant message, regenerate it directly.
         if let leafID = chat.activeLeafID,
-           let leaf = chat.message(id: leafID),
-           leaf.role == .assistant,
-           chat.activeMessages.count > 1 {
+            let leaf = chat.message(id: leafID),
+            leaf.role == .assistant,
+            chat.activeMessages.count > 1
+        {
             await regenerate(filename: filename, assistantMessageID: leaf.id)
             return
         }
@@ -2079,7 +2129,8 @@ actor ChatEngine {
                             // Anthropic reports max_tokens when the model
                             // exhausted its token budget on (omitted) thinking
                             // before emitting any visible content.
-                            message = "The model reached the token limit before producing any output. It likely spent all its tokens on internal thinking. Try increasing max_tokens, then retry."
+                            message =
+                                "The model reached the token limit before producing any output. It likely spent all its tokens on internal thinking. Try increasing max_tokens, then retry."
                         } else {
                             message = "The model produced no output. The provider may be overloaded — please try again."
                         }
@@ -2109,7 +2160,8 @@ actor ChatEngine {
                     stamped.internalTool = def?.serverName == ConfiguratorTools.serverName
                     // The collapsed one-line argument summary, shared by the
                     // chat renderer and the CLI.
-                    stamped.summary = ToolSummary.callLine(name: call.name, arguments: call.arguments, requiredArgs: stamped.requiredArgs)
+                    stamped.summary = ToolSummary.callLine(
+                        name: call.name, arguments: call.arguments, requiredArgs: stamped.requiredArgs)
                     return stamped
                 }
                 // `applyToolCalls` may rewrite colliding provider IDs — the
@@ -2207,7 +2259,8 @@ actor ChatEngine {
     /// are started before the request.
     private func gatherTools(filename: String) async -> [ToolDefinition] {
         guard let idx = records.firstIndex(where: { $0.filename == filename }),
-              let chat = records[idx].chat else { return [] }
+            let chat = records[idx].chat
+        else { return [] }
         let resolved = resolvedToolSources(for: chat)
         // The configurator role has no tool sources — it uses in-process config
         // tools instead — so don't bail out when its resolved list is empty.
@@ -2238,15 +2291,16 @@ actor ChatEngine {
                     return roleAllow.isEmpty || roleAllow.contains(t.name)
                 }
                 perSourceCounts.append((r.name, filtered.count))
-                defs.append(contentsOf: filtered.map { tool in
-                    ToolDefinition(
-                        serverName: r.name,
-                        prefix: "",
-                        name: tool.name,
-                        description: tool.description,
-                        inputSchema: tool.schema
-                    )
-                })
+                defs.append(
+                    contentsOf: filtered.map { tool in
+                        ToolDefinition(
+                            serverName: r.name,
+                            prefix: "",
+                            name: tool.name,
+                            description: tool.description,
+                            inputSchema: tool.schema
+                        )
+                    })
             } else {
                 // Custom MCP server: read the cached tool list.
                 guard let tools = await MCPManager.shared.cachedTools(for: r.name) else {
@@ -2258,20 +2312,21 @@ actor ChatEngine {
                 let serverAllow = Set(serverConfig?.tools ?? [])
                 let roleAllow = Set(r.toolsFilter)
                 let filtered = tools.filter { t in
-                    (serverAllow.isEmpty || serverAllow.contains(t.name)) &&
-                    (roleAllow.isEmpty || roleAllow.contains(t.name))
+                    (serverAllow.isEmpty || serverAllow.contains(t.name))
+                        && (roleAllow.isEmpty || roleAllow.contains(t.name))
                 }
                 perSourceCounts.append((r.name, filtered.count))
                 let prefix = serverConfig?.prefix ?? r.name
-                defs.append(contentsOf: filtered.map { tool in
-                    ToolDefinition(
-                        serverName: r.name,
-                        prefix: prefix,
-                        name: tool.name,
-                        description: tool.description,
-                        inputSchema: tool.inputSchema
-                    )
-                })
+                defs.append(
+                    contentsOf: filtered.map { tool in
+                        ToolDefinition(
+                            serverName: r.name,
+                            prefix: prefix,
+                            name: tool.name,
+                            description: tool.description,
+                            inputSchema: tool.inputSchema
+                        )
+                    })
             }
         }
         // Deduplicate by namespaced name.
@@ -2321,7 +2376,9 @@ actor ChatEngine {
         records[idx].chat = chat
         // Let the CLI render the collapsed tool-call header as each call starts.
         for call in calls {
-            let summary = call.summary ?? ToolSummary.callLine(name: call.name, arguments: call.arguments, requiredArgs: call.requiredArgs)
+            let summary =
+                call.summary
+                ?? ToolSummary.callLine(name: call.name, arguments: call.arguments, requiredArgs: call.requiredArgs)
             notifyOneShot(filename: filename, .toolCall(name: call.name, summary: summary))
         }
         scheduleCoalescedEmit()
@@ -2338,7 +2395,9 @@ actor ChatEngine {
     /// the chat's role (`auto_allow` / `auto_allow_all`) skip the approval
     /// prompt. Throws `CancellationError` when a pending approval is cancelled
     /// by a stop.
-    private func prepareToolCall(_ call: ToolCall, filename: String, tools: [ToolDefinition]) async throws -> PreparedToolCall {
+    private func prepareToolCall(_ call: ToolCall, filename: String, tools: [ToolDefinition]) async throws
+        -> PreparedToolCall
+    {
         // Don't start new work (or a new approval prompt) once the stream was
         // stopped — the task is cancelled but MCP/built-in calls don't throw.
         try Task.checkCancellation()
@@ -2347,7 +2406,10 @@ actor ChatEngine {
         // prefix parsing, which mis-splits prefixless tools.
         guard let match = tools.first(where: { $0.namespacedName == call.name }) else {
             debugLog("Tool", "no advertised tool matches name \"\(call.name)\" — chat=\(filename)")
-            return PreparedToolCall(call: call, immediateResult: ToolResult(callID: call.id, content: "No tool found for name \"\(call.name)\".", isError: true))
+            return PreparedToolCall(
+                call: call,
+                immediateResult: ToolResult(
+                    callID: call.id, content: "No tool found for name \"\(call.name)\".", isError: true))
         }
         let sourceName = match.serverName
         let toolName = match.name
@@ -2366,23 +2428,24 @@ actor ChatEngine {
         let chat = records.first(where: { $0.filename == filename })?.chat
         let resolved = chat.map { resolvedToolSources(for: $0) } ?? []
         let roleAllows = resolved.first(where: { $0.name == sourceName })?.autoAllows(tool: toolName) ?? false
-      let autoAllowed = chat?.isToolAutoApproved(namespacedName: call.name, roleDefault: roleAllows) ?? roleAllows
-       // Shell whitelist: when the shell tool requires confirmation but the
-       // role configures a command whitelist, a command whose every command
-       // name is whitelisted skips the approval prompt. No-op when the tool
-       // is already auto-allowed (role or chat level override).
-       var shellWhitelisted = false
-       if !autoAllowed, sourceName == BuiltinTools.shellGroup, toolName == "shell" {
-           let source = resolved.first(where: { $0.name == sourceName })
-           if let argsData = call.arguments.data(using: .utf8),
-              let args = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any],
-              let command = args["command"] as? String,
-              source?.shellCommandAllowed(command) == true {
-               shellWhitelisted = true
-           }
-       }
-       // Working directory + isolation for built-in groups.
-       let workdir = chat.flatMap { effectiveWorkingDirectory(for: $0) }
+        let autoAllowed = chat?.isToolAutoApproved(namespacedName: call.name, roleDefault: roleAllows) ?? roleAllows
+        // Shell whitelist: when the shell tool requires confirmation but the
+        // role configures a command whitelist, a command whose every command
+        // name is whitelisted skips the approval prompt. No-op when the tool
+        // is already auto-allowed (role or chat level override).
+        var shellWhitelisted = false
+        if !autoAllowed, sourceName == BuiltinTools.shellGroup, toolName == "shell" {
+            let source = resolved.first(where: { $0.name == sourceName })
+            if let argsData = call.arguments.data(using: .utf8),
+                let args = try? JSONSerialization.jsonObject(with: argsData) as? [String: Any],
+                let command = args["command"] as? String,
+                source?.shellCommandAllowed(command) == true
+            {
+                shellWhitelisted = true
+            }
+        }
+        // Working directory + isolation for built-in groups.
+        let workdir = chat.flatMap { effectiveWorkingDirectory(for: $0) }
         let isolation = resolved.first(where: { $0.name == sourceName })?.directoryIsolation ?? false
         // Per-chat identity for SSH control-socket naming (one master
         // connection per chat+host).
@@ -2405,36 +2468,55 @@ actor ChatEngine {
             let wd = Workdir(root: workdir, isolated: isolation, chatID: chatID)
             if let ssh = wd.ssh {
                 do {
-                    if let d = try await BuiltinToolsSSH.diffForWriteFile(arguments: call.arguments, workdir: wd, ssh: ssh) {
+                    if let d = try await BuiltinToolsSSH.diffForWriteFile(
+                        arguments: call.arguments, workdir: wd, ssh: ssh)
+                    {
                         setToolCallDiff(callID: call.id, filename: filename, diff: d)
                     } else {
                         debugLog("Tool", "write_file arguments invalid (no diff) — callID=\(call.id), chat=\(filename)")
-                        return PreparedToolCall(call: call, immediateResult: ToolResult(callID: call.id, content: "Invalid arguments: expected 'path' and 'content' strings.", isError: true))
+                        return PreparedToolCall(
+                            call: call,
+                            immediateResult: ToolResult(
+                                callID: call.id, content: "Invalid arguments: expected 'path' and 'content' strings.",
+                                isError: true))
                     }
                 } catch {
-                    debugLog("Tool", "write_file SSH diff preview failed (\(error.localizedDescription)) — proceeding without diff, callID=\(call.id), chat=\(filename)")
+                    debugLog(
+                        "Tool",
+                        "write_file SSH diff preview failed (\(error.localizedDescription)) — proceeding without diff, callID=\(call.id), chat=\(filename)"
+                    )
                 }
             } else {
                 if let d = DiffBuilder.diffForWriteFile(arguments: call.arguments, workdir: wd) {
                     setToolCallDiff(callID: call.id, filename: filename, diff: d)
                 } else {
                     debugLog("Tool", "write_file arguments invalid (no diff) — callID=\(call.id), chat=\(filename)")
-                    return PreparedToolCall(call: call, immediateResult: ToolResult(callID: call.id, content: "Invalid arguments: expected 'path' and 'content' strings.", isError: true))
+                    return PreparedToolCall(
+                        call: call,
+                        immediateResult: ToolResult(
+                            callID: call.id, content: "Invalid arguments: expected 'path' and 'content' strings.",
+                            isError: true))
                 }
             }
         } else if sourceName == BuiltinTools.codeGroup, toolName == "apply_patch" {
             let wd = Workdir(root: workdir, isolated: isolation, chatID: chatID)
             if let ssh = wd.ssh {
                 do {
-                    switch try await BuiltinToolsSSH.preflightApplyPatch(arguments: call.arguments, workdir: wd, ssh: ssh) {
+                    switch try await BuiltinToolsSSH.preflightApplyPatch(
+                        arguments: call.arguments, workdir: wd, ssh: ssh)
+                    {
                     case .ok(let d):
                         if let d { setToolCallDiff(callID: call.id, filename: filename, diff: d) }
                     case .error(let message):
                         debugLog("Tool", "apply_patch remote dry-run failed — callID=\(call.id), chat=\(filename)")
-                        return PreparedToolCall(call: call, immediateResult: ToolResult(callID: call.id, content: message, isError: true))
+                        return PreparedToolCall(
+                            call: call, immediateResult: ToolResult(callID: call.id, content: message, isError: true))
                     }
                 } catch {
-                    debugLog("Tool", "apply_patch SSH dry-run failed (\(error.localizedDescription)) — proceeding without diff, callID=\(call.id), chat=\(filename)")
+                    debugLog(
+                        "Tool",
+                        "apply_patch SSH dry-run failed (\(error.localizedDescription)) — proceeding without diff, callID=\(call.id), chat=\(filename)"
+                    )
                 }
             } else {
                 switch DiffBuilder.preflightApplyPatch(arguments: call.arguments, workdir: wd) {
@@ -2442,21 +2524,24 @@ actor ChatEngine {
                     if let d { setToolCallDiff(callID: call.id, filename: filename, diff: d) }
                 case .error(let message):
                     debugLog("Tool", "apply_patch dry-run failed — callID=\(call.id), chat=\(filename)")
-                    return PreparedToolCall(call: call, immediateResult: ToolResult(callID: call.id, content: message, isError: true))
+                    return PreparedToolCall(
+                        call: call, immediateResult: ToolResult(callID: call.id, content: message, isError: true))
                 }
             }
         }
 
         let approval: ToolApproval
-       if autoAllowed {
-           debugLog("Tool", "auto-allowed \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
-           approval = .allow
-       } else if shellWhitelisted {
-           debugLog("Tool", "shell whitelist approved \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
-           approval = .allow
-       } else if cliDriven.contains(filename) {
+        if autoAllowed {
+            debugLog("Tool", "auto-allowed \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
+            approval = .allow
+        } else if shellWhitelisted {
+            debugLog("Tool", "shell whitelist approved \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
+            approval = .allow
+        } else if cliDriven.contains(filename) {
             if cliAllowAll.contains(filename) {
-                debugLog("Tool", "auto-approved via --allow-all \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
+                debugLog(
+                    "Tool",
+                    "auto-approved via --allow-all \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
                 approval = .allow
             } else if cliInteractive.contains(filename) {
                 // Interactive CLI session: the approval prompt is relayed to
@@ -2467,16 +2552,26 @@ actor ChatEngine {
                 // prompt. The call is skipped: the CLI user gets a warning
                 // and the model gets a cancellation result explaining what
                 // happened.
-                debugLog("Tool", "skipping unconfirmed CLI tool call \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")
-                notifyOneShot(filename: filename, .notice("tool call \"\(call.name)\" requires confirmation — skipped (re-run with --allow-all to auto-approve tool calls)"))
+                debugLog(
+                    "Tool",
+                    "skipping unconfirmed CLI tool call \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)"
+                )
+                notifyOneShot(
+                    filename: filename,
+                    .notice(
+                        "tool call \"\(call.name)\" requires confirmation — skipped (re-run with --allow-all to auto-approve tool calls)"
+                    ))
                 // The changes were never applied — drop any diff preview.
                 setToolCallDiff(callID: call.id, filename: filename, diff: nil)
-                return PreparedToolCall(call: call, immediateResult: ToolResult(
-                    callID: call.id,
-                    content: "The tool call was not executed: it requires user confirmation, but the request is running in non-interactive CLI mode. Tell the user to re-run the command with --allow-all (-y) to auto-approve tool calls.",
-                    isError: true,
-                    isCancelled: true
-                ))
+                return PreparedToolCall(
+                    call: call,
+                    immediateResult: ToolResult(
+                        callID: call.id,
+                        content:
+                            "The tool call was not executed: it requires user confirmation, but the request is running in non-interactive CLI mode. Tell the user to re-run the command with --allow-all (-y) to auto-approve tool calls.",
+                        isError: true,
+                        isCancelled: true
+                    ))
             }
         } else {
             // The approval hook. Suspends until the user allows or denies the
@@ -2486,7 +2581,9 @@ actor ChatEngine {
             approval = try await approveToolCall(chatFilename: filename, call: call)
         }
 
-        return PreparedToolCall(call: call, sourceName: sourceName, toolName: toolName, workdir: workdir, isolation: isolation, chatID: chatID, approval: approval)
+        return PreparedToolCall(
+            call: call, sourceName: sourceName, toolName: toolName, workdir: workdir, isolation: isolation,
+            chatID: chatID, approval: approval)
     }
 
     /// Phase 2 of tool-call handling: executes a call prepared by
@@ -2513,12 +2610,19 @@ actor ChatEngine {
             } else if BuiltinTools.allGroups.contains(sourceName) {
                 // Built-in group: run in-process with the chat's workdir.
                 let wd = Workdir(root: prepared.workdir, isolated: prepared.isolation, chatID: prepared.chatID)
-                result = await BuiltinTools.call(name: toolName, arguments: call.arguments, callID: call.id, group: sourceName, workdir: wd, chatFilename: filename)
+                result = await BuiltinTools.call(
+                    name: toolName, arguments: call.arguments, callID: call.id, group: sourceName, workdir: wd,
+                    chatFilename: filename)
             } else {
                 // Custom MCP server: use the shared connection pool.
-                result = await MCPManager.shared.callTool(server: sourceName, name: toolName, arguments: call.arguments, callID: call.id, chatFilename: filename)
+                result = await MCPManager.shared.callTool(
+                    server: sourceName, name: toolName, arguments: call.arguments, callID: call.id,
+                    chatFilename: filename)
             }
-            debugLog("Tool", "result \(sourceName)/\(toolName) — isError=\(result.isError), contentSize=\(result.content.count), chat=\(filename)")
+            debugLog(
+                "Tool",
+                "result \(sourceName)/\(toolName) — isError=\(result.isError), contentSize=\(result.content.count), chat=\(filename)"
+            )
             return result
         case .deny(let reason):
             let message = ToolApproval.denialMessage(for: reason)
@@ -2540,8 +2644,9 @@ actor ChatEngine {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         guard var chat = records[idx].chat else { return }
         guard let targetID = chat.activeMessages.last(where: { $0.role == .assistant })?.id,
-              var calls = chat.message(id: targetID)?.toolCalls,
-              let cIdx = calls.firstIndex(where: { $0.id == callID }) else { return }
+            var calls = chat.message(id: targetID)?.toolCalls,
+            let cIdx = calls.firstIndex(where: { $0.id == callID })
+        else { return }
         calls[cIdx].diff = diff
         chat.updateMessage(id: targetID) { $0.toolCalls = calls }
         records[idx].chat = chat
@@ -2558,8 +2663,11 @@ actor ChatEngine {
     /// (stop) resumes it.
     private func approveToolCall(chatFilename: String, call: ToolCall) async throws -> ToolApproval {
         if cliInteractive.contains(chatFilename) {
-            let summary = call.summary ?? ToolSummary.callLine(name: call.name, arguments: call.arguments, requiredArgs: call.requiredArgs)
-            notifyOneShot(filename: chatFilename, .toolApprovalRequest(callID: call.id, name: call.name, summary: summary))
+            let summary =
+                call.summary
+                ?? ToolSummary.callLine(name: call.name, arguments: call.arguments, requiredArgs: call.requiredArgs)
+            notifyOneShot(
+                filename: chatFilename, .toolApprovalRequest(callID: call.id, name: call.name, summary: summary))
         } else {
             setPendingApproval(callID: call.id, filename: chatFilename, pending: true)
             emit(.toolApprovalRequested(filename: chatFilename, callID: call.id))
@@ -2606,8 +2714,9 @@ actor ChatEngine {
     func allowToolCallForChat(callID: String) {
         guard let pending = pendingApprovals[callID] else { return }
         if let idx = records.firstIndex(where: { $0.filename == pending.filename }),
-           var chat = records[idx].chat,
-           let call = chat.allMessages.lazy.compactMap(\.toolCalls).joined().first(where: { $0.id == callID }) {
+            var chat = records[idx].chat,
+            let call = chat.allMessages.lazy.compactMap(\.toolCalls).joined().first(where: { $0.id == callID })
+        {
             var changed = false
             if chat.autoDeny?.contains(call.name) == true {
                 chat.autoDeny?.removeAll { $0 == call.name }
@@ -2637,8 +2746,9 @@ actor ChatEngine {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         guard var chat = records[idx].chat else { return }
         guard let targetID = chat.activeMessages.last(where: { $0.role == .assistant })?.id,
-              var calls = chat.message(id: targetID)?.toolCalls,
-              let cIdx = calls.firstIndex(where: { $0.id == callID }) else { return }
+            var calls = chat.message(id: targetID)?.toolCalls,
+            let cIdx = calls.firstIndex(where: { $0.id == callID })
+        else { return }
         calls[cIdx].pendingApproval = pending
         chat.updateMessage(id: targetID) { $0.toolCalls = calls }
         records[idx].chat = chat
@@ -2677,16 +2787,19 @@ actor ChatEngine {
         // a cancelled tool finishing after `stopStreaming` already trimmed the
         // incomplete turn. Appending here would leave a dangling `tool`-role
         // message with no matching tool call.
-        guard chat.allMessages.contains(where: {
-            $0.role == .assistant && $0.toolCalls?.contains(where: { $0.id == result.callID }) == true
-        }) else {
+        guard
+            chat.allMessages.contains(where: {
+                $0.role == .assistant && $0.toolCalls?.contains(where: { $0.id == result.callID }) == true
+            })
+        else {
             debugLog("Tool", "ignoring result for unknown/trimmed call — callID=\(result.callID), chat=\(filename)")
             return
         }
         // Stamp the persisted one-line status summary (shared by the chat
         // renderer and the CLI) and forward it to the CLI sinks.
         var result = result
-        let callName = chat.allMessages.lazy.compactMap(\.toolCalls).joined().first(where: { $0.id == result.callID })?.name ?? ""
+        let callName =
+            chat.allMessages.lazy.compactMap(\.toolCalls).joined().first(where: { $0.id == result.callID })?.name ?? ""
         if result.summary == nil {
             result.summary = ToolSummary.resultStatus(name: callName, result: result)
         }
@@ -2726,7 +2839,9 @@ actor ChatEngine {
         // callID (current turn only, active path) and append to its streaming
         // content.
         if let tID = chat.activeToolResultMessageID(callID: callID),
-           var results = chat.message(id: tID)?.toolResults, let rIdx = results.firstIndex(where: { $0.callID == callID }) {
+            var results = chat.message(id: tID)?.toolResults,
+            let rIdx = results.firstIndex(where: { $0.callID == callID })
+        {
             results[rIdx].content += partial + "\n"
             results[rIdx].isStreaming = true
             chat.updateMessage(id: tID) { $0.toolResults = results }
@@ -2741,9 +2856,11 @@ actor ChatEngine {
         // replaced by the final result when the call completes. Skip when no
         // assistant message carries this call (e.g. the turn was trimmed by a
         // stop) — appending would leave a dangling `tool`-role message.
-        guard chat.allMessages.contains(where: {
-            $0.role == .assistant && $0.toolCalls?.contains(where: { $0.id == callID }) == true
-        }) else { return }
+        guard
+            chat.allMessages.contains(where: {
+                $0.role == .assistant && $0.toolCalls?.contains(where: { $0.id == callID }) == true
+            })
+        else { return }
         let placeholder = ToolResult(callID: callID, content: partial + "\n", isError: false, isStreaming: true)
         chat.appendToActiveLeaf(ChatMessage(role: .tool, content: "", toolResults: [placeholder]))
         records[idx].chat = chat
@@ -2777,7 +2894,8 @@ actor ChatEngine {
         // The streaming target is the active leaf (the placeholder appended
         // when the turn started).
         guard let leafID = chat.activeLeafID,
-              chat.message(id: leafID)?.role == .assistant else { return }
+            chat.message(id: leafID)?.role == .assistant
+        else { return }
         switch chunk {
         case .thinking(let text):
             chat.updateMessage(id: leafID) { $0.thinking = ($0.thinking ?? "") + text }
@@ -2885,7 +3003,8 @@ actor ChatEngine {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         guard var chat = records[idx].chat else { return }
         if let leafID = chat.activeLeafID,
-           chat.message(id: leafID)?.role == .assistant {
+            chat.message(id: leafID)?.role == .assistant
+        {
             chat.updateMessage(id: leafID) { $0.error = text }
         }
         records[idx].chat = chat
@@ -2904,7 +3023,8 @@ actor ChatEngine {
     /// takes precedence and clears this request.
     func stopStreamingAfterIteration(filename: String) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }),
-              records[idx].isStreaming, !records[idx].stopAfterIteration else { return }
+            records[idx].isStreaming, !records[idx].stopAfterIteration
+        else { return }
         debugLog("Stream", "stop-after-iteration requested — chat=\(filename)")
         records[idx].stopAfterIteration = true
         emit(.chatsChanged(records))
@@ -2913,7 +3033,8 @@ actor ChatEngine {
     /// Checks and clears a pending "stop after current iteration" request.
     private func consumeStopAfterIteration(filename: String) -> Bool {
         guard let idx = records.firstIndex(where: { $0.filename == filename }),
-              records[idx].stopAfterIteration else { return false }
+            records[idx].stopAfterIteration
+        else { return false }
         records[idx].stopAfterIteration = false
         return true
     }
@@ -2952,8 +3073,9 @@ actor ChatEngine {
     /// This is fire-and-forget and runs in parallel to the main stream.
     private func maybeGenerateChatName(filename: String) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }),
-              records[idx].chat?.title == nil,
-              !namingInProgress.contains(filename) else { return }
+            records[idx].chat?.title == nil,
+            !namingInProgress.contains(filename)
+        else { return }
 
         guard let firstUserMsg = records[idx].chat?.activeMessages.first(where: { $0.role == .user }) else { return }
         let firstUserText = firstUserMsg.content
@@ -3012,8 +3134,9 @@ actor ChatEngine {
     /// finished we persist and emit right away so the sidebar updates immediately.
     private func applyGeneratedName(filename: String, name: String) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }),
-              var chat = records[idx].chat,
-              chat.title == nil else { return }
+            var chat = records[idx].chat,
+            chat.title == nil
+        else { return }
         chat.title = name
         records[idx].chat = chat
         if !records[idx].isStreaming {
@@ -3050,7 +3173,10 @@ actor ChatEngine {
                 emit(.error("Please select a connection in the status bar."))
                 return
             }
-            chat.updateMessage(id: messageID) { $0.content = trimmed; $0.error = nil }
+            chat.updateMessage(id: messageID) {
+                $0.content = trimmed
+                $0.error = nil
+            }
             let placeholder = ChatMessage(role: .assistant, content: "", connectionName: connection.displayName)
             if hasChatTrees(for: chat) {
                 // Branching edit: the edited message is the fork point. Its
@@ -3082,7 +3208,10 @@ actor ChatEngine {
             runToolLoop(for: filename, connection: connection, messages: messages)
         } else {
             // Assistant-message edit: in-place text fix only.
-            chat.updateMessage(id: messageID) { $0.content = trimmed; $0.error = nil }
+            chat.updateMessage(id: messageID) {
+                $0.content = trimmed
+                $0.error = nil
+            }
             saveChat(chat, filename: filename)
             emit(.chatsChanged(records))
         }
@@ -3142,7 +3271,8 @@ actor ChatEngine {
     /// around at the ends.
     func siblingForSwitch(filename: String, messageID: UUID, direction: Int) -> UUID? {
         guard let idx = records.firstIndex(where: { $0.filename == filename }),
-              let chat = records[idx].chat else { return nil }
+            let chat = records[idx].chat
+        else { return nil }
         return chat.siblingID(of: messageID, direction: direction)
     }
 
@@ -3179,7 +3309,8 @@ actor ChatEngine {
     /// servers, so servers that are down simply contribute no tools.
     func toolSnapshot(filename: String) async -> ChatToolSnapshot {
         guard let idx = records.firstIndex(where: { $0.filename == filename }),
-              let chat = records[idx].chat else { return ChatToolSnapshot(builtin: [], external: []) }
+            let chat = records[idx].chat
+        else { return ChatToolSnapshot(builtin: [], external: []) }
         let resolved = resolvedToolSources(for: chat)
         let sshWorkdir = effectiveWorkingDirectory(for: chat).map { SSHSpec.isSSH($0) } ?? false
         var builtin: [ChatToolEntry] = []
@@ -3193,16 +3324,21 @@ actor ChatEngine {
                 for tool in BuiltinTools.tools(for: r.name) {
                     if sshWorkdir, BuiltinTools.sshUnavailableToolNames.contains(tool.name) { continue }
                     if r.name == BuiltinTools.webGroup, !webProviderConfigured,
-                       BuiltinToolsWeb.providerToolNames.contains(tool.name) { continue }
+                        BuiltinToolsWeb.providerToolNames.contains(tool.name)
+                    {
+                        continue
+                    }
                     if !roleAllow.isEmpty && !roleAllow.contains(tool.name) { continue }
-                    builtin.append(ChatToolEntry(
-                        name: tool.name,
-                        description: tool.description,
-                        autoApproved: chat.isToolAutoApproved(namespacedName: tool.name, roleDefault: r.autoAllows(tool: tool.name)),
-                        roleAutoApproved: r.autoAllows(tool: tool.name),
-                        source: r.name,
-                        hasShellWhitelist: r.name == BuiltinTools.shellGroup && !r.shellWhitelist.isEmpty
-                    ))
+                    builtin.append(
+                        ChatToolEntry(
+                            name: tool.name,
+                            description: tool.description,
+                            autoApproved: chat.isToolAutoApproved(
+                                namespacedName: tool.name, roleDefault: r.autoAllows(tool: tool.name)),
+                            roleAutoApproved: r.autoAllows(tool: tool.name),
+                            source: r.name,
+                            hasShellWhitelist: r.name == BuiltinTools.shellGroup && !r.shellWhitelist.isEmpty
+                        ))
                 }
             } else {
                 guard let tools = await MCPManager.shared.cachedTools(for: r.name) else { continue }
@@ -3214,14 +3350,16 @@ actor ChatEngine {
                     if !serverAllow.isEmpty && !serverAllow.contains(tool.name) { continue }
                     if !roleAllow.isEmpty && !roleAllow.contains(tool.name) { continue }
                     let namespaced = prefix.isEmpty ? tool.name : "\(prefix)_\(tool.name)"
-                    external.append(ChatToolEntry(
-                        name: namespaced,
-                        description: tool.description ?? "",
-                        autoApproved: chat.isToolAutoApproved(namespacedName: namespaced, roleDefault: r.autoAllows(tool: tool.name)),
-                        roleAutoApproved: r.autoAllows(tool: tool.name),
-                        source: serverConfig?.name ?? r.name,
-                        hasShellWhitelist: false
-                    ))
+                    external.append(
+                        ChatToolEntry(
+                            name: namespaced,
+                            description: tool.description ?? "",
+                            autoApproved: chat.isToolAutoApproved(
+                                namespacedName: namespaced, roleDefault: r.autoAllows(tool: tool.name)),
+                            roleAutoApproved: r.autoAllows(tool: tool.name),
+                            source: serverConfig?.name ?? r.name,
+                            hasShellWhitelist: false
+                        ))
                 }
             }
         }
@@ -3235,7 +3373,8 @@ actor ChatEngine {
     /// alphabetically, mirroring the request-time tool dedup.
     private static func deduplicated(_ entries: [ChatToolEntry]) -> [ChatToolEntry] {
         var seen = Set<String>()
-        return entries
+        return
+            entries
             .filter { seen.insert($0.name).inserted }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
@@ -3250,7 +3389,8 @@ actor ChatEngine {
         let snapshot = await toolSnapshot(filename: filename)
         guard let entry = (snapshot.builtin + snapshot.external).first(where: { $0.name == toolName }) else { return }
         guard let idx = records.firstIndex(where: { $0.filename == filename }),
-              var chat = records[idx].chat else { return }
+            var chat = records[idx].chat
+        else { return }
         chat.toggleToolAutoApproval(namespacedName: toolName, roleDefault: entry.roleAutoApproved)
         saveChat(chat, filename: filename)
         emit(.chatsChanged(records))

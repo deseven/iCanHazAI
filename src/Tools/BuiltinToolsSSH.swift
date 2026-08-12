@@ -70,7 +70,9 @@ enum BuiltinToolsSSH {
     /// variant its whole subtree — no glob support, so excluding a directory
     /// always prunes it entirely. Entries outside the search root can never
     /// match and are dropped. Empty when there are no usable exclusions.
-    static func findExcludePredicate(_ args: [String: Any], workdir: Workdir, resolvedRoot: String, caseInsensitive: Bool) throws -> String {
+    static func findExcludePredicate(
+        _ args: [String: Any], workdir: Workdir, resolvedRoot: String, caseInsensitive: Bool
+    ) throws -> String {
         guard let excluded = try BuiltinTools.optionalStringArray(args, "exclude_paths") else { return "" }
         var frags: [String] = []
         for e in excluded where !e.isEmpty {
@@ -78,9 +80,13 @@ enum BuiltinToolsSSH {
             while rel.hasSuffix("/") { rel.removeLast() }
             // Relativize against the search root; outside entries can't
             // match anything in the walk.
-            if rel == resolvedRoot { rel = "" }
-            else if rel.hasPrefix(resolvedRoot + "/") { rel = String(rel.dropFirst(resolvedRoot.count + 1)) }
-            else { continue }
+            if rel == resolvedRoot {
+                rel = ""
+            } else if rel.hasPrefix(resolvedRoot + "/") {
+                rel = String(rel.dropFirst(resolvedRoot.count + 1))
+            } else {
+                continue
+            }
             if rel.isEmpty { continue }
             let flag = caseInsensitive ? "-ipath" : "-path"
             frags.append("\(flag) \(q("./" + rel)) -o \(flag) \(q("./" + rel + "/*"))")
@@ -88,9 +94,11 @@ enum BuiltinToolsSSH {
         return frags.isEmpty ? "" : "-not \\( " + frags.joined(separator: " -o ") + " \\) "
     }
 
-    private static func run(_ ssh: SSHContext, script: String, stdin: Data? = nil,
-                            hardTimeout: TimeInterval? = fileOpTimeout,
-                            idleTimeout: TimeInterval? = nil) async throws -> SSHManager.RunResult {
+    private static func run(
+        _ ssh: SSHContext, script: String, stdin: Data? = nil,
+        hardTimeout: TimeInterval? = fileOpTimeout,
+        idleTimeout: TimeInterval? = nil
+    ) async throws -> SSHManager.RunResult {
         var data = Data(script.utf8)
         if !script.hasSuffix("\n") { data.append(0x0A) }
         if let stdin { data.append(stdin) }
@@ -102,7 +110,9 @@ enum BuiltinToolsSSH {
     /// `scrubbing` rewrites resolved remote paths in the error text to their
     /// display spelling, so isolated mode never leaks the real remote layout
     /// through a remote binary's stderr (mv/rm/mkdir/grep all embed paths).
-    private static func requireSuccess(_ r: SSHManager.RunResult, scrubbing paths: [(resolved: String, display: String)] = []) throws {
+    private static func requireSuccess(
+        _ r: SSHManager.RunResult, scrubbing paths: [(resolved: String, display: String)] = []
+    ) throws {
         if let failure = r.failure {
             switch failure {
             case .hardTimeout(let t):
@@ -122,7 +132,9 @@ enum BuiltinToolsSSH {
 
     // MARK: - Dispatch
 
-    static func filesystem(name: String, args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String) async throws -> ToolOutput {
+    static func filesystem(name: String, args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String)
+        async throws -> ToolOutput
+    {
         switch name {
         case "ls": return try await ls(args, workdir: workdir, ssh: ssh)
         case "read_file": return try await readFile(args, workdir: workdir, ssh: ssh, chatFilename: chatFilename)
@@ -139,7 +151,9 @@ enum BuiltinToolsSSH {
         }
     }
 
-    static func code(name: String, args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String) async throws -> ToolOutput {
+    static func code(name: String, args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String)
+        async throws -> ToolOutput
+    {
         switch name {
         case "apply_patch": return try await applyPatch(args, workdir: workdir, ssh: ssh)
         default:
@@ -164,17 +178,17 @@ enum BuiltinToolsSSH {
             // 1000-entry cap is deterministic.
             let prune = includeHidden ? "" : "\\( -name '.*' ! -name . -prune \\) -o "
             script = """
-            if [ ! -e \(qp(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
-            if [ ! -d \(qp(resolved)) ]; then printf 'not a directory: %s\\n' \(q(path)) >&2; exit 1; fi
-            command -v find >/dev/null 2>&1 || { echo 'find: command not found on the remote host' >&2; exit 127; }
-            cd \(qp(resolved)) && find . -mindepth 1 -maxdepth 2 \(prune)-print | while IFS= read -r p; do if [ -d "$p" ]; then printf '%s/\\n' "${p#./}"; else printf '%s\\n' "${p#./}"; fi; done | sort
-            """
+                if [ ! -e \(qp(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
+                if [ ! -d \(qp(resolved)) ]; then printf 'not a directory: %s\\n' \(q(path)) >&2; exit 1; fi
+                command -v find >/dev/null 2>&1 || { echo 'find: command not found on the remote host' >&2; exit 127; }
+                cd \(qp(resolved)) && find . -mindepth 1 -maxdepth 2 \(prune)-print | while IFS= read -r p; do if [ -d "$p" ]; then printf '%s/\\n' "${p#./}"; else printf '%s\\n' "${p#./}"; fi; done | sort
+                """
         } else {
             script = """
-            if [ ! -e \(qp(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
-            if [ ! -d \(qp(resolved)) ]; then printf 'not a directory: %s\\n' \(q(path)) >&2; exit 1; fi
-            ls -1\(includeHidden ? "A" : "")p \(qp(resolved))
-            """
+                if [ ! -e \(qp(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
+                if [ ! -d \(qp(resolved)) ]; then printf 'not a directory: %s\\n' \(q(path)) >&2; exit 1; fi
+                ls -1\(includeHidden ? "A" : "")p \(qp(resolved))
+                """
         }
         let r = try await run(ssh, script: script)
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
@@ -182,7 +196,9 @@ enum BuiltinToolsSSH {
         return ToolOutput(content: lines.prefix(1000).joined(separator: "\n"), isError: false)
     }
 
-    private static func readFile(_ args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String) async throws -> ToolOutput {
+    private static func readFile(_ args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String)
+        async throws -> ToolOutput
+    {
         let path = try BuiltinTools.requireString(args, "path")
         let offset = BuiltinTools.optionalInt(args, "offset") ?? 1
         let limit = BuiltinTools.optionalInt(args, "limit") ?? 2000
@@ -193,15 +209,16 @@ enum BuiltinToolsSSH {
         // the first that succeeds wins. The size is printed to stdout on a
         // marker line, then cat follows on the same stream.
         let script = """
-        if [ ! -e \(qp(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
-        if [ -d \(qp(resolved)) ]; then printf 'is a directory: %s\\n' \(q(path)) >&2; exit 1; fi
-        sz=$(stat -c '%s' \(qp(resolved)) 2>/dev/null || stat -f '%z' \(qp(resolved)) 2>/dev/null || echo 0)
-        if [ "$sz" -gt \(readFileSizeLimit) ]; then printf 'file is %s bytes; exceeds the %s byte read limit\\n' "$sz" "\(readFileSizeLimit)" >&2; exit 1; fi
-        cat \(qp(resolved))
-        """
+            if [ ! -e \(qp(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
+            if [ -d \(qp(resolved)) ]; then printf 'is a directory: %s\\n' \(q(path)) >&2; exit 1; fi
+            sz=$(stat -c '%s' \(qp(resolved)) 2>/dev/null || stat -f '%z' \(qp(resolved)) 2>/dev/null || echo 0)
+            if [ "$sz" -gt \(readFileSizeLimit) ]; then printf 'file is %s bytes; exceeds the %s byte read limit\\n' "$sz" "\(readFileSizeLimit)" >&2; exit 1; fi
+            cat \(qp(resolved))
+            """
         let r = try await run(ssh, script: script)
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
-        return try BuiltinTools.formatFileContent(r.stdout, path: path, offset: offset, limit: limit, chatFilename: chatFilename)
+        return try BuiltinTools.formatFileContent(
+            r.stdout, path: path, offset: offset, limit: limit, chatFilename: chatFilename)
     }
 
     private static func writeFile(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
@@ -226,7 +243,8 @@ enum BuiltinToolsSSH {
         let includeHidden = BuiltinTools.optionalBool(args, "include_hidden") ?? false
         let resolved = try workdir.resolve(searchRoot)
 
-        let exclude = try findExcludePredicate(args, workdir: workdir, resolvedRoot: resolved, caseInsensitive: caseInsensitive)
+        let exclude = try findExcludePredicate(
+            args, workdir: workdir, resolvedRoot: resolved, caseInsensitive: caseInsensitive)
 
         // find's fnmatch natively supports *, ? and [...]; with -path its
         // wildcards also cross '/', which approximates '**' (zero-or-more
@@ -246,9 +264,9 @@ enum BuiltinToolsSSH {
         let prune = includeHidden ? "" : "\\( -name '.*' ! -name . -prune \\) -o "
 
         let script = """
-        if [ ! -d \(qp(resolved)) ]; then printf 'not a directory: %s\\n' \(q(searchRoot)) >&2; exit 1; fi
-        cd \(qp(resolved)) && find . \(prune)\(exclude)\(predicate) -print | sort
-        """
+            if [ ! -d \(qp(resolved)) ]; then printf 'not a directory: %s\\n' \(q(searchRoot)) >&2; exit 1; fi
+            cd \(qp(resolved)) && find . \(prune)\(exclude)\(predicate) -print | sort
+            """
         let r = try await run(ssh, script: script)
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
         let matches = r.stdoutString.split(separator: "\n", omittingEmptySubsequences: true).map { line -> String in
@@ -265,7 +283,8 @@ enum BuiltinToolsSSH {
     /// max_results count; content passes through untouched either way.
     private static func grepOutputLineIsMatch(_ line: String) -> Bool {
         guard let m = grepLineSeparatorRegex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
-              let range = Range(m.range, in: line) else { return true }
+            let range = Range(m.range, in: line)
+        else { return true }
         return line[range].hasPrefix(":")
     }
     private static let grepLineSeparatorRegex = try! NSRegularExpression(pattern: #"[:-][0-9]+[:-]"#)
@@ -319,13 +338,14 @@ enum BuiltinToolsSSH {
             let flag = caseInsensitive ? "-iname" : "-name"
             findPred = "\(flag) \(q(filePattern)) -a \(findPred)"
         }
-        let dirCommand = "cd \(qp(resolved)) && find . \(prune)\(exclude)\(findPred) -exec grep \(grepArgs) -- \(q(regex)) {} +"
+        let dirCommand =
+            "cd \(qp(resolved)) && find . \(prune)\(exclude)\(findPred) -exec grep \(grepArgs) -- \(q(regex)) {} +"
         // Missing search roots error with the caller's spelling (scrubbed
         // below), mirroring the local tool instead of grep's own message.
         let script = """
-        if [ ! -e \(qp(resolved)) ]; then printf 'not found: %s\\n' \(q(searchRoot)) >&2; exit 1; fi
-        if [ -d \(qp(resolved)) ]; then \(dirCommand); else grep \(grepArgs) -- \(q(regex)) \(qp(resolved)); fi
-        """
+            if [ ! -e \(qp(resolved)) ]; then printf 'not found: %s\\n' \(q(searchRoot)) >&2; exit 1; fi
+            if [ -d \(qp(resolved)) ]; then \(dirCommand); else grep \(grepArgs) -- \(q(regex)) \(qp(resolved)); fi
+            """
         let wrapped = "{ \(script); printf 'ICHAI-GREP-EXIT %s\\n' \"$?\" >&2; } | head -c 1048576"
 
         let r = try await run(ssh, script: wrapped)
@@ -376,7 +396,9 @@ enum BuiltinToolsSSH {
             }
             if line == "--" {
                 if !cur.isEmpty { blocks.append((curKey ?? cur[0], cur, curMatches)) }
-                cur = []; curMatches = 0; curKey = nil
+                cur = []
+                curMatches = 0
+                curKey = nil
                 continue
             }
             if grepOutputLineIsMatch(line) {
@@ -394,8 +416,14 @@ enum BuiltinToolsSSH {
         var hitResultCap = false
         var hitByteCap = grepExit == 141
         for block in blocks {
-            if matchCount >= maxResults { hitResultCap = true; break }
-            if outBytes >= BuiltinTools.findTextMaxOutputBytes { hitByteCap = true; break }
+            if matchCount >= maxResults {
+                hitResultCap = true
+                break
+            }
+            if outBytes >= BuiltinTools.findTextMaxOutputBytes {
+                hitByteCap = true
+                break
+            }
             if context > 0, !out.isEmpty {
                 out.append("--")
                 outBytes += 3
@@ -408,8 +436,11 @@ enum BuiltinToolsSSH {
             matchCount += block.matches
         }
         var result = out.joined(separator: "\n")
-        if hitResultCap { result += "\n... (truncated at \(maxResults) results)" }
-        else if hitByteCap { result += "\n... (truncated, output size limit)" }
+        if hitResultCap {
+            result += "\n... (truncated at \(maxResults) results)"
+        } else if hitByteCap {
+            result += "\n... (truncated, output size limit)"
+        }
         return ToolOutput(content: result, isError: false)
     }
 
@@ -427,10 +458,12 @@ enum BuiltinToolsSSH {
         let resolvedSrc = try workdir.resolve(src)
         let resolvedDst = try workdir.resolve(dst)
         let r = try await run(ssh, script: "mv \(qp(resolvedSrc)) \(qp(resolvedDst))")
-        try requireSuccess(r, scrubbing: [
-            (resolvedSrc, workdir.displayPath(forResolved: resolvedSrc)),
-            (resolvedDst, workdir.displayPath(forResolved: resolvedDst)),
-        ])
+        try requireSuccess(
+            r,
+            scrubbing: [
+                (resolvedSrc, workdir.displayPath(forResolved: resolvedSrc)),
+                (resolvedDst, workdir.displayPath(forResolved: resolvedDst)),
+            ])
         return ToolOutput(content: "Moved \(src) to \(dst)", isError: false)
     }
 
@@ -443,18 +476,18 @@ enum BuiltinToolsSSH {
         // them), matching the local tool where a non-recursive delete of an
         // empty directory succeeds.
         let script = """
-        if [ ! -e \(qp(resolved)) ] && [ ! -L \(qp(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
-        if [ -d \(qp(resolved)) ] && [ ! -L \(qp(resolved)) ]; then
-          if [ \(recursive ? 1 : 0) -eq 0 ]; then
-            if [ -n "$(ls -A \(qp(resolved)) 2>/dev/null)" ]; then printf 'directory is not empty; use recursive: true to delete it\\n' >&2; exit 1; fi
-            rmdir \(qp(resolved))
-          else
-            rm -r \(qp(resolved))
-          fi
-        else
-          rm \(qp(resolved))
-        fi
-        """
+            if [ ! -e \(qp(resolved)) ] && [ ! -L \(qp(resolved)) ]; then printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
+            if [ -d \(qp(resolved)) ] && [ ! -L \(qp(resolved)) ]; then
+              if [ \(recursive ? 1 : 0) -eq 0 ]; then
+                if [ -n "$(ls -A \(qp(resolved)) 2>/dev/null)" ]; then printf 'directory is not empty; use recursive: true to delete it\\n' >&2; exit 1; fi
+                rmdir \(qp(resolved))
+              else
+                rm -r \(qp(resolved))
+              fi
+            else
+              rm \(qp(resolved))
+            fi
+            """
         let r = try await run(ssh, script: script)
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
         return ToolOutput(content: "Deleted \(path)", isError: false)
@@ -468,12 +501,12 @@ enum BuiltinToolsSSH {
         // are parsed back in Swift, which also assembles the JSON (so `file`
         // output never needs shell-side JSON escaping).
         let script = """
-        p=\(qp(resolved))
-        if [ -L "$p" ]; then t=symlink; elif [ -d "$p" ]; then t=dir; elif [ -e "$p" ]; then t=file; else printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
-        meta=$(stat -c '%s %Y %W' "$p" 2>/dev/null) || meta=$(stat -f '%z %m %B' "$p" 2>/dev/null) || meta=
-        printf 'ICHAI-TYPE %s\\nICHAI-META %s\\nICHAI-FILE ' "$t" "$meta"
-        file -b "$p" 2>/dev/null || true
-        """
+            p=\(qp(resolved))
+            if [ -L "$p" ]; then t=symlink; elif [ -d "$p" ]; then t=dir; elif [ -e "$p" ]; then t=file; else printf 'not found: %s\\n' \(q(path)) >&2; exit 1; fi
+            meta=$(stat -c '%s %Y %W' "$p" 2>/dev/null) || meta=$(stat -f '%z %m %B' "$p" 2>/dev/null) || meta=
+            printf 'ICHAI-TYPE %s\\nICHAI-META %s\\nICHAI-FILE ' "$t" "$meta"
+            file -b "$p" 2>/dev/null || true
+            """
         let r = try await run(ssh, script: script)
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
 
@@ -539,7 +572,9 @@ enum BuiltinToolsSSH {
     /// Fetches the remote content of every file the patch touches and runs
     /// the shared in-memory planner against that snapshot. No writes — used
     /// both by the tool itself and by the pre-execution diff preview.
-    private static func planRemoteApplyPatch(args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> [PlannedPatchOp] {
+    private static func planRemoteApplyPatch(args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws
+        -> [PlannedPatchOp]
+    {
         let patch = try BuiltinTools.requireString(args, "patch")
         let parsed = try PatchParser.parse(patch)
 
@@ -579,7 +614,8 @@ enum BuiltinToolsSSH {
     /// results back file by file. Read-modify-write without locking — a
     /// concurrent remote change between read and write would be silently
     /// clobbered; accepted for a single-user utility.
-    private static func applyPatch(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
+    private static func applyPatch(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput
+    {
         let ops: [PlannedPatchOp]
         do {
             ops = try await planRemoteApplyPatch(args: args, workdir: workdir, ssh: ssh)
@@ -601,7 +637,8 @@ enum BuiltinToolsSSH {
                 let r = try await run(ssh, script: "rm \(qp(resolved))")
                 try requireSuccess(r)
                 summary.append("Deleted: \(path)")
-            case .updateFile(let path, let resolved, let movePath, let moveResolved, let chunkCount, _, let newContent, let isNoOp):
+            case .updateFile(
+                let path, let resolved, let movePath, let moveResolved, let chunkCount, _, let newContent, let isNoOp):
                 if isNoOp {
                     summary.append("No changes needed: \(path) (content already matches)")
                     continue
@@ -632,12 +669,12 @@ enum BuiltinToolsSSH {
     private static func fetchFile(_ ssh: SSHContext, resolved: String) async throws -> (exists: Bool, data: Data?) {
         let marker = "ICHAI-\(UUID().uuidString)"
         let script = """
-        if [ -e \(qp(resolved)) ] || [ -L \(qp(resolved)) ]; then
-          if [ -d \(qp(resolved)) ]; then printf '%s dir\\n' \(q(marker)); else printf '%s file\\n' \(q(marker)); cat \(qp(resolved)); fi
-        else
-          printf '%s missing\\n' \(q(marker))
-        fi
-        """
+            if [ -e \(qp(resolved)) ] || [ -L \(qp(resolved)) ]; then
+              if [ -d \(qp(resolved)) ]; then printf '%s dir\\n' \(q(marker)); else printf '%s file\\n' \(q(marker)); cat \(qp(resolved)); fi
+            else
+              printf '%s missing\\n' \(q(marker))
+            fi
+            """
         let r = try await run(ssh, script: script)
         try requireSuccess(r)
 
@@ -687,9 +724,10 @@ enum BuiltinToolsSSH {
     /// caller skips the preview and lets the tool itself report the error.
     static func diffForWriteFile(arguments: String, workdir: Workdir, ssh: SSHContext) async throws -> String? {
         guard let data = arguments.data(using: .utf8),
-              let args = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let path = args["path"] as? String,
-              let content = args["content"] as? String else { return nil }
+            let args = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            let path = args["path"] as? String,
+            let content = args["content"] as? String
+        else { return nil }
         let resolved = try workdir.resolve(path)
         let remote = try await fetchFile(ssh, resolved: resolved)
         let old = (remote.exists ? remote.data.flatMap { String(data: $0, encoding: .utf8) } : nil) ?? ""
@@ -701,9 +739,12 @@ enum BuiltinToolsSSH {
     /// either the diff preview or the exact error the tool would report.
     /// Transport failures throw — the caller skips the preview and lets the
     /// tool itself report the error.
-    static func preflightApplyPatch(arguments: String, workdir: Workdir, ssh: SSHContext) async throws -> DiffBuilder.ApplyPatchPreflight {
+    static func preflightApplyPatch(arguments: String, workdir: Workdir, ssh: SSHContext) async throws
+        -> DiffBuilder.ApplyPatchPreflight
+    {
         guard let data = arguments.data(using: .utf8),
-              let args = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            let args = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else {
             return .error(message: "Error: Invalid arguments JSON.")
         }
         do {
@@ -744,9 +785,10 @@ enum BuiltinToolsSSH {
         // An explicit timeout is a hard kill (local semantics). Without one,
         // an idle watchdog kills the call after a stretch of output silence,
         // so a hung network can't hang the tool call indefinitely.
-        let r = try await run(ssh, script: script,
-                              hardTimeout: timeout,
-                              idleTimeout: timeout == nil ? shellIdleTimeout : nil)
+        let r = try await run(
+            ssh, script: script,
+            hardTimeout: timeout,
+            idleTimeout: timeout == nil ? shellIdleTimeout : nil)
 
         // With `exec 2>&1` everything lands on stdout; stderr is empty unless
         // the redirect itself failed (ssh transport errors surface via
@@ -759,7 +801,8 @@ enum BuiltinToolsSSH {
             return ToolOutput(content: text, isError: false)
         case .idleTimeout(let t):
             if !r.stderrString.isEmpty { text += BuiltinTools.stripAnsi(r.stderrString) }
-            text += "\n[exit code: killed after \(Int(t))s without output; pass an explicit timeout for long-running silent commands]"
+            text +=
+                "\n[exit code: killed after \(Int(t))s without output; pass an explicit timeout for long-running silent commands]"
             return ToolOutput(content: text, isError: false)
         case nil:
             break

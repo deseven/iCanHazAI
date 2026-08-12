@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import Foundation
-import MCP
 import Logging
-import ProcessExit
 import LoginShell
+import MCP
+import ProcessExit
+
 #if canImport(System)
     import System
 #else
@@ -26,15 +27,15 @@ struct MCPDebugLogHandler: LogHandler {
     }
     subscript(metadataKey key: String) -> Logging.Logger.Metadata.Value? {
         get { nil }
-        set { }
+        set {}
     }
     var metadata: Logging.Logger.Metadata {
         get { [:] }
-        set { }
+        set {}
     }
     var logLevel: Logging.Logger.Level {
         get { .debug }
-        set { }
+        set {}
     }
 }
 
@@ -257,8 +258,9 @@ actor MCPManager {
                 } else {
                     await disconnect(name: name)
                     toolsCache.removeValue(forKey: name)
-                    state.set(name: name, status: .failed, toolCount: nil,
-                              errorMessage: errorReason ?? "failed to list tools")
+                    state.set(
+                        name: name, status: .failed, toolCount: nil,
+                        errorMessage: errorReason ?? "failed to list tools")
                 }
                 reportStatus(state)
             }
@@ -274,7 +276,9 @@ actor MCPManager {
 
         state.isConfiguring = false
         reportStatus(state)
-        debugLog("MCP", "configure complete — \(toolsCache.count) server(s) healthy, \(servers.count - toolsCache.count) failed")
+        debugLog(
+            "MCP",
+            "configure complete — \(toolsCache.count) server(s) healthy, \(servers.count - toolsCache.count) failed")
         return state
     }
 
@@ -300,7 +304,9 @@ actor MCPManager {
             entry.toolCount = tools.count
             entry.errorMessage = nil
         } catch {
-            debugLog("MCP", "⚠️ reconfigure connectAndListTools failed — server=\"\(server.name)\": \(error.localizedDescription)")
+            debugLog(
+                "MCP",
+                "⚠️ reconfigure connectAndListTools failed — server=\"\(server.name)\": \(error.localizedDescription)")
             await disconnect(name: server.name)
             toolsCache.removeValue(forKey: server.name)
             entry.status = .failed
@@ -360,7 +366,10 @@ actor MCPManager {
         do {
             let conn = try await makeConnection(server)
             connections[server.name] = conn
-            debugLog("MCP", "connected — server=\"\(server.name)\", serverName=\"\(conn.initResult.serverInfo.name)\", serverVersion=\"\(conn.initResult.serverInfo.version)\", protocolVersion=\"\(conn.initResult.protocolVersion)\", capabilities=\(capabilitySummary(conn.initResult.capabilities))")
+            debugLog(
+                "MCP",
+                "connected — server=\"\(server.name)\", serverName=\"\(conn.initResult.serverInfo.name)\", serverVersion=\"\(conn.initResult.serverInfo.version)\", protocolVersion=\"\(conn.initResult.protocolVersion)\", capabilities=\(capabilitySummary(conn.initResult.capabilities))"
+            )
         } catch {
             debugLog("MCP", "⚠️ connect failed — server=\"\(server.name)\": \(error.localizedDescription)")
             reportError("MCP server \"\(server.name)\" failed to connect: \(error.localizedDescription)")
@@ -393,7 +402,8 @@ actor MCPManager {
             try proc.run()
             try stdin.fileHandleForWriting.write(contentsOf: Data(LoginShell.execLine(command: command).utf8))
             process = proc
-            debugLog("MCP", "stdio server \"\(server.name)\" started — pid=\(proc.processIdentifier), command=\(command)")
+            debugLog(
+                "MCP", "stdio server \"\(server.name)\" started — pid=\(proc.processIdentifier), command=\(command)")
             let inputFD = try fileDescriptor(for: stdout.fileHandleForReading)
             let outputFD = try fileDescriptor(for: stdin.fileHandleForWriting)
             transport = StdioTransport(input: inputFD, output: outputFD)
@@ -424,7 +434,8 @@ actor MCPManager {
         }
         let initResult: Initialize.Result
         do {
-            initResult = try await performHandshake(client: client, transport: transport, serverName: server.name, process: process)
+            initResult = try await performHandshake(
+                client: client, transport: transport, serverName: server.name, process: process)
         } catch {
             process?.terminate()
             if let process { await awaitProcessExit(process) }
@@ -446,14 +457,18 @@ actor MCPManager {
     /// deadlocks the SDK Client actor's internal scheduling); only the
     /// watchdog runs on a separate task, mirroring how process death is
     /// handled in [`connectAndListTools`](src/MCP/MCPManager.swift).
-    private func performHandshake(client: Client, transport: any Transport, serverName: String, process: Process?) async throws -> Initialize.Result {
+    private func performHandshake(client: Client, transport: any Transport, serverName: String, process: Process?)
+        async throws -> Initialize.Result
+    {
         let timeout = connectTimeout
         let timeoutBox = HandshakeTimeoutBox()
         let watchdog = Task {
             try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
             // Returns false if the handshake already completed — nothing to do.
             guard timeoutBox.fireUnlessDone() else { return }
-            debugLog("MCP", "⚠️ initialize handshake timed out after \(Int(timeout))s — server=\"\(serverName)\", disconnecting")
+            debugLog(
+                "MCP",
+                "⚠️ initialize handshake timed out after \(Int(timeout))s — server=\"\(serverName)\", disconnecting")
             await client.disconnect()
             process?.terminate()
         }
@@ -527,7 +542,8 @@ actor MCPManager {
             try stdin.fileHandleForWriting.write(contentsOf: Data(LoginShell.execLine(command: command).utf8))
             process = proc
             stderrPipe = stderr
-            debugLog("MCP", "stdio server \"\(server.name)\" started — pid=\(proc.processIdentifier), command=\(command)")
+            debugLog(
+                "MCP", "stdio server \"\(server.name)\" started — pid=\(proc.processIdentifier), command=\(command)")
             let inputFD = try fileDescriptor(for: stdout.fileHandleForReading)
             let outputFD = try fileDescriptor(for: stdin.fileHandleForWriting)
             transport = StdioTransport(input: inputFD, output: outputFD, logger: mcpLogger)
@@ -576,13 +592,16 @@ actor MCPManager {
                 try await Task.sleep(nanoseconds: grace)
                 if box.hasTerminated() {
                     let err = box.makeError(serverName: server.name, stderrPipe: stderrPipe)
-                    debugLog("MCP", "⚠️ stdio server \"\(server.name)\" died during startup grace — \(err.localizedDescription)")
+                    debugLog(
+                        "MCP",
+                        "⚠️ stdio server \"\(server.name)\" died during startup grace — \(err.localizedDescription)")
                     proc.terminationHandler = nil
                     throw err
                 }
                 let initResult: Initialize.Result
                 do {
-                    initResult = try await performHandshake(client: client, transport: transport, serverName: server.name, process: proc)
+                    initResult = try await performHandshake(
+                        client: client, transport: transport, serverName: server.name, process: proc)
                 } catch {
                     proc.terminationHandler = nil
                     // A handshake timeout is reported as such, not as the
@@ -592,7 +611,9 @@ actor MCPManager {
                     }
                     if box.hasTerminated() {
                         let err = box.makeError(serverName: server.name, stderrPipe: stderrPipe)
-                        debugLog("MCP", "⚠️ stdio server \"\(server.name)\" died during handshake — \(err.localizedDescription)")
+                        debugLog(
+                            "MCP",
+                            "⚠️ stdio server \"\(server.name)\" died during handshake — \(err.localizedDescription)")
                         await client.disconnect()
                         proc.terminate()
                         await awaitProcessExit(proc)
@@ -601,13 +622,22 @@ actor MCPManager {
                     throw error
                 }
                 proc.terminationHandler = nil
-                debugLog("MCP", "connected — server=\"\(server.name)\", serverName=\"\(initResult.serverInfo.name)\", serverVersion=\"\(initResult.serverInfo.version)\", protocolVersion=\"\(initResult.protocolVersion)\", capabilities=\(capabilitySummary(initResult.capabilities))")
-                connections[server.name] = Connection(server: server, client: client, process: proc, initResult: initResult)
+                debugLog(
+                    "MCP",
+                    "connected — server=\"\(server.name)\", serverName=\"\(initResult.serverInfo.name)\", serverVersion=\"\(initResult.serverInfo.version)\", protocolVersion=\"\(initResult.protocolVersion)\", capabilities=\(capabilitySummary(initResult.capabilities))"
+                )
+                connections[server.name] = Connection(
+                    server: server, client: client, process: proc, initResult: initResult)
                 return try await queryTools(for: server.name)
             } else {
-                let initResult = try await performHandshake(client: client, transport: transport, serverName: server.name, process: nil)
-                debugLog("MCP", "connected — server=\"\(server.name)\", serverName=\"\(initResult.serverInfo.name)\", serverVersion=\"\(initResult.serverInfo.version)\", protocolVersion=\"\(initResult.protocolVersion)\", capabilities=\(capabilitySummary(initResult.capabilities))")
-                connections[server.name] = Connection(server: server, client: client, process: nil, initResult: initResult)
+                let initResult = try await performHandshake(
+                    client: client, transport: transport, serverName: server.name, process: nil)
+                debugLog(
+                    "MCP",
+                    "connected — server=\"\(server.name)\", serverName=\"\(initResult.serverInfo.name)\", serverVersion=\"\(initResult.serverInfo.version)\", protocolVersion=\"\(initResult.protocolVersion)\", capabilities=\(capabilitySummary(initResult.capabilities))"
+                )
+                connections[server.name] = Connection(
+                    server: server, client: client, process: nil, initResult: initResult)
                 return try await queryTools(for: server.name)
             }
         } catch {
@@ -648,7 +678,10 @@ actor MCPManager {
         if let process = conn.process {
             process.terminate()
             await awaitProcessExit(process)
-            debugLog("MCP", "stdio server \"\(name)\" terminated — pid=\(process.processIdentifier), exitStatus=\(process.terminationStatus), reason=\(process.terminationReason.rawValue)")
+            debugLog(
+                "MCP",
+                "stdio server \"\(name)\" terminated — pid=\(process.processIdentifier), exitStatus=\(process.terminationStatus), reason=\(process.terminationReason.rawValue)"
+            )
         }
     }
 
@@ -681,11 +714,12 @@ actor MCPManager {
             for tool in batch {
                 let schemaData = try JSONEncoder().encode(tool.inputSchema)
                 let schemaString = String(data: schemaData, encoding: .utf8) ?? "{}"
-                tools.append(MCPTool(
-                    name: tool.name,
-                    description: tool.description,
-                    inputSchema: schemaString
-                ))
+                tools.append(
+                    MCPTool(
+                        name: tool.name,
+                        description: tool.description,
+                        inputSchema: schemaString
+                    ))
             }
             cursor = next
         } while cursor != nil
@@ -770,7 +804,8 @@ actor MCPManager {
         let elapsed = Date().timeIntervalSince(last)
         guard elapsed >= idleTimeout else { return }
         if let server = knownServers[name], server.runPolicy == .onDemand {
-            debugLog("MCP", "idle timeout — shutting down on-demand server \"\(name)\" after \(Int(elapsed))s of inactivity")
+            debugLog(
+                "MCP", "idle timeout — shutting down on-demand server \"\(name)\" after \(Int(elapsed))s of inactivity")
             await disconnect(name: name)
             lastActivity.removeValue(forKey: name)
             idleTasks.removeValue(forKey: name)
@@ -792,7 +827,9 @@ actor MCPManager {
     /// unreachable). The server is NOT permanently disabled; the next tool
     /// call retries the connection. On-demand stdio servers are started
     /// lazily here if needed.
-    func callTool(server: String, name: String, arguments: String, callID: String, chatFilename: String) async -> ToolResult {
+    func callTool(server: String, name: String, arguments: String, callID: String, chatFilename: String) async
+        -> ToolResult
+    {
         debugLog("MCP", "callTool — server=\"\(server)\", tool=\"\(name)\", callID=\(callID), chat=\(chatFilename)")
         // Start on-demand stdio servers lazily before calling tools.
         if let known = knownServers[server], known.runPolicy == .onDemand {
@@ -804,17 +841,24 @@ actor MCPManager {
             // the server was just unreachable. The LLM sees the message and
             // can retry on the next call.
             debugLog("MCP", "callTool — server \"\(server)\" unreachable, returning error in RESULT")
-            return ToolResult(callID: callID, content: "MCP server \"\(server)\" is currently unreachable. Please retry.", isError: false)
+            return ToolResult(
+                callID: callID, content: "MCP server \"\(server)\" is currently unreachable. Please retry.",
+                isError: false)
         }
-        return await performCall(conn: conn, server: server, name: name, arguments: arguments, callID: callID, chatFilename: chatFilename, onFailure: { [weak self] in
-            await self?.disconnect(name: server)
-        })
+        return await performCall(
+            conn: conn, server: server, name: name, arguments: arguments, callID: callID, chatFilename: chatFilename,
+            onFailure: { [weak self] in
+                await self?.disconnect(name: server)
+            })
     }
 
     /// Shared tool-call core. Parses arguments, attaches a progress
     /// token, invokes the client, and maps content. `onFailure` is invoked
     /// when the call throws (so the connection is torn down).
-    private func performCall(conn: Connection, server: String, name: String, arguments: String, callID: String, chatFilename: String, onFailure: @escaping () async -> Void) async -> ToolResult {
+    private func performCall(
+        conn: Connection, server: String, name: String, arguments: String, callID: String, chatFilename: String,
+        onFailure: @escaping () async -> Void
+    ) async -> ToolResult {
         // Parse the raw JSON arguments string into an MCP `Value`.
         let argsValue: [String: Value]?
         if let data = arguments.data(using: .utf8), !data.isEmpty {
@@ -826,7 +870,9 @@ actor MCPManager {
                     argsValue = nil
                 }
             } catch {
-                return ToolResult(callID: callID, content: "Failed to parse tool arguments JSON: \(error.localizedDescription)", isError: true)
+                return ToolResult(
+                    callID: callID, content: "Failed to parse tool arguments JSON: \(error.localizedDescription)",
+                    isError: true)
             }
         } else {
             argsValue = nil
@@ -867,15 +913,25 @@ actor MCPManager {
                     return "[resource link: \(name) at \(uri)]"
                 }
             }.joined(separator: "\n")
-            debugLog("MCP", "callTool result — server=\"\(server)\", tool=\"\(name)\", isError=\(isError ?? false), contentSize=\(text.count)")
+            debugLog(
+                "MCP",
+                "callTool result — server=\"\(server)\", tool=\"\(name)\", isError=\(isError ?? false), contentSize=\(text.count)"
+            )
             return ToolResult(callID: callID, content: text, isError: isError ?? false)
         } catch is CancellationError {
             debugLog("MCP", "callTool cancelled — server=\"\(server)\", tool=\"\(name)\", callID=\(callID)")
             return ToolResult(callID: callID, content: "Tool call was cancelled.", isError: true)
         } catch {
-            debugLog("MCP", "callTool failed — server=\"\(server)\", tool=\"\(name)\", callID=\(callID), error=\(error), type=\(String(describing: error))")
+            debugLog(
+                "MCP",
+                "callTool failed — server=\"\(server)\", tool=\"\(name)\", callID=\(callID), error=\(error), type=\(String(describing: error))"
+            )
             await onFailure()
-            return ToolResult(callID: callID, content: "MCP server \"\(server)\" error during tool call: \(error.localizedDescription). Please retry.", isError: false)
+            return ToolResult(
+                callID: callID,
+                content:
+                    "MCP server \"\(server)\" error during tool call: \(error.localizedDescription). Please retry.",
+                isError: false)
         }
     }
 
@@ -934,7 +990,8 @@ enum MCPManagerError: Error, LocalizedError {
             }
             return "MCP stdio server \"\(name)\" exited before initializing (exit code \(status)): \(stderrTrimmed)"
         case .initializationTimeout(let name, let timeout):
-            return "MCP server \"\(name)\" did not respond to initialization within \(Int(timeout))s and was marked unavailable."
+            return
+                "MCP server \"\(name)\" did not respond to initialization within \(Int(timeout))s and was marked unavailable."
         }
     }
 }

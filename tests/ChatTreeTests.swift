@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+
 @testable import iCanHazAI
 
 /// Tests for the chat tree data model: the nested `branches`/`activeBranch`
@@ -130,14 +131,23 @@ extension AllAppTests {
             // to mix tool calls of one branch with results of another).
             let user = Fixtures.message(role: .user, content: "q", timestamp: Date(timeIntervalSince1970: 1))
             let a1 = Fixtures.message(role: .assistant, content: "a1", timestamp: Date(timeIntervalSince1970: 2))
-            let a2 = Fixtures.message(role: .assistant, content: "a2", timestamp: Date(timeIntervalSince1970: 3), toolCalls: [ToolCall(id: "c1", name: "ls", arguments: "{}")])
-            let toolRes = Fixtures.message(role: .tool, content: "", timestamp: Date(timeIntervalSince1970: 4), toolResults: [ToolResult(callID: "c1", content: "out", isError: false)])
-            let a2final = Fixtures.message(role: .assistant, content: "a2 final", timestamp: Date(timeIntervalSince1970: 5))
-            var chat = Fixtures.chat(messages: [Fixtures.forking(user, branches: [[a1], [a2, toolRes, a2final]], active: 1)])
+            let a2 = Fixtures.message(
+                role: .assistant, content: "a2", timestamp: Date(timeIntervalSince1970: 3),
+                toolCalls: [ToolCall(id: "c1", name: "ls", arguments: "{}")])
+            let toolRes = Fixtures.message(
+                role: .tool, content: "", timestamp: Date(timeIntervalSince1970: 4),
+                toolResults: [ToolResult(callID: "c1", content: "out", isError: false)])
+            let a2final = Fixtures.message(
+                role: .assistant, content: "a2 final", timestamp: Date(timeIntervalSince1970: 5))
+            var chat = Fixtures.chat(messages: [
+                Fixtures.forking(user, branches: [[a1], [a2, toolRes, a2final]], active: 1)
+            ])
             // Switch back to the first answer and send a follow-up.
             chat.switchActiveBranch(parentID: user.id, to: a1.id)
-            let followUp = Fixtures.message(role: .user, content: "follow-up", timestamp: Date(timeIntervalSince1970: 6))
-            let answer = Fixtures.message(role: .assistant, content: "a1 follow-up answer", timestamp: Date(timeIntervalSince1970: 7))
+            let followUp = Fixtures.message(
+                role: .user, content: "follow-up", timestamp: Date(timeIntervalSince1970: 6))
+            let answer = Fixtures.message(
+                role: .assistant, content: "a1 follow-up answer", timestamp: Date(timeIntervalSince1970: 7))
             chat.appendToActiveLeaf(followUp)
             chat.appendToActiveLeaf(answer)
             // The follow-up turn is a continuation of the FIRST branch.
@@ -362,9 +372,12 @@ extension AllAppTests {
             let user = Fixtures.message(role: .user, content: "q", timestamp: Date(timeIntervalSince1970: 1))
             let a1 = Fixtures.message(role: .assistant, content: "a1", timestamp: Date(timeIntervalSince1970: 2))
             let call = ToolCall(id: "c1", name: "ls", arguments: "{}")
-            let a2 = Fixtures.message(role: .assistant, content: "working…", timestamp: Date(timeIntervalSince1970: 3), toolCalls: [call])
+            let a2 = Fixtures.message(
+                role: .assistant, content: "working…", timestamp: Date(timeIntervalSince1970: 3), toolCalls: [call])
             let placeholder = Fixtures.message(role: .assistant, content: "", timestamp: Date(timeIntervalSince1970: 4))
-            var chat = Fixtures.chat(messages: [Fixtures.forking(user, branches: [[a1], [a2, placeholder]], active: 1)])
+            var chat = Fixtures.chat(messages: [
+                Fixtures.forking(user, branches: [[a1], [a2, placeholder]], active: 1)
+            ])
             chat.finalizeActiveStoppedTurn()
             // The placeholder is gone; a2's unanswered call got a synthesized
             // cancelled result; the first branch is untouched.
@@ -415,11 +428,11 @@ extension AllAppTests {
             let user = Fixtures.message(role: .user, content: "q")
             let assistant = Fixtures.message(role: .assistant, content: "a")
             let json = """
-            {"id":"00000000-0000-0000-0000-000000000001","messages":[
-            {"id":"\(user.id.uuidString)","role":"user","content":"q","timestamp":0},
-            {"id":"\(assistant.id.uuidString)","role":"assistant","content":"a","timestamp":1}
-            ],"children":{"nonexistent":["also-nonexistent"]},"activeChild":{"x":"y"}}
-            """
+                {"id":"00000000-0000-0000-0000-000000000001","messages":[
+                {"id":"\(user.id.uuidString)","role":"user","content":"q","timestamp":0},
+                {"id":"\(assistant.id.uuidString)","role":"assistant","content":"a","timestamp":1}
+                ],"children":{"nonexistent":["also-nonexistent"]},"activeChild":{"x":"y"}}
+                """
             let chat = try JSONDecoder().decode(Chat.self, from: Data(json.utf8))
             #expect(chat.hasForks == false)
             #expect(chat.activeMessages.count == 2)
@@ -430,11 +443,11 @@ extension AllAppTests {
             let user = Fixtures.message(role: .user, content: "q")
             let a1 = Fixtures.message(role: .assistant, content: "a1")
             let json = """
-            {"id":"00000000-0000-0000-0000-000000000001","messages":[
-            {"id":"\(user.id.uuidString)","role":"user","content":"q","timestamp":0,
-             "branches":[[{"id":"\(a1.id.uuidString)","role":"assistant","content":"a1","timestamp":1}]],"activeBranch":0}
-            ]}
-            """
+                {"id":"00000000-0000-0000-0000-000000000001","messages":[
+                {"id":"\(user.id.uuidString)","role":"user","content":"q","timestamp":0,
+                 "branches":[[{"id":"\(a1.id.uuidString)","role":"assistant","content":"a1","timestamp":1}]],"activeBranch":0}
+                ]}
+                """
             let chat = try JSONDecoder().decode(Chat.self, from: Data(json.utf8))
             #expect(chat.hasForks == false)
             #expect(chat.messages.map(\.id) == [user.id, a1.id])
@@ -446,13 +459,13 @@ extension AllAppTests {
             let a1 = Fixtures.message(role: .assistant, content: "a1")
             let a2 = Fixtures.message(role: .assistant, content: "a2")
             let json = """
-            {"id":"00000000-0000-0000-0000-000000000001","messages":[
-            {"id":"\(user.id.uuidString)","role":"user","content":"q","timestamp":0,
-             "branches":[[{"id":"\(a1.id.uuidString)","role":"assistant","content":"a1","timestamp":1}],
-                         [{"id":"\(a2.id.uuidString)","role":"assistant","content":"a2","timestamp":2}]],
-             "activeBranch":7}
-            ]}
-            """
+                {"id":"00000000-0000-0000-0000-000000000001","messages":[
+                {"id":"\(user.id.uuidString)","role":"user","content":"q","timestamp":0,
+                 "branches":[[{"id":"\(a1.id.uuidString)","role":"assistant","content":"a1","timestamp":1}],
+                             [{"id":"\(a2.id.uuidString)","role":"assistant","content":"a2","timestamp":2}]],
+                 "activeBranch":7}
+                ]}
+                """
             let chat = try JSONDecoder().decode(Chat.self, from: Data(json.utf8))
             #expect(chat.hasForks == true)
             #expect(chat.activeMessages.map(\.id) == [user.id, a2.id])
@@ -465,13 +478,13 @@ extension AllAppTests {
             let a2 = Fixtures.message(role: .assistant, content: "a2")
             let tail = Fixtures.message(role: .user, content: "tail")
             let json = """
-            {"id":"00000000-0000-0000-0000-000000000001","messages":[
-            {"id":"\(user.id.uuidString)","role":"user","content":"q","timestamp":0,
-             "branches":[[{"id":"\(a1.id.uuidString)","role":"assistant","content":"a1","timestamp":1}]]},
-            {"id":"\(a2.id.uuidString)","role":"assistant","content":"a2","timestamp":2},
-            {"id":"\(tail.id.uuidString)","role":"user","content":"tail","timestamp":3}
-            ]}
-            """
+                {"id":"00000000-0000-0000-0000-000000000001","messages":[
+                {"id":"\(user.id.uuidString)","role":"user","content":"q","timestamp":0,
+                 "branches":[[{"id":"\(a1.id.uuidString)","role":"assistant","content":"a1","timestamp":1}]]},
+                {"id":"\(a2.id.uuidString)","role":"assistant","content":"a2","timestamp":2},
+                {"id":"\(tail.id.uuidString)","role":"user","content":"tail","timestamp":3}
+                ]}
+                """
             let chat = try JSONDecoder().decode(Chat.self, from: Data(json.utf8))
             #expect(chat.hasForks == true)
             // The inline tail became the first branch; default active = last

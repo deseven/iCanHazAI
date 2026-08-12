@@ -131,7 +131,8 @@ enum WorkdirItemsBuilder {
         // Recents are matched (case-insensitive substring) against their
         // display form so `~` and abbreviated queries behave the way the
         // user sees them; MRU order is preserved.
-        var items = recents
+        var items =
+            recents
             .filter { WorkdirItem.display($0).range(of: q, options: .caseInsensitive) != nil }
             .map { WorkdirItem.recent($0) }
 
@@ -203,7 +204,8 @@ final class WorkdirSSHLister: ObservableObject {
             if let entries = await self.ls(ctx, dir: full) {
                 guard gen == self.generation else { return }
                 self.typed = "\(host):\(full)"
-                self.specs = entries
+                self.specs =
+                    entries
                     .filter { !$0.hasPrefix(".") }
                     .map { "\(host):\(full == "/" ? "" : full)/\($0)" }
                 return
@@ -212,7 +214,8 @@ final class WorkdirSSHLister: ObservableObject {
             guard let entries = await self.ls(ctx, dir: dir) else { return }
             let includeHidden = prefix.hasPrefix(".")
             let base = dir == "/" ? "" : dir
-            let matched = entries
+            let matched =
+                entries
                 .filter { includeHidden || !$0.hasPrefix(".") }
                 .filter { WorkdirQuery.nameMatches($0, prefix: prefix) }
                 .map { "\(host):\(base)/\($0)" }
@@ -228,9 +231,11 @@ final class WorkdirSSHLister: ObservableObject {
         // `test -d` rejects plain files (ls would happily list a file as
         // itself); `ls -1Ap` marks directories with a trailing "/".
         let script = "test -d \(BuiltinToolsSSH.q(dir)) && ls -1Ap \(BuiltinToolsSSH.q(dir))"
-        guard let result = try? await SSHManager.shared.exec(
-            ctx, stdin: Data(script.utf8), hardTimeout: 20, idleTimeout: nil
-        ), result.exitCode == 0 else { return nil }
+        guard
+            let result = try? await SSHManager.shared.exec(
+                ctx, stdin: Data(script.utf8), hardTimeout: 20, idleTimeout: nil
+            ), result.exitCode == 0
+        else { return nil }
         return result.stdoutString
             .components(separatedBy: "\n")
             .filter { $0.hasSuffix("/") }

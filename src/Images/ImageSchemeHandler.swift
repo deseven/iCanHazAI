@@ -84,7 +84,8 @@ final class ImageSchemeHandler: NSObject, WKURLSchemeHandler {
         let fileURL = dir.appendingPathComponent(filename)
 
         guard FileManager.default.fileExists(atPath: fileURL.path),
-              let data = try? Data(contentsOf: fileURL) else {
+            let data = try? Data(contentsOf: fileURL)
+        else {
             urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))
             return
         }
@@ -161,4 +162,3 @@ final class ImageSchemeHandler: NSObject, WKURLSchemeHandler {
         return nil
     }
 }
-

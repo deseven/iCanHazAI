@@ -18,7 +18,7 @@ let subscriber: HostSubscriber | null = null;
  * The native side invokes `window.chatHost.postMessage(jsonString)`.
  */
 export function setHostSubscriber(fn: HostSubscriber): void {
-  subscriber = fn;
+    subscriber = fn;
 }
 
 /**
@@ -26,12 +26,12 @@ export function setHostSubscriber(fn: HostSubscriber): void {
  * isn't present (e.g. when running standalone in a browser for dev).
  */
 export function sendToHost(msg: BridgeMessage): void {
-  const bridge = (window as any).webkit?.messageHandlers?.bridge;
-  if (bridge) {
-    bridge.postMessage(msg);
-  } else if (typeof window !== "undefined") {
-    console.log("[bridge -> host]", msg);
-  }
+    const bridge = (window as any).webkit?.messageHandlers?.bridge;
+    if (bridge) {
+        bridge.postMessage(msg);
+    } else if (typeof window !== "undefined") {
+        console.log("[bridge -> host]", msg);
+    }
 }
 
 // Expose `chatHost` on the window object. The native WKWebView calls
@@ -39,27 +39,27 @@ export function sendToHost(msg: BridgeMessage): void {
 // We attach it as a non-enumerable property so it doesn't leak into Preact
 // state or iteration.
 declare global {
-  interface Window {
-    chatHost: {
-      postMessage: (raw: string) => void;
-    };
-  }
+    interface Window {
+        chatHost: {
+            postMessage: (raw: string) => void;
+        };
+    }
 }
 
 Object.defineProperty(window, "chatHost", {
-  value: {
-    postMessage(raw: string) {
-      let msg: HostMessage;
-      try {
-        msg = JSON.parse(raw) as HostMessage;
-      } catch (e) {
-        console.error("[chatHost] failed to parse host message", e, raw);
-        return;
-      }
-      subscriber?.(msg);
+    value: {
+        postMessage(raw: string) {
+            let msg: HostMessage;
+            try {
+                msg = JSON.parse(raw) as HostMessage;
+            } catch (e) {
+                console.error("[chatHost] failed to parse host message", e, raw);
+                return;
+            }
+            subscriber?.(msg);
+        },
     },
-  },
-  writable: false,
-  enumerable: false,
-  configurable: false,
+    writable: false,
+    enumerable: false,
+    configurable: false,
 });

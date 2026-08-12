@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+
 @testable import iCanHazAI
 
 /// Tests for the tree overview projection builder and the gotoMessage path
@@ -209,8 +210,10 @@ extension AllAppTests {
             let root = TreeNodeData(
                 id: "n1", role: "user", snippet: "hello", messageCount: 1, isActive: true,
                 split: TreeSplitData(branches: [
-                    TreeNodeData(id: "n2", role: "assistant", snippet: "world", messageCount: 1, isActive: true, split: nil),
-                    TreeNodeData(id: "n3", role: "assistant", snippet: "other", messageCount: 2, isActive: false, split: nil),
+                    TreeNodeData(
+                        id: "n2", role: "assistant", snippet: "world", messageCount: 1, isActive: true, split: nil),
+                    TreeNodeData(
+                        id: "n3", role: "assistant", snippet: "other", messageCount: 2, isActive: false, split: nil),
                 ])
             )
             let original = HostMessageData.treeOverview(root: root)

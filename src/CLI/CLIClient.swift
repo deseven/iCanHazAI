@@ -168,7 +168,8 @@ enum CLIClient {
         // mode stdin is the session's input channel instead.
         if message.isEmpty, !opts.interactive, isatty(FileHandle.standardInput.fileDescriptor) == 0 {
             if let data = try? FileHandle.standardInput.readToEnd(),
-               let text = String(data: data, encoding: .utf8) {
+                let text = String(data: data, encoding: .utf8)
+            {
                 message = text.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
@@ -251,11 +252,16 @@ enum CLIClient {
                     requestID = reqID
                     let wd = resolveWorkdir(opts)
                     do {
-                        try conn.send(.request(CLIRequest(
-                            id: reqID,
-                            method: CLIRequest.methodChatSend,
-                            params: CLIRequestParams(message: message, role: opts.role, connection: opts.connection, chat: opts.chat, temporary: opts.temporary, workdir: wd.workdir, workdirExplicit: wd.explicit, allowAll: opts.allowAll)
-                        )))
+                        try conn.send(
+                            .request(
+                                CLIRequest(
+                                    id: reqID,
+                                    method: CLIRequest.methodChatSend,
+                                    params: CLIRequestParams(
+                                        message: message, role: opts.role, connection: opts.connection, chat: opts.chat,
+                                        temporary: opts.temporary, workdir: wd.workdir, workdirExplicit: wd.explicit,
+                                        allowAll: opts.allowAll)
+                                )))
                     } catch {
                         stderr("Failed to send the request — \(error.localizedDescription)")
                         break loop
@@ -306,7 +312,7 @@ enum CLIClient {
                     terminated = true
                     break loop
                 case .hello, .ping, .pong, .request, .approve:
-                    break // client-side frames / unused by this client
+                    break  // client-side frames / unused by this client
                 }
             }
         }
@@ -402,7 +408,7 @@ enum CLIClient {
         /// Tool calls awaiting an approval answer, in order; the head is the
         /// one the current prompt is about. (Calls execute sequentially, so
         /// in practice this never holds more than one.)
-        var approvalQueue: [String] = [] // call ids
+        var approvalQueue: [String] = []  // call ids
         /// Set after answering "n": the next input line is the deny reason.
         var awaitingDenyReason = false
         /// Stdin bytes not yet consumed (a partial line in line mode).
@@ -472,11 +478,13 @@ enum CLIClient {
         func sendApproval(decision: String, reason: String? = nil) {
             guard !approvalQueue.isEmpty else { return }
             let callID = approvalQueue.removeFirst()
-            try? conn.send(.request(CLIRequest(
-                id: UUID().uuidString,
-                method: CLIRequest.methodToolApprove,
-                params: CLIRequestParams(message: "", callID: callID, decision: decision, reason: reason)
-            )))
+            try? conn.send(
+                .request(
+                    CLIRequest(
+                        id: UUID().uuidString,
+                        method: CLIRequest.methodToolApprove,
+                        params: CLIRequestParams(message: "", callID: callID, decision: decision, reason: reason)
+                    )))
             if !approvalQueue.isEmpty {
                 showApprovalPrompt()
             }
@@ -487,21 +495,23 @@ enum CLIClient {
             let wd = resolveWorkdir(opts)
             let continuing = chatFilename != nil
             do {
-                try conn.send(.request(CLIRequest(
-                    id: reqID,
-                    method: CLIRequest.methodChatSend,
-                    params: CLIRequestParams(
-                        message: text,
-                        role: continuing ? nil : opts.role,
-                        connection: continuing ? nil : opts.connection,
-                        chat: continuing ? chatFilename : opts.chat,
-                        temporary: continuing ? false : opts.temporary,
-                        workdir: continuing ? nil : wd.workdir,
-                        workdirExplicit: !continuing && wd.explicit,
-                        allowAll: opts.allowAll,
-                        interactive: true
-                    )
-                )))
+                try conn.send(
+                    .request(
+                        CLIRequest(
+                            id: reqID,
+                            method: CLIRequest.methodChatSend,
+                            params: CLIRequestParams(
+                                message: text,
+                                role: continuing ? nil : opts.role,
+                                connection: continuing ? nil : opts.connection,
+                                chat: continuing ? chatFilename : opts.chat,
+                                temporary: continuing ? false : opts.temporary,
+                                workdir: continuing ? nil : wd.workdir,
+                                workdirExplicit: !continuing && wd.explicit,
+                                allowAll: opts.allowAll,
+                                interactive: true
+                            )
+                        )))
                 requestID = reqID
                 streaming = true
                 quitArmed = false
@@ -597,7 +607,10 @@ enum CLIClient {
                     result = 130
                     break loop
                 }
-                if promptVisible { _ = writeStdout("\n"); promptVisible = false }
+                if promptVisible {
+                    _ = writeStdout("\n")
+                    promptVisible = false
+                }
                 if !approvalQueue.isEmpty || awaitingDenyReason {
                     // Ctrl-C at a tool confirmation cancels the whole request
                     // — like the GUI's Stop: the pending approval and the
@@ -608,20 +621,24 @@ enum CLIClient {
                     awaitingDenyReason = false
                     exitKeyMode()
                     if let chatFilename {
-                        try? conn.send(.request(CLIRequest(
-                            id: UUID().uuidString,
-                            method: CLIRequest.methodChatStop,
-                            params: CLIRequestParams(message: "", chat: chatFilename, immediate: true)
-                        )))
+                        try? conn.send(
+                            .request(
+                                CLIRequest(
+                                    id: UUID().uuidString,
+                                    method: CLIRequest.methodChatStop,
+                                    params: CLIRequestParams(message: "", chat: chatFilename, immediate: true)
+                                )))
                     }
                     warn("stopped — press ctrl-c again to quit")
                 } else if streaming, let chatFilename {
                     quitArmed = true
-                    try? conn.send(.request(CLIRequest(
-                        id: UUID().uuidString,
-                        method: CLIRequest.methodChatStop,
-                        params: CLIRequestParams(message: "", chat: chatFilename)
-                    )))
+                    try? conn.send(
+                        .request(
+                            CLIRequest(
+                                id: UUID().uuidString,
+                                method: CLIRequest.methodChatStop,
+                                params: CLIRequestParams(message: "", chat: chatFilename)
+                            )))
                     warn("stopping after the current iteration — press ctrl-c again to quit")
                 } else {
                     // Idle at the input prompt: nothing to stop, quit right away.
@@ -650,7 +667,9 @@ enum CLIClient {
                 case .welcome(_, _, let negotiated):
                     greeted.set(true)
                     guard negotiated >= 2 else {
-                        stderr("Interactive mode requires a newer version of the running app — restart iCanHazAI and try again.")
+                        stderr(
+                            "Interactive mode requires a newer version of the running app — restart iCanHazAI and try again."
+                        )
                         result = 1
                         break loop
                     }
@@ -704,7 +723,10 @@ enum CLIClient {
                         warn("request failed: \(message)")
                         break
                     }
-                    if promptVisible { _ = writeStdout("\n"); promptVisible = false }
+                    if promptVisible {
+                        _ = writeStdout("\n")
+                        promptVisible = false
+                    }
                     streaming = false
                     requestID = nil
                     approvalQueue.removeAll()
@@ -714,7 +736,7 @@ enum CLIClient {
                     stderr("error: \(message)")
                     showInputPrompt()
                 case .hello, .ping, .pong, .request:
-                    break // client-side frames / unused by this client
+                    break  // client-side frames / unused by this client
                 }
             }
         }
@@ -932,7 +954,7 @@ enum CLIClient {
                 guard ch == "\n" else { break }
                 n += 1
             }
-            if n == out.count { // only newlines (or empty) — they accumulate
+            if n == out.count {  // only newlines (or empty) — they accumulate
                 trailingNewlines = min(2, trailingNewlines + n)
             } else {
                 trailingNewlines = min(2, n)
@@ -956,8 +978,10 @@ enum CLIClient {
         /// Pops the header for a finished call: the first pending one with
         /// the same name, else the oldest.
         mutating func pop(forResultName name: String) -> (name: String, args: String?)? {
-            guard let idx = headers.firstIndex(where: { $0.name == name })
-                ?? (headers.isEmpty ? nil : headers.startIndex) else { return nil }
+            guard
+                let idx = headers.firstIndex(where: { $0.name == name })
+                    ?? (headers.isEmpty ? nil : headers.startIndex)
+            else { return nil }
             return headers.remove(at: idx)
         }
 
@@ -973,15 +997,18 @@ enum CLIClient {
     /// `⚙ name args-summary`; a finished call becomes `  ✓ done — description`
     /// with the symbol colored by status (green done, red error, yellow
     /// denied/cancelled). Mirrors the chat renderer's collapsed tool blocks.
-    static func renderToolFrame(name: String, args: String?, status: CLIToolStatus?, color: Bool = stdoutColor) -> String {
+    static func renderToolFrame(name: String, args: String?, status: CLIToolStatus?, color: Bool = stdoutColor)
+        -> String
+    {
         if let status {
             let (symbol, code): (String, String)
             switch status.kind {
             case "done": (symbol, code) = ("✓", "32")
             case "error": (symbol, code) = ("✗", "31")
-            default: (symbol, code) = ("⚠", "33") // denied / cancelled
+            default: (symbol, code) = ("⚠", "33")  // denied / cancelled
             }
-            var line = "  " + styled(symbol, code, enabled: color)
+            var line =
+                "  " + styled(symbol, code, enabled: color)
                 + styled(" \(status.label)", "2", enabled: color)
             if !status.description.isEmpty {
                 line += styled(" — ", "2", enabled: color) + status.description
@@ -1015,39 +1042,39 @@ enum CLIClient {
 
     private static func printUsage(toStderr: Bool) {
         let usage = """
-        Usage: iCanHazAI [options] <message…>
-               <command> | iCanHazAI [options]
-               iCanHazAI --interactive [options] [message…]
+            Usage: iCanHazAI [options] <message…>
+                   <command> | iCanHazAI [options]
+                   iCanHazAI --interactive [options] [message…]
 
-        Sends a message and streams the reply to stdout. Creates a new chat
-        (default role and connection) unless --chat is given. Chats created
-        here are regular chats, visible and continuable in the GUI — unless
-        --temporary is used, in which case the chat only exists while the
-        CLI is running.
+            Sends a message and streams the reply to stdout. Creates a new chat
+            (default role and connection) unless --chat is given. Chats created
+            here are regular chats, visible and continuable in the GUI — unless
+            --temporary is used, in which case the chat only exists while the
+            CLI is running.
 
-        Options:
-          -f, --chat <name>       Continue an existing chat
-          -r, --role <name>       Role for the new chat
-                                  (default: your default role)
-          -c, --connection <id>   Connection for the new chat, "provider/name"
-                                  (default: your default connection)
-          -w, --workdir <path>    Working directory for workdir-capable roles
-                                  (default: the current directory)
-          -y, --allow-all         Auto-approve all tool calls (without it, calls
-                                  that need confirmation are skipped; interactive
-                                  mode asks instead)
-          -t, --temporary         Use a temporary chat instead of a permanent one
-          -i, --interactive       Interactive session: the message is optional,
-                                  follow-up messages are entered at the "< "
-                                  prompt, ^C stops after the current iteration,
-                                  ^C again quits
-          --                      Treat the remaining arguments as the message
-          -h, --help              Show this help
+            Options:
+              -f, --chat <name>       Continue an existing chat
+              -r, --role <name>       Role for the new chat
+                                      (default: your default role)
+              -c, --connection <id>   Connection for the new chat, "provider/name"
+                                      (default: your default connection)
+              -w, --workdir <path>    Working directory for workdir-capable roles
+                                      (default: the current directory)
+              -y, --allow-all         Auto-approve all tool calls (without it, calls
+                                      that need confirmation are skipped; interactive
+                                      mode asks instead)
+              -t, --temporary         Use a temporary chat instead of a permanent one
+              -i, --interactive       Interactive session: the message is optional,
+                                      follow-up messages are entered at the "< "
+                                      prompt, ^C stops after the current iteration,
+                                      ^C again quits
+              --                      Treat the remaining arguments as the message
+              -h, --help              Show this help
 
-        Long options also accept the --name=value form. The app must be
-        running; it is started automatically (without showing the main
-        window) when it isn't. Control socket: ~/iCanHazAI/app.sock
-        """
+            Long options also accept the --name=value form. The app must be
+            running; it is started automatically (without showing the main
+            window) when it isn't. Control socket: ~/iCanHazAI/app.sock
+            """
         if toStderr {
             stderr(usage)
         } else {

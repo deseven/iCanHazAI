@@ -56,7 +56,10 @@ struct ChatInfoSidebar: View {
                     if let snapshot = toolSnapshot {
                         if !snapshot.builtin.isEmpty {
                             Section("Tools") {
-                                ForEach(groupedSections(from: snapshot.builtin, preferredOrder: BuiltinTools.groupOrder), id: \.0) { groupName, tools in
+                                ForEach(
+                                    groupedSections(from: snapshot.builtin, preferredOrder: BuiltinTools.groupOrder),
+                                    id: \.0
+                                ) { groupName, tools in
                                     ToolSubcategory(label: groupName, tools: tools) { name in
                                         store.toggleChatToolAutoApproval(toolName: name)
                                     }
@@ -96,9 +99,12 @@ struct ChatInfoSidebar: View {
     /// MCP server name) and returns (groupName, tools) pairs. When
     /// `preferredOrder` is given, groups are sorted by that order (unknown
     /// groups fall back to alphabetical); otherwise purely alphabetical.
-    private func groupedSections(from tools: [ChatToolEntry], preferredOrder: [String] = []) -> [(String, [ChatToolEntry])] {
+    private func groupedSections(from tools: [ChatToolEntry], preferredOrder: [String] = []) -> [(
+        String, [ChatToolEntry]
+    )] {
         let groups = Dictionary(grouping: tools, by: { $0.source })
-        return groups
+        return
+            groups
             .map { ($0.key, $0.value) }
             .sorted { a, b in
                 let ai = preferredOrder.firstIndex(of: a.0) ?? Int.max

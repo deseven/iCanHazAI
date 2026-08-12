@@ -213,7 +213,9 @@ final class LoaderController: ObservableObject {
             // batch (e.g. "1 entry" for a single-file edit); `total` keeps the
             // on-disk count for the success/warning/failed derivation.
             let refresh = refreshCounts[r] ?? n
-            return LoaderEntry(id: r.id, label: r.title, status: .inProgress, detail: resourceSubtitle(r, count: refresh), total: n, refreshCount: refresh)
+            return LoaderEntry(
+                id: r.id, label: r.title, status: .inProgress, detail: resourceSubtitle(r, count: refresh), total: n,
+                refreshCount: refresh)
         }
         sections.removeAll(where: { $0.id == "application" })
         sections.insert(LoaderSection(id: "application", title: "Application", entries: appEntries), at: 0)
@@ -230,7 +232,8 @@ final class LoaderController: ObservableObject {
     func markApplicationCompleted(_ resource: AppResource, loaded: Int) {
         guard mode != .idle else { return }
         guard var section = sections.first(where: { $0.id == "application" }),
-              let idx = section.entries.firstIndex(where: { $0.id == resource.id }) else { return }
+            let idx = section.entries.firstIndex(where: { $0.id == resource.id })
+        else { return }
         let total = section.entries[idx].total
         let refresh = section.entries[idx].refreshCount
         let failed = max(0, total - loaded)
@@ -259,7 +262,8 @@ final class LoaderController: ObservableObject {
     func markChatsCompleted(total: Int, freshCached: Int, failed: Int) {
         guard mode != .idle else { return }
         guard var section = sections.first(where: { $0.id == "application" }),
-              let idx = section.entries.firstIndex(where: { $0.id == AppResource.chats.id }) else { return }
+            let idx = section.entries.firstIndex(where: { $0.id == AppResource.chats.id })
+        else { return }
         let reRead = max(0, total - freshCached)
         let status: LoaderStatus
         if total <= 0 || failed == 0 {
@@ -285,7 +289,9 @@ final class LoaderController: ObservableObject {
     /// for a single reconfigure, all entries for a full reinitialize).
     func setMCPState(_ state: MCPConfigurationState) {
         let entries = state.entries.map { e in
-            LoaderEntry(id: e.name, label: e.name, status: LoaderStatus(e.status), detail: mcpDetail(e) ?? "pending", total: 1, refreshCount: 1)
+            LoaderEntry(
+                id: e.name, label: e.name, status: LoaderStatus(e.status), detail: mcpDetail(e) ?? "pending", total: 1,
+                refreshCount: 1)
         }
         if mode == .startup {
             guard var section = sections.first(where: { $0.id == "mcps" }) else { return }

@@ -1,5 +1,6 @@
-import Testing
 import Foundation
+import Testing
+
 @testable import iCanHazAI
 
 /// Tests for the unix socket plumbing ([`UnixSocket`](src/CLI/UnixSocket.swift))
@@ -30,7 +31,7 @@ extension AllAppTests {
             // Stale: the file exists but the listener is gone.
             let fd = try UnixSocket.listen(path: path)
             #expect(UnixSocket.probe(path: path))
-            close(fd) // file remains, nobody listening → stale
+            close(fd)  // file remains, nobody listening → stale
             #expect(!UnixSocket.probe(path: path))
             CLIServer.removeStaleSocketIfNeeded(at: path)
             #expect(!FileManager.default.fileExists(atPath: path))
@@ -76,11 +77,13 @@ extension AllAppTests {
                 frames.append(frame)
                 if case .welcome = frame, !requestSent {
                     requestSent = true
-                    try conn.send(.request(CLIRequest(
-                        id: "req-1",
-                        method: CLIRequest.methodChatSend,
-                        params: CLIRequestParams(message: "hi")
-                    )))
+                    try conn.send(
+                        .request(
+                            CLIRequest(
+                                id: "req-1",
+                                method: CLIRequest.methodChatSend,
+                                params: CLIRequestParams(message: "hi")
+                            )))
                 }
                 if case .done = frame { break }
             }
@@ -139,8 +142,11 @@ extension AllAppTests {
                 frames.append(frame)
                 if case .welcome = frame, !requestSent {
                     requestSent = true
-                    try conn.send(.request(CLIRequest(id: "r", method: CLIRequest.methodChatSend,
-                                                    params: CLIRequestParams(message: "hi"))))
+                    try conn.send(
+                        .request(
+                            CLIRequest(
+                                id: "r", method: CLIRequest.methodChatSend,
+                                params: CLIRequestParams(message: "hi"))))
                 }
                 if case .error = frame { break }
             }
@@ -164,8 +170,11 @@ extension AllAppTests {
 
             // Garbage line, then an unknown method, then a valid ping.
             try UnixSocket.writeAll(fd: fd, data: Data("this is not json\n".utf8))
-            try conn.send(.request(CLIRequest(id: "x", method: "chat.explode",
-                                              params: CLIRequestParams(message: "hi"))))
+            try conn.send(
+                .request(
+                    CLIRequest(
+                        id: "x", method: "chat.explode",
+                        params: CLIRequestParams(message: "hi"))))
             try conn.send(.ping)
 
             var frames: [CLIFrame] = []
@@ -225,8 +234,11 @@ extension AllAppTests {
                 guard case .frame(let frame) = event else { continue }
                 if case .welcome = frame, !requestSent {
                     requestSent = true
-                    try conn.send(.request(CLIRequest(id: "r", method: CLIRequest.methodChatSend,
-                                                    params: CLIRequestParams(message: "hi", temporary: true))))
+                    try conn.send(
+                        .request(
+                            CLIRequest(
+                                id: "r", method: CLIRequest.methodChatSend,
+                                params: CLIRequestParams(message: "hi", temporary: true))))
                 }
                 if case .done = frame { break }
             }
@@ -253,7 +265,10 @@ extension AllAppTests {
                     while !entered { try? await Task.sleep(nanoseconds: 10_000_000) }
                 }
                 func hold() async { await withCheckedContinuation { release = $0 } }
-                func open() { release?.resume(); release = nil }
+                func open() {
+                    release?.resume()
+                    release = nil
+                }
             }
             actor CleanupRecorder {
                 private(set) var calls: [[String]] = []
@@ -270,7 +285,7 @@ extension AllAppTests {
                 oneShotHandler: { request in
                     #expect(request.params.temporary)
                     await gate.markEntered()
-                    await gate.hold() // the client disconnects while suspended here
+                    await gate.hold()  // the client disconnects while suspended here
                     let (stream, continuation) = AsyncStream<OneShotEvent>.makeStream()
                     continuation.finish()
                     return .started(filename: "temp-late.json", events: stream)
@@ -285,8 +300,11 @@ extension AllAppTests {
             try conn.send(.hello(pid: getpid(), client: "test", protocolVersion: CLIProtocol.version))
             for await event in conn.events {
                 guard case .frame(.welcome) = event else { continue }
-                try conn.send(.request(CLIRequest(id: "r", method: CLIRequest.methodChatSend,
-                                                  params: CLIRequestParams(message: "hi", temporary: true))))
+                try conn.send(
+                    .request(
+                        CLIRequest(
+                            id: "r", method: CLIRequest.methodChatSend,
+                            params: CLIRequestParams(message: "hi", temporary: true))))
                 break
             }
 
@@ -318,7 +336,10 @@ extension AllAppTests {
                 Task {
                     continuation.yield(.notice("--workdir has no effect for this role"))
                     continuation.yield(.toolCall(name: "read_file", summary: "src/main.swift"))
-                    continuation.yield(.toolResult(name: "read_file", summary: ToolSummary.Status(kind: .done, label: "done", description: "Read 12 lines.")))
+                    continuation.yield(
+                        .toolResult(
+                            name: "read_file",
+                            summary: ToolSummary.Status(kind: .done, label: "done", description: "Read 12 lines.")))
                     continuation.yield(.finished(error: nil, chatName: "Test"))
                     continuation.finish()
                 }
@@ -339,16 +360,22 @@ extension AllAppTests {
                 frames.append(frame)
                 if case .welcome = frame, !requestSent {
                     requestSent = true
-                    try conn.send(.request(CLIRequest(id: "r", method: CLIRequest.methodChatSend,
-                                                    params: CLIRequestParams(message: "hi"))))
+                    try conn.send(
+                        .request(
+                            CLIRequest(
+                                id: "r", method: CLIRequest.methodChatSend,
+                                params: CLIRequestParams(message: "hi"))))
                 }
                 if case .done = frame { break }
             }
 
             #expect(frames.contains(.notice(id: "r", text: "--workdir has no effect for this role")))
             #expect(frames.contains(.tool(id: "r", name: "read_file", args: "src/main.swift", status: nil)))
-            #expect(frames.contains(.tool(id: "r", name: "read_file", args: nil,
-                                          status: CLIToolStatus(kind: "done", label: "done", description: "Read 12 lines."))))
+            #expect(
+                frames.contains(
+                    .tool(
+                        id: "r", name: "read_file", args: nil,
+                        status: CLIToolStatus(kind: "done", label: "done", description: "Read 12 lines."))))
             #expect(frames.last == .done(id: "r", chat: "cli-chat.json", name: "Test"))
         }
 
@@ -362,8 +389,12 @@ extension AllAppTests {
                 let (stream, continuation) = AsyncStream<OneShotEvent>.makeStream()
                 Task {
                     continuation.yield(.toolCall(name: "write_file", summary: "a.txt · +5 -0"))
-                    continuation.yield(.toolApprovalRequest(callID: "call-1", name: "write_file", summary: "a.txt · +5 -0"))
-                    continuation.yield(.toolResult(name: "write_file", summary: ToolSummary.Status(kind: .done, label: "done", description: "Wrote a.txt.")))
+                    continuation.yield(
+                        .toolApprovalRequest(callID: "call-1", name: "write_file", summary: "a.txt · +5 -0"))
+                    continuation.yield(
+                        .toolResult(
+                            name: "write_file",
+                            summary: ToolSummary.Status(kind: .done, label: "done", description: "Wrote a.txt.")))
                     continuation.yield(.finished(error: nil, chatName: nil))
                     continuation.finish()
                 }
@@ -384,8 +415,11 @@ extension AllAppTests {
                 frames.append(frame)
                 if case .welcome = frame, !requestSent {
                     requestSent = true
-                    try conn.send(.request(CLIRequest(id: "r", method: CLIRequest.methodChatSend,
-                                                    params: CLIRequestParams(message: "hi", interactive: true))))
+                    try conn.send(
+                        .request(
+                            CLIRequest(
+                                id: "r", method: CLIRequest.methodChatSend,
+                                params: CLIRequestParams(message: "hi", interactive: true))))
                 }
                 if case .done = frame { break }
             }
@@ -422,19 +456,37 @@ extension AllAppTests {
             let conn = CLIConnection(fd: fd)
             defer { conn.close() }
             try conn.send(.hello(pid: getpid(), client: "test", protocolVersion: CLIProtocol.version))
-            try conn.send(.request(CLIRequest(id: "a1", method: CLIRequest.methodToolApprove,
-                                              params: CLIRequestParams(message: "", callID: "call-1", decision: "deny", reason: "nope"))))
-            try conn.send(.request(CLIRequest(id: "a2", method: CLIRequest.methodToolApprove,
-                                              params: CLIRequestParams(message: "", callID: "call-2", decision: "allow_chat"))))
-            try conn.send(.request(CLIRequest(id: "s1", method: CLIRequest.methodChatStop,
-                                              params: CLIRequestParams(message: "", chat: "cli-chat.json"))))
-            try conn.send(.request(CLIRequest(id: "s3", method: CLIRequest.methodChatStop,
-                                              params: CLIRequestParams(message: "", chat: "cli-chat.json", immediate: true))))
+            try conn.send(
+                .request(
+                    CLIRequest(
+                        id: "a1", method: CLIRequest.methodToolApprove,
+                        params: CLIRequestParams(message: "", callID: "call-1", decision: "deny", reason: "nope"))))
+            try conn.send(
+                .request(
+                    CLIRequest(
+                        id: "a2", method: CLIRequest.methodToolApprove,
+                        params: CLIRequestParams(message: "", callID: "call-2", decision: "allow_chat"))))
+            try conn.send(
+                .request(
+                    CLIRequest(
+                        id: "s1", method: CLIRequest.methodChatStop,
+                        params: CLIRequestParams(message: "", chat: "cli-chat.json"))))
+            try conn.send(
+                .request(
+                    CLIRequest(
+                        id: "s3", method: CLIRequest.methodChatStop,
+                        params: CLIRequestParams(message: "", chat: "cli-chat.json", immediate: true))))
             // Malformed variants get bad_params errors and don't reach the handlers.
-            try conn.send(.request(CLIRequest(id: "a3", method: CLIRequest.methodToolApprove,
-                                              params: CLIRequestParams(message: "", callID: "call-3"))))
-            try conn.send(.request(CLIRequest(id: "s2", method: CLIRequest.methodChatStop,
-                                              params: CLIRequestParams(message: ""))))
+            try conn.send(
+                .request(
+                    CLIRequest(
+                        id: "a3", method: CLIRequest.methodToolApprove,
+                        params: CLIRequestParams(message: "", callID: "call-3"))))
+            try conn.send(
+                .request(
+                    CLIRequest(
+                        id: "s2", method: CLIRequest.methodChatStop,
+                        params: CLIRequestParams(message: ""))))
 
             var errors: [CLIFrame] = []
             for await event in conn.events {
@@ -443,10 +495,11 @@ extension AllAppTests {
                 if errors.count == 2 { break }
             }
 
-            #expect(errors == [
-                .error(id: "a3", code: "bad_params", message: "tool.approve requires call_id and decision"),
-                .error(id: "s2", code: "bad_params", message: "chat.stop requires a chat"),
-            ])
+            #expect(
+                errors == [
+                    .error(id: "a3", code: "bad_params", message: "tool.approve requires call_id and decision"),
+                    .error(id: "s2", code: "bad_params", message: "chat.stop requires a chat"),
+                ])
 
             var waited = 0
             while waited < 100 {
