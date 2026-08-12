@@ -154,11 +154,7 @@ enum BuiltinToolsSSH {
     static func code(name: String, args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String)
         async throws -> ToolOutput
     {
-        switch name {
-        case "apply_patch": return try await applyPatch(args, workdir: workdir, ssh: ssh)
-        default:
-            throw BuiltinToolError("Unknown tool \"\(name)\" in group \"Code\".")
-        }
+        throw BuiltinToolError("Unknown tool \"\(name)\" in group \"Code\".")
     }
 
     // MARK: - Filesystem tools
@@ -567,105 +563,8 @@ enum BuiltinToolsSSH {
         return ToolOutput(content: r.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines), isError: false)
     }
 
-    // MARK: - Code tools
-
-    /// Fetches the remote content of every file the patch touches and runs
-    /// the shared in-memory planner against that snapshot. No writes — used
-    /// both by the tool itself and by the pre-execution diff preview.
-    private static func planRemoteApplyPatch(args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws
-        -> [PlannedPatchOp]
-    {
-        let patch = try BuiltinTools.requireString(args, "patch")
-        let parsed = try PatchParser.parse(patch)
-
-        var resolvedPaths: [String] = []
-        for hunk in parsed.hunks {
-            let path: String
-            switch hunk {
-            case .addFile(let p, _): path = p
-            case .deleteFile(let p): path = p
-            case .updateFile(let p, _, _): path = p
-            }
-            let resolved = try workdir.resolve(path)
-            if !resolvedPaths.contains(resolved) { resolvedPaths.append(resolved) }
-        }
-
-        var remote: [String: (exists: Bool, data: Data?)] = [:]
-        for resolved in resolvedPaths {
-            remote[resolved] = try await fetchFile(ssh, resolved: resolved)
-        }
-
-        return try PatchApplier.plan(
-            hunks: parsed.hunks,
-            workdir: workdir,
-            fileExists: { remote[$0]?.exists ?? false },
-            fileContent: { resolved, path in
-                guard let f = remote[resolved], f.exists, let data = f.data else { return nil }
-                guard let s = String(data: data, encoding: .utf8) else {
-                    throw ApplyPatchError(message: "\(path) is not readable as UTF-8")
-                }
-                return s
-            }
-        )
-    }
-
-    /// Remote apply_patch: pre-fetch the content of every touched file,
-    /// run the shared in-memory planner against that snapshot, then write the
-    /// results back file by file. Read-modify-write without locking — a
-    /// concurrent remote change between read and write would be silently
-    /// clobbered; accepted for a single-user utility.
-    private static func applyPatch(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput
-    {
-        let ops: [PlannedPatchOp]
-        do {
-            ops = try await planRemoteApplyPatch(args: args, workdir: workdir, ssh: ssh)
-        } catch let e as PatchParseError {
-            return ToolOutput(content: "Invalid apply_patch format: \(e.description)", isError: true)
-        } catch let e as ApplyPatchError {
-            return ToolOutput(content: "Failed to apply patch: \(e.description)", isError: true)
-        } catch let e as BuiltinToolError {
-            return ToolOutput(content: "Error: \(e.description)", isError: true)
-        }
-
-        var summary: [String] = []
-        for op in ops {
-            switch op {
-            case .addFile(let path, let resolved, let contents):
-                try await remoteWrite(ssh, resolved: resolved, contents: contents)
-                summary.append("Added: \(path)")
-            case .deleteFile(let path, let resolved, _):
-                let r = try await run(ssh, script: "rm \(qp(resolved))")
-                try requireSuccess(r)
-                summary.append("Deleted: \(path)")
-            case .updateFile(
-                let path, let resolved, let movePath, let moveResolved, let chunkCount, _, let newContent, let isNoOp):
-                if isNoOp {
-                    summary.append("No changes needed: \(path) (content already matches)")
-                    continue
-                }
-                if let movePath, let moveResolved {
-                    // Preserve the source file's mode across the move: the
-                    // destination is written fresh (cat >) and would otherwise
-                    // get the umask default, dropping e.g. the executable bit.
-                    let mode = try await remoteFileMode(ssh, resolved: resolved)
-                    try await remoteWrite(ssh, resolved: moveResolved, contents: newContent)
-                    if let mode { try await remoteChmod(ssh, resolved: moveResolved, mode: mode) }
-                    let r = try await run(ssh, script: "rm \(qp(resolved))")
-                    try requireSuccess(r)
-                    summary.append("Updated: \(path) → \(movePath) (\(chunkCount) hunks)")
-                } else {
-                    // Non-move: `cat >` truncates in place, preserving the
-                    // existing inode and its mode — no chmod needed.
-                    try await remoteWrite(ssh, resolved: resolved, contents: newContent)
-                    summary.append("Updated: \(path) (\(chunkCount) hunks)")
-                }
-            }
-        }
-        return ToolOutput(content: summary.joined(separator: "\n"), isError: false)
-    }
-
-    /// Fetches one remote file for the patch planner. The first stdout line
-    /// is a status header (`<marker> file|dir|missing`); file bytes follow.
+    /// Fetches one remote file. The first stdout line is a status header
+    /// (`<marker> file|dir|missing`); file bytes follow.
     private static func fetchFile(_ ssh: SSHContext, resolved: String) async throws -> (exists: Bool, data: Data?) {
         let marker = "ICHAI-\(UUID().uuidString)"
         let script = """
@@ -690,31 +589,6 @@ enum BuiltinToolsSSH {
         return (false, nil)
     }
 
-    private static func remoteWrite(_ ssh: SSHContext, resolved: String, contents: String) async throws {
-        let script = "mkdir -p \(qp(posixDirname(resolved))) && cat > \(qp(resolved))"
-        let r = try await run(ssh, script: script, stdin: Data(contents.utf8))
-        try requireSuccess(r)
-    }
-
-    /// Reads the POSIX mode (0o000–0o7777) of a remote file, or nil if it
-    /// doesn't exist. Used to carry permissions across a move in apply_patch.
-    private static func remoteFileMode(_ ssh: SSHContext, resolved: String) async throws -> UInt16? {
-        // GNU stat -c %a, BSD stat -f %Lp; missing file → empty (nil).
-        let script = "stat -c '%a' \(qp(resolved)) 2>/dev/null || stat -f '%Lp' \(qp(resolved)) 2>/dev/null || true"
-        let r = try await run(ssh, script: script)
-        let raw = r.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let octal = UInt16(raw, radix: 8) else { return nil }
-        return octal & 0o7777
-    }
-
-    /// Applies `chmod <mode>` to a remote path (mode is an octal string like
-    /// "755"). Failures are swallowed — a best-effort restore, not a hard
-    /// error, mirroring the local tool's `try?` on setAttributes.
-    private static func remoteChmod(_ ssh: SSHContext, resolved: String, mode: UInt16) async throws {
-        let script = "chmod \(String(mode, radix: 8)) \(qp(resolved))"
-        _ = try? await run(ssh, script: script)
-    }
-
     // MARK: - Pre-execution diff previews
 
     /// SSH counterpart of [`DiffBuilder.diffForWriteFile`](src/Tools/DiffBuilder.swift:39):
@@ -732,31 +606,6 @@ enum BuiltinToolsSSH {
         let remote = try await fetchFile(ssh, resolved: resolved)
         let old = (remote.exists ? remote.data.flatMap { String(data: $0, encoding: .utf8) } : nil) ?? ""
         return DiffBuilder.unifiedDiff(old: old, new: content, oldPath: path, newPath: path)
-    }
-
-    /// SSH counterpart of [`DiffBuilder.preflightApplyPatch`](src/Tools/DiffBuilder.swift:50):
-    /// dry-runs the patch against the remote snapshot (no writes) and returns
-    /// either the diff preview or the exact error the tool would report.
-    /// Transport failures throw — the caller skips the preview and lets the
-    /// tool itself report the error.
-    static func preflightApplyPatch(arguments: String, workdir: Workdir, ssh: SSHContext) async throws
-        -> DiffBuilder.ApplyPatchPreflight
-    {
-        guard let data = arguments.data(using: .utf8),
-            let args = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        else {
-            return .error(message: "Error: Invalid arguments JSON.")
-        }
-        do {
-            let ops = try await planRemoteApplyPatch(args: args, workdir: workdir, ssh: ssh)
-            return .ok(diff: DiffBuilder.diffForOps(ops))
-        } catch let e as PatchParseError {
-            return .error(message: "Invalid apply_patch format: \(e.description)")
-        } catch let e as ApplyPatchError {
-            return .error(message: "Failed to apply patch: \(e.description)")
-        } catch let e as BuiltinToolError {
-            return .error(message: "Error: \(e.description)")
-        }
     }
 
     // MARK: - Shell tool

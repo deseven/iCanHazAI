@@ -40,7 +40,6 @@ extension AllAppTests {
     struct SSHIntegrationTests {
         private static let host = SSHIntegrationSupport.host
         private static let fs = BuiltinTools.filesystemGroup
-        private static let code = BuiltinTools.codeGroup
         private static let sh = BuiltinTools.shellGroup
 
         /// Sockets go to a throwaway local directory, not the real app cache.
@@ -327,41 +326,6 @@ extension AllAppTests {
             await Self.destroy(wd, remote)
         }
 
-        @Test("apply_patch adds and updates remote files")
-        func applyPatch() async {
-            let (wd, remote) = Self.makeContext()
-            _ = await Self.call("write_file", Self.fs, ["path": "orig.txt", "content": "alpha\nbeta\n"], workdir: wd)
-
-            let patch = """
-                *** Begin Patch
-                *** Update File: orig.txt
-                @@
-                -beta
-                +gamma
-                *** Add File: added.txt
-                +fresh
-                *** End Patch
-                """
-            let (text, isError) = await Self.call("apply_patch", Self.code, ["patch": patch], workdir: wd)
-            #expect(!isError)
-            #expect(text.contains("Updated: orig.txt"))
-            #expect(text.contains("Added: added.txt"))
-
-            let (orig, _) = await Self.call("read_file", Self.fs, ["path": "orig.txt"], workdir: wd)
-            #expect(orig.contains("gamma"))
-            #expect(!orig.contains("beta"))
-            let (added, _) = await Self.call("read_file", Self.fs, ["path": "added.txt"], workdir: wd)
-            #expect(added.contains("fresh"))
-
-            let (fail, failErr) = await Self.call(
-                "apply_patch", Self.code,
-                ["patch": "*** Begin Patch\n*** Update File: ghost.txt\n@@\n-x\n+y\n*** End Patch\n"], workdir: wd)
-            #expect(failErr)
-            #expect(fail.contains("ghost.txt does not exist"))
-
-            await Self.destroy(wd, remote)
-        }
-
         @Test("write_file diff preview reflects the remote before-state")
         func writeFileDiffPreview() async throws {
             let (wd, remote) = Self.makeContext()
@@ -390,51 +354,6 @@ extension AllAppTests {
             let bad = try await BuiltinToolsSSH.diffForWriteFile(
                 arguments: #"{"path":"only-path"}"#, workdir: wd, ssh: ssh)
             #expect(bad == nil)
-
-            await Self.destroy(wd, remote)
-        }
-
-        @Test("apply_patch preflight previews the diff and dry-runs failures")
-        func applyPatchPreflight() async throws {
-            let (wd, remote) = Self.makeContext()
-            let ssh = try #require(wd.ssh)
-            _ = await Self.call("write_file", Self.fs, ["path": "orig.txt", "content": "alpha\nbeta\n"], workdir: wd)
-
-            let patch = """
-                *** Begin Patch
-                *** Update File: orig.txt
-                @@
-                -beta
-                +gamma
-                *** Add File: added.txt
-                +fresh
-                *** End Patch
-                """
-            let arguments = String(data: try JSONSerialization.data(withJSONObject: ["patch": patch]), encoding: .utf8)!
-            switch try await BuiltinToolsSSH.preflightApplyPatch(arguments: arguments, workdir: wd, ssh: ssh) {
-            case .ok(let diff):
-                let d = try #require(diff)
-                #expect(d.contains("-beta"))
-                #expect(d.contains("+gamma"))
-                #expect(d.contains("+fresh"))
-            case .error(let message):
-                Issue.record("expected a diff preview, got error: \(message)")
-            }
-
-            // The preflight is a dry-run: nothing was written.
-            let (missing, missingErr) = await Self.call("read_file", Self.fs, ["path": "added.txt"], workdir: wd)
-            #expect(missingErr)
-            #expect(missing.contains("not found"))
-
-            // A patch that would fail yields the tool's exact error.
-            let ghost = "*** Begin Patch\n*** Update File: ghost.txt\n@@\n-x\n+y\n*** End Patch\n"
-            let ghostArgs = String(data: try JSONSerialization.data(withJSONObject: ["patch": ghost]), encoding: .utf8)!
-            switch try await BuiltinToolsSSH.preflightApplyPatch(arguments: ghostArgs, workdir: wd, ssh: ssh) {
-            case .ok:
-                Issue.record("expected a dry-run failure for a missing file")
-            case .error(let message):
-                #expect(message.contains("ghost.txt does not exist"))
-            }
 
             await Self.destroy(wd, remote)
         }
@@ -582,56 +501,6 @@ extension AllAppTests {
             // stat's not-found error names the caller's path, not the resolved one.
             let statMissing = outputs.first { $0.label == "stat missing" }?.text ?? ""
             #expect(statMissing.contains("not found: /missing.txt"))
-
-            await Self.destroyIsolated(remote)
-        }
-
-        @Test("isolated apply_patch output and errors use jail paths")
-        func isolatedApplyPatch() async {
-            let remote = "/tmp/ichai-tests-\(UUID().uuidString.prefix(8))"
-            let wd = Workdir(root: "\(Self.host):\(remote)", isolated: true, chatID: Self.chatID)
-
-            let add = """
-                *** Begin Patch
-                *** Add File: /p.txt
-                +patched
-                *** End Patch
-                """
-            let (addText, addErr) = await Self.call("apply_patch", Self.code, ["patch": add], workdir: wd)
-            #expect(!addErr)
-            #expect(addText.contains("Added: /p.txt"))
-            #expect(!addText.contains(remote))
-
-            let updateMissing = """
-                *** Begin Patch
-                *** Update File: /missing.txt
-                @@
-                -x
-                +y
-                *** End Patch
-                """
-            let (missText, missErr) = await Self.call("apply_patch", Self.code, ["patch": updateMissing], workdir: wd)
-            #expect(missErr)
-            #expect(missText.contains("/missing.txt does not exist"))
-            #expect(!missText.contains(remote))
-
-            // Non-UTF-8 remote file: the planner's error must cite the jail
-            // path. The shell group can't be isolated (validation forbids
-            // it), so write the bytes through a non-isolated lens.
-            let shellWD = Workdir(root: "\(Self.host):\(remote)", isolated: false, chatID: Self.chatID)
-            _ = await Self.call("shell", Self.sh, ["command": "printf '\\377\\330\\377' > bin.dat"], workdir: shellWD)
-            let updateBinary = """
-                *** Begin Patch
-                *** Update File: /bin.dat
-                @@
-                -x
-                +y
-                *** End Patch
-                """
-            let (binText, binErr) = await Self.call("apply_patch", Self.code, ["patch": updateBinary], workdir: wd)
-            #expect(binErr)
-            #expect(binText.contains("/bin.dat is not readable as UTF-8"))
-            #expect(!binText.contains(remote))
 
             await Self.destroyIsolated(remote)
         }

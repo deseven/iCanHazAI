@@ -11,10 +11,10 @@ import Foundation
 /// CLI — renders the same text without re-deriving it.
 ///
 /// For internal tools we know which arguments matter (path for read_file, the
-/// command for shell, the affected paths for apply_patch, ...). For everything
-/// else we fall back to `key: value` pairs ordered required-first (the engine
-/// stamps the schema's `required` list onto each ToolCall), then optional;
-/// without that list the JSON key order is preserved.
+/// command for shell, ...). For everything else we fall back to `key: value`
+/// pairs ordered required-first (the engine stamps the schema's `required`
+/// list onto each ToolCall), then optional; without that list the JSON key
+/// order is preserved.
 enum ToolSummary {
 
     /// One piece of the collapsed argument summary. `key: nil` marks a tool's
@@ -321,32 +321,6 @@ extension ToolSummary {
         "read_log": KnownToolSpec(primary: []),
     ]
 
-    /// Extract the affected paths from an apply_patch patch text. A `Move to`
-    /// renames the previously listed path into `old → new`.
-    fileprivate static func extractPatchPaths(_ patch: String) -> [String] {
-        var paths: [String] = []
-        for line in patch.split(separator: "\n", omittingEmptySubsequences: false) {
-            let s = String(line)
-            if let m = firstMatch(of: #"^\*\*\* (?:Add|Delete|Update) File: (.+)$"#, in: s) {
-                paths.append(m.trimmingCharacters(in: .whitespaces))
-                continue
-            }
-            if let m = firstMatch(of: #"^\*\*\* Move to: (.+)$"#, in: s), !paths.isEmpty {
-                paths[paths.count - 1] = "\(paths[paths.count - 1]) → \(m.trimmingCharacters(in: .whitespaces))"
-            }
-        }
-        return paths
-    }
-
-    fileprivate static func firstMatch(of pattern: String, in s: String) -> String? {
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let range = NSRange(s.startIndex..., in: s)
-        guard let m = re.firstMatch(in: s, range: range), m.numberOfRanges > 1,
-            let r = Range(m.range(at: 1), in: s)
-        else { return nil }
-        return String(s[r])
-    }
-
     /// Custom summaries for internal tools whose primary value isn't a plain
     /// argument lookup. Returns nil when the expected arguments are missing,
     /// so the caller falls back to the generic spec-based rendering.
@@ -355,16 +329,12 @@ extension ToolSummary {
         case "mv":
             guard let src = obj["src"].flatMap(scalar), let dst = obj["dst"].flatMap(scalar) else { return nil }
             return [Entry(key: nil, value: "\(src) → \(dst)")]
-        case "apply_patch":
-            guard let patch = obj["patch"] as? String else { return nil }
-            let paths = extractPatchPaths(patch)
-            return paths.isEmpty ? nil : [Entry(key: nil, value: paths.joined(separator: ", "))]
         default:
             return nil
         }
     }
 
-    fileprivate static let customKnownTools: Set<String> = ["mv", "apply_patch"]
+    fileprivate static let customKnownTools: Set<String> = ["mv"]
 
     /// Summary for an internal tool, or nil when the tool isn't known.
     fileprivate static func knownToolSummary(name: String, obj: [String: Any]) -> [Entry]? {
@@ -487,28 +457,6 @@ extension ToolSummary {
         case "find_file", "find_text":
             let n = countResultLines(content)
             return "Found \(n) \(n == 1 ? "item" : "items")."
-        case "apply_patch":
-            // The result is one "Added:/Updated:/Deleted: path" line per file op.
-            var added = 0
-            var updated = 0
-            var deleted = 0
-            for line in content.split(separator: "\n", omittingEmptySubsequences: false) {
-                let t = line.trimmingCharacters(in: .whitespaces)
-                if t.hasPrefix("Added:") {
-                    added += 1
-                } else if t.hasPrefix("Updated:") {
-                    updated += 1
-                } else if t.hasPrefix("Deleted:") {
-                    deleted += 1
-                }
-            }
-            let total = added + updated + deleted
-            if total == 0 { return firstLine(content) }
-            var parts: [String] = []
-            if added > 0 { parts.append("\(added) added") }
-            if updated > 0 { parts.append("\(updated) updated") }
-            if deleted > 0 { parts.append("\(deleted) deleted") }
-            return "Patched \(total) \(total == 1 ? "file" : "files") (\(parts.joined(separator: ", ")))."
         case "shell":
             // Output ends with the "[exit code: N]" line — that's the useful part.
             return lastLine(content)

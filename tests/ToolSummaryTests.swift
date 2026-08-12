@@ -48,37 +48,11 @@ extension AllAppTests {
                     == [ToolSummary.Entry(key: nil, value: "cd /tmp⏎ls -la")])
         }
 
-        @Test("mv renders src → dst; apply_patch lists affected paths")
+        @Test("mv renders src → dst")
         func customKnown() {
             #expect(
                 ToolSummary.callEntries(name: "mv", arguments: json(["src": "a.txt", "dst": "b.txt"]))
                     == [ToolSummary.Entry(key: nil, value: "a.txt → b.txt")])
-
-            let patch = """
-                *** Begin Patch
-                *** Add File: hello.txt
-                +hi
-                *** Update File: src/app.py
-                @@
-                 ctx
-                *** Delete File: obsolete.txt
-                *** End Patch
-                """
-            #expect(
-                ToolSummary.callEntries(name: "apply_patch", arguments: json(["patch": patch]))
-                    == [ToolSummary.Entry(key: nil, value: "hello.txt, src/app.py, obsolete.txt")])
-
-            let move = """
-                *** Begin Patch
-                *** Update File: src/app.py
-                *** Move to: src/main.py
-                @@
-                 ctx
-                *** End Patch
-                """
-            #expect(
-                ToolSummary.callEntries(name: "apply_patch", arguments: json(["patch": move]))
-                    == [ToolSummary.Entry(key: nil, value: "src/app.py → src/main.py")])
         }
 
         @Test("no-arg tools produce an empty summary")
@@ -230,22 +204,6 @@ extension AllAppTests {
                     result: ToolResult(
                         callID: "c", content: "total 8\n-rw-r--r--  a.txt\n[exit code: 0]", isError: false))?
                     .description == "[exit code: 0]")
-        }
-
-        @Test("apply_patch summarizes the per-file operation lines")
-        func applyPatchResult() {
-            let content =
-                "Added: a.txt\nUpdated: b.swift (2 hunks)\nUpdated: c.swift → d.swift (1 hunks)\nDeleted: e.txt"
-            #expect(
-                ToolSummary.resultStatus(
-                    name: "apply_patch", result: ToolResult(callID: "c", content: content, isError: false))?.description
-                    == "Patched 4 files (1 added, 2 updated, 1 deleted).")
-            #expect(
-                ToolSummary.resultStatus(
-                    name: "apply_patch",
-                    result: ToolResult(callID: "c", content: "Updated: src/app.py (3 hunks)", isError: false))?
-                    .description
-                    == "Patched 1 file (1 updated).")
         }
 
         @Test("configurator list/check tools count bullets; readers count lines")

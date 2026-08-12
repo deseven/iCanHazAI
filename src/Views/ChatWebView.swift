@@ -1332,8 +1332,8 @@ struct ChatMessageData: Codable, Equatable, Sendable {
         /// True while the engine is waiting for the user to approve this call.
         /// Drives the renderer's Allow/Deny buttons.
         var pendingApproval: Bool = false
-        /// Optional pre-rendered unified diff for `write_file`/`apply_patch`
-        /// calls. When present, the renderer shows this diff instead of the
+        /// Optional pre-rendered unified diff for `write_file` calls. When
+        /// present, the renderer shows this diff instead of the
         /// raw arguments. Nil for tools that don't produce diffs.
         let diff: String?
         /// The tool schema's required argument names, used by the renderer to

@@ -240,8 +240,8 @@ private struct ToolTag: View {
     let tool: ChatToolEntry
     let action: () -> Void
 
-    /// Tool descriptions can be huge (e.g. apply_patch); the tooltip shows
-    /// only the first 300 characters, terminated by an ellipsis when cut.
+    /// Tool descriptions can be huge; the tooltip shows only the first 300
+    /// characters, terminated by an ellipsis when cut.
     private var tooltip: String {
         tool.description.count <= 300 ? tool.description : String(tool.description.prefix(300)) + "..."
     }

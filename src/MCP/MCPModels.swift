@@ -151,8 +151,8 @@ struct ToolCall: Codable, Identifiable, Equatable, Sendable {
     /// state. Decoded defensively (defaults to false) so a hand-edited or
     /// externally-written chat file can't fail the whole message.
     var pendingApproval: Bool = false
-    /// Optional pre-rendered unified diff for `write_file`/`apply_patch` calls.
-    /// Built by [`DiffBuilder`](src/Tools/DiffBuilder.swift) from the file's before/
+    /// Optional pre-rendered unified diff for `write_file` calls. Built by
+    /// [`DiffBuilder`](src/Tools/DiffBuilder.swift) from the file's before/
     /// after content so the renderer can show a colorized diff instead of raw
     /// JSON arguments. Nil for tools that don't produce diffs, or when the
     /// arguments are invalid. Cleared on denial since the changes were never

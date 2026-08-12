@@ -4,29 +4,12 @@
 import Differ
 import Foundation
 
-/// Builds unified-diff text for `write_file` and `apply_patch` tool calls so
-/// the chat renderer can show a colorized diff instead of raw JSON arguments.
+/// Builds unified-diff text for `write_file` tool calls so the chat renderer
+/// can show a colorized diff instead of raw JSON arguments.
 ///
 /// The diff is computed against the file's current on-disk content (the "before"
-/// state) and the content the tool call would write (the "after" state). For
-/// `apply_patch`, each file operation in the patch produces its own diff
-/// section; they are joined into a single string.
-///
-/// `apply_patch` goes through a full dry-run (parse + plan, no writes) shared
-/// with the tool itself: `preflightApplyPatch` either yields the diff preview
-/// or the exact error the tool would report, so the caller can fail fast with
-/// a useful message instead of asking the user to approve a doomed call.
+/// state) and the content the tool call would write (the "after" state).
 enum DiffBuilder {
-
-    /// Result of dry-running an `apply_patch` tool call before execution.
-    enum ApplyPatchPreflight {
-        /// The patch applies cleanly; `diff` is the preview (nil when the
-        /// patch produces no visible changes).
-        case ok(diff: String?)
-        /// The patch would fail; `message` is the exact error the tool would
-        /// return — relay it to the model instead of executing the call.
-        case error(message: String)
-    }
 
     /// Maximum diff size (characters). Diffs exceeding this are truncated so the
     /// renderer never gets a multi-megabyte string for a large file write.
@@ -44,52 +27,6 @@ enum DiffBuilder {
         let resolved = (try? workdir.resolve(path)) ?? path
         let old = readFileAsString(resolved) ?? ""
         return unifiedDiff(old: old, new: content, oldPath: path, newPath: path)
-    }
-
-    /// Dry-runs an `apply_patch` tool call against the current on-disk state
-    /// (no writes) and returns either the diff preview or the failure message.
-    static func preflightApplyPatch(arguments: String, workdir: Workdir) -> ApplyPatchPreflight {
-        guard let args = parseArgs(arguments) else {
-            return .error(message: "Error: Invalid arguments JSON.")
-        }
-        switch BuiltinTools.planApplyPatch(args: args, workdir: workdir) {
-        case .failure(let message): return .error(message: message)
-        case .success(let ops): return .ok(diff: diffForOps(ops))
-        }
-    }
-
-    /// Builds a diff for an `apply_patch` tool call. Returns `nil` when the
-    /// call is invalid or wouldn't apply — use `preflightApplyPatch` to tell
-    /// the two apart and to get the error message.
-    static func diffForApplyPatch(arguments: String, workdir: Workdir) -> String? {
-        if case .ok(let diff) = preflightApplyPatch(arguments: arguments, workdir: workdir) {
-            return diff
-        }
-        return nil
-    }
-
-    /// Renders planned patch operations as unified-diff sections joined with a
-    /// blank line separator. Returns `nil` when there are no visible changes.
-    /// Internal (not private) so the SSH preflight in
-    /// [`BuiltinToolsSSH`](src/Tools/BuiltinToolsSSH.swift:17) can render the
-    /// ops it planned against the remote snapshot.
-    static func diffForOps(_ ops: [PlannedPatchOp]) -> String? {
-        var sections: [String] = []
-        for op in ops {
-            switch op {
-            case .addFile(let path, _, let contents):
-                let d = unifiedDiff(old: "", new: contents, oldPath: nil, newPath: path)
-                if !d.isEmpty { sections.append(d) }
-            case .deleteFile(let path, _, let original):
-                let d = unifiedDiff(old: original ?? "", new: "", oldPath: path, newPath: nil)
-                if !d.isEmpty { sections.append(d) }
-            case .updateFile(let path, _, let movePath, _, _, let original, let newContent, _):
-                let d = unifiedDiff(old: original, new: newContent, oldPath: path, newPath: movePath ?? path)
-                if !d.isEmpty { sections.append(d) }
-            }
-        }
-        if sections.isEmpty { return nil }
-        return truncate(sections.joined(separator: "\n"))
     }
 
     // MARK: - Unified diff generation

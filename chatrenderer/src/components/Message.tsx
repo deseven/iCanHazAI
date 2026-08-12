@@ -276,8 +276,8 @@ function ShellToolCall({ args }: { args: string }) {
 
 /** Render a pre-computed unified diff (from the host) as a colorized code
  *  block via highlight.js's `diff` language. The host builds the diff for
- *  `write_file`/`apply_patch` calls so the renderer can show what changed
- *  instead of raw JSON arguments. */
+ *  `write_file` calls so the renderer can show what changed instead of raw
+ *  JSON arguments. */
 function ToolDiffView({ diff }: { diff: string }) {
     const html = useMemo(() => renderDiff(diff), [diff]);
     if (!html) return null;

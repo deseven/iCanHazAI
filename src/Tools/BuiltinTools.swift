@@ -336,7 +336,7 @@ enum BuiltinTools {
         BuiltinToolDef(
             name: "write_file",
             description:
-                "Write text content to a file (creates or overwrites). Parent directories are created as needed. ALWAYS provide the COMPLETE intended content of the file — partial updates or placeholders like '// rest unchanged' are forbidden. Do NOT include line numbers in the content. For targeted edits to existing files, prefer apply_patch.",
+                "Write text content to a file (creates or overwrites). Parent directories are created as needed. ALWAYS provide the COMPLETE intended content of the file — partial updates or placeholders like '// rest unchanged' are forbidden. Do NOT include line numbers in the content.",
             schema:
                 #"{"type":"object","properties":{"path":{"type":"string","description":"File path to write. \#(Workdir.pathDescription)"},"content":{"type":"string","description":"The complete text content to write, without line numbers or truncation."}},"required":["path","content"]}"#
         ),
@@ -386,60 +386,6 @@ enum BuiltinTools {
             schema: #"{"type":"object","properties":{},"required":[]}"#),
     ]
 
-    /// Full apply_patch format documentation, embedded in the tool description
-    /// so every role with the code group gets it regardless of its prompt.
-    private static let applyPatchDescription = """
-        Apply patches to files using a stripped-down, file-oriented diff format. One call can create, delete, and update multiple files.
-
-        Patch envelope:
-        *** Begin Patch
-        [ one or more file sections ]
-        *** End Patch
-
-        Each file section starts with one of three headers:
-        - *** Add File: <path> — create a new file. Every following line is a + line (the initial contents).
-        - *** Delete File: <path> — remove an existing file. Nothing follows.
-        - *** Update File: <path> — patch an existing file in place. May be immediately followed by *** Move to: <new path> to rename.
-
-        Update File sections contain one or more hunks, each introduced by @@ optionally followed by an anchor (a line copied verbatim from the file, e.g. a class or function signature). Multiple @@ lines per file are allowed — each starts a new hunk.
-
-        Within a hunk, every line starts with one prefix character:
-        - ' ' (space) for context lines (unchanged) — a file line indented with 4 spaces has 5 leading spaces in the patch
-        - '-' for lines to remove
-        - '+' for lines to add
-        Never paste lines copied from read_file output without adding the prefix, and never include the 'N|' line-number prefix that read_file displays — it is not part of the file.
-
-        Context guidelines:
-        - Show 3 lines of context above and below each change.
-        - If 3 lines of context cannot uniquely identify the location, use @@ with a class/function anchor.
-        - The @@ anchor is not part of the hunk body — do not repeat it as a context line.
-        - To append to a file, use a hunk containing only + lines (no context, no removals) — it is inserted at end of file.
-        - Context lines must match the file exactly — read the file before patching and copy context verbatim.
-
-        Example:
-        *** Begin Patch
-        *** Add File: hello.txt
-        +Hello world
-        *** Update File: src/app.py
-        *** Move to: src/main.py
-        @@ def greet():
-         print("starting")
-        -print("Hi")
-        +print("Hello, world!")
-         print("done")
-        *** Delete File: obsolete.txt
-        *** End Patch
-        """
-
-    private static let codeToolDefs: [BuiltinToolDef] = [
-        BuiltinToolDef(
-            name: "apply_patch",
-            description: applyPatchDescription,
-            schema:
-                #"{"type":"object","properties":{"patch":{"type":"string","description":"The patch text in apply_patch format. Begins with '*** Begin Patch' and ends with '*** End Patch'."}},"required":["patch"]}"#
-        )
-    ]
-
     private static let shellToolDefs: [BuiltinToolDef] = {
         let shellDesc =
             "Execute a command in the user's login shell (\(shellPath) -l). Returns stdout, and stderr on non-zero exit. Runs in current directory. Only use if other available tools can't achieve the desired results at all or effectively enough."
@@ -464,7 +410,7 @@ enum BuiltinTools {
         switch group {
         case utilsGroup: return utilsToolDefs
         case filesystemGroup: return filesystemToolDefs
-        case codeGroup: return codeToolDefs
+        case codeGroup: return []
         case shellGroup: return shellToolDefs
         case webGroup: return BuiltinToolsWeb.toolDefs
         default: return []
@@ -575,8 +521,6 @@ enum BuiltinTools {
         case (filesystemGroup, "rm"): return try rm(args, workdir: workdir)
         case (filesystemGroup, "stat"): return try await stat(args, workdir: workdir)
         case (filesystemGroup, "pwd"): return pwd(workdir)
-        // Code
-        case (codeGroup, "apply_patch"): return try applyPatch(args, workdir: workdir)
         // Shell
         case (shellGroup, "shell"): return try await shell(args, workdir: workdir)
         case (shellGroup, "applescript"): return try await applescript(args)
@@ -1450,96 +1394,6 @@ enum BuiltinTools {
 
     private static func pwd(_ workdir: Workdir) -> ToolOutput {
         ToolOutput(content: workdir.currentDirectory, isError: false)
-    }
-
-    // MARK: - Code tools
-
-    /// Outcome of dry-running an apply_patch call: planned operations ready to
-    /// execute, or the exact user-facing error message the tool would report.
-    enum ApplyPatchPlan {
-        case success([PlannedPatchOp])
-        case failure(String)
-    }
-
-    /// Parses an apply_patch call and dry-runs it against the workdir (no
-    /// writes). On success returns the planned file operations; on failure
-    /// returns the exact error message the tool would report, so callers doing
-    /// a pre-approval check can fail fast with a useful message.
-    static func planApplyPatch(args: [String: Any], workdir: Workdir) -> ApplyPatchPlan {
-        do {
-            let patch = try requireString(args, "patch")
-            let parsed = try PatchParser.parse(patch)
-            return .success(try PatchApplier.plan(hunks: parsed.hunks, workdir: workdir))
-        } catch let e as PatchParseError {
-            return .failure("Invalid apply_patch format: \(e.description)")
-        } catch let e as ApplyPatchError {
-            return .failure("Failed to apply patch: \(e.description)")
-        } catch let e as BuiltinToolError {
-            return .failure("Error: \(e.description)")
-        } catch {
-            return .failure("Error: \(error.localizedDescription)")
-        }
-    }
-
-    private static func applyPatch(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
-        let ops: [PlannedPatchOp]
-        switch planApplyPatch(args: args, workdir: workdir) {
-        case .success(let planned): ops = planned
-        case .failure(let message): return ToolOutput(content: message, isError: true)
-        }
-
-        let fm = FileManager.default
-        var summary: [String] = []
-
-        for op in ops {
-            switch op {
-            case .addFile(let path, let resolved, let contents):
-                let dir = (resolved as NSString).deletingLastPathComponent
-                if !fm.fileExists(atPath: dir) {
-                    try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-                }
-                try Data(contents.utf8).write(to: URL(fileURLWithPath: resolved), options: .atomic)
-                summary.append("Added: \(path)")
-
-            case .deleteFile(let path, let resolved, _):
-                try fm.removeItem(atPath: resolved)
-                summary.append("Deleted: \(path)")
-
-            case .updateFile(
-                let path, let resolved, let movePath, let moveResolved, let chunkCount, _, let newContent, let isNoOp):
-                if isNoOp {
-                    summary.append("No changes needed: \(path) (content already matches)")
-                    continue
-                }
-                // Preserve the original file's permissions across the inode
-                // swap (the temp file is written with the umask default).
-                let savedMode = filePermissions(at: resolved)
-                let tempURL = URL(fileURLWithPath: resolved)
-                    .deletingLastPathComponent()
-                    .appendingPathComponent(".ichai-patch-tmp-\(UUID().uuidString)")
-                try Data(newContent.utf8).write(to: tempURL, options: .atomic)
-                if let movePath, let moveResolved {
-                    let moveDir = (moveResolved as NSString).deletingLastPathComponent
-                    if !fm.fileExists(atPath: moveDir) {
-                        try fm.createDirectory(atPath: moveDir, withIntermediateDirectories: true)
-                    }
-                    _ = try? fm.removeItem(atPath: moveResolved)
-                    try fm.moveItem(atPath: tempURL.path, toPath: moveResolved)
-                    try fm.removeItem(atPath: resolved)
-                    if let savedMode {
-                        try? fm.setAttributes([.posixPermissions: savedMode], ofItemAtPath: moveResolved)
-                    }
-                    summary.append("Updated: \(path) → \(movePath) (\(chunkCount) hunks)")
-                } else {
-                    _ = try? fm.removeItem(atPath: resolved)
-                    try fm.moveItem(atPath: tempURL.path, toPath: resolved)
-                    if let savedMode { try? fm.setAttributes([.posixPermissions: savedMode], ofItemAtPath: resolved) }
-                    summary.append("Updated: \(path) (\(chunkCount) hunks)")
-                }
-            }
-        }
-
-        return ToolOutput(content: summary.joined(separator: "\n"), isError: false)
     }
 
     // MARK: - Shell tools
