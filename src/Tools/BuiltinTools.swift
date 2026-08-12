@@ -580,60 +580,25 @@ enum BuiltinTools {
 
     // MARK: - Process helper
 
-    private struct RunResult {
-        let exitCode: Int32
-        let stdout: String
-        let stderr: String
-    }
+   private struct RunResult {
+       let exitCode: Int32
+       let stdout: String
+       let stderr: String
+   }
 
     private static func runProcess(launchPath: String, arguments: [String] = [], stdin: String? = nil, cwd: String? = nil, timeout: TimeInterval? = nil) async throws -> RunResult {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: launchPath)
-        process.arguments = arguments
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        if let cwd { process.currentDirectoryURL = URL(fileURLWithPath: cwd) }
-
-        let stdinPipe: Pipe?
-        if stdin != nil {
-            let p = Pipe()
-            process.standardInput = p
-            stdinPipe = p
-        } else {
-            stdinPipe = nil
-        }
-
-        try process.run()
-
-        if let stdin, let stdinPipe {
-            try stdinPipe.fileHandleForWriting.write(contentsOf: Data(stdin.utf8))
-            try stdinPipe.fileHandleForWriting.close()
-        }
-
-        if let timeout {
-            let deadline = Date().addingTimeInterval(timeout)
-            while process.isRunning && Date() < deadline {
-                try await Task.sleep(nanoseconds: 50_000_000)
-            }
-            if process.isRunning {
-                process.terminate()
-                await awaitProcessExit(process)
-                return RunResult(exitCode: -1, stdout: "", stderr: "timed out after \(timeout) seconds")
-            }
-        }
-
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        await awaitProcessExit(process)
-
+        let result = await ProcessRunner.run(
+            executable: launchPath,
+            arguments: arguments,
+            stdin: stdin.map { Data($0.utf8) },
+            cwd: cwd,
+            timeout: timeout,
+            outputMode: .separate
+        )
         return RunResult(
-            exitCode: process.terminationStatus,
-            stdout: String(data: stdoutData, encoding: .utf8) ?? "",
-            stderr: String(data: stderrData, encoding: .utf8) ?? ""
+            exitCode: result.exitCode,
+            stdout: result.stdoutString,
+            stderr: result.stderrString
         )
     }
 
@@ -711,11 +676,25 @@ enum BuiltinTools {
     }()
 
     static func stripAnsi(_ s: String) -> String {
-        let range = NSRange(s.startIndex..., in: s)
-        return ansiRegex.stringByReplacingMatches(in: s, range: range, withTemplate: "")
+       let range = NSRange(s.startIndex..., in: s)
+       return ansiRegex.stringByReplacingMatches(in: s, range: range, withTemplate: "")
+   }
+
+    private static let maxShellOutput = 10000
+    private static let shellOutputHead = 1000
+    private static let shellOutputTail = 9000
+
+    /// Truncates shell output to `maxShellOutput` characters, keeping the
+    /// first `shellOutputHead` and last `shellOutputTail` characters with a
+    /// marker at the cut point so the model knows output was elided.
+    static func truncateOutput(_ text: String) -> String {
+        guard text.count > maxShellOutput else { return text }
+        let head = text.prefix(shellOutputHead)
+        let tail = text.suffix(shellOutputTail)
+        return "\(head)...\n[truncated to \(maxShellOutput) chars]\n...\(tail)"
     }
 
-    /// POSIX permission bits (0o0000–0o7777) of an existing path, or nil when
+   /// POSIX permission bits (0o0000–0o7777) of an existing path, or nil when
     /// the path doesn't exist. Used to preserve the executable bit (and any
     /// custom mode) across the inode swap that `Data.write(.atomic)` performs.
     static func filePermissions(at path: String) -> UInt16? {
@@ -1440,54 +1419,25 @@ enum BuiltinTools {
     // MARK: - Shell tools
 
     private static func shell(_ args: [String: Any], workdir: Workdir) async throws -> ToolOutput {
-        let command = try requireString(args, "command")
-        let cwd = try workdir.resolve(optionalString(args, "cwd") ?? workdir.defaultCwd)
-        let timeout = optionalInt(args, "timeout").map { TimeInterval($0) }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: shellPath)
-        process.arguments = ["-l"]
-        process.currentDirectoryURL = URL(fileURLWithPath: cwd)
-
-        // Merge stderr into stdout so the model sees output in the order it was
-        // written, emulating a terminal instead of two separate channels.
-        let mergedPipe = Pipe()
-        process.standardOutput = mergedPipe
-        process.standardError = mergedPipe
-
-        let stdinPipe = Pipe()
-        process.standardInput = stdinPipe
-
-        try process.run()
+       let command = try requireString(args, "command")
+       let cwd = try workdir.resolve(optionalString(args, "cwd") ?? workdir.defaultCwd)
+       let timeout = optionalInt(args, "timeout").map { TimeInterval($0) }
 
         let input = "cd \"\(cwd)\"\n\(command)\n"
-        try stdinPipe.fileHandleForWriting.write(contentsOf: Data(input.utf8))
-        try stdinPipe.fileHandleForWriting.close()
-
-        var timedOut = false
-        if let timeout {
-            let deadline = Date().addingTimeInterval(timeout)
-            while process.isRunning && Date() < deadline {
-                try await Task.sleep(nanoseconds: 50_000_000)
-            }
-            if process.isRunning {
-                timedOut = true
-                process.terminate()
-                await awaitProcessExit(process)
-            }
+        let result = await ProcessRunner.run(
+            executable: shellPath,
+            arguments: ["-l"],
+            stdin: Data(input.utf8),
+            cwd: cwd,
+            timeout: timeout,
+            outputMode: .merged
+        )
+        let text = truncateOutput(stripAnsi(result.stdoutString))
+        if result.exitCode == -1, let timeout {
+            return ToolOutput(content: "\(text)\n[exit code: timed out after \(Int(timeout))s]", isError: false)
         }
-
-        let outputData = mergedPipe.fileHandleForReading.readDataToEndOfFile()
-        if !timedOut { await awaitProcessExit(process) }
-
-        let text = stripAnsi(String(data: outputData, encoding: .utf8) ?? "")
-        let exitCode = process.terminationStatus
-
-        if timedOut {
-            return ToolOutput(content: "\(text)\n[exit code: timed out after \(Int(timeout!))s]", isError: false)
-        }
-        return ToolOutput(content: "\(text)\n[exit code: \(exitCode)]", isError: false)
-    }
+        return ToolOutput(content: "\(text)\n[exit code: \(result.exitCode)]", isError: false)
+   }
 
     private static func applescript(_ args: [String: Any]) async throws -> ToolOutput {
         let script = try requireString(args, "script")

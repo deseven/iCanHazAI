@@ -461,30 +461,48 @@ enum PatchApplier {
                 ops.append(.deleteFile(path: path, resolved: resolved, original: original))
 
             case .updateFile(let path, let movePath, let chunks):
-                let resolved = try workdir.resolve(path)
-                guard exists(resolved) else {
-                    throw ApplyPatchError(message: "\(path) does not exist")
+               let resolved = try workdir.resolve(path)
+               guard exists(resolved) else {
+                   throw ApplyPatchError(message: "\(path) does not exist")
+               }
+               guard let original = try content(resolved, path: path) else {
+                   throw ApplyPatchError(message: "\(path) is not readable as UTF-8")
+               }
+               let newContent = try applyChunksToContent(
+                   originalContent: original,
+                   filePath: path,
+                   chunks: chunks
+               )
+                // Normalize a move-to-same-path: if the destination resolves to
+                // the same path, treat it as a plain update (no move). Without
+                // this, the execution path removes the file, moves a temp into
+                // its place, then removes it again — silently deleting it.
+                let effectiveMovePath: String?
+                let moveResolved: String?
+                if let movePath {
+                    let resolvedMove = try workdir.resolve(movePath)
+                    if resolvedMove == resolved {
+                        effectiveMovePath = nil
+                        moveResolved = nil
+                    } else {
+                        effectiveMovePath = movePath
+                        moveResolved = resolvedMove
+                    }
+                } else {
+                    effectiveMovePath = nil
+                    moveResolved = nil
                 }
-                guard let original = try content(resolved, path: path) else {
-                    throw ApplyPatchError(message: "\(path) is not readable as UTF-8")
-                }
-                let newContent = try applyChunksToContent(
-                    originalContent: original,
-                    filePath: path,
-                    chunks: chunks
-                )
-                let moveResolved = try movePath.map { try workdir.resolve($0) }
                 if let moveResolved {
                     overlay[resolved] = nil
                     overlay[moveResolved] = newContent
                 } else {
                     overlay[resolved] = newContent
                 }
-                let isNoOp = newContent == original && movePath == nil
-                ops.append(.updateFile(path: path, resolved: resolved, movePath: movePath, moveResolved: moveResolved, chunkCount: chunks.count, original: original, newContent: newContent, isNoOp: isNoOp))
-            }
-        }
-        return ops
+                let isNoOp = newContent == original && effectiveMovePath == nil
+                ops.append(.updateFile(path: path, resolved: resolved, movePath: effectiveMovePath, moveResolved: moveResolved, chunkCount: chunks.count, original: original, newContent: newContent, isNoOp: isNoOp))
+           }
+       }
+       return ops
     }
 }
 

@@ -1132,22 +1132,63 @@ extension AllAppTests {
         }
 
         @Test("apply_patch move-only update renames a file")
-        func patchMoveOnly() async throws {
+       func patchMoveOnly() async throws {
+           let tmp = try TestDir()
+           try tmp.write("old.txt", content: "hello\n")
+           let patch = """
+           *** Begin Patch
+           *** Update File: \(tmp.sub("old.txt"))
+           *** Move to: \(tmp.sub("new.txt"))
+           *** End Patch
+           """
+           let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
+           #expect(!err, "move-only update failed: \(text)")
+           #expect(!tmp.exists("old.txt"))
+           #expect(try tmp.read("new.txt") == "hello\n")
+       }
+
+        @Test("apply_patch move-to-same-path does not delete the file")
+        func patchMoveToSamePath() async throws {
             let tmp = try TestDir()
-            try tmp.write("old.txt", content: "hello\n")
+            try tmp.write("target.txt", content: "line1\nline2\n")
+            let path = tmp.sub("target.txt")
             let patch = """
             *** Begin Patch
-            *** Update File: \(tmp.sub("old.txt"))
-            *** Move to: \(tmp.sub("new.txt"))
+            *** Update File: \(path)
+            *** Move to: \(path)
+             line1
+            -line2
+            +line3
             *** End Patch
             """
             let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
-            #expect(!err, "move-only update failed: \(text)")
-            #expect(!tmp.exists("old.txt"))
-            #expect(try tmp.read("new.txt") == "hello\n")
+           #expect(!err, "patch failed: \(text)")
+            #expect(text.contains("Updated:"), "unexpected summary: \(text)")
+           // File must still exist with the applied change — a move-to-same-path
+           // must not silently delete it.
+            #expect(tmp.exists("target.txt"), "file was deleted by move-to-same-path")
+            #expect(try tmp.read("target.txt") == "line1\nline3\n")
         }
 
-        @Test("apply_patch stacked @@ markers work as separate hunks")
+        @Test("apply_patch move-to-same-path with no chunks is a no-op")
+        func patchMoveToSamePathNoChunks() async throws {
+            let tmp = try TestDir()
+            try tmp.write("target.txt", content: "hello\n")
+            let path = tmp.sub("target.txt")
+            let patch = """
+            *** Begin Patch
+            *** Update File: \(path)
+            *** Move to: \(path)
+            *** End Patch
+            """
+            let (text, err) = await Self.call("apply_patch", BuiltinTools.codeGroup, ["patch": patch])
+            #expect(!err, "patch failed: \(text)")
+            #expect(text.contains("No changes needed"), "unexpected summary: \(text)")
+            #expect(tmp.exists("target.txt"), "file was deleted by move-to-same-path")
+            #expect(try tmp.read("target.txt") == "hello\n")
+        }
+
+       @Test("apply_patch stacked @@ markers work as separate hunks")
         func patchStackedContextMarkers() async throws {
             let tmp = try TestDir()
             let path = tmp.sub("stacked.txt")
@@ -1331,15 +1372,49 @@ extension AllAppTests {
         }
 
         @Test("shell defaults to the workdir as cwd")
-        func shellDefaultCwd() async throws {
-            let tmp = try TestDir()
-            let wd = Workdir(root: tmp.path, isolated: false)
-            let (text, err) = await Self.call("shell", BuiltinTools.shellGroup, ["command": "pwd"], workdir: wd)
+       func shellDefaultCwd() async throws {
+           let tmp = try TestDir()
+           let wd = Workdir(root: tmp.path, isolated: false)
+           let (text, err) = await Self.call("shell", BuiltinTools.shellGroup, ["command": "pwd"], workdir: wd)
+           #expect(!err)
+           #expect(text.contains(tmp.path))
+       }
+
+        @Test("shell handles large output without deadlock")
+        func shellLargeOutput() async throws {
+            // Output exceeds the 64 KB pipe buffer; the old read-after-exit
+            // pattern deadlocked here. 70000 lines * ~2 bytes = ~140 KB.
+            let (text, err) = await Self.call("shell", BuiltinTools.shellGroup, ["command": "yes x | head -70000", "timeout": 15])
             #expect(!err)
-            #expect(text.contains(tmp.path))
+            #expect(text.contains("[exit code: 0]"))
+            // Truncation marker should be present since output > 10000 chars
+            #expect(text.contains("[truncated to 10000 chars]"))
         }
 
-        // MARK: - chmod preservation
+        @Test("shell truncates output to 10000 chars with head and tail")
+        func shellTruncation() async throws {
+            // Generate a predictable long output: 20000 lines of "line NNNNN"
+            // so we can verify head and tail content survives truncation.
+            let cmd = "for i in $(seq 1 20000); do echo \"line $i\"; done"
+            let (text, err) = await Self.call("shell", BuiltinTools.shellGroup, ["command": cmd, "timeout": 15])
+            #expect(!err)
+            #expect(text.contains("[truncated to 10000 chars]"))
+            // Head: first lines survive
+            #expect(text.contains("line 1\n"))
+            // Tail: last line survives
+            #expect(text.contains("line 20000"))
+            // Exit code line is present after truncation
+            #expect(text.contains("[exit code: 0]"))
+        }
+
+        @Test("shell does not truncate output under 10000 chars")
+        func shellNoTruncation() async throws {
+            let (text, err) = await Self.call("shell", BuiltinTools.shellGroup, ["command": "echo hello"])
+            #expect(!err)
+            #expect(!text.contains("[truncated to"))
+        }
+
+       // MARK: - chmod preservation
 
         /// Reads the POSIX permission bits of a path as an octal string (e.g.
         /// "755"), for asserting the executable bit survives a write.
