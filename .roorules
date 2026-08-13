@@ -13,7 +13,7 @@ Dependencies and their documentation live under `.build/checkouts`.
 Chat messages are rendered using a webview that loads the web app from `chatrenderer`.
 
 # Building
-Use `build.sh` to build the project (this also builds `chatrenderer`). Check the output for compilation errors — no need to pipe through `tail`, `head`, or `2>&1`, as the output is short and errors appear in stdout.
+Use `build.sh` to build the project (this also builds `chatrenderer`). Check the output for compilation errors.
 
 # Research & Experimentation
 For quick research, use one-liners with `swift -e`. For anything longer, write a temporary Swift file and run it.
@@ -24,7 +24,7 @@ Generally two things might need updates:
 - `default/prompts/Configurator.md` - the prompt for our agentic configuration manager that should have all current information about existing configs
 
 # Tests
-Please write new tests or update the old ones when needed. To run the tests, use `./build.sh test` (outputs quick summary, writes full log to `build.log`) or `swift test`/`npm test` for more targeted approach.
+Please write new tests or update the old ones when needed. To run the tests, use `./build.sh test` (outputs quick summary, on failure check `build-step.log`) or `swift test`/`npm test` for more targeted approach.
 
 # Code Style
 Keep comments minimal. Don't describe the obvious — focus only on:

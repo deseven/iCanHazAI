@@ -386,6 +386,16 @@ enum BuiltinTools {
             schema: #"{"type":"object","properties":{},"required":[]}"#),
     ]
 
+    private static let codeToolDefs: [BuiltinToolDef] = [
+        BuiltinToolDef(
+            name: "edit_file",
+            description:
+                "Edit existing text files using the hashline patch format. The 'input' is a patch beginning with '*** Begin Patch' and ending with '*** End Patch', containing one or more '[path#TAG]' sections. Copy '[path#TAG]' verbatim from read_file or find_text output: the #TAG proves you saw the current file state, and the edit is rejected with a re-read instruction if the file changed since. Operations per section: 'PUT N.=M:' replaces original inclusive lines N-M with the following '+TEXT' body rows; 'PUT <N:' / 'PUT >N:' insert body rows before/after line N ('<1' = file head, '>$' = file tail); 'CUT N.=M' deletes original inclusive lines N-M; 'REM' deletes the file; 'MV DEST' moves/renames the file (quote paths with spaces). Body rows are verbatim file content — '+' alone is a blank line, '+TEXT' is a literal line (leading whitespace preserved); never use '-' or context rows: the range deletes, the body is final content. Only UTF-8 text files can be edited; use write_file to replace other files entirely. The result reports the new '[path#NEWTAG]' for each edited file so you can chain edits without re-reading.",
+            schema:
+                #"{"type":"object","properties":{"input":{"type":"string","description":"Hashline patch text. Begins with '*** Begin Patch' and ends with '*** End Patch'. Contains one or more [path#TAG] sections with PUT/CUT/REM/MV operations."}},"required":["input"]}"#
+        )
+    ]
+
     private static let shellToolDefs: [BuiltinToolDef] = {
         let shellDesc =
             "Execute a command in the user's login shell (\(shellPath) -l). Returns stdout, and stderr on non-zero exit. Runs in current directory. Only use if other available tools can't achieve the desired results at all or effectively enough."
@@ -410,7 +420,7 @@ enum BuiltinTools {
         switch group {
         case utilsGroup: return utilsToolDefs
         case filesystemGroup: return filesystemToolDefs
-        case codeGroup: return []
+        case codeGroup: return codeToolDefs
         case shellGroup: return shellToolDefs
         case webGroup: return BuiltinToolsWeb.toolDefs
         default: return []
@@ -521,6 +531,8 @@ enum BuiltinTools {
         case (filesystemGroup, "rm"): return try rm(args, workdir: workdir)
         case (filesystemGroup, "stat"): return try await stat(args, workdir: workdir)
         case (filesystemGroup, "pwd"): return pwd(workdir)
+        // Code
+        case (codeGroup, "edit_file"): return try editFile(args, workdir: workdir)
         // Shell
         case (shellGroup, "shell"): return try await shell(args, workdir: workdir)
         case (shellGroup, "applescript"): return try await applescript(args)
@@ -1129,6 +1141,72 @@ enum BuiltinTools {
             try? fm.setAttributes([.posixPermissions: savedMode], ofItemAtPath: resolved)
         }
         return ToolOutput(content: "Wrote \(data.count) bytes to \(path)", isError: false)
+    }
+
+    /// Edits existing text files with a hashline patch. The #TAG in each
+    /// section header is validated against the file's current content, then
+    /// line edits are applied and written back with a direct (non-atomic)
+    /// write — the inode survives, so permissions, owner, and extended
+    /// attributes are preserved without a save/restore dance. Only UTF-8
+    /// text files are editable; everything else must be replaced via
+    /// `write_file`.
+    private static func editFile(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
+        let input = try requireString(args, "input")
+        let patch = try HashlineEdit.parse(input)
+
+        var summaries: [String] = []
+        for section in patch.sections {
+            let resolved = try workdir.resolve(section.path)
+            let fm = FileManager.default
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: resolved, isDirectory: &isDir) else {
+                throw BuiltinToolError("invalid argument 'input': file not found: \(section.path)")
+            }
+            if isDir.boolValue {
+                throw BuiltinToolError("invalid argument 'input': is a directory: \(section.path)")
+            }
+            guard let data = fm.contents(atPath: resolved) else {
+                throw BuiltinToolError("invalid argument 'input': could not read: \(section.path)")
+            }
+            guard let currentContent = String(data: data, encoding: .utf8) else {
+                throw BuiltinToolError(
+                    "File \(section.path) is not a text file and cannot be edited with edit_file. Use write_file to replace it entirely."
+                )
+            }
+
+            let result: ApplyResult
+            do {
+                result = try HashlineEdit.applySection(section, fileContent: currentContent)
+            } catch let err as HashlineEditError {
+                if case .noop(let path) = err {
+                    summaries.append("No changes to \(path).")
+                    continue
+                }
+                throw BuiltinToolError(err.localizedDescription)
+            }
+
+            switch section.fileOp {
+            case .rem:
+                // Hash validated above; delete the file outright.
+                try fm.removeItem(atPath: resolved)
+                summaries.append("Deleted: \(section.path)")
+            case .move(let dest):
+                let resolvedDest = try workdir.resolve(dest)
+                let destDir = (resolvedDest as NSString).deletingLastPathComponent
+                if !fm.fileExists(atPath: destDir) {
+                    try fm.createDirectory(atPath: destDir, withIntermediateDirectories: true)
+                }
+                try Data(result.text.utf8).write(to: URL(fileURLWithPath: resolvedDest))
+                try fm.removeItem(atPath: resolved)
+                let newTag = HashlineFormat.computeFileHash(result.text)
+                summaries.append("Updated: \(section.path) [\(dest)#\(newTag)]")
+            case nil:
+                try Data(result.text.utf8).write(to: URL(fileURLWithPath: resolved))
+                let newTag = HashlineFormat.computeFileHash(result.text)
+                summaries.append("Updated: \(section.path) [\(section.path)#\(newTag)]")
+            }
+        }
+        return ToolOutput(content: summaries.joined(separator: "\n"), isError: false)
     }
 
     private static func findFile(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {

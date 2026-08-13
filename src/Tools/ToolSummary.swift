@@ -268,6 +268,8 @@ extension ToolSummary {
     /// Per-tool argument importance for internal (built-in + configurator)
     /// tools. Tools with no meaningful arguments map to an empty primary list.
     fileprivate static let knownTools: [String: KnownToolSpec] = [
+        // Built-in: Code
+        "edit_file": KnownToolSpec(primary: []),
         // Built-in: Filesystem
         "read_file": KnownToolSpec(primary: ["path"], secondary: ["offset", "limit"]),
         "write_file": KnownToolSpec(primary: ["path"]),
@@ -324,17 +326,44 @@ extension ToolSummary {
     /// Custom summaries for internal tools whose primary value isn't a plain
     /// argument lookup. Returns nil when the expected arguments are missing,
     /// so the caller falls back to the generic spec-based rendering.
+    /// Regex for a hashline section header line (`[path]` or `[path#TAG]`).
+    private static let hashlineSectionHeaderRegex = try! NSRegularExpression(
+        pattern: #"^\[([^#\r\n]+)(?:#[0-9A-Fa-f]{4})?\]"#
+    )
+
+    /// Extracts the affected paths from a hashline patch: one per
+    /// `[path#TAG]` section header in the `input` string.
+    static func extractEditFilePaths(_ input: String) -> [String] {
+        var paths: [String] = []
+        for line in input.split(separator: "\n", omittingEmptySubsequences: false) {
+            let s = String(line)
+            let range = NSRange(s.startIndex..., in: s)
+            guard let match = hashlineSectionHeaderRegex.firstMatch(in: s, range: range),
+                let r = Range(match.range(at: 1), in: s)
+            else { continue }
+            let path = String(s[r])
+            if !path.isEmpty && !paths.contains(path) {
+                paths.append(path)
+            }
+        }
+        return paths
+    }
+
     fileprivate static func customKnownSummary(name: String, obj: [String: Any]) -> [Entry]? {
         switch name {
         case "mv":
             guard let src = obj["src"].flatMap(scalar), let dst = obj["dst"].flatMap(scalar) else { return nil }
             return [Entry(key: nil, value: "\(src) → \(dst)")]
+        case "edit_file":
+            guard let input = obj["input"] as? String else { return nil }
+            let paths = extractEditFilePaths(input)
+            return paths.map { Entry(key: nil, value: oneLine($0)) }
         default:
             return nil
         }
     }
 
-    fileprivate static let customKnownTools: Set<String> = ["mv"]
+    fileprivate static let customKnownTools: Set<String> = ["mv", "edit_file"]
 
     /// Summary for an internal tool, or nil when the tool isn't known.
     fileprivate static func knownToolSummary(name: String, obj: [String: Any]) -> [Entry]? {

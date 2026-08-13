@@ -2497,6 +2497,48 @@ actor ChatEngine {
             }
         }
 
+        // For edit_file, run a preflight: parse the hashline patch, validate
+        // the #TAGs against current file content, and build the diff preview
+        // for the approval UI. A preflight failure (parse error, stale tag,
+        // non-text file) is relayed to the model as an immediate error instead
+        // of asking the user to approve a call that can't succeed. SSH runs
+        // the same checks locally on fetched content.
+        if sourceName == BuiltinTools.codeGroup, toolName == "edit_file" {
+            let wd = Workdir(root: workdir, isolated: isolation, chatID: chatID)
+            if let ssh = wd.ssh {
+                do {
+                    if let d = try await BuiltinToolsSSH.diffForEditFile(
+                        arguments: call.arguments, workdir: wd, ssh: ssh)
+                    {
+                        setToolCallDiff(callID: call.id, filename: filename, diff: d)
+                    }
+                } catch let err as BuiltinToolError {
+                    return PreparedToolCall(
+                        call: call,
+                        immediateResult: ToolResult(callID: call.id, content: err.message, isError: true))
+                } catch let err as HashlineEditError {
+                    return PreparedToolCall(
+                        call: call,
+                        immediateResult: ToolResult(callID: call.id, content: err.localizedDescription, isError: true))
+                } catch {
+                    debugLog(
+                        "Tool",
+                        "edit_file SSH preflight failed (\(error.localizedDescription)) — proceeding without diff, callID=\(call.id), chat=\(filename)"
+                    )
+                }
+            } else {
+                switch DiffBuilder.preflightEditFile(arguments: call.arguments, workdir: wd) {
+                case .ok(let diff):
+                    setToolCallDiff(callID: call.id, filename: filename, diff: diff)
+                case .error(let message):
+                    debugLog("Tool", "edit_file preflight failed — callID=\(call.id), chat=\(filename)")
+                    return PreparedToolCall(
+                        call: call,
+                        immediateResult: ToolResult(callID: call.id, content: message, isError: true))
+                }
+            }
+        }
+
         let approval: ToolApproval
         if autoAllowed {
             debugLog("Tool", "auto-allowed \(sourceName)/\(toolName) — callID=\(call.id), chat=\(filename)")

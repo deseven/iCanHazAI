@@ -40,6 +40,7 @@ extension AllAppTests {
     struct SSHIntegrationTests {
         private static let host = SSHIntegrationSupport.host
         private static let fs = BuiltinTools.filesystemGroup
+        private static let code = BuiltinTools.codeGroup
         private static let sh = BuiltinTools.shellGroup
 
         /// Sockets go to a throwaway local directory, not the real app cache.
@@ -226,6 +227,63 @@ extension AllAppTests {
             let (grep, grepErr) = await Self.call("find_text", Self.fs, ["regex": "needle"], workdir: wd)
             #expect(!grepErr)
             #expect(grep.contains("f1.swift:1:let needle = 1"))
+
+            await Self.destroy(wd, remote)
+        }
+
+        @Test("edit_file applies hashline edits over SSH")
+        func editFileSSH() async {
+            let (wd, remote) = Self.makeContext()
+            _ = await Self.call("write_file", Self.fs, ["path": "a.txt", "content": "one\ntwo\n"], workdir: wd)
+
+            let (read, readErr) = await Self.call("read_file", Self.fs, ["path": "a.txt"], workdir: wd)
+            #expect(!readErr)
+            // Extract the tag from the read_file header for a valid edit.
+            let headerLine = read.split(separator: "\n").first { $0.hasPrefix("[") } ?? ""
+            let tag = headerLine.split(separator: "#").last?.dropLast() ?? ""
+            #expect(tag.count == 4)
+
+            let input = "*** Begin Patch\n[a.txt#\(tag)]\nPUT 1.=1:\n+ONE\n*** End Patch"
+            let (edit, editErr) = await Self.call("edit_file", Self.code, ["input": input], workdir: wd)
+            #expect(!editErr, "edit_file failed: \(edit)")
+            #expect(edit.contains("Updated: a.txt [a.txt#"))
+
+            let (after, afterErr) = await Self.call("read_file", Self.fs, ["path": "a.txt"], workdir: wd)
+            #expect(!afterErr)
+            #expect(after.contains("1:ONE"))
+            #expect(after.contains("2:two"))
+
+            await Self.destroy(wd, remote)
+        }
+
+        @Test("edit_file REM and MV work over SSH")
+        func editFileOpsSSH() async {
+            let (wd, remote) = Self.makeContext()
+            _ = await Self.call("write_file", Self.fs, ["path": "a.txt", "content": "x\ny\n"], workdir: wd)
+            _ = await Self.call("write_file", Self.fs, ["path": "b.txt", "content": "x\ny\n"], workdir: wd)
+
+            let tagA = HashlineFormat.computeFileHash("x\ny\n")
+            let tagB = HashlineFormat.computeFileHash("x\ny\n")
+
+            // MV: move a.txt to renamed.txt (no edits).
+            let mvInput = "*** Begin Patch\n[a.txt#\(tagA)]\nMV renamed.txt\n*** End Patch"
+            let (mv, mvErr) = await Self.call("edit_file", Self.code, ["input": mvInput], workdir: wd)
+            #expect(!mvErr, "edit_file failed: \(mv)")
+            #expect(mv.contains("Updated: a.txt [renamed.txt#"))
+
+            // REM: delete b.txt after hash validation.
+            let remInput = "*** Begin Patch\n[b.txt#\(tagB)]\nREM\n*** End Patch"
+            let (rm, rmErr) = await Self.call("edit_file", Self.code, ["input": remInput], workdir: wd)
+            #expect(!rmErr, "edit_file failed: \(rm)")
+            #expect(rm.contains("Deleted: b.txt"))
+
+            // The moved file is readable; the removed one is gone.
+            let (moved, movedErr) = await Self.call("read_file", Self.fs, ["path": "renamed.txt"], workdir: wd)
+            #expect(!movedErr)
+            #expect(moved.contains("1:x"))
+            let (gone, goneErr) = await Self.call("read_file", Self.fs, ["path": "b.txt"], workdir: wd)
+            #expect(goneErr)
+            #expect(gone.contains("not found"))
 
             await Self.destroy(wd, remote)
         }

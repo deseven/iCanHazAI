@@ -29,6 +29,65 @@ enum DiffBuilder {
         return unifiedDiff(old: old, new: content, oldPath: path, newPath: path)
     }
 
+    /// Outcome of the `edit_file` preflight: either the unified diffs for the
+    /// patch's sections, or an error message to relay to the model (instead of
+    /// asking the user for approval).
+    enum EditFilePreflight {
+        case ok(diff: String?)
+        case error(message: String)
+    }
+
+    /// Preflights an `edit_file` tool call without writing anything: parses
+    /// the patch, validates each section's #TAG against the current file
+    /// content, applies the edits in memory, and produces unified diffs for
+    /// the approval UI. Any parse/hash/apply failure becomes `.error` so the
+    /// caller can relay it to the model instead of prompting the user.
+    static func preflightEditFile(arguments: String, workdir: Workdir) -> EditFilePreflight {
+        guard let args = parseArgs(arguments), let input = args["input"] as? String else {
+            return .error(message: "Invalid arguments: expected an 'input' string.")
+        }
+        let patch: ParsedPatch
+        do {
+            patch = try HashlineEdit.parse(input)
+        } catch {
+            return .error(message: error.localizedDescription)
+        }
+        var diffs: [String] = []
+        for section in patch.sections {
+            let resolved: String
+            do {
+                resolved = try workdir.resolve(section.path)
+            } catch {
+                return .error(message: error.localizedDescription)
+            }
+            guard let data = FileManager.default.contents(atPath: resolved) else {
+                return .error(message: "invalid argument 'input': file not found: \(section.path)")
+            }
+            guard let old = String(data: data, encoding: .utf8) else {
+                return .error(
+                    message:
+                        "File \(section.path) is not a text file and cannot be edited with edit_file. Use write_file to replace it entirely."
+                )
+            }
+            let result: ApplyResult
+            do {
+                result = try HashlineEdit.applySection(section, fileContent: old)
+            } catch {
+                return .error(message: error.localizedDescription)
+            }
+            switch section.fileOp {
+            case .rem:
+                diffs.append(unifiedDiff(old: old, new: "", oldPath: section.path, newPath: nil))
+            case .move(let dest):
+                diffs.append(unifiedDiff(old: old, new: result.text, oldPath: section.path, newPath: dest))
+            case nil:
+                diffs.append(unifiedDiff(old: old, new: result.text, oldPath: section.path, newPath: section.path))
+            }
+        }
+        let joined = diffs.filter { !$0.isEmpty }.joined(separator: "\n")
+        return .ok(diff: joined.isEmpty ? nil : joined)
+    }
+
     // MARK: - Unified diff generation
 
     /// Builds a unified diff between `old` and `new`. Returns an empty string

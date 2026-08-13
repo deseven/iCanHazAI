@@ -154,7 +154,11 @@ enum BuiltinToolsSSH {
     static func code(name: String, args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String)
         async throws -> ToolOutput
     {
-        throw BuiltinToolError("Unknown tool \"\(name)\" in group \"Code\".")
+        switch name {
+        case "edit_file": return try await editFile(args, workdir: workdir, ssh: ssh)
+        default:
+            throw BuiltinToolError("Unknown tool \"\(name)\" in group \"Code\".")
+        }
     }
 
     // MARK: - Filesystem tools
@@ -228,6 +232,71 @@ enum BuiltinToolsSSH {
         let r = try await run(ssh, script: script, stdin: Data(content.utf8))
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
         return ToolOutput(content: "Wrote \(content.utf8.count) bytes to \(path)", isError: false)
+    }
+
+    /// Edits a remote text file with a hashline patch. Hash computation and
+    /// edit application are local operations on the fetched content — only
+    /// the read (`cat`) and the write-back (`cat >`) go over SSH, keeping
+    /// latency to two round-trips per file. `REM`/`MV` still validate the
+    /// #TAG against the source file before touching it.
+    private static func editFile(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
+        let input = try BuiltinTools.requireString(args, "input")
+        let patch = try HashlineEdit.parse(input)
+
+        var summaries: [String] = []
+        for section in patch.sections {
+            let resolved = try workdir.resolve(section.path)
+
+            let remote = try await fetchFile(ssh, resolved: resolved)
+            guard remote.exists, let data = remote.data else {
+                throw BuiltinToolError("invalid argument 'input': file not found: \(section.path)")
+            }
+            guard let currentContent = String(data: data, encoding: .utf8) else {
+                throw BuiltinToolError(
+                    "File \(section.path) is not a text file and cannot be edited with edit_file. Use write_file to replace it entirely."
+                )
+            }
+
+            let result: ApplyResult
+            do {
+                result = try HashlineEdit.applySection(section, fileContent: currentContent)
+            } catch let err as HashlineEditError {
+                if case .noop(let path) = err {
+                    summaries.append("No changes to \(path).")
+                    continue
+                }
+                throw BuiltinToolError(err.localizedDescription)
+            }
+
+            switch section.fileOp {
+            case .rem:
+                try requireSuccess(
+                    try await run(ssh, script: "rm \(qp(resolved))"),
+                    scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
+                summaries.append("Deleted: \(section.path)")
+            case .move(let dest):
+                let resolvedDest = try workdir.resolve(dest)
+                let write = try await run(
+                    ssh,
+                    script: "mkdir -p \(qp(posixDirname(resolvedDest))) && cat > \(qp(resolvedDest))",
+                    stdin: Data(result.text.utf8))
+                try requireSuccess(
+                    write, scrubbing: [(resolvedDest, workdir.displayPath(forResolved: resolvedDest))])
+                try requireSuccess(
+                    try await run(ssh, script: "rm \(qp(resolved))"),
+                    scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
+                let newTag = HashlineFormat.computeFileHash(result.text)
+                summaries.append("Updated: \(section.path) [\(dest)#\(newTag)]")
+            case nil:
+                let write = try await run(
+                    ssh, script: "cat > \(qp(resolved))", stdin: Data(result.text.utf8))
+                try requireSuccess(
+                    write, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
+                let newTag = HashlineFormat.computeFileHash(result.text)
+                summaries.append("Updated: \(section.path) [\(section.path)#\(newTag)]")
+            }
+        }
+        return ToolOutput(content: summaries.joined(separator: "\n"), isError: false)
     }
 
     private static func findFile(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
@@ -606,6 +675,45 @@ enum BuiltinToolsSSH {
         let remote = try await fetchFile(ssh, resolved: resolved)
         let old = (remote.exists ? remote.data.flatMap { String(data: $0, encoding: .utf8) } : nil) ?? ""
         return DiffBuilder.unifiedDiff(old: old, new: content, oldPath: path, newPath: path)
+    }
+
+    /// SSH counterpart of [`DiffBuilder.preflightEditFile`](src/Tools/DiffBuilder.swift:59):
+    /// fetch the remote "before" content, apply the hashline edits locally, and
+    /// generate the diff locally — no remote-side hashing. Returns nil when the
+    /// arguments are invalid so the caller can fail fast exactly like the local
+    /// path; transport failures and hash/parse mismatches throw.
+    static func diffForEditFile(arguments: String, workdir: Workdir, ssh: SSHContext) async throws -> String? {
+        guard let data = arguments.data(using: .utf8),
+            let args = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            let input = args["input"] as? String
+        else { return nil }
+        let patch = try HashlineEdit.parse(input)
+        var diffs: [String] = []
+        for section in patch.sections {
+            let resolved = try workdir.resolve(section.path)
+            let remote = try await fetchFile(ssh, resolved: resolved)
+            guard remote.exists, let fileData = remote.data else {
+                throw BuiltinToolError("invalid argument 'input': file not found: \(section.path)")
+            }
+            guard let old = String(data: fileData, encoding: .utf8) else {
+                throw BuiltinToolError(
+                    "File \(section.path) is not a text file and cannot be edited with edit_file. Use write_file to replace it entirely."
+                )
+            }
+            let result = try HashlineEdit.applySection(section, fileContent: old)
+            switch section.fileOp {
+            case .rem:
+                diffs.append(DiffBuilder.unifiedDiff(old: old, new: "", oldPath: section.path, newPath: nil))
+            case .move(let dest):
+                diffs.append(
+                    DiffBuilder.unifiedDiff(old: old, new: result.text, oldPath: section.path, newPath: dest))
+            case nil:
+                diffs.append(
+                    DiffBuilder.unifiedDiff(old: old, new: result.text, oldPath: section.path, newPath: section.path))
+            }
+        }
+        let joined = diffs.filter { !$0.isEmpty }.joined(separator: "\n")
+        return joined.isEmpty ? nil : joined
     }
 
     // MARK: - Shell tool

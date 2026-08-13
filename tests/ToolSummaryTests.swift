@@ -55,6 +55,23 @@ extension AllAppTests {
                     == [ToolSummary.Entry(key: nil, value: "a.txt → b.txt")])
         }
 
+        @Test("edit_file renders affected hashline paths as bare entries")
+        func editFile() {
+            let patch =
+                "*** Begin Patch\n[src/a.swift#A1B2]\nPUT 2.=2:\n+x\n[src/b.swift#C3D4]\nPUT 1.=1:\n+y\n*** End Patch"
+            #expect(
+                ToolSummary.callEntries(name: "edit_file", arguments: json(["input": patch]))
+                    == [
+                        ToolSummary.Entry(key: nil, value: "src/a.swift"),
+                        ToolSummary.Entry(key: nil, value: "src/b.swift"),
+                    ])
+            // A section header without a tag still yields the path.
+            let noTag = "*** Begin Patch\n[src/a.swift]\nPUT 2.=2:\n+x\n*** End Patch"
+            #expect(
+                ToolSummary.callEntries(name: "edit_file", arguments: json(["input": noTag]))
+                    == [ToolSummary.Entry(key: nil, value: "src/a.swift")])
+        }
+
         @Test("no-arg tools produce an empty summary")
         func noArgTools() {
             #expect(ToolSummary.callEntries(name: "datetime", arguments: "{}") == [])
