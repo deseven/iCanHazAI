@@ -400,7 +400,7 @@ enum BuiltinTools {
                 'PUT <N:' / 'PUT >N:' — insert body rows before/after line N; '<1' is the file head, '>$' is the file tail.
                 'CUT N.=M' — delete original inclusive lines N-M (no body).
                 'REM' — delete the section file.
-'MV DEST' — move/rename the file (quote paths with spaces); edits above apply to the source first, final content goes to DEST. DEST must not already exist (MV refuses to overwrite), and must differ from the source.
+                'MV DEST' — move/rename the file (quote paths with spaces); edits above apply to the source first, final content goes to DEST. DEST must not already exist (MV refuses to overwrite), and must differ from the source.
                 'PUT >$:' — Append body rows at file tail.
                 Multiple sections targeting the same file are merged into one batch so their original line anchors apply together; conflicting tags are rejected up front.
                 Body rows: only below ':' operations. Every row starts with '+': '+TEXT' is a literal line (leading whitespace preserved), a bare '+' is a blank line. NEVER use '-' rows, bare rows, or context rows — the range deletes, the body is the final content. A literal leading '-' or '+': write '+- item' or '++ item'. To keep a line, leave it out of every range.
