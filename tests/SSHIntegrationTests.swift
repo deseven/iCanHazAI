@@ -97,6 +97,22 @@ extension AllAppTests {
             await Self.destroy(wd, remote)
         }
 
+        @Test("read_file hashline tag is computed locally from remote content")
+        func readFileLocalHash() async {
+            let (wd, remote) = Self.makeContext()
+            _ = await Self.call(
+                "write_file", Self.fs, ["path": "h.txt", "content": "one\ntwo\n"], workdir: wd)
+
+            // The tag must equal the deterministic local hash of the fetched
+            // content — proving no remote hash command (sha256sum, md5) is used.
+            let expected = HashlineFormat.computeFileHash("one\ntwo\n")
+            let (text, err) = await Self.call("read_file", Self.fs, ["path": "h.txt"], workdir: wd)
+            #expect(!err)
+            #expect(text.contains("[h.txt#\(expected)]"))
+
+            await Self.destroy(wd, remote)
+        }
+
         @Test("read_file honors offset/limit and errors on missing paths")
         func readFileRanges() async {
             let (wd, remote) = Self.makeContext()

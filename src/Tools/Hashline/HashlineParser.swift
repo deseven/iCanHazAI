@@ -28,7 +28,7 @@ final class HashlineParser {
     private static let snapshotRowsAutoPutWarning =
         "Recovered top-level `N:TEXT` snapshot row(s) as single-line `PUT N.=N:` replacements. Use explicit `PUT` headers for reliable edits."
     private static let emptyPutAutoCutWarning =
-        "Interpreted an empty `PUT` body as deletion. Use `CUT N.=M` for bodyless deletes."
+        "Empty `PUT` bodies are deprecated and will be rejected in a future version; use `CUT N.=M` for bodyless deletes. (For now the empty body was interpreted as deletion.)"
     private static let cutColonIgnoredWarning =
         "Ignored a trailing `:` on bodyless `CUT`. Prefer `CUT N.=M` without a colon."
     private static let diffOldRowsIgnoredWarning =

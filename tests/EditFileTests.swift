@@ -210,6 +210,42 @@ extension AllAppTests {
             #expect(tmp.exists("a.txt"))
             #expect(!tmp.exists("renamed.txt"))
         }
+
+        @Test("MV to an existing destination is rejected (no silent overwrite)")
+        func mvExistingDest() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "source content\n")
+            _ = try tmp.write("dest.txt", content: "destination content\n")
+            let tag = HashlineFormat.computeFileHash("source content\n")
+            let input = """
+                *** Begin Patch
+                [\(file)#\(tag)]
+                MV \(tmp.sub("dest.txt"))
+                *** End Patch
+                """
+            let (text, err) = await AllAppTests.editCall(input)
+            #expect(err)
+            #expect(text.contains("MV destination already exists"))
+            #expect(try tmp.read("a.txt") == "source content\n")
+            #expect(try tmp.read("dest.txt") == "destination content\n")
+        }
+
+        @Test("MV onto the source itself is rejected")
+        func mvSelf() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "a\nb\n")
+            let tag = HashlineFormat.computeFileHash("a\nb\n")
+            let input = """
+                *** Begin Patch
+                [\(file)#\(tag)]
+                MV \(file)
+                *** End Patch
+                """
+            let (text, err) = await AllAppTests.editCall(input)
+            #expect(err)
+            #expect(text.contains("MV destination is the same"))
+            #expect(tmp.exists("a.txt"))
+        }
     }
 
     // MARK: - edit_file: validation
@@ -271,6 +307,19 @@ extension AllAppTests {
             #expect(text.contains("out of bounds"))
         }
 
+        @Test("out-of-bounds error reports the real line count including trailing empty line")
+        func outOfBoundsLineCount() async throws {
+            let tmp = try EditTestDir()
+            // "a\nb\nc\n" splits to ["a","b","c",""] — 4 lines. read_file
+            // shows all 4 (including the empty line 4), so edit_file's
+            // bounds error must also report 4, not 3.
+            let file = try tmp.write("a.txt", content: "a\nb\nc\n")
+            let tag = HashlineFormat.computeFileHash("a\nb\nc\n")
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 5.=5:\n+X\n", tag: tag))
+            #expect(err)
+            #expect(text.contains("file has 4 lines"))
+        }
+
         @Test("missing file is rejected")
         func missingFile() async throws {
             let tmp = try EditTestDir()
@@ -298,6 +347,66 @@ extension AllAppTests {
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=2:\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
             #expect(try tmp.read("a.txt") == "a\nc\n")
+            #expect(text.contains("Empty `PUT` bodies are deprecated"))
+        }
+
+        @Test("bare body rows are auto-piped with a warning surfaced in output")
+        func bareBodyWarning() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "alpha\nbravo\ncharlie\n")
+            let tag = HashlineFormat.computeFileHash("alpha\nbravo\ncharlie\n")
+            // Row without '+': accepted as literal (matching the reference),
+            // but the warning must reach the model.
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=2:\nbravo (modified)\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "alpha\nbravo (modified)\ncharlie\n")
+            #expect(text.contains("Warnings:"))
+            #expect(text.contains("Auto-prefixed bare body row(s)"))
+        }
+
+        @Test("duplicate sections for the same file apply atomically")
+        func duplicateSameFileSections() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "alpha\nbravo\ncharlie\n")
+            let tag = HashlineFormat.computeFileHash("alpha\nbravo\ncharlie\n")
+            // Two sections targeting the same file with the same tag must
+            // apply as one batch (first section's write shifts the tag out
+            // from under the second's stale-tag check).
+            let input = """
+                *** Begin Patch
+                [\(file)#\(tag)]
+                PUT 1.=1:
+                +ALPHA
+                [\(file)#\(tag)]
+                PUT 2.=2:
+                +BRAVO
+                *** End Patch
+                """
+            let (text, err) = await AllAppTests.editCall(input)
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "ALPHA\nBRAVO\ncharlie\n")
+        }
+
+        @Test("conflicting tags on duplicate same-file sections are rejected up front")
+        func duplicateSameFileConflictingTags() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "alpha\nbravo\ncharlie\n")
+            let tag = HashlineFormat.computeFileHash("alpha\nbravo\ncharlie\n")
+            let input = """
+                *** Begin Patch
+                [\(file)#\(tag)]
+                PUT 1.=1:
+                +ALPHA
+                [\(file)#0000]
+                PUT 2.=2:
+                +BRAVO
+                *** End Patch
+                """
+            let (text, err) = await AllAppTests.editCall(input)
+            #expect(err)
+            #expect(text.contains("Conflicting hashline snapshot tags"))
+            // Nothing was written — the merge rejects before any apply.
+            #expect(try tmp.read("a.txt") == "alpha\nbravo\ncharlie\n")
         }
 
         @Test("apply_patch contamination is rejected")
@@ -394,6 +503,24 @@ extension AllAppTests {
                 return
             }
             #expect(message.contains("has changed since you last read it"))
+        }
+
+        @Test("preflight surfaces parser warnings")
+        func preflightWarnings() async throws {
+            let tmp = try EditTestDir()
+            _ = try tmp.write("a.txt", content: "one\ntwo\n")
+            let tag = HashlineFormat.computeFileHash("one\ntwo\n")
+            let input = "*** Begin Patch\n[\(tmp.sub("a.txt"))#\(tag)]\nPUT 1.=1:\nX\n*** End Patch"
+            let wd = Workdir(root: tmp.path, isolated: false)
+            let result = DiffBuilder.preflightEditFile(arguments: argsJSON(input), workdir: wd)
+            guard case .ok(let diff) = result else {
+                Issue.record("expected .ok, got \(result)")
+                return
+            }
+            let d = try #require(diff)
+            #expect(d.contains("WARNING: Auto-prefixed bare body row(s)"))
+            // Preflight still never writes.
+            #expect(try tmp.read("a.txt") == "one\ntwo\n")
         }
 
         @Test("preflight handles invalid arguments JSON")

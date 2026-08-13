@@ -244,6 +244,7 @@ enum BuiltinToolsSSH {
         let patch = try HashlineEdit.parse(input)
 
         var summaries: [String] = []
+        var warnings: [String] = []
         for section in patch.sections {
             let resolved = try workdir.resolve(section.path)
 
@@ -267,6 +268,7 @@ enum BuiltinToolsSSH {
                 }
                 throw BuiltinToolError(err.localizedDescription)
             }
+            warnings.append(contentsOf: result.warnings)
 
             switch section.fileOp {
             case .rem:
@@ -276,6 +278,17 @@ enum BuiltinToolsSSH {
                 summaries.append("Deleted: \(section.path)")
             case .move(let dest):
                 let resolvedDest = try workdir.resolve(dest)
+                // Never clobber an existing destination or move onto the
+                // source itself — same guard as the local edit_file.
+                guard BuiltinTools.canonicalPath(resolved) != BuiltinTools.canonicalPath(resolvedDest) else {
+                    throw BuiltinToolError("invalid argument 'input': MV destination is the same as \(section.path).")
+                }
+                let exists = try await run(ssh, script: "test -e \(qp(resolvedDest)) && echo yes || echo no")
+                if exists.stdoutString.contains("yes") {
+                    throw BuiltinToolError(
+                        "invalid argument 'input': MV destination already exists: \(dest). Remove it first or pick another name."
+                    )
+                }
                 let write = try await run(
                     ssh,
                     script: "mkdir -p \(qp(posixDirname(resolvedDest))) && cat > \(qp(resolvedDest))",
@@ -296,7 +309,12 @@ enum BuiltinToolsSSH {
                 summaries.append("Updated: \(section.path) [\(section.path)#\(newTag)]")
             }
         }
-        return ToolOutput(content: summaries.joined(separator: "\n"), isError: false)
+        var content = summaries.joined(separator: "\n")
+        if !warnings.isEmpty {
+            let unique = Array(NSOrderedSet(array: warnings)).compactMap { $0 as? String }
+            content += "\n\nWarnings:\n" + unique.joined(separator: "\n")
+        }
+        return ToolOutput(content: content, isError: false)
     }
 
     private static func findFile(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
@@ -689,6 +707,7 @@ enum BuiltinToolsSSH {
         else { return nil }
         let patch = try HashlineEdit.parse(input)
         var diffs: [String] = []
+        var warnings: [String] = []
         for section in patch.sections {
             let resolved = try workdir.resolve(section.path)
             let remote = try await fetchFile(ssh, resolved: resolved)
@@ -701,6 +720,7 @@ enum BuiltinToolsSSH {
                 )
             }
             let result = try HashlineEdit.applySection(section, fileContent: old)
+            warnings.append(contentsOf: result.warnings)
             switch section.fileOp {
             case .rem:
                 diffs.append(DiffBuilder.unifiedDiff(old: old, new: "", oldPath: section.path, newPath: nil))
@@ -712,7 +732,12 @@ enum BuiltinToolsSSH {
                     DiffBuilder.unifiedDiff(old: old, new: result.text, oldPath: section.path, newPath: section.path))
             }
         }
-        let joined = diffs.filter { !$0.isEmpty }.joined(separator: "\n")
+        var joined = diffs.filter { !$0.isEmpty }.joined(separator: "\n")
+        if !warnings.isEmpty {
+            let unique = Array(NSOrderedSet(array: warnings)).compactMap { $0 as? String }
+            let block = unique.map { "// WARNING: \($0)" }.joined(separator: "\n")
+            joined += (joined.isEmpty ? "" : "\n") + block
+        }
         return joined.isEmpty ? nil : joined
     }
 

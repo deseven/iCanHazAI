@@ -53,6 +53,7 @@ enum DiffBuilder {
             return .error(message: error.localizedDescription)
         }
         var diffs: [String] = []
+        var warnings: [String] = []
         for section in patch.sections {
             let resolved: String
             do {
@@ -75,6 +76,7 @@ enum DiffBuilder {
             } catch {
                 return .error(message: error.localizedDescription)
             }
+            warnings.append(contentsOf: result.warnings)
             switch section.fileOp {
             case .rem:
                 diffs.append(unifiedDiff(old: old, new: "", oldPath: section.path, newPath: nil))
@@ -84,7 +86,14 @@ enum DiffBuilder {
                 diffs.append(unifiedDiff(old: old, new: result.text, oldPath: section.path, newPath: section.path))
             }
         }
-        let joined = diffs.filter { !$0.isEmpty }.joined(separator: "\n")
+        var joined = diffs.filter { !$0.isEmpty }.joined(separator: "\n")
+        // Mirror the tool result: parser warnings (bare rows auto-piped,
+        // empty-PUT auto-cut, etc.) are appended so the model sees them.
+        if !warnings.isEmpty {
+            let unique = Array(NSOrderedSet(array: warnings)).compactMap { $0 as? String }
+            let block = unique.map { "// WARNING: \($0)" }.joined(separator: "\n")
+            joined += (joined.isEmpty ? "" : "\n") + block
+        }
         return .ok(diff: joined.isEmpty ? nil : joined)
     }
 

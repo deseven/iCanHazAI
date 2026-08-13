@@ -280,6 +280,21 @@ extension AllAppTests {
             #expect(!r.contains("\t"), "gutter must not use tabs: \(r)")
         }
 
+        @Test("read_file shows the trailing empty line so line counts match edit_file")
+        func readTrailingEmptyLine() async throws {
+            let tmp = try TestDir()
+            try tmp.write("trail.txt", content: "a\nb\n")
+            let (r, err) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": tmp.sub("trail.txt")])
+            #expect(!err, "read_file failed: \(r)")
+            // "a\nb\n" splits to ["a", "b", ""] — 3 lines. The trailing
+            // empty line (line 3) is shown so edit_file's bounds check
+            // ("file has 3 lines") matches what the model saw.
+            #expect(r.contains("\n1:a"))
+            #expect(r.contains("\n2:b"))
+            #expect(r.contains("\n3:"))
+            #expect(!r.contains("\n4:"))
+        }
+
         @Test("read_file handles large files with multi-byte UTF-8")
         func readMultiByteLargeFile() async throws {
             let tmp = try TestDir()

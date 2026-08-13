@@ -390,7 +390,60 @@ enum BuiltinTools {
         BuiltinToolDef(
             name: "edit_file",
             description:
-                "Edit existing text files using the hashline patch format. The 'input' is a patch beginning with '*** Begin Patch' and ending with '*** End Patch', containing one or more '[path#TAG]' sections. Copy '[path#TAG]' verbatim from read_file or find_text output: the #TAG proves you saw the current file state, and the edit is rejected with a re-read instruction if the file changed since. Operations per section: 'PUT N.=M:' replaces original inclusive lines N-M with the following '+TEXT' body rows; 'PUT <N:' / 'PUT >N:' insert body rows before/after line N ('<1' = file head, '>$' = file tail); 'CUT N.=M' deletes original inclusive lines N-M; 'REM' deletes the file; 'MV DEST' moves/renames the file (quote paths with spaces). Body rows are verbatim file content — '+' alone is a blank line, '+TEXT' is a literal line (leading whitespace preserved); never use '-' or context rows: the range deletes, the body is final content. Only UTF-8 text files can be edited; use write_file to replace other files entirely. The result reports the new '[path#NEWTAG]' for each edited file so you can chain edits without re-reading.",
+                """
+                Edit existing text files with the hashline patch format: name original lines or gaps, then give the new content. ':' operations take '+TEXT' body rows; CUT/REM/MV take none.
+
+                Section header: '[path#TAG]' — TAG is the 4-hex file-version hash printed by read_file and find_text; copy it verbatim, it is REQUIRED per section. If the file changed since you read it, the edit is rejected with a re-read instruction. New files or non-text files (PDF, docx, images, binaries): use write_file. edit_file edits existing UTF-8 text files only.
+
+                Operations (per section):
+                'PUT N.=M:' — replace original inclusive lines N-M with the following '+TEXT' body rows.
+                'PUT <N:' / 'PUT >N:' — insert body rows before/after line N; '<1' is the file head, '>$' is the file tail.
+                'CUT N.=M' — delete original inclusive lines N-M (no body).
+                'REM' — delete the section file.
+'MV DEST' — move/rename the file (quote paths with spaces); edits above apply to the source first, final content goes to DEST. DEST must not already exist (MV refuses to overwrite), and must differ from the source.
+                'PUT >$:' — Append body rows at file tail.
+                Multiple sections targeting the same file are merged into one batch so their original line anchors apply together; conflicting tags are rejected up front.
+                Body rows: only below ':' operations. Every row starts with '+': '+TEXT' is a literal line (leading whitespace preserved), a bare '+' is a blank line. NEVER use '-' rows, bare rows, or context rows — the range deletes, the body is the final content. A literal leading '-' or '+': write '+- item' or '++ item'. To keep a line, leave it out of every range.
+
+                Rules:
+                - Numbers and '#TAG' come from the latest read_file/find_text 'LINE:TEXT'; numbers are original, never shifted by your own edits.
+                - Each edit renumbers and changes '#TAG' — take the next numbers from the edit response or a fresh read_file.
+                - Touch only displayed lines; ranges cover changed lines only, never widened over lines you keep. Non-adjacent changes: separate hunks.
+                - Pure addition: 'PUT <N:' / 'PUT >N:', never a widened 'PUT N.=M:'.
+                - Never start or end a range mid-expression or mid-block.
+                - Never reformat or restyle with this tool; run the project formatter.
+
+                Example — read_file output:
+                [greet.swift#A1B2]
+                1:func greet(name: String) {
+                2:    let msg = "Hello, " + name
+                3:    return msg
+                4:}
+
+                Replace lines 2-3:
+                *** Begin Patch
+                [greet.swift#A1B2]
+                PUT 2.=3:
+                +    return "Hi, " + name
+                *** End Patch
+
+                Markdown — file receives '- task' after line 2:
+                [PLAN.md#A1B2]
+                PUT >2:
+                +- task
+                +  - nested task
+
+                Anti-patterns:
+                - WRONG: empty 'PUT 4.=4:' to delete. RIGHT: 'CUT 4.=4'.
+                - WRONG: range sized to the post-edit content ('PUT 1.=2:' for a one-line change). RIGHT: 'PUT 1.=1:' — body length is irrelevant.
+                - WRONG: '-' rows or bare context lines. RIGHT: only '+' rows; the range deletes, the body is the final content.
+                - WRONG: pure insertion as a widened 'PUT 2.=4:' retyping keepers. RIGHT: 'PUT >2:' — touch nothing you keep.
+
+                Critical rules:
+                1. RE-GROUND AFTER EVERY EDIT: edits renumber and change '#TAG'; take next numbers from the edit response or a fresh read. Stale tag or surprise: STOP and re-read.
+                2. RANGES TIGHT: changed lines only.
+                3. BODY IS FINAL CONTENT: every row starts '+'; Markdown bullet is '+- item', not '- item'.
+                """,
             schema:
                 #"{"type":"object","properties":{"input":{"type":"string","description":"Hashline patch text. Begins with '*** Begin Patch' and ends with '*** End Patch'. Contains one or more [path#TAG] sections with PUT/CUT/REM/MV operations."}},"required":["input"]}"#
         )
@@ -1072,19 +1125,24 @@ enum BuiltinTools {
     /// whether more content follows beyond the hard 2000-line cap. A lone empty
     /// line (a file containing just a newline) stays addressable: the file has
     /// no lines only when the text itself is empty.
+    /// Slices text into an offset/limit window. Returns the windowed lines and
+    /// whether more content follows beyond the hard 2000-line cap. The file's
+    /// trailing empty line (the phantom line produced by a final newline) is
+    /// kept and shown so that `read_file` and `edit_file` agree on line count:
+    /// `"a\nb\n"` has 3 lines (the third empty), matching the applier's split.
+    /// A truly empty file has zero lines.
     private static func sliceText(_ text: String, offset: Int, limit: Int) -> (lines: [String], truncated: Bool) {
         if text.isEmpty { return ([], false) }
         let lines = text.components(separatedBy: "\n")
-        let cleaned: [String] = lines.last?.isEmpty ?? false ? Array(lines.dropLast()) : lines
 
         let hardLimit = 2000
         let effectiveLimit = min(limit, hardLimit)
         let startIdx = offset - 1
-        guard startIdx < cleaned.count else {
+        guard startIdx < lines.count else {
             return ([], false)
         }
-        let endIdx = min(startIdx + effectiveLimit, cleaned.count)
-        return (Array(cleaned[startIdx..<endIdx]), endIdx - startIdx == hardLimit && cleaned.count > endIdx)
+        let endIdx = min(startIdx + effectiveLimit, lines.count)
+        return (Array(lines[startIdx..<endIdx]), endIdx - startIdx == hardLimit && lines.count > endIdx)
     }
 
     /// Formats text as hashline output: a `[path#TAG]` header (tag computed
@@ -1155,6 +1213,7 @@ enum BuiltinTools {
         let patch = try HashlineEdit.parse(input)
 
         var summaries: [String] = []
+        var warnings: [String] = []
         for section in patch.sections {
             let resolved = try workdir.resolve(section.path)
             let fm = FileManager.default
@@ -1184,6 +1243,7 @@ enum BuiltinTools {
                 }
                 throw BuiltinToolError(err.localizedDescription)
             }
+            warnings.append(contentsOf: result.warnings)
 
             switch section.fileOp {
             case .rem:
@@ -1192,6 +1252,17 @@ enum BuiltinTools {
                 summaries.append("Deleted: \(section.path)")
             case .move(let dest):
                 let resolvedDest = try workdir.resolve(dest)
+                // Never clobber an existing destination or move onto the
+                // source itself — the reference implementation overwrites
+                // silently, but that destroys data with no signal.
+                guard canonicalPath(resolved) != canonicalPath(resolvedDest) else {
+                    throw BuiltinToolError("invalid argument 'input': MV destination is the same as \(section.path).")
+                }
+                if fm.fileExists(atPath: resolvedDest) {
+                    throw BuiltinToolError(
+                        "invalid argument 'input': MV destination already exists: \(dest). Remove it first or pick another name."
+                    )
+                }
                 let destDir = (resolvedDest as NSString).deletingLastPathComponent
                 if !fm.fileExists(atPath: destDir) {
                     try fm.createDirectory(atPath: destDir, withIntermediateDirectories: true)
@@ -1206,7 +1277,12 @@ enum BuiltinTools {
                 summaries.append("Updated: \(section.path) [\(section.path)#\(newTag)]")
             }
         }
-        return ToolOutput(content: summaries.joined(separator: "\n"), isError: false)
+        var content = summaries.joined(separator: "\n")
+        if !warnings.isEmpty {
+            let unique = Array(NSOrderedSet(array: warnings)).compactMap { $0 as? String }
+            content += "\n\nWarnings:\n" + unique.joined(separator: "\n")
+        }
+        return ToolOutput(content: content, isError: false)
     }
 
     private static func findFile(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
