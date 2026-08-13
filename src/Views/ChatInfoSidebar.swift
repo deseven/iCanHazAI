@@ -45,10 +45,8 @@ struct ChatInfoSidebar: View {
                         InfoCell(label: "Updated", value: formatted(updatedDate(for: item)))
                     }
                     Section("Usage") {
-                        if let usage = item.tokenUsage {
-                            InfoCell(label: "Input", value: "\(usage.inputTokens)")
-                            InfoCell(label: "Cached", value: "\(usage.cachedInputTokens)")
-                            InfoCell(label: "Output", value: "\(usage.outputTokens)")
+                        if let usage = item.tokenUsage, !usage.breakdownComponents.isEmpty {
+                            InfoCell(label: usage.breakdownTitle, value: usage.breakdownValue)
                         } else {
                             InfoCell(label: "Tokens", value: "N/A")
                         }

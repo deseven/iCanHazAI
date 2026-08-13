@@ -228,3 +228,58 @@ extension AllAppTests {
         }
     }
 }
+
+// MARK: - Number formatting
+
+@Test("formatCount follows the display ladder")
+func formatCountLadder() {
+    let cases: [(Int, String)] = [
+        (1, "1"),
+        (10, "10"),
+        (100, "100"),
+        (999, "999"),
+        (1_000, "1 000"),
+        (10_000, "10 000"),
+        (99_999, "99 999"),
+        (100_000, "100.0k"),
+        (999_499, "999.5k"),
+        (1_000_000, "1.00kk"),
+        (10_000_000, "10.00kk"),
+        (100_000_000, "100.00kk"),
+        (1_000_000_000, "1.00kkk"),
+        (10_000_000_000, "10.00kkk"),
+    ]
+    for (count, expected) in cases {
+        #expect(TokenUsage.formatCount(count) == expected, "formatCount(\(count))")
+    }
+}
+
+@Test("formatCount falls through to the next tier on rounding overflow")
+func formatCountTierOverflow() {
+    // 999_999 rounds to 1000.0k, which must display as 1.00kk, not 1000.0k
+    #expect(TokenUsage.formatCount(999_999) == "1.00kk")
+    // 999_999_999 rounds to 1000.00kk, which must display as 1.00kkk
+    #expect(TokenUsage.formatCount(999_999_999) == "1.00kkk")
+}
+
+@Test("breakdown lists only non-zero counters in Input/Cached/Output order")
+func breakdownComponentsOrder() {
+    let usage = TokenUsage(
+        tokensUsed: 500,
+        inputTokens: 100,
+        outputTokens: 50,
+        cachedInputTokens: 947_000,
+        cacheCreationTokens: 323_000
+    )
+    #expect(usage.breakdownComponents.map(\.label) == ["Input", "Cached", "Output"])
+    #expect(usage.breakdownTitle == "Input / Cached / Output")
+    #expect(usage.breakdownValue == "100 / 947.0k / 50")
+
+    let noCache = TokenUsage(tokensUsed: 150, inputTokens: 100, outputTokens: 50)
+    #expect(noCache.breakdownTitle == "Input / Output")
+    #expect(noCache.breakdownValue == "100 / 50")
+
+    let outputOnly = TokenUsage(tokensUsed: 50, outputTokens: 50)
+    #expect(outputOnly.breakdownTitle == "Output")
+    #expect(outputOnly.breakdownValue == "50")
+}

@@ -67,6 +67,58 @@ struct TokenUsage: Sendable, Equatable, Codable {
         ].joined(separator: ", ")
         return "\(tokensUsed) total (\(breakdown))"
     }
+    /// Formats a token count for display: plain integers below 1000,
+    /// space-separated thousands below 100k, then compact k/kk/kkk suffixes
+    /// ("1", "10", "100", "1 000", "10 000", "100.0k", "1.00kk", ...).
+    static func formatCount(_ count: Int) -> String {
+        let n = max(0, count)
+        if n < 1000 {
+            return "\(n)"
+        }
+        if n < 100_000 {
+            return String(format: "%d %03d", n / 1000, n % 1000)
+        }
+        // Compact tiers round to the tier's precision; when rounding pushes a
+        // value into the next tier (999.9k -> 1000.0k) fall through so the
+        // suffix stays correct.
+        let posix = Locale(identifier: "en_US_POSIX")
+        let k = Double(n) / 1000
+        if k < 1000 {
+            let rounded = (k * 10).rounded() / 10
+            if rounded < 1000 {
+                return String(format: "%.1fk", locale: posix, rounded)
+            }
+        }
+        let m = Double(n) / 1_000_000
+        if m < 1000 {
+            let rounded = (m * 100).rounded() / 100
+            if rounded < 1000 {
+                return String(format: "%.2fkk", locale: posix, rounded)
+            }
+        }
+        let g = Double(n) / 1_000_000_000
+        return String(format: "%.2fkkk", locale: posix, (g * 100).rounded() / 100)
+    }
+
+    /// The (label, formatted value) pairs for the chat info panel, in
+    /// Input / Cached / Output order, omitting counters that are zero.
+    var breakdownComponents: [(label: String, value: String)] {
+        var components: [(label: String, value: String)] = []
+        if inputTokens > 0 { components.append((label: "Input", value: Self.formatCount(inputTokens))) }
+        if cachedInputTokens > 0 { components.append((label: "Cached", value: Self.formatCount(cachedInputTokens))) }
+        if outputTokens > 0 { components.append((label: "Output", value: Self.formatCount(outputTokens))) }
+        return components
+    }
+
+    /// "Input / Cached / Output" restricted to the counters that are present.
+    var breakdownTitle: String {
+        breakdownComponents.map(\.label).joined(separator: " / ")
+    }
+
+    /// The formatted counters joined in the same order as `breakdownTitle`.
+    var breakdownValue: String {
+        breakdownComponents.map(\.value).joined(separator: " / ")
+    }
 }
 
 /// A shared chunk coalescer used by both providers so they stream at the same
