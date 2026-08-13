@@ -517,12 +517,14 @@ enum BuiltinTools {
     // MARK: - Dispatch
 
     static func call(
-        name: String, arguments: String, callID: String, group: String, workdir: Workdir, chatFilename: String
+        name: String, arguments: String, callID: String, group: String, workdir: Workdir, chatFilename: String,
+        snapshotStore: SnapshotStore? = nil
     ) async -> ToolResult {
         do {
             let args = try argsDict(arguments)
             let output = try await dispatch(
-                name: name, group: group, args: args, workdir: workdir, chatFilename: chatFilename)
+                name: name, group: group, args: args, workdir: workdir, chatFilename: chatFilename,
+                snapshotStore: snapshotStore)
             var result = ToolResult(callID: callID, content: output.content, isError: output.isError)
             if let image = output.image {
                 result.image = ToolResultImage(
@@ -543,7 +545,8 @@ enum BuiltinTools {
     }
 
     private static func dispatch(
-        name: String, group: String, args: [String: Any], workdir: Workdir, chatFilename: String
+        name: String, group: String, args: [String: Any], workdir: Workdir, chatFilename: String,
+        snapshotStore: SnapshotStore?
     ) async throws -> ToolOutput {
         // SSH workdir: route workdir-capable tools to the remote
         // implementations. Utils and applescript always run locally.
@@ -551,10 +554,12 @@ enum BuiltinTools {
             switch (group, name) {
             case (filesystemGroup, _):
                 return try await BuiltinToolsSSH.filesystem(
-                    name: name, args: args, workdir: workdir, ssh: ssh, chatFilename: chatFilename)
+                    name: name, args: args, workdir: workdir, ssh: ssh, chatFilename: chatFilename,
+                    snapshotStore: snapshotStore)
             case (codeGroup, _):
                 return try await BuiltinToolsSSH.code(
-                    name: name, args: args, workdir: workdir, ssh: ssh, chatFilename: chatFilename)
+                    name: name, args: args, workdir: workdir, ssh: ssh, chatFilename: chatFilename,
+                    snapshotStore: snapshotStore)
             case (shellGroup, "shell"):
                 return try await BuiltinToolsSSH.shell(args: args, workdir: workdir, ssh: ssh)
             default:
@@ -575,17 +580,19 @@ enum BuiltinTools {
         case (utilsGroup, "rand"): return try randTool(args)
         // Filesystem
         case (filesystemGroup, "ls"): return try ls(args, workdir: workdir)
-        case (filesystemGroup, "read_file"): return try readFile(args, workdir: workdir, chatFilename: chatFilename)
+        case (filesystemGroup, "read_file"):
+            return try readFile(args, workdir: workdir, chatFilename: chatFilename, snapshotStore: snapshotStore)
         case (filesystemGroup, "write_file"): return try writeFile(args, workdir: workdir)
         case (filesystemGroup, "find_file"): return try findFile(args, workdir: workdir)
-        case (filesystemGroup, "find_text"): return try await findText(args, workdir: workdir)
+        case (filesystemGroup, "find_text"):
+            return try await findText(args, workdir: workdir, snapshotStore: snapshotStore)
         case (filesystemGroup, "mkdir"): return try mkdir(args, workdir: workdir)
         case (filesystemGroup, "mv"): return try mv(args, workdir: workdir)
         case (filesystemGroup, "rm"): return try rm(args, workdir: workdir)
         case (filesystemGroup, "stat"): return try await stat(args, workdir: workdir)
         case (filesystemGroup, "pwd"): return pwd(workdir)
         // Code
-        case (codeGroup, "edit_file"): return try editFile(args, workdir: workdir)
+        case (codeGroup, "edit_file"): return try editFile(args, workdir: workdir, snapshotStore: snapshotStore)
         // Shell
         case (shellGroup, "shell"): return try await shell(args, workdir: workdir)
         case (shellGroup, "applescript"): return try await applescript(args)
@@ -1027,7 +1034,9 @@ enum BuiltinTools {
         return ToolOutput(content: lines.prefix(maxEntries).joined(separator: "\n"), isError: false)
     }
 
-    private static func readFile(_ args: [String: Any], workdir: Workdir, chatFilename: String) throws -> ToolOutput {
+    private static func readFile(
+        _ args: [String: Any], workdir: Workdir, chatFilename: String, snapshotStore: SnapshotStore?
+    ) throws -> ToolOutput {
         let path = try requireString(args, "path")
         let offset = optionalInt(args, "offset") ?? 1
         let limit = optionalInt(args, "limit") ?? 2000
@@ -1049,7 +1058,9 @@ enum BuiltinTools {
         guard let data = fm.contents(atPath: resolved) else {
             throw BuiltinToolError("invalid argument 'path': could not read: \(path)")
         }
-        return try formatFileContent(data, path: path, offset: offset, limit: limit, chatFilename: chatFilename)
+        return try formatFileContent(
+            data, path: path, offset: offset, limit: limit, chatFilename: chatFilename,
+            resolvedPath: resolved, snapshotStore: snapshotStore)
     }
 
     /// Shared read_file formatting pipeline (classification, document/image
@@ -1061,9 +1072,10 @@ enum BuiltinTools {
     /// the request builders can send them as image blocks on vision-capable
     /// connections and the fallback text on vision-incapable ones — exactly
     /// like user-attached images.
-    static func formatFileContent(_ data: Data, path: String, offset: Int, limit: Int, chatFilename: String) throws
-        -> ToolOutput
-    {
+    static func formatFileContent(
+        _ data: Data, path: String, offset: Int, limit: Int, chatFilename: String, resolvedPath: String,
+        snapshotStore: SnapshotStore?
+    ) throws -> ToolOutput {
         let hint = DocumentTypeHint(filename: path)
         let kind = DocumentClassifier.classify(data: data, hint: hint)
 
@@ -1072,7 +1084,9 @@ enum BuiltinTools {
             guard let text = String(data: data, encoding: .utf8) else {
                 throw BuiltinToolError("invalid argument 'path': file is not valid UTF-8: \(path)")
             }
-            return formatTextLines(text, path: path, offset: offset, limit: limit)
+            return formatTextLines(
+                text, path: path, offset: offset, limit: limit, resolvedPath: resolvedPath,
+                snapshotStore: snapshotStore)
 
         case .document(let format):
             switch DocumentExtractor.extract(data: data, format: format) {
@@ -1148,13 +1162,22 @@ enum BuiltinTools {
     /// Formats text as hashline output: a `[path#TAG]` header (tag computed
     /// from the full file text, so partial reads still anchor edits to the
     /// whole file) followed by unpadded `N:content` lines. The hash comes from
-    /// the full `text`, not the visible slice.
-    private static func formatTextLines(_ text: String, path: String, offset: Int, limit: Int) -> ToolOutput {
+    /// the full `text`, not the visible slice. When a snapshot store is
+    /// present, the read is recorded live with the displayed line numbers so
+    /// the seen-lines guard knows what the model actually saw.
+    private static func formatTextLines(
+        _ text: String, path: String, offset: Int, limit: Int, resolvedPath: String, snapshotStore: SnapshotStore?
+    ) -> ToolOutput {
         let slice = sliceText(text, offset: offset, limit: limit)
         guard !slice.lines.isEmpty else {
             return ToolOutput(content: "", isError: false)
         }
         let tag = HashlineFormat.computeFileHash(text)
+        if let snapshotStore {
+            let canonical = canonicalPath(resolvedPath)
+            let seen = Set(offset...(offset + slice.lines.count - 1))
+            snapshotStore.record(path: canonical, hash: tag, text: text, seenLines: seen)
+        }
         var out: [String] = []
         out.append(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))
         for (i, line) in slice.lines.enumerated() {
@@ -1208,7 +1231,9 @@ enum BuiltinTools {
     /// attributes are preserved without a save/restore dance. Only UTF-8
     /// text files are editable; everything else must be replaced via
     /// `write_file`.
-    private static func editFile(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
+    private static func editFile(_ args: [String: Any], workdir: Workdir, snapshotStore: SnapshotStore?) throws
+        -> ToolOutput
+    {
         let input = try requireString(args, "input")
         let patch = try HashlineEdit.parse(input)
 
@@ -1216,6 +1241,8 @@ enum BuiltinTools {
         var warnings: [String] = []
         for section in patch.sections {
             let resolved = try workdir.resolve(section.path)
+            let displayPath = workdir.displayPath(forResolved: resolved)
+            let canonical = canonicalPath(resolved)
             let fm = FileManager.default
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: resolved, isDirectory: &isDir) else {
@@ -1245,17 +1272,32 @@ enum BuiltinTools {
             }
             warnings.append(contentsOf: result.warnings)
 
+            // Seen-lines guard: after the hash validated (applySection throws
+            // on mismatch), reject edits that anchor to lines the model never
+            // saw (partial read / search hit) before anything is written.
+            if let rejection = SnapshotStore.seenLinesRejection(
+                snapshotStore,
+                displayPath: displayPath,
+                canonical: canonical,
+                tag: section.fileHash,
+                currentContent: currentContent,
+                anchorLines: section.anchorLines
+            ) {
+                throw BuiltinToolError(rejection)
+            }
+
             switch section.fileOp {
             case .rem:
                 // Hash validated above; delete the file outright.
                 try fm.removeItem(atPath: resolved)
+                snapshotStore?.invalidate(path: canonical)
                 summaries.append("Deleted: \(section.path)")
             case .move(let dest):
                 let resolvedDest = try workdir.resolve(dest)
                 // Never clobber an existing destination or move onto the
                 // source itself — the reference implementation overwrites
                 // silently, but that destroys data with no signal.
-                guard canonicalPath(resolved) != canonicalPath(resolvedDest) else {
+                guard canonical != canonicalPath(resolvedDest) else {
                     throw BuiltinToolError("invalid argument 'input': MV destination is the same as \(section.path).")
                 }
                 if fm.fileExists(atPath: resolvedDest) {
@@ -1270,10 +1312,23 @@ enum BuiltinTools {
                 try Data(result.text.utf8).write(to: URL(fileURLWithPath: resolvedDest))
                 try fm.removeItem(atPath: resolved)
                 let newTag = HashlineFormat.computeFileHash(result.text)
+                // The edit applied to the source first; the post-edit content
+                // now lives at the destination. Relocate the version history
+                // first (the new version below then becomes the head), so
+                // future edits to the destination are not treated as unseen.
+                let canonicalDest = canonicalPath(resolvedDest)
+                let lineCount = HashlineFormat.splitAddressableFileLines(result.text).count
+                snapshotStore?.relocate(from: canonical, to: canonicalDest)
+                snapshotStore?.record(
+                    path: canonicalDest, hash: newTag, text: result.text, seenLines: Set(1...lineCount))
                 summaries.append("Updated: \(section.path) [\(dest)#\(newTag)]")
             case nil:
                 try Data(result.text.utf8).write(to: URL(fileURLWithPath: resolved))
                 let newTag = HashlineFormat.computeFileHash(result.text)
+                // The edit wrote the whole file, so every line is now seen.
+                let lineCount = HashlineFormat.splitAddressableFileLines(result.text).count
+                snapshotStore?.record(
+                    path: canonical, hash: newTag, text: result.text, seenLines: Set(1...lineCount))
                 summaries.append("Updated: \(section.path) [\(section.path)#\(newTag)]")
             }
         }
@@ -1283,6 +1338,149 @@ enum BuiltinTools {
             content += "\n\nWarnings:\n" + unique.joined(separator: "\n")
         }
         return ToolOutput(content: content, isError: false)
+    }
+
+    // MARK: - Snapshot rebuild from chat history
+
+    /// Rebuilds a per-chat snapshot store from the chat's message history.
+    /// Derived data, not primary state: the chat JSON already contains every
+    /// `read_file`/`find_text`/`edit_file` call and its result, so the store
+    /// is reconstructed at the start of a request. No file I/O — the store
+    /// tracks what the model has seen (context state), not file state, so
+    /// `text` is left nil (the full content isn't in the tool result). The
+    /// seen-lines guard works on `hash` + `seenLines` alone; only the
+    /// inline-reveal branch of the rejection message needs `text` and is
+    /// skipped for rebuilt stores.
+    static func rebuildSnapshots(from messages: [ChatMessage], workdir: Workdir) -> SnapshotStore {
+        let store = SnapshotStore()
+        // Match tool results back to their calls by id: assistant messages
+        // register `callID -> tool name`, the following tool-role messages
+        // carry the results.
+        var callNames: [String: String] = [:]
+        for msg in messages {
+            if let calls = msg.toolCalls {
+                for call in calls { callNames[call.id] = call.name }
+            }
+            guard let results = msg.toolResults else { continue }
+            for result in results {
+                guard let name = callNames[result.callID] else { continue }
+                switch name {
+                case "read_file":
+                    replayReadResult(result.content, workdir: workdir, store: store)
+                case "find_text":
+                    replayFindResult(result.content, workdir: workdir, store: store)
+                case "edit_file":
+                    replayEditResult(result.content, workdir: workdir, store: store)
+                default:
+                    break
+                }
+            }
+        }
+        return store
+    }
+
+    /// Resolves a display path from a tool result to its canonical store key.
+    /// A failed resolve (e.g. a path escape) skips the record — a path the
+    /// tool itself would have rejected is not worth guarding.
+    private static func canonicalKey(_ display: String, workdir: Workdir) -> String? {
+        guard let resolved = try? workdir.resolve(display) else { return nil }
+        return canonicalPath(resolved)
+    }
+
+    /// A regex capturing the line number and separator of a numbered tool
+    /// result line: `N:content` (read/match) or `N-content` (find_text
+    /// context). Display metadata rows (truncation notices, `--` separators)
+    /// never match.
+    private static let numberedResultLineRegex = try! NSRegularExpression(
+        pattern: #"^\s*(\d+)[:|-](.*)$"#
+    )
+
+    /// Parses one `[path#TAG]` header followed by `N:`/`N-` numbered lines,
+    /// recording a snapshot with the displayed line numbers.
+    private static func replayHeaderBlock(
+        _ lines: [String], start: Int, workdir: Workdir, store: SnapshotStore
+    ) -> (nextIndex: Int, seen: Set<Int>)? {
+        guard start < lines.count, let header = HashlineTokenizer.tryParseHeader(lines[start]),
+            let tag = header.fileHash
+        else { return nil }
+        var seen = Set<Int>()
+        var idx = start + 1
+        while idx < lines.count {
+            let line = lines[idx]
+            if HashlineTokenizer.isHeader(line) { break }
+            let range = NSRange(line.startIndex..., in: line)
+            guard let m = numberedResultLineRegex.firstMatch(in: line, range: range) else {
+                idx += 1
+                continue
+            }
+            if let num = Int(lines[idx][Range(m.range(at: 1), in: line)!]) {
+                seen.insert(num)
+            }
+            idx += 1
+        }
+        guard !seen.isEmpty, let canonical = canonicalKey(header.path, workdir: workdir) else {
+            return (idx, seen)
+        }
+        store.record(path: canonical, hash: tag, text: nil, seenLines: seen)
+        return (idx, seen)
+    }
+
+    private static func replayReadResult(_ content: String, workdir: Workdir, store: SnapshotStore) {
+        let lines = content.components(separatedBy: "\n")
+        _ = replayHeaderBlock(lines, start: 0, workdir: workdir, store: store)
+    }
+
+    private static func replayFindResult(_ content: String, workdir: Workdir, store: SnapshotStore) {
+        let lines = content.components(separatedBy: "\n")
+        var idx = 0
+        while idx < lines.count {
+            if HashlineTokenizer.isHeader(lines[idx]) {
+                guard let next = replayHeaderBlock(lines, start: idx, workdir: workdir, store: store) else { return }
+                idx = next.nextIndex
+            } else {
+                idx += 1
+            }
+        }
+    }
+
+    /// `Updated: <path> [<dest-or-path>#TAG]` — all lines of the post-edit
+    /// file are seen (the edit wrote the whole file). `MV` relocates the
+    /// source's history to the destination. `Deleted: <path>` invalidates.
+    private static let updatedLineRegex = try! NSRegularExpression(
+        pattern: #"^Updated: (.+?) \[([^#\]]+)#([0-9A-Fa-f]{4})\]\s*$"#
+    )
+    private static let deletedLineRegex = try! NSRegularExpression(
+        pattern: #"^Deleted: (.+?)\s*$"#
+    )
+
+    private static func replayEditResult(_ content: String, workdir: Workdir, store: SnapshotStore) {
+        for line in content.components(separatedBy: "\n") {
+            let range = NSRange(line.startIndex..., in: line)
+            if let m = updatedLineRegex.firstMatch(in: line, range: range) {
+                let src = String(line[Range(m.range(at: 1), in: line)!])
+                let dest = String(line[Range(m.range(at: 2), in: line)!])
+                let tag = String(line[Range(m.range(at: 3), in: line)!]).uppercased()
+                if src == dest {
+                    // Plain edit: the whole file is now known.
+                    if let canonical = canonicalKey(src, workdir: workdir) {
+                        store.record(path: canonical, hash: tag, text: nil, seenLines: nil)
+                    }
+                } else if let from = canonicalKey(src, workdir: workdir), let to = canonicalKey(dest, workdir: workdir)
+                {
+                    // MV: relocate history, then record the destination as
+                    // fully seen (post-edit content lives there).
+                    store.relocate(from: from, to: to)
+                    store.record(path: to, hash: tag, text: nil, seenLines: nil)
+                }
+                continue
+            }
+            if let m = deletedLineRegex.firstMatch(in: line, range: range) {
+                let path = String(line[Range(m.range(at: 1), in: line)!])
+                if let canonical = canonicalKey(path, workdir: workdir) {
+                    store.invalidate(path: canonical)
+                }
+            }
+        }
     }
 
     private static func findFile(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
@@ -1342,7 +1540,9 @@ enum BuiltinTools {
         return String(line.prefix(findTextMaxLineLength)) + "…"
     }
 
-    private static func findText(_ args: [String: Any], workdir: Workdir) async throws -> ToolOutput {
+    private static func findText(_ args: [String: Any], workdir: Workdir, snapshotStore: SnapshotStore?) async throws
+        -> ToolOutput
+    {
         let pattern = try requireString(args, "regex")
         let searchRoot = optionalString(args, "path") ?? workdir.defaultRoot
         let caseInsensitive = optionalBool(args, "case_insensitive") ?? false
@@ -1451,6 +1651,17 @@ enum BuiltinTools {
             // One hashline header per file, then 'N:content' lines for matches
             // and context (context uses '-', matching lines ':').
             let tag = HashlineFormat.computeFileHash(text)
+            if let snapshotStore {
+                // The matching lines (+ context) are seen; line numbers are
+                // 1-indexed in the output. The full text is in hand, so record
+                // it — the inline-reveal branch of the seen-lines rejection
+                // needs it.
+                var seen = Set<Int>()
+                for group in groups {
+                    for i in group.range { seen.insert(i + 1) }
+                }
+                snapshotStore.record(path: canonicalPath(file), hash: tag, text: text, seenLines: seen)
+            }
             let header = HashlineFormat.formatHashlineHeader(path: display, fileHash: tag)
             var headerEmitted = false
             for group in groups {

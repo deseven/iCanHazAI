@@ -42,7 +42,9 @@ enum DiffBuilder {
     /// content, applies the edits in memory, and produces unified diffs for
     /// the approval UI. Any parse/hash/apply failure becomes `.error` so the
     /// caller can relay it to the model instead of prompting the user.
-    static func preflightEditFile(arguments: String, workdir: Workdir) -> EditFilePreflight {
+    static func preflightEditFile(
+        arguments: String, workdir: Workdir, snapshotStore: SnapshotStore? = nil
+    ) -> EditFilePreflight {
         guard let args = parseArgs(arguments), let input = args["input"] as? String else {
             return .error(message: "Invalid arguments: expected an 'input' string.")
         }
@@ -77,6 +79,19 @@ enum DiffBuilder {
                 return .error(message: error.localizedDescription)
             }
             warnings.append(contentsOf: result.warnings)
+            // Seen-lines guard: surface approval-time errors before execution
+            // so the model sees the rejection in the tool result (via the
+            // immediate-error path) instead of after user approval.
+            if let rejection = SnapshotStore.seenLinesRejection(
+                snapshotStore,
+                displayPath: workdir.displayPath(forResolved: resolved),
+                canonical: BuiltinTools.canonicalPath(resolved),
+                tag: section.fileHash,
+                currentContent: old,
+                anchorLines: section.anchorLines
+            ) {
+                return .error(message: rejection)
+            }
             switch section.fileOp {
             case .rem:
                 diffs.append(unifiedDiff(old: old, new: "", oldPath: section.path, newPath: nil))

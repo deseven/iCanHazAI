@@ -931,6 +931,14 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     /// Full chat data, or nil when unloaded. Loaded on demand via
     /// `ChatStore.loadChat` when the user opens the chat or streaming starts.
     var chat: Chat?
+    /// Per-chat snapshot store of what file content the model has seen,
+    /// derived from the chat's message history. `nil` when the chat is
+    /// unloaded; rebuilt at the start of a request (see
+    /// [`BuiltinTools.rebuildSnapshots`](src/Tools/BuiltinTools.swift)) and
+    /// kept alive for the request's duration, updated live as tools execute.
+    /// Transient runtime state — never persisted. Excluded from `Equatable`
+    /// (it is a reference type and does not affect the UI-facing snapshot).
+    var snapshotStore: SnapshotStore?
     /// Whether a streaming request is currently in flight for this chat.
     var isStreaming: Bool
     /// Whether a "stop after current iteration" request is pending: the
@@ -973,13 +981,15 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     var isTemporary: Bool
 
     init(
-        filename: String, chat: Chat? = nil, cachedName: String? = nil, cachedRole: String? = nil,
-        cachedModificationTime: Date = Date(), cachedArchive: Bool = false, cachedWorkingDirectory: String? = nil,
-        cachedLastActivity: Date = .distantPast, isStreaming: Bool = false, stopAfterIteration: Bool = false,
-        hasUnreadActivity: Bool = false, lastError: String? = nil, createdAt: Date = Date(), isTemporary: Bool = false
+        filename: String, chat: Chat? = nil, snapshotStore: SnapshotStore? = nil, cachedName: String? = nil,
+        cachedRole: String? = nil, cachedModificationTime: Date = Date(), cachedArchive: Bool = false,
+        cachedWorkingDirectory: String? = nil, cachedLastActivity: Date = .distantPast, isStreaming: Bool = false,
+        stopAfterIteration: Bool = false, hasUnreadActivity: Bool = false, lastError: String? = nil,
+        createdAt: Date = Date(), isTemporary: Bool = false
     ) {
         self.filename = filename
         self.chat = chat
+        self.snapshotStore = snapshotStore
         self.cachedName = cachedName
         self.cachedRole = cachedRole
         self.cachedModificationTime = cachedModificationTime
@@ -1066,6 +1076,28 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
             return name
         }
         return emptyTitle
+    }
+
+    static func == (lhs: ChatRecord, rhs: ChatRecord) -> Bool {
+        // `snapshotStore` is transient runtime state (a reference type) and
+        // must not participate in equality — the engine mutates it live during
+        // a request, which would otherwise churn the UI diff for every tool
+        // call. Compare everything else field-by-field.
+        if lhs.filename != rhs.filename { return false }
+        if lhs.chat != rhs.chat { return false }
+        if lhs.isStreaming != rhs.isStreaming { return false }
+        if lhs.stopAfterIteration != rhs.stopAfterIteration { return false }
+        if lhs.hasUnreadActivity != rhs.hasUnreadActivity { return false }
+        if lhs.lastError != rhs.lastError { return false }
+        if lhs.createdAt != rhs.createdAt { return false }
+        if lhs.cachedName != rhs.cachedName { return false }
+        if lhs.cachedRole != rhs.cachedRole { return false }
+        if lhs.cachedModificationTime != rhs.cachedModificationTime { return false }
+        if lhs.cachedArchive != rhs.cachedArchive { return false }
+        if lhs.cachedWorkingDirectory != rhs.cachedWorkingDirectory { return false }
+        if lhs.cachedLastActivity != rhs.cachedLastActivity { return false }
+        if lhs.isTemporary != rhs.isTemporary { return false }
+        return true
     }
 }
 
