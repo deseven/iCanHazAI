@@ -1036,4 +1036,106 @@ extension AllAppTests {
             #expect(try tmp.read("a.txt").contains("\nY\n"))
         }
     }
+
+    // MARK: - edit_file: boundary repair
+
+    @Suite("edit_file: boundary repair")
+    struct EditFileBoundaryRepairTests {
+        @Test("two-sided echo: restated boundary lines are dropped with a warning")
+        func twoSidedEchoRepaired() async throws {
+            let tmp = try EditTestDir()
+            let content = "a\nb\nc\nd\ne\n"
+            let file = try tmp.write("a.txt", content: content)
+            let tag = HashlineFormat.computeFileHash(content)
+            // Replace lines 2-3; the body restates line 1 (above) and line 4
+            // (below) — both are dropped so they are not duplicated.
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=3:\n+a\n+X\n+d\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "a\nX\nd\ne\n")
+            #expect(text.contains("Auto-repaired a replacement boundary echo at line 2"))
+            #expect(text.contains("dropped 1 leading and 1 trailing payload line(s)"))
+        }
+
+        @Test("one-sided leading echo: body restates lines above the range")
+        func oneSidedLeadingEcho() async throws {
+            let tmp = try EditTestDir()
+            let content = "a\nb\nc\nd\ne\nf\n"
+            let file = try tmp.write("a.txt", content: content)
+            let tag = HashlineFormat.computeFileHash(content)
+            // Replace line 3; the body restates lines 1-2 just above the range.
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 3.=3:\n+a\n+b\n+X\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "a\nb\nX\nd\ne\nf\n")
+            #expect(text.contains("dropped 2 leading payload line(s)"))
+            #expect(text.contains("just above the range"))
+        }
+
+        @Test("one-sided trailing echo: body restates a line below the range")
+        func oneSidedTrailingEcho() async throws {
+            let tmp = try EditTestDir()
+            let content = "a\nb\nc\nd\n"
+            let file = try tmp.write("a.txt", content: content)
+            let tag = HashlineFormat.computeFileHash(content)
+            // Replace line 2; the body restates line 3 just below the range.
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=2:\n+X\n+c\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "a\nX\nc\nd\n")
+            #expect(text.contains("dropped 1 trailing payload line(s)"))
+            #expect(text.contains("just below the range"))
+        }
+
+        @Test("whole-payload echo is left alone as intentional")
+        func wholePayloadEchoLeftAlone() async throws {
+            let tmp = try EditTestDir()
+            let content = "a\nb\nc\n"
+            let file = try tmp.write("a.txt", content: content)
+            let tag = HashlineFormat.computeFileHash(content)
+            // Body is entirely a restatement of the boundaries (k+j >= payload):
+            // ambiguous, so the edit applies as-is with no repair.
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=2:\n+a\n+c\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "a\na\nc\nc\n")
+            #expect(!text.contains("Auto-repaired"))
+        }
+
+        @Test("clean replace produces no repair and no warning")
+        func noEchoNoRepair() async throws {
+            let tmp = try EditTestDir()
+            let content = "a\nb\nc\n"
+            let file = try tmp.write("a.txt", content: content)
+            let tag = HashlineFormat.computeFileHash(content)
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=2:\n+B\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "a\nB\nc\n")
+            #expect(!text.contains("Auto-repaired"))
+        }
+
+        @Test("multi-hunk patch: only the echoed hunk is repaired")
+        func multiHunkOnlyEchoedRepaired() async throws {
+            let tmp = try EditTestDir()
+            let content = "alpha\nbravo\ncharlie\ndelta\necho\nfoxtrot\ngolf\nhotel\nindia\njuliet\n"
+            let file = try tmp.write("a.txt", content: content)
+            let tag = HashlineFormat.computeFileHash(content)
+            let input = """
+                *** Begin Patch
+                [\(file)#\(tag)]
+                PUT 2.=3:
+                +alpha
+                +X
+                +delta
+                PUT 7.=7:
+                +GOLF
+                *** End Patch
+                """
+            let (text, err) = await AllAppTests.editCall(input)
+            #expect(!err, "edit_file failed: \(text)")
+            // Hunk 1 dropped its echoed edges; hunk 2 applied unchanged.
+            #expect(
+                try tmp.read("a.txt") == "alpha\nX\ndelta\necho\nfoxtrot\nGOLF\nhotel\nindia\njuliet\n")
+            // Exactly one warning, attributed to the echoed hunk.
+            let occurrences = text.components(separatedBy: "Auto-repaired a replacement boundary echo").count - 1
+            #expect(occurrences == 1)
+            #expect(text.contains("at line 2"))
+        }
+    }
 }

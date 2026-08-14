@@ -407,8 +407,11 @@ enum BuiltinTools {
 
                 Rules:
                 - Numbers and '#TAG' come from the latest read_file/find_text 'LINE:TEXT'; numbers are original, never shifted by your own edits.
-                - Each edit renumbers and changes '#TAG' — take the next numbers from the edit response or a fresh read_file.
+                - Each edit renumbers and changes '#TAG' — take the next numbers from the edit response or a fresh read_file. The tag in the result reflects the post-edit file state; re-read to get fresh line numbers before the next edit.
                 - Touch only displayed lines; ranges cover changed lines only, never widened over lines you keep. Non-adjacent changes: separate hunks.
+                - Edits targeting lines not shown in your read_file or find_text output are rejected with the actual content at those lines. Re-read the missing range if needed.
+                - A compact diff of the changed region is included in the result — verify it matches your intent.
+                - If your replace body restates unchanged lines bordering the range, they are automatically dropped with a warning. Issue the payload as the final desired content for the selected range only.
                 - Pure addition: 'PUT <N:' / 'PUT >N:', never a widened 'PUT N.=M:'.
                 - Never start or end a range mid-expression or mid-block.
                 - Never reformat or restyle with this tool; run the project formatter.

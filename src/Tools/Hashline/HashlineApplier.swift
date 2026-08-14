@@ -22,7 +22,17 @@ enum HashlineApplier {
         let dropped = dropTrailingPhantomDeletes(edits, fileLines: fileLines)
         try validateLineBounds(dropped, fileLines: fileLines)
 
-        return materializeEdits(originalLines: fileLines, edits: dropped)
+        // Repair replacement boundary echoes before materializing: a replace
+        // body that restates unchanged lines bordering the range would silently
+        // duplicate them in the output.
+        let repaired = HashlineRepair.repairReplacementBoundaries(dropped, fileLines: fileLines)
+
+        let result = materializeEdits(originalLines: fileLines, edits: repaired.edits)
+        return ApplyResult(
+            text: result.text,
+            firstChangedLine: result.firstChangedLine,
+            warnings: result.warnings + repaired.warnings
+        )
     }
 
     // MARK: - Validation

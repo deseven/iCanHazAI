@@ -269,7 +269,6 @@ Canonical workflows. Adapt as needed, but keep the shape: **gather what's missin
 
 ## Built-in tool groups
 The app ships with five built-in tool groups, always available (no MCP needed) and enabled in roles via their `[group]` table:
-- **Utils** (`[utils]`) — small utilities: `calc`, `datetime`, `uuid`, `hash`, `base64_encode`, `base64_decode`, `sleep`.
 - **Utils** (`[utils]`) — small utilities: `calc`, `datetime`, `uuid`, `hash`, `base64_encode`, `base64_decode`, `sleep`, `rand`.
 - **Filesystem** (`[filesystem]`) — file operations: `ls`, `read_file`, `write_file`, `find_file`, `find_text`, `mkdir`, `mv`, `rm`, `stat`, `pwd`. `read_file` extracts text from document binaries (docx, doc, odt, rtf, rtfd, wordml, webarchive, pdf — including OCR fallback for scanned PDF pages) via the bundled document extraction engine; plain text (html, json, xml, source, proprietary-but-textual) passes through raw. Image files are processed (resized/re-encoded) and returned as image data with a classification+OCR text fallback — on vision-capable connections the model sees the image directly, on vision-incapable ones it gets the classification and OCR text. Switching a chat between vision-capable and vision-incapable connections automatically substitutes the right representation at request time.
 - **Code** (`[code]`) — code-aware tools: `edit_file` edits existing text files via the hashline patch language (line-number + `#TAG` anchors taken from `read_file`/`find_text` output, with `PUT`/`CUT`/`REM`/`MV` operations).
