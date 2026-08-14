@@ -330,7 +330,9 @@ enum BuiltinToolsSSH {
                 snapshotStore?.relocate(from: canonical, to: canonicalDest)
                 snapshotStore?.record(
                     path: canonicalDest, hash: newTag, text: result.text, seenLines: Set(1...lineCount))
-                summaries.append("Updated: \(section.path) [\(dest)#\(newTag)]")
+                summaries.append(
+                    BuiltinTools.updatedSummary(
+                        "Updated: \(section.path) [\(dest)#\(newTag)]", old: currentContent, new: result.text))
             case nil:
                 let write = try await run(
                     ssh, script: "cat > \(qp(resolved))", stdin: Data(result.text.utf8))
@@ -340,7 +342,9 @@ enum BuiltinToolsSSH {
                 let lineCount = HashlineFormat.splitAddressableFileLines(result.text).count
                 snapshotStore?.record(
                     path: canonical, hash: newTag, text: result.text, seenLines: Set(1...lineCount))
-                summaries.append("Updated: \(section.path) [\(section.path)#\(newTag)]")
+                summaries.append(
+                    BuiltinTools.updatedSummary(
+                        "Updated: \(section.path) [\(section.path)#\(newTag)]", old: currentContent, new: result.text))
             }
         }
         var content = summaries.joined(separator: "\n")

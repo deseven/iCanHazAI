@@ -147,6 +147,192 @@ extension AllAppTests {
         }
     }
 
+    // MARK: - edit_file: diff preview
+
+    @Suite("edit_file: diff preview")
+    struct EditFileDiffPreviewTests {
+
+        @Test("single-line replace produces a preview")
+        func singleLineReplace() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "one\ntwo\nthree\n")
+            let tag = HashlineFormat.computeFileHash("one\ntwo\nthree\n")
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=2:\n+TWO\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            // Deleted and added lines with correct line numbers, plus context.
+            #expect(text.contains("-2:two"))
+            #expect(text.contains("+2:TWO"))
+            #expect(text.contains(" 1:one"))
+            #expect(text.contains(" 3:three"))
+        }
+
+        @Test("context lines carry post-edit numbers after an insert")
+        func contextPostEditNumbers() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "a\nb\nc\n")
+            let tag = HashlineFormat.computeFileHash("a\nb\nc\n")
+            // Insert a line before line 3 — line 3 shifts to line 4 in the
+            // post-edit file, and the preview must show the new number.
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT <3:\n+inserted\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(text.contains("+3:inserted"))
+            #expect(text.contains(" 4:c"))
+        }
+
+        @Test("multi-section patch keeps each preview under its own header")
+        func multiSectionAttribution() async throws {
+            let tmp = try EditTestDir()
+            let file1 = try tmp.write("one.txt", content: "a\nb\n")
+            let file2 = try tmp.write("two.txt", content: "x\ny\n")
+            let tag1 = HashlineFormat.computeFileHash("a\nb\n")
+            let tag2 = HashlineFormat.computeFileHash("x\ny\n")
+            let input = """
+                *** Begin Patch
+                [\(file1)#\(tag1)]
+                PUT 1.=1:
+                +A
+                [\(file2)#\(tag2)]
+                PUT 2.=2:
+                +Y
+                *** End Patch
+                """
+            let (text, err) = await AllAppTests.editCall(input)
+            #expect(!err, "edit_file failed: \(text)")
+            // Each preview follows its own Updated: header (attribution).
+            let updated1 = text.range(of: "Updated: \(file1)")
+            let preview1 = text.range(of: "-1:a")
+            let updated2 = text.range(of: "Updated: \(file2)")
+            let preview2 = text.range(of: "-2:y")
+            #expect(updated1 != nil && preview1 != nil && preview1!.lowerBound > updated1!.lowerBound)
+            #expect(updated2 != nil && preview2 != nil && preview2!.lowerBound > updated2!.lowerBound)
+            #expect(updated2!.lowerBound > preview1!.lowerBound)
+        }
+
+        @Test("multi-line replace shows all deletions and additions")
+        func multiLineReplace() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "a\nb\nc\nd\ne\n")
+            let tag = HashlineFormat.computeFileHash("a\nb\nc\nd\ne\n")
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=4:\n+X\n+Y\n+Z\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(text.contains("-2:b"))
+            #expect(text.contains("-3:c"))
+            #expect(text.contains("-4:d"))
+            #expect(text.contains("+2:X"))
+            #expect(text.contains("+3:Y"))
+            #expect(text.contains("+4:Z"))
+        }
+
+        @Test("insert produces additions only")
+        func insertOnlyAdditions() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "a\nb\nc\n")
+            let tag = HashlineFormat.computeFileHash("a\nb\nc\n")
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT >2:\n+inserted\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(text.contains("+3:inserted"))
+            // No '-' lines for a pure insert.
+            let hasDelete = text.components(separatedBy: "\n").contains { $0.hasPrefix("-") }
+            #expect(!hasDelete)
+        }
+
+        @Test("CUT produces deletions only")
+        func cutOnlyDeletions() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "a\nb\nc\nd\ne\n")
+            let tag = HashlineFormat.computeFileHash("a\nb\nc\nd\ne\n")
+            let (text, err) = await AllAppTests.editCall(patch(file, "CUT 2.=4\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(text.contains("-2:b"))
+            #expect(text.contains("-4:d"))
+            // No '+' lines for a pure cut.
+            let hasAdd = text.components(separatedBy: "\n").contains { $0.hasPrefix("+") }
+            #expect(!hasAdd)
+        }
+
+        @Test("non-contiguous hunks are separated by a blank row")
+        func nonContiguousHunks() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: (1...10).map { "line\($0)" }.joined(separator: "\n") + "\n")
+            let tag = HashlineFormat.computeFileHash((1...10).map { "line\($0)" }.joined(separator: "\n") + "\n")
+            let input = """
+                *** Begin Patch
+                [\(file)#\(tag)]
+                PUT 2.=2:
+                +TWO
+                PUT 9.=9:
+                +NINE
+                *** End Patch
+                """
+            let (text, err) = await AllAppTests.editCall(input)
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(text.contains("-2:line2"))
+            #expect(text.contains("-9:line9"))
+            #expect(text.contains("\n\n"))
+        }
+
+        @Test("large edit is truncated with a marker")
+        func largeEditTruncated() async throws {
+            let tmp = try EditTestDir()
+            let content = (1...400).map { "line\($0)" }.joined(separator: "\n") + "\n"
+            let file = try tmp.write("a.txt", content: content)
+            let tag = HashlineFormat.computeFileHash(content)
+            // Replace all 400 lines with 400 new ones.
+            let body = (1...400).map { "+NEW\($0)" }.joined(separator: "\n") + "\n"
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 1.=400:\n\(body)", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(text.contains("(diff preview truncated)"))
+            // Under the line and byte caps.
+            let preview = text.components(separatedBy: "\n").filter { !$0.hasPrefix("Updated:") }
+            #expect(preview.count <= HashlineDiffPreview.maxLines + 1)
+            #expect(text.utf8.count < HashlineDiffPreview.maxBytes * 2)
+        }
+
+        @Test("UTF-8 truncation never splits a character")
+        func utf8TruncationSafe() async throws {
+            let tmp = try EditTestDir()
+            // Enough multi-byte lines to exceed the 8 KiB byte cap. A naive
+            // byte-cap would split a 3-byte sequence at the cut, yielding
+            // U+FFFD.
+            let oldLine = String(repeating: "é", count: 800)  // 2 bytes each
+            let newLine = String(repeating: "界", count: 800)  // 3 bytes each
+            let oldContent = (1...10).map { "\(oldLine)\($0)" }.joined(separator: "\n") + "\n"
+            let newContent = (1...10).map { "\(newLine)\($0)" }.joined(separator: "\n") + "\n"
+            let file = try tmp.write("a.txt", content: oldContent)
+            let tag = HashlineFormat.computeFileHash(oldContent)
+            let body = newContent.components(separatedBy: "\n").map { "+\($0)" }.joined(separator: "\n") + "\n"
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 1.=10:\n\(body)", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(text.contains("(diff preview truncated)"))
+            // No U+FFFD replacement character anywhere in the preview.
+            #expect(!text.contains("\u{FFFD}"))
+        }
+
+        @Test("REM has no preview")
+        func remHasNoPreview() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "a\nb\n")
+            let tag = HashlineFormat.computeFileHash("a\nb\n")
+            let (text, err) = await AllAppTests.editCall(patch(file, "REM\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(text.contains("Deleted: \(file)"))
+            #expect(!text.contains("-1:"))
+            #expect(!text.contains("+1:"))
+        }
+
+        @Test("no-op has no preview")
+        func noopHasNoPreview() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "a\nb\n")
+            let tag = HashlineFormat.computeFileHash("a\nb\n")
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 1.=1:\n+a\n", tag: tag))
+            #expect(!err)
+            #expect(text.contains("No changes to \(file)."))
+            #expect(!text.contains("-1:"))
+            #expect(!text.contains("+1:"))
+        }
+    }
+
     // MARK: - edit_file: file operations
 
     @Suite("edit_file: file ops")

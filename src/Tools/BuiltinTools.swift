@@ -1321,7 +1321,9 @@ enum BuiltinTools {
                 snapshotStore?.relocate(from: canonical, to: canonicalDest)
                 snapshotStore?.record(
                     path: canonicalDest, hash: newTag, text: result.text, seenLines: Set(1...lineCount))
-                summaries.append("Updated: \(section.path) [\(dest)#\(newTag)]")
+                summaries.append(
+                    Self.updatedSummary(
+                        "Updated: \(section.path) [\(dest)#\(newTag)]", old: currentContent, new: result.text))
             case nil:
                 try Data(result.text.utf8).write(to: URL(fileURLWithPath: resolved))
                 let newTag = HashlineFormat.computeFileHash(result.text)
@@ -1329,7 +1331,9 @@ enum BuiltinTools {
                 let lineCount = HashlineFormat.splitAddressableFileLines(result.text).count
                 snapshotStore?.record(
                     path: canonical, hash: newTag, text: result.text, seenLines: Set(1...lineCount))
-                summaries.append("Updated: \(section.path) [\(section.path)#\(newTag)]")
+                summaries.append(
+                    Self.updatedSummary(
+                        "Updated: \(section.path) [\(section.path)#\(newTag)]", old: currentContent, new: result.text))
             }
         }
         var content = summaries.joined(separator: "\n")
@@ -1338,6 +1342,14 @@ enum BuiltinTools {
             content += "\n\nWarnings:\n" + unique.joined(separator: "\n")
         }
         return ToolOutput(content: content, isError: false)
+    }
+
+    /// The `Updated:` line for a section plus the compact diff preview of the
+    /// change, joined as one block so a multi-section result keeps each
+    /// preview attributed to its own file.
+    static func updatedSummary(_ header: String, old: String, new: String) -> String {
+        guard let preview = HashlineDiffPreview.generate(old: old, new: new) else { return header }
+        return header + "\n" + preview
     }
 
     // MARK: - Snapshot rebuild from chat history
