@@ -476,22 +476,16 @@ extension AllAppTests {
 
         // MARK: - Delegates
 
-        @Test("newChatFilename produces a timestamped .json filename")
+        @Test("newChatFilename produces a timestamped UUID .json filename")
         func newChatFilename() {
             let name = env.store.newChatFilename()
-            let pattern = #"^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}\.json$"#
+            let pattern = #"^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2} [0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\.json$"#
             #expect(name.range(of: pattern, options: .regularExpression) != nil)
         }
 
-        @Test("newChatFilename returns distinct values across a second boundary")
+        @Test("consecutive newChatFilename calls return distinct values")
         func newChatFilenameDistinct() {
-            // newChatFilename() is second-granular, so two calls in the same second
-            // yield the same name; across a second boundary they differ.
             let a = env.store.newChatFilename()
-            let sameSecond = env.store.newChatFilename()
-            #expect(a == sameSecond)
-
-            Thread.sleep(forTimeInterval: 1.1)
             let b = env.store.newChatFilename()
             #expect(a != b)
         }

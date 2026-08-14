@@ -175,8 +175,7 @@ final class EnvironmentManager: @unchecked Sendable {
         filename.hasPrefix(temporaryChatPrefix)
     }
 
-    /// Generates a filename for a temporary chat. UUID-based, so uniqueness
-    /// doesn't depend on wall-clock seconds (unlike `newChatFilename`).
+    /// Generates a UUID-based filename for a temporary chat.
     /// The file is never actually created — the name is just an identifier.
     func newTemporaryChatFilename() -> String {
         "\(Self.temporaryChatPrefix)\(UUID().uuidString).json"
@@ -278,12 +277,12 @@ final class EnvironmentManager: @unchecked Sendable {
         }
     }
 
-    /// Generates a new chat filename using the current date/time.
+    /// Generates a timestamped chat filename with a UUID suffix for uniqueness.
     func newChatFilename() -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH-mm-ss"
         formatter.timeZone = TimeZone.current
-        return formatter.string(from: Date()) + ".json"
+        return "\(formatter.string(from: Date())) \(UUID().uuidString).json"
     }
 
     /// Saves a chat to disk under the given filename.

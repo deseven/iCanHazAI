@@ -9,7 +9,7 @@ import SwiftData
 /// without loading the full chat JSON from disk.
 @Model
 final class ChatCacheEntry {
-    /// The chat filename, e.g. "2026-07-12 14-30-00.json". Unique.
+    /// The chat filename, e.g. "2026-07-12 14-30-00 <UUID>.json". Unique.
     @Attribute(.unique) var filename: String
     /// Derived display name: the chat's title if set, otherwise a preview of
     /// the first user message. Nil when the chat is truly empty (no title,
