@@ -55,7 +55,6 @@ enum DiffBuilder {
             return .error(message: error.localizedDescription)
         }
         var diffs: [String] = []
-        var warnings: [String] = []
         for section in patch.sections {
             let resolved: String
             do {
@@ -78,7 +77,6 @@ enum DiffBuilder {
             } catch {
                 return .error(message: error.localizedDescription)
             }
-            warnings.append(contentsOf: result.warnings)
             // Seen-lines guard: surface approval-time errors before execution
             // so the model sees the rejection in the tool result (via the
             // immediate-error path) instead of after user approval.
@@ -88,7 +86,8 @@ enum DiffBuilder {
                 canonical: BuiltinTools.canonicalPath(resolved),
                 tag: section.fileHash,
                 currentContent: old,
-                anchorLines: section.anchorLines
+                anchorLines: section.anchorLines,
+                strictReject: true
             ) {
                 return .error(message: rejection)
             }
@@ -102,13 +101,9 @@ enum DiffBuilder {
             }
         }
         var joined = diffs.filter { !$0.isEmpty }.joined(separator: "\n")
-        // Mirror the tool result: parser warnings (bare rows auto-piped,
-        // empty-PUT auto-cut, etc.) are appended so the model sees them.
-        if !warnings.isEmpty {
-            let unique = Array(NSOrderedSet(array: warnings)).compactMap { $0 as? String }
-            let block = unique.map { "// WARNING: \($0)" }.joined(separator: "\n")
-            joined += (joined.isEmpty ? "" : "\n") + block
-        }
+        // Warnings (bare rows auto-piped, empty-PUT auto-cut, boundary-echo
+        // repairs) are surfaced in the tool result only — duplicating them in
+        // the approval diff would show them twice.
         return .ok(diff: joined.isEmpty ? nil : joined)
     }
 

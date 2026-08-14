@@ -78,19 +78,25 @@ struct HashlineSection {
 
     /// The 1-indexed file lines this section's edits anchor to: every
     /// `beforeAnchor`/`afterAnchor` insert cursor and every delete anchor.
-    /// Used by the seen-lines guard to reject edits targeting lines the model
-    /// never displayed.
+    /// Deduplicated — a `PUT N.=N:` replacement emits both an insert and a
+    /// delete on `N`. Used by the seen-lines guard to reject edits targeting
+    /// lines the model never displayed.
     var anchorLines: [Int] {
-        edits.compactMap { edit in
+        var lines: [Int] = []
+        var seen = Set<Int>()
+        for edit in edits {
+            let line: Int?
             switch edit {
             case .insert(let cursor, _, _, _, _):
                 switch cursor {
-                case .beforeAnchor(let a), .afterAnchor(let a): return a.line
-                default: return nil
+                case .beforeAnchor(let a), .afterAnchor(let a): line = a.line
+                default: line = nil
                 }
-            case .delete(let a, _, _): return a.line
+            case .delete(let a, _, _): line = a.line
             }
+            if let line, seen.insert(line).inserted { lines.append(line) }
         }
+        return lines
     }
 }
 

@@ -6,7 +6,7 @@ import Foundation
 /// Errors from the hashline edit pipeline.
 enum HashlineEditError: Error, LocalizedError {
     case parseError(String)
-    case hashMismatch(path: String, expected: String, actual: String)
+    case hashMismatch(path: String, expected: String)
     case applyError(String)
     case noop(path: String)
 
@@ -14,9 +14,9 @@ enum HashlineEditError: Error, LocalizedError {
         switch self {
         case .parseError(let msg):
             return msg
-        case .hashMismatch(let path, let expected, let actual):
+        case .hashMismatch(let path, let expected):
             return
-                "File \(path) has changed since you last read it (expected tag #\(expected), current is #\(actual)). Re-read the file and retry."
+                "File \(path) has changed since you last read it (expected tag #\(expected)). Re-read the file and retry."
         case .applyError(let msg):
             return msg
         case .noop(let path):
@@ -147,8 +147,7 @@ enum HashlineEdit {
             guard actualHash == expectedHash else {
                 throw HashlineEditError.hashMismatch(
                     path: section.path,
-                    expected: expectedHash,
-                    actual: actualHash
+                    expected: expectedHash
                 )
             }
         } else {

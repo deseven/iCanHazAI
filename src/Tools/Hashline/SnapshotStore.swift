@@ -4,16 +4,17 @@
 import Foundation
 
 /// A recorded version of a file's content as seen by the model: the hash tag
-/// minted by the read/edit that created it, the optional full text (nil when
-/// rebuilt from chat history — the bytes aren't in the tool result), and the
-/// 1-indexed line numbers actually displayed. `seenLines == nil` means "all
-/// lines seen" (an edit wrote the whole file, so every line is known).
+/// minted by the read/edit that created it, the optional full text (used to
+/// dedup versions — two distinct texts can collide on 4 hex; nil when rebuilt
+/// from chat history), and the 1-indexed line numbers actually displayed.
+/// `seenLines == nil` means "all lines seen" — a write_file replaced the whole
+/// file, so every line is known.
 struct Snapshot: Sendable {
     let path: String
     let text: String?
     let hash: String
     /// `nil` = all lines seen. Non-nil values are merged when the store
-    /// records a dedup or the reveal-and-retry path reveals new lines.
+    /// records a dedup.
     var seenLines: Set<Int>?
 }
 
@@ -34,12 +35,6 @@ final class SnapshotStore: @unchecked Sendable {
 
     private let lock = NSLock()
     private var versions: [String: [Snapshot]] = [:]
-
-    /// Maximum unseen lines inlined into a seen-lines rejection before it is
-    /// truncated, forcing a re-read instead of a reveal-and-retry.
-    static let maxRevealLines = 40
-    /// Maximum characters per line inlined into a seen-lines rejection.
-    static let maxRevealLineChars = 512
 
     /// Records a version with an explicit tag. When `text` is non-nil, dedups
     /// on full-text equality (two distinct texts can collide on 4 hex); when
@@ -62,24 +57,45 @@ final class SnapshotStore: @unchecked Sendable {
         return hash
     }
 
+    /// Records the post-edit version after a successful `edit_file` section.
+    /// The model's knowledge does not extend to the whole file — it saw the
+    /// lines it had previously read (matching the pre-edit version) plus the
+    /// rows of the returned diff preview (post-edit line numbers). Marking
+    /// every line as seen here would let a model that read only lines 1-5
+    /// edit line 30 immediately after touching line 5, which is exactly the
+    /// "editing blind" failure this store exists to prevent.
+    ///
+    /// `editFile` is the caller; it has the post-edit full text in hand, so
+    /// the version is recorded with `text` (dedups on content, not just the
+    /// 4-hex tag). The pre-edit version is looked up by the pre-edit tag to
+    /// inherit what was already seen; the preview rows are added on top.
+    @discardableResult
+    func recordEdit(
+        path: String, preTag: String?, postHash: String, postText: String, previewSeen: Set<Int>
+    ) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        var seen: Set<Int> = previewSeen
+        if let preTag, let pre = versions[path]?.last(where: { $0.hash == preTag }), let preSeen = pre.seenLines {
+            seen.formUnion(preSeen)
+        }
+        var list = versions[path] ?? []
+        if let idx = existingIndex(in: list, text: postText, hash: postHash) {
+            var snap = list[idx]
+            snap.seenLines = Self.mergedSeen(snap.seenLines, seen)
+            list.remove(at: idx)
+            list.append(snap)
+        } else {
+            list.append(Snapshot(path: path, text: postText, hash: postHash, seenLines: seen))
+        }
+        versions[path] = list
+        return postHash
+    }
+
     /// Computes the tag from `text` and records the version.
     @discardableResult
     func record(path: String, text: String, seenLines: Set<Int>?) -> String {
         record(path: path, hash: HashlineFormat.computeFileHash(text), text: text, seenLines: seenLines)
-    }
-
-    /// Merges additional seen lines into the entry matching `hash`. No-op if
-    /// no such entry exists.
-    func recordSeenLines(path: String, hash: String, lines: Set<Int>) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard var list = versions[path], let idx = list.firstIndex(where: { $0.hash == hash }) else { return }
-        var snap = list[idx]
-        if snap.seenLines != nil {
-            snap.seenLines = snap.seenLines!.union(lines)
-        }
-        list[idx] = snap
-        versions[path] = list
     }
 
     /// The most recent version matching a tag.
@@ -111,15 +127,14 @@ final class SnapshotStore: @unchecked Sendable {
         versions[path] = nil
     }
 
-    /// Moves a path's version history to a new canonical path (used by `MV`),
-    /// appending it to the destination's history.
+    /// Moves a path's version history to a new canonical path (used by `MV`).
+    /// The destination's previous history is dropped: `MV` is guarded against
+    /// overwriting an existing file, so any prior snapshots there are stale.
     func relocate(from: String, to: String) {
         lock.lock()
         defer { lock.unlock() }
         guard let list = versions.removeValue(forKey: from) else { return }
-        var dest = versions[to] ?? []
-        dest.append(contentsOf: list.map { Snapshot(path: to, text: $0.text, hash: $0.hash, seenLines: $0.seenLines) })
-        versions[to] = dest
+        versions[to] = list.map { Snapshot(path: to, text: $0.text, hash: $0.hash, seenLines: $0.seenLines) }
     }
 
     /// Drops everything.
@@ -131,56 +146,59 @@ final class SnapshotStore: @unchecked Sendable {
 
     /// The seen-lines guard shared by `edit_file` execution and preflight.
     /// Returns a rejection message when the edit anchors to lines the model
-    /// never saw; nil when the guard passes or is skipped (no snapshot for
-    /// the content/tag, or all lines were seen). When the inline reveal is
-    /// not truncated, the revealed lines are merged into the snapshot's
-    /// `seenLines` so a straight retry of the same edit succeeds.
+    /// never saw; nil when the guard passes or is skipped (store nil, all
+    /// lines seen, or `seenLines == nil` = "everything seen"). The guard is
+    /// metadata-only: it never inlines file content — a rejection always
+    /// requires a re-read.
+    ///
+    /// `currentContent` is matched against a recorded snapshot by full text
+    /// first (the hash is a 4-hex fingerprint and can collide across distinct
+    /// contents); the tag lookup is the fallback for rebuilt stores (no text).
+    /// When the file has a snapshot store but no snapshot matches the current
+    /// content or tag, `strictReject` is true and the edit is rejected — the
+    /// tag names content the model never saw (a silent skip would let a model
+    /// dodge the guard with a fresh/unknown tag).
     static func seenLinesRejection(
         _ store: SnapshotStore?, displayPath: String, canonical: String, tag: String?, currentContent: String,
-        anchorLines: [Int]
+        anchorLines: [Int], strictReject: Bool
     ) -> String? {
-        guard let store, let tag else { return nil }
-        guard
-            let snapshot = store.byContent(path: canonical, fullText: currentContent)
-                ?? store.byHash(path: canonical, hash: tag)
-        else { return nil }
+        guard let store else { return nil }
+        let header = tag.map { HashlineFormat.formatHashlineHeader(path: displayPath, fileHash: $0) }
+
+        guard let tag else {
+            // Untagged sections are normally a parse error upstream; if one
+            // reaches the guard with a store, reject rather than guess.
+            return strictReject
+                ? "This edit has no #TAG, so it cannot be verified against what was displayed. Re-read the file and re-issue the edit with a \(HashlineFormat.filePrefix)path#TAG\(HashlineFormat.fileSuffix) header."
+                : nil
+        }
+
+        let snapshot =
+            store.byContent(path: canonical, fullText: currentContent)
+            ?? store.byHash(path: canonical, hash: tag)
+
+        guard let snapshot else {
+            // No recorded version of this content/tag — the model never saw
+            // it in this session. Reject rather than silently skip.
+            return strictReject
+                ? "This edit references \(header!) which was never displayed (no read in this session produced that content). Re-read the file and re-issue the edit."
+                : nil
+        }
+
         guard let seen = snapshot.seenLines else { return nil }
         let unseen = anchorLines.filter { !seen.contains($0) }.sorted()
         guard !unseen.isEmpty else { return nil }
 
-        let header = HashlineFormat.formatHashlineHeader(path: displayPath, fileHash: tag)
-        let linesList = unseen.map(String.init).joined(separator: ", ")
-
-        guard let text = snapshot.text else {
-            // Rebuilt from history: no full content to inline. Force a re-read.
-            return """
-                This edit anchors to lines \(linesList) of \(displayPath) that were not displayed in the read that minted \(header). Re-read those lines in full first, then re-issue the edit.
-                """
+        // Collapse large ranges so a pathological edit cannot produce a
+        // message with hundreds of line numbers.
+        let linesList: String
+        if unseen.count > 20 {
+            linesList = "\(unseen.first!)-\(unseen.last!) (\(unseen.count) lines)"
+        } else {
+            linesList = unseen.map(String.init).joined(separator: ", ")
         }
-
-        let textLines = HashlineFormat.splitAddressableFileLines(text)
-        var truncated = unseen.count > maxRevealLines
-        var revealed: [String] = []
-        for line in unseen {
-            let content = line <= textLines.count ? textLines[line - 1] : ""
-            if content.count > maxRevealLineChars { truncated = true }
-            revealed.append("  \(line):\(content)")
-        }
-        if truncated {
-            let shown = revealed.prefix(maxRevealLines).joined(separator: "\n")
-            return """
-                This edit anchors to lines \(unseen.first!)-\(unseen.last!) of \(displayPath) that \(header) never displayed. Preview of the first \(min(unseen.count, maxRevealLines)) unseen line(s):
-                \(shown)
-                The range exceeds the inline preview cap — re-read the remainder before re-issuing the edit.
-                """
-        }
-
-        store.recordSeenLines(path: canonical, hash: snapshot.hash, lines: Set(unseen))
         return """
-            This edit anchors to lines \(linesList) of \(displayPath) that \(header) never displayed (it showed a partial range or a search hit). Re-read them in full first, then re-issue the edit.
-
-            Actual file content at those lines:
-            \(revealed.joined(separator: "\n"))
+            This edit anchors to lines \(linesList) of \(header!) that were never displayed (a partial read or search hit shows only some lines). Re-read them in full first, then re-issue the edit.
             """
     }
 

@@ -212,6 +212,10 @@ extension AllAppTests {
                 "write_file", BuiltinTools.filesystemGroup, ["path": path, "content": "line1\nline2\n"])
             #expect(!wErr)
             #expect(w.contains("Wrote"))
+            // The result mints the #TAG so the file can be edited without a
+            // re-read.
+            let tag = HashlineFormat.computeFileHash("line1\nline2\n")
+            #expect(w.contains(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag)))
             let (r, rErr) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": path])
             #expect(!rErr)
             #expect(r.contains("line1"))
@@ -228,7 +232,11 @@ extension AllAppTests {
             let (w, wErr) = await Self.call(
                 "write_file", BuiltinTools.filesystemGroup, ["path": path, "content": pasted])
             #expect(!wErr)
+            // The returned tag is minted from the stripped content, never the
+            // pasted header.
             #expect(!w.contains("#A1B2"), "result must not carry a tag: \(w)")
+            let strippedTag = HashlineFormat.computeFileHash("line1\nline2\n")
+            #expect(w.contains(HashlineFormat.formatHashlineHeader(path: path, fileHash: strippedTag)))
             let (r, rErr) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": path])
             #expect(!rErr)
             #expect(r.contains("\n1:line1"))

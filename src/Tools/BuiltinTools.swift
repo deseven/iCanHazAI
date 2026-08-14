@@ -336,7 +336,7 @@ enum BuiltinTools {
         BuiltinToolDef(
             name: "write_file",
             description:
-                "Write text content to a file (creates or overwrites). Parent directories are created as needed. ALWAYS provide the COMPLETE intended content of the file — partial updates or placeholders like '// rest unchanged' are forbidden. Pasted read_file output (headers and line numbers) is automatically stripped. For targeted edits to existing files, use edit_file instead.",
+                "Write text content to a file (creates or overwrites). Parent directories are created as needed. ALWAYS provide the COMPLETE intended content of the file — partial updates or placeholders like '// rest unchanged' are forbidden. Pasted read_file output (headers and line numbers) is automatically stripped. The result includes the '[path#TAG]' file-version hash — copy it verbatim into edit_file to edit the file without re-reading. For targeted edits to existing files, use edit_file instead.",
             schema:
                 #"{"type":"object","properties":{"path":{"type":"string","description":"File path to write. \#(Workdir.pathDescription)"},"content":{"type":"string","description":"The complete text content to write, without line numbers or truncation."}},"required":["path","content"]}"#
         ),
@@ -585,7 +585,8 @@ enum BuiltinTools {
         case (filesystemGroup, "ls"): return try ls(args, workdir: workdir)
         case (filesystemGroup, "read_file"):
             return try readFile(args, workdir: workdir, chatFilename: chatFilename, snapshotStore: snapshotStore)
-        case (filesystemGroup, "write_file"): return try writeFile(args, workdir: workdir)
+        case (filesystemGroup, "write_file"):
+            return try writeFile(args, workdir: workdir, snapshotStore: snapshotStore)
         case (filesystemGroup, "find_file"): return try findFile(args, workdir: workdir)
         case (filesystemGroup, "find_text"):
             return try await findText(args, workdir: workdir, snapshotStore: snapshotStore)
@@ -1205,7 +1206,9 @@ enum BuiltinTools {
         }
     }
 
-    private static func writeFile(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
+    private static func writeFile(_ args: [String: Any], workdir: Workdir, snapshotStore: SnapshotStore?) throws
+        -> ToolOutput
+    {
         let path = try requireString(args, "path")
         let content = HashlineFormat.stripPastedPrefixes(try requireString(args, "content"))
         let resolved = try workdir.resolve(path)
@@ -1224,7 +1227,20 @@ enum BuiltinTools {
         if let savedMode {
             try? fm.setAttributes([.posixPermissions: savedMode], ofItemAtPath: resolved)
         }
-        return ToolOutput(content: "Wrote \(data.count) bytes to \(path)", isError: false)
+        // A write replaced the whole file, so every line is now seen. Return
+        // the minted #TAG so the model can edit the file without re-reading.
+        let tag: String
+        if let snapshotStore {
+            let canonical = canonicalPath(resolved)
+            let lineCount = HashlineFormat.splitAddressableFileLines(content).count
+            tag = snapshotStore.record(path: canonical, text: content, seenLines: Set(1...lineCount))
+        } else {
+            tag = HashlineFormat.computeFileHash(content)
+        }
+        return ToolOutput(
+            content:
+                "Wrote \(data.count) bytes to \(path)\n\(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))",
+            isError: false)
     }
 
     /// Edits existing text files with a hashline patch. The #TAG in each
@@ -1284,7 +1300,8 @@ enum BuiltinTools {
                 canonical: canonical,
                 tag: section.fileHash,
                 currentContent: currentContent,
-                anchorLines: section.anchorLines
+                anchorLines: section.anchorLines,
+                strictReject: true
             ) {
                 throw BuiltinToolError(rejection)
             }
@@ -1320,20 +1337,19 @@ enum BuiltinTools {
                 // first (the new version below then becomes the head), so
                 // future edits to the destination are not treated as unseen.
                 let canonicalDest = canonicalPath(resolvedDest)
-                let lineCount = HashlineFormat.splitAddressableFileLines(result.text).count
                 snapshotStore?.relocate(from: canonical, to: canonicalDest)
-                snapshotStore?.record(
-                    path: canonicalDest, hash: newTag, text: result.text, seenLines: Set(1...lineCount))
+                snapshotStore?.recordEdit(
+                    path: canonicalDest, preTag: section.fileHash, postHash: newTag, postText: result.text,
+                    previewSeen: editPreviewSeen(result: result, old: currentContent))
                 summaries.append(
                     Self.updatedSummary(
                         "Updated: \(section.path) [\(dest)#\(newTag)]", old: currentContent, new: result.text))
             case nil:
                 try Data(result.text.utf8).write(to: URL(fileURLWithPath: resolved))
                 let newTag = HashlineFormat.computeFileHash(result.text)
-                // The edit wrote the whole file, so every line is now seen.
-                let lineCount = HashlineFormat.splitAddressableFileLines(result.text).count
-                snapshotStore?.record(
-                    path: canonical, hash: newTag, text: result.text, seenLines: Set(1...lineCount))
+                snapshotStore?.recordEdit(
+                    path: canonical, preTag: section.fileHash, postHash: newTag, postText: result.text,
+                    previewSeen: editPreviewSeen(result: result, old: currentContent))
                 summaries.append(
                     Self.updatedSummary(
                         "Updated: \(section.path) [\(section.path)#\(newTag)]", old: currentContent, new: result.text))
@@ -1345,6 +1361,27 @@ enum BuiltinTools {
             content += "\n\nWarnings:\n" + unique.joined(separator: "\n")
         }
         return ToolOutput(content: content, isError: false)
+    }
+
+    /// The post-edit line numbers the model sees in the tool result: every row
+    /// of the compact diff preview, which the live tool emits below the
+    /// `Updated:` line. The preview is the only new content revealed by a
+    /// successful edit — the rest of the file stays unseen until a read. When
+    /// the preview cannot be produced (e.g. no change), fall back to the
+    /// anchor lines themselves, which the model did reference in the patch.
+    static func editPreviewSeen(result: ApplyResult, old: String) -> Set<Int> {
+        if let preview = HashlineDiffPreview.generate(old: old, new: result.text) {
+            var seen = Set<Int>()
+            for line in preview.components(separatedBy: "\n") {
+                guard let match = diffPreviewRowRegex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line))
+                else { continue }
+                if let num = Int(line[Range(match.range(at: 1), in: line)!]) {
+                    seen.insert(num)
+                }
+            }
+            return seen
+        }
+        return result.firstChangedLine.map { [$0] } ?? []
     }
 
     /// The `Updated:` line for a section plus the compact diff preview of the
@@ -1363,18 +1400,27 @@ enum BuiltinTools {
     /// is reconstructed at the start of a request. No file I/O — the store
     /// tracks what the model has seen (context state), not file state, so
     /// `text` is left nil (the full content isn't in the tool result). The
-    /// seen-lines guard works on `hash` + `seenLines` alone; only the
-    /// inline-reveal branch of the rejection message needs `text` and is
-    /// skipped for rebuilt stores.
+    /// seen-lines guard matches by tag and compares anchor lines against
+    /// `seenLines`; it never needs the content, so rebuilt stores are fully
+    /// guarded.
     static func rebuildSnapshots(from messages: [ChatMessage], workdir: Workdir) -> SnapshotStore {
         let store = SnapshotStore()
         // Match tool results back to their calls by id: assistant messages
         // register `callID -> tool name`, the following tool-role messages
         // carry the results.
+        // First pass: tool results — these carry the `[path#TAG]` headers and
+        // numbered lines for reads/searches and the `Updated:` lines for edits.
         var callNames: [String: String] = [:]
+        var writeCalls: [(String, String)] = []
         for msg in messages {
             if let calls = msg.toolCalls {
-                for call in calls { callNames[call.id] = call.name }
+                for call in calls {
+                    callNames[call.id] = call.name
+                    // `write_file` results now carry the `[path#TAG]` header,
+                    // but the full content lives in the call arguments, so
+                    // stash them for a second pass (path + content → tag).
+                    if call.name == "write_file" { writeCalls.append((call.id, call.arguments)) }
+                }
             }
             guard let results = msg.toolResults else { continue }
             for result in results {
@@ -1390,6 +1436,11 @@ enum BuiltinTools {
                     break
                 }
             }
+        }
+        // Second pass: `write_file` call arguments — a write replaces the whole
+        // file, so record it as all-lines-seen.
+        for (_, arguments) in writeCalls {
+            replayWriteCall(arguments, workdir: workdir, store: store)
         }
         return store
     }
@@ -1440,6 +1491,23 @@ enum BuiltinTools {
         return (idx, seen)
     }
 
+    /// Parses a `write_file` call's raw JSON arguments (path + content) and
+    /// records the written file as all-lines-seen. Malformed/partial JSON or a
+    /// path that fails to resolve is skipped — the tool itself would have
+    /// rejected it, so it isn't worth guarding.
+    private static func replayWriteCall(_ arguments: String, workdir: Workdir, store: SnapshotStore) {
+        guard let data = arguments.data(using: .utf8),
+            let args = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            let path = args["path"] as? String,
+            let content = args["content"] as? String,
+            let resolved = try? workdir.resolve(path)
+        else { return }
+        let canonical = canonicalPath(resolved)
+        let lineCount = HashlineFormat.splitAddressableFileLines(content).count
+        store.record(
+            path: canonical, hash: HashlineFormat.computeFileHash(content), text: nil, seenLines: Set(1...lineCount))
+    }
+
     private static func replayReadResult(_ content: String, workdir: Workdir, store: SnapshotStore) {
         let lines = content.components(separatedBy: "\n")
         _ = replayHeaderBlock(lines, start: 0, workdir: workdir, store: store)
@@ -1458,34 +1526,66 @@ enum BuiltinTools {
         }
     }
 
-    /// `Updated: <path> [<dest-or-path>#TAG]` — all lines of the post-edit
-    /// file are seen (the edit wrote the whole file). `MV` relocates the
-    /// source's history to the destination. `Deleted: <path>` invalidates.
+    /// `Updated: <path> [<dest-or-path>#TAG]` — the lines after an edit are
+    /// known only to the extent the diff preview revealed them (the same
+    /// `[ -+ ]N:` rows the live tool emits). `MV` relocates the source's
+    /// history to the destination. `Deleted: <path>` invalidates.
     private static let updatedLineRegex = try! NSRegularExpression(
         pattern: #"^Updated: (.+?) \[([^#\]]+)#([0-9A-Fa-f]{4})\]\s*$"#
     )
     private static let deletedLineRegex = try! NSRegularExpression(
         pattern: #"^Deleted: (.+?)\s*$"#
     )
+    /// A row of the compact diff preview: `[ -+ ]N:content` (post-edit line
+    /// numbers). Removed rows share the post-edit number of the line they were
+    /// replaced by — the model did see that coordinate.
+    private static let diffPreviewRowRegex = try! NSRegularExpression(
+        pattern: #"^\s*[-+ ](\d+):"#
+    )
 
     private static func replayEditResult(_ content: String, workdir: Workdir, store: SnapshotStore) {
-        for line in content.components(separatedBy: "\n") {
+        // The diff-preview rows emitted after an `Updated:` block (same
+        // `[ -+ ]N:` rows the live tool returns) are the only new lines the
+        // model saw. Record each block after its rows have been collected —
+        // the `Updated:` line precedes its preview in the result.
+        var pendingBlock: (src: String, dest: String, tag: String)?
+        var previewSeen: Set<Int> = []
+        let lines = content.components(separatedBy: "\n")
+        let flush = {
+            guard let pending = pendingBlock else { return }
+            if pending.src == pending.dest {
+                if let canonical = canonicalKey(pending.src, workdir: workdir) {
+                    store.record(
+                        path: canonical, hash: pending.tag, text: nil,
+                        seenLines: previewSeen.isEmpty ? nil : previewSeen)
+                }
+            } else if let from = canonicalKey(pending.src, workdir: workdir),
+                let to = canonicalKey(pending.dest, workdir: workdir)
+            {
+                // MV: the post-edit content lives at the destination. The
+                // preview (post-edit rows) is what the model saw of it.
+                store.relocate(from: from, to: to)
+                store.record(
+                    path: to, hash: pending.tag, text: nil,
+                    seenLines: previewSeen.isEmpty ? nil : previewSeen)
+            }
+            pendingBlock = nil
+            previewSeen = []
+        }
+        for line in lines {
             let range = NSRange(line.startIndex..., in: line)
             if let m = updatedLineRegex.firstMatch(in: line, range: range) {
-                let src = String(line[Range(m.range(at: 1), in: line)!])
-                let dest = String(line[Range(m.range(at: 2), in: line)!])
-                let tag = String(line[Range(m.range(at: 3), in: line)!]).uppercased()
-                if src == dest {
-                    // Plain edit: the whole file is now known.
-                    if let canonical = canonicalKey(src, workdir: workdir) {
-                        store.record(path: canonical, hash: tag, text: nil, seenLines: nil)
-                    }
-                } else if let from = canonicalKey(src, workdir: workdir), let to = canonicalKey(dest, workdir: workdir)
-                {
-                    // MV: relocate history, then record the destination as
-                    // fully seen (post-edit content lives there).
-                    store.relocate(from: from, to: to)
-                    store.record(path: to, hash: tag, text: nil, seenLines: nil)
+                flush()
+                pendingBlock = (
+                    src: String(line[Range(m.range(at: 1), in: line)!]),
+                    dest: String(line[Range(m.range(at: 2), in: line)!]),
+                    tag: String(line[Range(m.range(at: 3), in: line)!]).uppercased()
+                )
+                continue
+            }
+            if let m = diffPreviewRowRegex.firstMatch(in: line, range: range) {
+                if let num = Int(line[Range(m.range(at: 1), in: line)!]) {
+                    previewSeen.insert(num)
                 }
                 continue
             }
@@ -1496,6 +1596,7 @@ enum BuiltinTools {
                 }
             }
         }
+        flush()
     }
 
     private static func findFile(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
@@ -1669,8 +1770,7 @@ enum BuiltinTools {
             if let snapshotStore {
                 // The matching lines (+ context) are seen; line numbers are
                 // 1-indexed in the output. The full text is in hand, so record
-                // it — the inline-reveal branch of the seen-lines rejection
-                // needs it.
+                // it (it dedups versions; the guard never inlines it).
                 var seen = Set<Int>()
                 for group in groups {
                     for i in group.range { seen.insert(i + 1) }

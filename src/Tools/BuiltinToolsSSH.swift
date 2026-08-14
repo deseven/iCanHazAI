@@ -141,7 +141,8 @@ enum BuiltinToolsSSH {
         case "read_file":
             return try await readFile(
                 args, workdir: workdir, ssh: ssh, chatFilename: chatFilename, snapshotStore: snapshotStore)
-        case "write_file": return try await writeFile(args, workdir: workdir, ssh: ssh)
+        case "write_file":
+            return try await writeFile(args, workdir: workdir, ssh: ssh, snapshotStore: snapshotStore)
         case "find_file": return try await findFile(args, workdir: workdir, ssh: ssh)
         case "find_text": return try await findText(args, workdir: workdir, ssh: ssh)
         case "mkdir": return try await mkdir(args, workdir: workdir, ssh: ssh)
@@ -227,7 +228,9 @@ enum BuiltinToolsSSH {
             resolvedPath: resolved, snapshotStore: snapshotStore)
     }
 
-    private static func writeFile(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
+    private static func writeFile(
+        _ args: [String: Any], workdir: Workdir, ssh: SSHContext, snapshotStore: SnapshotStore?
+    ) async throws -> ToolOutput {
         let path = try BuiltinTools.requireString(args, "path")
         let content = HashlineFormat.stripPastedPrefixes(try BuiltinTools.requireString(args, "content"))
         let resolved = try workdir.resolve(path)
@@ -237,7 +240,20 @@ enum BuiltinToolsSSH {
         let script = "mkdir -p \(qp(posixDirname(resolved))) && cat > \(qp(resolved))"
         let r = try await run(ssh, script: script, stdin: Data(content.utf8))
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
-        return ToolOutput(content: "Wrote \(content.utf8.count) bytes to \(path)", isError: false)
+        // A write replaced the whole file, so every line is now seen. Return
+        // the minted #TAG so the model can edit the file without re-reading.
+        let tag: String
+        if let snapshotStore {
+            let canonical = BuiltinTools.canonicalPath(resolved)
+            let lineCount = HashlineFormat.splitAddressableFileLines(content).count
+            tag = snapshotStore.record(path: canonical, text: content, seenLines: Set(1...lineCount))
+        } else {
+            tag = HashlineFormat.computeFileHash(content)
+        }
+        return ToolOutput(
+            content:
+                "Wrote \(content.utf8.count) bytes to \(path)\n\(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))",
+            isError: false)
     }
 
     /// Edits a remote text file with a hashline patch. Hash computation and
@@ -290,7 +306,8 @@ enum BuiltinToolsSSH {
                 canonical: canonical,
                 tag: section.fileHash,
                 currentContent: currentContent,
-                anchorLines: section.anchorLines
+                anchorLines: section.anchorLines,
+                strictReject: true
             ) {
                 throw BuiltinToolError(rejection)
             }
@@ -326,10 +343,10 @@ enum BuiltinToolsSSH {
                     scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
                 let newTag = HashlineFormat.computeFileHash(result.text)
                 let canonicalDest = BuiltinTools.canonicalPath(resolvedDest)
-                let lineCount = HashlineFormat.splitAddressableFileLines(result.text).count
                 snapshotStore?.relocate(from: canonical, to: canonicalDest)
-                snapshotStore?.record(
-                    path: canonicalDest, hash: newTag, text: result.text, seenLines: Set(1...lineCount))
+                snapshotStore?.recordEdit(
+                    path: canonicalDest, preTag: section.fileHash, postHash: newTag, postText: result.text,
+                    previewSeen: BuiltinTools.editPreviewSeen(result: result, old: currentContent))
                 summaries.append(
                     BuiltinTools.updatedSummary(
                         "Updated: \(section.path) [\(dest)#\(newTag)]", old: currentContent, new: result.text))
@@ -339,9 +356,9 @@ enum BuiltinToolsSSH {
                 try requireSuccess(
                     write, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
                 let newTag = HashlineFormat.computeFileHash(result.text)
-                let lineCount = HashlineFormat.splitAddressableFileLines(result.text).count
-                snapshotStore?.record(
-                    path: canonical, hash: newTag, text: result.text, seenLines: Set(1...lineCount))
+                snapshotStore?.recordEdit(
+                    path: canonical, preTag: section.fileHash, postHash: newTag, postText: result.text,
+                    previewSeen: BuiltinTools.editPreviewSeen(result: result, old: currentContent))
                 summaries.append(
                     BuiltinTools.updatedSummary(
                         "Updated: \(section.path) [\(section.path)#\(newTag)]", old: currentContent, new: result.text))
@@ -747,7 +764,6 @@ enum BuiltinToolsSSH {
         else { return nil }
         let patch = try HashlineEdit.parse(input)
         var diffs: [String] = []
-        var warnings: [String] = []
         for section in patch.sections {
             let resolved = try workdir.resolve(section.path)
             let remote = try await fetchFile(ssh, resolved: resolved)
@@ -760,7 +776,6 @@ enum BuiltinToolsSSH {
                 )
             }
             let result = try HashlineEdit.applySection(section, fileContent: old)
-            warnings.append(contentsOf: result.warnings)
             // Seen-lines guard: surface approval-time errors before execution.
             if let rejection = SnapshotStore.seenLinesRejection(
                 snapshotStore,
@@ -768,7 +783,8 @@ enum BuiltinToolsSSH {
                 canonical: BuiltinTools.canonicalPath(resolved),
                 tag: section.fileHash,
                 currentContent: old,
-                anchorLines: section.anchorLines
+                anchorLines: section.anchorLines,
+                strictReject: true
             ) {
                 throw BuiltinToolError(rejection)
             }
@@ -784,11 +800,9 @@ enum BuiltinToolsSSH {
             }
         }
         var joined = diffs.filter { !$0.isEmpty }.joined(separator: "\n")
-        if !warnings.isEmpty {
-            let unique = Array(NSOrderedSet(array: warnings)).compactMap { $0 as? String }
-            let block = unique.map { "// WARNING: \($0)" }.joined(separator: "\n")
-            joined += (joined.isEmpty ? "" : "\n") + block
-        }
+        // Warnings (bare rows auto-piped, empty-PUT auto-cut, boundary-echo
+        // repairs) are surfaced in the tool result only — duplicating them in
+        // the approval diff would show them twice.
         return joined.isEmpty ? nil : joined
     }
 

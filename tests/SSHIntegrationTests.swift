@@ -85,6 +85,9 @@ extension AllAppTests {
                 "write_file", Self.fs, ["path": "sub/dir/hello.txt", "content": "line1\nline2\n"], workdir: wd)
             #expect(!wErr)
             #expect(wText.contains("Wrote 12 bytes"))
+            // The result mints the local #TAG for the written content.
+            let tag = HashlineFormat.computeFileHash("line1\nline2\n")
+            #expect(wText.contains(HashlineFormat.formatHashlineHeader(path: "sub/dir/hello.txt", fileHash: tag)))
 
             let (rText, rErr) = await Self.call("read_file", Self.fs, ["path": "sub/dir/hello.txt"], workdir: wd)
             #expect(!rErr)
