@@ -483,17 +483,27 @@ extension AllAppTests {
             #expect(name.range(of: pattern, options: .regularExpression) != nil)
         }
 
-        @Test("newChatFilename returns distinct values across a second boundary")
-        func newChatFilenameDistinct() {
-            // newChatFilename() is second-granular, so two calls in the same second
-            // yield the same name; across a second boundary they differ.
-            let a = env.store.newChatFilename()
-            let sameSecond = env.store.newChatFilename()
-            #expect(a == sameSecond)
+        @Test("newChatFilename adds a numeric suffix when the timestamp name already exists")
+        func newChatFilenameDeduplicatesExistingFiles() {
+            let now = Date(timeIntervalSince1970: 1_800_000_000)
+            let base = env.env.newChatFilename(now: now)
+            let stem = (base as NSString).deletingPathExtension
+            env.store.saveChat(Fixtures.simpleChat(), filename: base)
+            env.store.saveChat(Fixtures.simpleChat(), filename: "\(stem) (2).json")
 
-            Thread.sleep(forTimeInterval: 1.1)
-            let b = env.store.newChatFilename()
-            #expect(a != b)
+            let next = env.env.newChatFilename(now: now)
+            #expect(next == "\(stem) (3).json")
+        }
+
+        @Test("newChatFilename avoids reserved in-memory filenames")
+        func newChatFilenameAvoidsReservedFilenames() {
+            let now = Date(timeIntervalSince1970: 1_800_000_000)
+            let base = env.env.newChatFilename(now: now)
+            let stem = (base as NSString).deletingPathExtension
+
+            let next = env.env.newChatFilename(
+                now: now, reservedFilenames: [base, "\(stem) (2).json"])
+            #expect(next == "\(stem) (3).json")
         }
     }
 }  // extension AllAppTests

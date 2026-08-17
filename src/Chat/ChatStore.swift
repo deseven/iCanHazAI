@@ -265,8 +265,8 @@ final class ChatStore: @unchecked Sendable {
 
     // MARK: - Delegates
 
-    func newChatFilename() -> String {
-        env.newChatFilename()
+    func newChatFilename(reservedFilenames: Set<String> = []) -> String {
+        env.newChatFilename(reservedFilenames: reservedFilenames)
     }
 
     // MARK: - SwiftData helpers (must be called within `queue.sync`)
