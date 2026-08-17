@@ -1207,7 +1207,13 @@ actor ChatEngine {
     ) async -> String {
         pruneEmptyChats(except: nil)
         destroyAllTemporaryChats()
-        let filename = temporary ? env.newTemporaryChatFilename() : store.newChatFilename()
+        let reservedFilenames = Set(records.map(\.filename))
+        let filename: String
+        if temporary {
+            filename = env.newTemporaryChatFilename()
+        } else {
+            filename = store.newChatFilename(reservedFilenames: reservedFilenames)
+        }
         var chat = Chat()
         chat.role = roleName
         chat.outputRendering = outputRendering

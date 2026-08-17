@@ -476,18 +476,34 @@ extension AllAppTests {
 
         // MARK: - Delegates
 
-        @Test("newChatFilename produces a timestamped UUID .json filename")
+        @Test("newChatFilename produces a timestamped .json filename")
         func newChatFilename() {
             let name = env.store.newChatFilename()
-            let pattern = #"^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2} [0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\.json$"#
+            let pattern = #"^\d{4}-\d{2}-\d{2} \d{2}-\d{2}-\d{2}\.json$"#
             #expect(name.range(of: pattern, options: .regularExpression) != nil)
         }
 
-        @Test("consecutive newChatFilename calls return distinct values")
-        func newChatFilenameDistinct() {
-            let a = env.store.newChatFilename()
-            let b = env.store.newChatFilename()
-            #expect(a != b)
+        @Test("newChatFilename adds a numeric suffix when the timestamp name already exists")
+        func newChatFilenameDeduplicatesExistingFiles() {
+            let now = Date(timeIntervalSince1970: 1_800_000_000)
+            let base = env.env.newChatFilename(now: now)
+            let stem = (base as NSString).deletingPathExtension
+            env.store.saveChat(Fixtures.simpleChat(), filename: base)
+            env.store.saveChat(Fixtures.simpleChat(), filename: "\(stem) (2).json")
+
+            let next = env.env.newChatFilename(now: now)
+            #expect(next == "\(stem) (3).json")
+        }
+
+        @Test("newChatFilename avoids reserved in-memory filenames")
+        func newChatFilenameAvoidsReservedFilenames() {
+            let now = Date(timeIntervalSince1970: 1_800_000_000)
+            let base = env.env.newChatFilename(now: now)
+            let stem = (base as NSString).deletingPathExtension
+
+            let next = env.env.newChatFilename(
+                now: now, reservedFilenames: [base, "\(stem) (2).json"])
+            #expect(next == "\(stem) (3).json")
         }
     }
 }  // extension AllAppTests

@@ -93,7 +93,7 @@ A `{name}.toml` file in `Roles/` — a template for new chats combining a prompt
 
 ### Chat
 
-A `YYYY-MM-DD HH-mm-ss UUID.json` file in `Chats/`, with attachments in a same-named directory next to it. Attached documents are extracted to text at send time and embedded in the chat JSON; the originals are kept on disk as a user-facing backup. Chats created via the CLI are regular chats — visible and continuable in the GUI, and vice versa.
+A `YYYY-MM-DD HH-mm-ss.json` file in `Chats/`, with a numeric suffix like ` (2)` if needed, and attachments in a same-named directory next to it. Attached documents are extracted to text at send time and embedded in the chat JSON; the originals are kept on disk as a user-facing backup. Chats created via the CLI are regular chats — visible and continuable in the GUI, and vice versa.
 
 
 ## Building

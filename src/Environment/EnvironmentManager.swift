@@ -277,12 +277,25 @@ final class EnvironmentManager: @unchecked Sendable {
         }
     }
 
-    /// Generates a timestamped chat filename with a UUID suffix for uniqueness.
-    func newChatFilename() -> String {
+    /// Generates a timestamped chat filename, adding a human-readable suffix if needed.
+    func newChatFilename(now: Date = Date(), reservedFilenames: Set<String> = []) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH-mm-ss"
         formatter.timeZone = TimeZone.current
-        return "\(formatter.string(from: Date())) \(UUID().uuidString).json"
+        let base = formatter.string(from: now)
+        let fm = FileManager.default
+
+        var counter = 1
+        while true {
+            let suffix = counter == 1 ? "" : " (\(counter))"
+            let candidate = "\(base)\(suffix).json"
+            if !reservedFilenames.contains(candidate),
+                !fm.fileExists(atPath: chatsURL.appendingPathComponent(candidate).path)
+            {
+                return candidate
+            }
+            counter += 1
+        }
     }
 
     /// Saves a chat to disk under the given filename.
