@@ -245,6 +245,14 @@ struct AnthropicProvider: LLMProvider {
         }
         var chunks: [StreamChunk] = []
         switch type {
+        // Anthropic can end a stream with an error event
+        // (`{"type":"error","error":{"type":...,"message":...}}`) instead of
+        // error_message / message_delta. Surface it so the engine reports it
+        // rather than treating the truncated stream as a normal completion.
+        case "error":
+            if let error = json["error"] as? [String: Any] {
+                chunks.append(.error((error["message"] as? String) ?? "Provider error"))
+            }
         case "content_block_start":
             if let block = json["content_block"] as? [String: Any],
                 (block["type"] as? String) == "tool_use",

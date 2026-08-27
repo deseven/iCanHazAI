@@ -205,6 +205,13 @@ struct OpenAIProvider: LLMProvider {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return []
         }
+        // OpenAI-compatible gateways could return HTTP 200 and stream an
+        // `{"error": {...}}` event mid-stream.
+        // Surface it as an error chunk so the engine can report it instead of
+        // treating the empty stream as "no output".
+        if let error = json["error"] as? [String: Any] {
+            return [.error((error["message"] as? String) ?? "Provider error")]
+        }
         if let usage = json["usage"] as? [String: Any],
             let total = usage["total_tokens"] as? Int,
             let promptTokens = usage["prompt_tokens"] as? Int,

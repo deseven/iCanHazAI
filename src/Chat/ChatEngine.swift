@@ -2144,6 +2144,15 @@ actor ChatEngine {
                     await self?.applyChunk(chunk, filename: filename)
                 }
 
+                // The provider delivered an error mid-stream (HTTP 200 + SSE
+                // error event). Surface it and stop — even if some content
+                // already streamed before the error.
+                if let error = result.error {
+                    recordError(error, filename: filename)
+                    finishStream(filename: filename)
+                    return
+                }
+
                 // No tool calls → the loop is done; finalize the stream.
                 if result.toolCalls.isEmpty {
                     // If the model produced no usable content (and no tool

@@ -251,6 +251,10 @@ final class ChatService: @unchecked Sendable {
         let toolCalls: [ToolCall]
         let finishReason: String?
         let usage: TokenUsage?
+        /// A provider error delivered mid-stream (HTTP 200 + SSE error event),
+        /// if any. The stream ended with this error, so the caller should
+        /// surface it rather than treating the response as complete.
+        let error: String?
     }
 
     /// Streams a chat completion, calling `onChunk` for each piece of
@@ -312,7 +316,7 @@ final class ChatService: @unchecked Sendable {
         let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
         debugLog(
             "LLM",
-            "request finish — finishReason=\(result.finishReason ?? "nil"), contentSize=\(result.content.count), toolCalls=\(result.toolCalls.count), elapsed=\(elapsed)s, chat=\(chatFilename)"
+            "request finish — finishReason=\(result.finishReason ?? "nil"), contentSize=\(result.content.count), toolCalls=\(result.toolCalls.count), error=\(result.error ?? "nil"), elapsed=\(elapsed)s, chat=\(chatFilename)"
         )
         return result
     }

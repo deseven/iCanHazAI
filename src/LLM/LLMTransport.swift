@@ -130,6 +130,7 @@ enum LLMTransport {
         var fullContent = ""
         var finishReason: String?
         var usage: TokenUsage?
+        var streamError: String?
         let accumulator = ToolCallAccumulator()
 
         for try await line in bytes.lines {
@@ -148,6 +149,8 @@ enum LLMTransport {
                     finishReason = reason
                 case .usage(let u):
                     usage = u
+                case .error(let message):
+                    streamError = message
                 default:
                     break
                 }
@@ -170,7 +173,8 @@ enum LLMTransport {
             content: fullContent,
             toolCalls: toolCalls,
             finishReason: finishReason,
-            usage: usage
+            usage: usage,
+            error: streamError
         )
     }
 
@@ -191,6 +195,15 @@ enum LLMTransport {
         let (data, response) = try await session.data(for: request)
 
         if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+            throw provider.parseError(data, statusCode: http.statusCode)
+        }
+
+        // Some OpenAI-compatible gateways return HTTP 200 with an
+        // `{"error": {...}}` body instead of a non-2xx status. Surface it.
+        if let http = response as? HTTPURLResponse,
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            json["error"] != nil
+        {
             throw provider.parseError(data, statusCode: http.statusCode)
         }
 
