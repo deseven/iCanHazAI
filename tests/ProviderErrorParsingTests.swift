@@ -64,6 +64,19 @@ extension AllAppTests {
             #expect(result.content == "partial")
         }
 
+        @Test("Empty content with a normal finish reason produces the empty-response message")
+        func emptyContentMessage() {
+            // The engine's empty-content branch reports the provider returned
+            // nothing, and points to app.log for the raw dump — instead of
+            // guessing the provider is overloaded.
+            let finishReason = "stop"
+            let message =
+                "The provider returned an empty response (finish_reason: \(finishReason)). Please try again, or check the raw response in app.log."
+            #expect(message.contains("finish_reason: stop"))
+            #expect(message.contains("empty response"))
+            #expect(message.contains("app.log"))
+        }
+
         @Test("LLMError parseOpenAI extracts provider message")
         func parseOpenAIError() throws {
             let data = try JSONSerialization.data(withJSONObject: [

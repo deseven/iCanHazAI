@@ -127,6 +127,14 @@ final class ToolCallAccumulator: @unchecked Sendable {
         return (inputTokens, cachedInputTokens, cacheCreationTokens)
     }
 
+    /// Whether no tool-call deltas were recorded (the stream produced no tool
+    /// calls at all).
+    var isEmpty: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries.isEmpty
+    }
+
     /// Materialize the accumulated tool calls into [`ToolCall`](src/MCP/MCPModels.swift)
     /// objects, ordered by index. Missing ids are synthesised as `call_{index}`.
     func materialize() -> [ToolCall] {

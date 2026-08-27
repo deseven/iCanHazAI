@@ -2167,7 +2167,12 @@ actor ChatEngine {
                             message =
                                 "The model reached the token limit before producing any output. It likely spent all its tokens on internal thinking. Try increasing max_tokens, then retry."
                         } else {
-                            message = "The model produced no output. The provider may be overloaded — please try again."
+                            // The provider reported a normal stop with empty
+                            // content — a provider-side failure, not an app
+                            // bug. The raw stream is dumped to app.log (see
+                            // LLMTransport) for diagnosis.
+                            message =
+                                "The provider returned an empty response (finish_reason: \(result.finishReason ?? "unknown")). Please try again, or check the raw response in app.log."
                         }
                         recordError(message, filename: filename)
                         finishStream(filename: filename)

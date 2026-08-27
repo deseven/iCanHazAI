@@ -124,6 +124,8 @@ enum LLMTransport {
 
         if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
             let body = try await drainBytes(bytes)
+            debugLog(
+                "LLM", "HTTP \(http.statusCode) error body:\n\(String(data: body, encoding: .utf8) ?? "<non-utf8>")")
             throw provider.parseError(body, statusCode: http.statusCode)
         }
 
@@ -131,10 +133,13 @@ enum LLMTransport {
         var finishReason: String?
         var usage: TokenUsage?
         var streamError: String?
+        // Raw SSE lines of this stream, kept for the debug dump on error.
+        var rawDump: [String] = []
         let accumulator = ToolCallAccumulator()
 
         for try await line in bytes.lines {
             try Task.checkCancellation()
+            rawDump.append(line)
             guard let payload = SSEParser.parsePayload(line) else { continue }
             if case .done = payload { break }
             guard case .data(let jsonString) = payload,
@@ -156,6 +161,16 @@ enum LLMTransport {
                 }
                 await onChunk(chunk)
             }
+        }
+
+        // Debug: dump the entire raw response when the stream ended in an
+        // error OR produced no usable output (empty content, no tool calls).
+        // Helps diagnose providers that deliver errors in non-standard shapes
+        // (HTTP 200 + odd SSE frames) or silently truncate the stream.
+        if streamError != nil
+            || (fullContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && accumulator.isEmpty)
+        {
+            debugLog("LLM", "raw stream dump (\(rawDump.count) lines):\n" + rawDump.joined(separator: "\n"))
         }
 
         let toolCalls = accumulator.materialize()
@@ -195,6 +210,8 @@ enum LLMTransport {
         let (data, response) = try await session.data(for: request)
 
         if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+            debugLog(
+                "LLM", "HTTP \(http.statusCode) error body:\n\(String(data: data, encoding: .utf8) ?? "<non-utf8>")")
             throw provider.parseError(data, statusCode: http.statusCode)
         }
 
@@ -204,6 +221,7 @@ enum LLMTransport {
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             json["error"] != nil
         {
+            debugLog("LLM", "HTTP 200 error body:\n\(String(data: data, encoding: .utf8) ?? "<non-utf8>")")
             throw provider.parseError(data, statusCode: http.statusCode)
         }
 
