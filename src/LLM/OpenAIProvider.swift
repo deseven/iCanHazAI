@@ -212,13 +212,19 @@ struct OpenAIProvider: LLMProvider {
         if let error = json["error"] as? [String: Any] {
             return [.error((error["message"] as? String) ?? "Provider error")]
         }
+        var chunks: [StreamChunk] = []
+        // Usage arrives in the final chunk, which with
+        // `stream_options.include_usage` also carries the finish reason:
+        // `{"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{...}}`.
+        // Parse it alongside the choices instead of early-returning so the
+        // finish reason (and any content/tool-call deltas) aren't dropped.
         if let usage = json["usage"] as? [String: Any],
             let total = usage["total_tokens"] as? Int,
             let promptTokens = usage["prompt_tokens"] as? Int,
             let completionTokens = usage["completion_tokens"] as? Int
         {
             let cached = (usage["prompt_tokens_details"] as? [String: Any])?["cached_tokens"] as? Int ?? 0
-            return [
+            chunks.append(
                 .usage(
                     TokenUsage(
                         tokensUsed: total,
@@ -226,13 +232,11 @@ struct OpenAIProvider: LLMProvider {
                         outputTokens: completionTokens,
                         cachedInputTokens: cached,
                         cacheCreationTokens: 0
-                    ))
-            ]
+                    )))
         }
         guard let choices = json["choices"] as? [[String: Any]] else {
-            return []
+            return chunks
         }
-        var chunks: [StreamChunk] = []
         for choice in choices {
             guard let delta = choice["delta"] as? [String: Any] else { continue }
             if let content = delta["content"] as? String {

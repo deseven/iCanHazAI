@@ -166,6 +166,72 @@ extension AllAppTests {
             #expect(usage.cacheCreationTokens == 0)
         }
 
+        @Test("OpenAI final chunk with usage also yields the finish reason and tool-call deltas")
+        func openAIFinalChunkCombined() throws {
+            // Real-world shape (CrofAI/GLM): `stream_options.include_usage`
+            // puts usage in the same final chunk that carries the finish
+            // reason and the last tool-call delta. The usage branch must not
+            // shadow the choices parsing.
+            let provider = OpenAIProvider()
+            let acc = ToolCallAccumulator()
+            let data = try JSONSerialization.data(withJSONObject: [
+                "id": "chatcmpl-789",
+                "object": "chat.completion.chunk",
+                "created": 1_700_000_000,
+                "model": "glm-5.3-flash",
+                "choices": [
+                    [
+                        "index": 0,
+                        "delta": [
+                            "content": "",
+                            "tool_calls": [
+                                [
+                                    "index": 0,
+                                    "id": nil,
+                                    "function": [
+                                        "arguments": "{}",
+                                        "name": nil,
+                                    ],
+                                    "type": nil,
+                                ]
+                            ],
+                        ],
+                        "finish_reason": "tool_calls",
+                    ]
+                ],
+                "usage": [
+                    "prompt_tokens": 1032,
+                    "completion_tokens": 76,
+                    "total_tokens": 1108,
+                ],
+            ])
+            let chunks = provider.parseStreamChunk(data, accumulator: acc)
+            let kinds = chunks.map { chunk -> String in
+                switch chunk {
+                case .usage: return "usage"
+                case .finishReason: return "finishReason"
+                case .toolCallDelta: return "toolCallDelta"
+                default: return "other"
+                }
+            }
+            #expect(kinds.contains("usage"))
+            #expect(kinds.contains("finishReason"))
+            #expect(kinds.contains("toolCallDelta"))
+            guard
+                case .finishReason(let reason) = chunks.first(where: {
+                    if case .finishReason = $0 { return true }
+                    return false
+                })
+            else {
+                Issue.record("Expected finish reason chunk")
+                return
+            }
+            #expect(reason == "tool_calls")
+            let calls = acc.materialize()
+            #expect(calls.count == 1)
+            #expect(calls[0].arguments == "{}")
+        }
+
         @Test("OpenAI non-usage chunk is parsed as content")
         func openAIContentChunk() throws {
             let provider = OpenAIProvider()
