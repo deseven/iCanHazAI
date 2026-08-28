@@ -226,7 +226,7 @@ linkup_render_js = false                   # Linkup only: render page JS during 
 tavily_advanced_extraction = false         # Tavily only: use the advanced extract depth for web_extract; only saved while provider is "tavily"
 
 [debug]
-app_debug_enabled = false                  # app-level debug logging (log + stdout)
+app_debug_enabled = false                  # app-level debug logging (log + stdout); when on, also overwrites last_request.log with the full dump of the most recent LLM request
 chat_renderer_debug_enabled = false        # chat renderer debug overlay
 
 [chat_list]

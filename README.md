@@ -70,6 +70,7 @@ On first launch, iCanHazAI creates its data directory at `~/iCanHazAI`:
 ├── Chats/           # chats (*.json) and their attachments
 ├── config.toml      # app settings
 ├── app.log          # debug log
+├── last_request.log # full dump of the most recent LLM request (app debug only)
 └── app.sock         # CLI control socket
 ```
 

@@ -19,6 +19,11 @@ import Foundation
 /// stdout as `[YYYY-MM-DD hh:mm:ss] [topic] message`. The timestamp uses the
 /// user's local time zone for readability.
 ///
+/// When app debug logging is enabled,
+/// [`DebugLogger.recordLastRequest(_:)`](src/Utilities/DebugLogger.swift) additionally
+/// overwrites `~/iCanHazAI/last_request.log` with a complete dump of the most
+/// recent LLM request — every header and byte sent and received.
+///
 /// The enabled flag is cached behind a `DispatchQueue`-protected box so that
 /// `debugLog` can be called from any thread/actor without hopping to
 /// `ConfigManager`. The flag is refreshed by
@@ -92,6 +97,26 @@ enum DebugLogger {
     /// The URL of the currently open log file, if any. Exposed for tests.
     static var currentLogFileURL: URL? { urlBox.get() }
 
+    /// Tracks the URL of `last_request.log` (mirrors `urlBox`). Unlike
+    /// `app.log` it isn't kept open — every
+    /// [`recordLastRequest(_:)`](src/Utilities/DebugLogger.swift) call overwrites the
+    /// file wholesale.
+    private final class RequestFileBox: @unchecked Sendable {
+        private let queue = DispatchQueue(label: "iCanHazAI.debugLogger.requestFile")
+        private var _url: URL?
+        func get() -> URL? { queue.sync { _url } }
+        func set(_ value: URL?) { queue.sync { _url = value } }
+    }
+    private static let requestFileBox = RequestFileBox()
+
+    /// Serializes `last_request.log` overwrites so concurrent requests settle
+    /// in completion order — the request that finishes last always wins.
+    private static let requestWriteQueue = DispatchQueue(label: "iCanHazAI.debugLogger.requestWrite")
+
+    /// The URL of `last_request.log`, if file logging has been started.
+    /// Exposed for tests.
+    static var currentRequestLogFileURL: URL? { requestFileBox.get() }
+
     /// Opens (and truncates) `~/iCanHazAI/app.log` for appending. Safe to
     /// call before the enabled flag is known — the file is opened regardless
     /// so that early log lines are captured even if logging is later turned on.
@@ -115,6 +140,11 @@ enum DebugLogger {
         _ = try? handle.seekToEnd()
         fileBox.set(handle)
         urlBox.set(url)
+        // `last_request.log` is created (truncated) alongside `app.log`; it is
+        // overwritten wholesale by recordLastRequest per request.
+        let requestURL = rootURL.appendingPathComponent("last_request.log", isDirectory: false)
+        FileManager.default.createFile(atPath: requestURL.path, contents: nil, attributes: nil)
+        requestFileBox.set(requestURL)
     }
 
     /// Closes the log file, if open. Called on app termination.
@@ -124,6 +154,7 @@ enum DebugLogger {
         }
         fileBox.set(nil)
         urlBox.set(nil)
+        requestFileBox.set(nil)
     }
 
     /// The single entry point for debug logging.
@@ -151,6 +182,22 @@ enum DebugLogger {
             if let data = line.data(using: .utf8) {
                 try? handle.write(contentsOf: data)
             }
+        }
+    }
+
+    // MARK: - Last request capture
+
+    /// Overwrites `last_request.log` with a complete dump of the most recent
+    /// LLM request (see [`LLMTransport.requestDump`](src/LLM/LLMTransport.swift)).
+    /// Only writes when app debug logging is enabled — the file is a debugging
+    /// aid, not a permanent record. Writes are serialized on a dedicated queue
+    /// so concurrent requests settle in completion order.
+    static func recordLastRequest(_ dump: String) {
+        guard enabled else { return }
+        let url = requestFileBox.get()
+        guard let url else { return }
+        requestWriteQueue.async {
+            try? dump.data(using: .utf8)?.write(to: url, options: .atomic)
         }
     }
 }

@@ -69,5 +69,116 @@ extension AllAppTests {
             reset()
             try? FileManager.default.removeItem(at: tmpRoot)
         }
+
+        @Test("last_request.log is written when app debug logging is enabled")
+        func lastRequestWrittenWhenEnabled() async throws {
+            reset()
+            DebugLogger.setEnabled(true)
+
+            let tmpRoot = FileManager.default.temporaryDirectory
+                .appendingPathComponent("ichai-debug-\(UUID().uuidString)", isDirectory: true)
+            DebugLogger.startFileLogging(rootURL: tmpRoot)
+
+            let marker = "last-\(UUID().uuidString)"
+            DebugLogger.recordLastRequest("dump: \(marker)")
+
+            try await Task.sleep(nanoseconds: 200_000_000)
+
+            let url = try #require(DebugLogger.currentRequestLogFileURL)
+            let contents = try String(contentsOf: url, encoding: .utf8)
+            #expect(contents.contains(marker))
+
+            reset()
+            try? FileManager.default.removeItem(at: tmpRoot)
+        }
+
+        @Test("last_request.log is not written when app debug logging is disabled")
+        func lastRequestSkippedWhenDisabled() async throws {
+            reset()
+            DebugLogger.setEnabled(false)
+
+            let tmpRoot = FileManager.default.temporaryDirectory
+                .appendingPathComponent("ichai-debug-\(UUID().uuidString)", isDirectory: true)
+            DebugLogger.startFileLogging(rootURL: tmpRoot)
+
+            let marker = "should-not-appear-\(UUID().uuidString)"
+            DebugLogger.recordLastRequest("dump: \(marker)")
+
+            try await Task.sleep(nanoseconds: 200_000_000)
+
+            let url = try #require(DebugLogger.currentRequestLogFileURL)
+            let contents = try String(contentsOf: url, encoding: .utf8)
+            #expect(!contents.contains(marker))
+
+            reset()
+            try? FileManager.default.removeItem(at: tmpRoot)
+        }
+
+        @Test("recordLastRequest overwrites the previous dump")
+        func lastRequestOverwrites() async throws {
+            reset()
+            DebugLogger.setEnabled(true)
+
+            let tmpRoot = FileManager.default.temporaryDirectory
+                .appendingPathComponent("ichai-debug-\(UUID().uuidString)", isDirectory: true)
+            DebugLogger.startFileLogging(rootURL: tmpRoot)
+
+            let first = "first-\(UUID().uuidString)"
+            let second = "second-\(UUID().uuidString)"
+            DebugLogger.recordLastRequest("dump: \(first)")
+            DebugLogger.recordLastRequest("dump: \(second)")
+
+            try await Task.sleep(nanoseconds: 200_000_000)
+
+            let url = try #require(DebugLogger.currentRequestLogFileURL)
+            let contents = try String(contentsOf: url, encoding: .utf8)
+            #expect(contents.contains(second))
+            // The file is overwritten, not appended.
+            #expect(!contents.contains(first))
+
+            reset()
+            try? FileManager.default.removeItem(at: tmpRoot)
+        }
+
+        @Test("requestDump includes request and response headers and bodies")
+        func requestDumpIsComplete() throws {
+            let url = try #require(URL(string: "https://api.example.com/v1/chat/completions"))
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("Bearer sk-test", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = Data(#"{"model":"gpt-test","messages":[{"role":"user","content":"hi"}]}"#.utf8)
+
+            let response = try #require(
+                HTTPURLResponse(
+                    url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "application/json", "X-Rate-Limit": "42"]))
+            let body = Data(#"{"id":"resp-1","choices":[{"message":{"content":"hello"}}]}"#.utf8)
+
+            let dump = LLMTransport.requestDump(request: request, response: response, receivedBody: body)
+
+            #expect(dump.contains("POST https://api.example.com/v1/chat/completions"))
+            #expect(dump.contains("Authorization: Bearer sk-test"))
+            #expect(dump.contains("Content-Type: application/json"))
+            #expect(dump.contains(#""model":"gpt-test""#))
+            #expect(dump.contains("HTTP 200"))
+            #expect(dump.contains("X-Rate-Limit: 42"))
+            #expect(dump.contains(#""id":"resp-1""#))
+        }
+
+        @Test("requestDump reports transport errors without a response")
+        func requestDumpTransportError() throws {
+            var request = URLRequest(url: try #require(URL(string: "https://api.example.com/v1/chat/completions")))
+            request.httpMethod = "POST"
+            request.httpBody = Data("{}".utf8)
+
+            let dump = LLMTransport.requestDump(
+                request: request, response: nil, receivedBody: Data(), transportError: "connection refused")
+
+            #expect(dump.contains("=== Transport error ==="))
+            #expect(dump.contains("connection refused"))
+            // No response section when the request never reached the server.
+            #expect(!dump.contains("=== Response ==="))
+        }
     }
 }

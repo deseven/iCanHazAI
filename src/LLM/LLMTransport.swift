@@ -120,10 +120,18 @@ enum LLMTransport {
             stream: true
         )
 
-        let (bytes, response) = try await session.bytes(for: request)
+        let (bytes, response): (URLSession.AsyncBytes, URLResponse)
+        do {
+            (bytes, response) = try await session.bytes(for: request)
+        } catch {
+            DebugLogger.recordLastRequest(
+                requestDump(request: request, response: nil, receivedBody: Data(), transportError: "\(error)"))
+            throw error
+        }
 
         if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
             let body = try await drainBytes(bytes)
+            DebugLogger.recordLastRequest(requestDump(request: request, response: http, receivedBody: body))
             debugLog(
                 "LLM", "HTTP \(http.statusCode) error body:\n\(String(data: body, encoding: .utf8) ?? "<non-utf8>")")
             throw provider.parseError(body, statusCode: http.statusCode)
@@ -137,30 +145,43 @@ enum LLMTransport {
         var rawDump: [String] = []
         let accumulator = ToolCallAccumulator()
 
-        for try await line in bytes.lines {
-            try Task.checkCancellation()
-            rawDump.append(line)
-            guard let payload = SSEParser.parsePayload(line) else { continue }
-            if case .done = payload { break }
-            guard case .data(let jsonString) = payload,
-                let data = jsonString.data(using: .utf8)
-            else { continue }
-            let chunks = provider.parseStreamChunk(data, accumulator: accumulator)
-            for chunk in chunks {
-                switch chunk {
-                case .content(let text):
-                    fullContent += text
-                case .finishReason(let reason):
-                    finishReason = reason
-                case .usage(let u):
-                    usage = u
-                case .error(let message):
-                    streamError = message
-                default:
-                    break
+        do {
+            for try await line in bytes.lines {
+                try Task.checkCancellation()
+                rawDump.append(line)
+                guard let payload = SSEParser.parsePayload(line) else { continue }
+                if case .done = payload { break }
+                guard case .data(let jsonString) = payload,
+                    let data = jsonString.data(using: .utf8)
+                else { continue }
+                let chunks = provider.parseStreamChunk(data, accumulator: accumulator)
+                for chunk in chunks {
+                    switch chunk {
+                    case .content(let text):
+                        fullContent += text
+                    case .finishReason(let reason):
+                        finishReason = reason
+                    case .usage(let u):
+                        usage = u
+                    case .error(let message):
+                        streamError = message
+                    default:
+                        break
+                    }
+                    await onChunk(chunk)
                 }
-                await onChunk(chunk)
             }
+        } catch {
+            // Stream aborted (cancellation, connection drop, ...): dump
+            // everything received so far so last_request.log reflects this
+            // request rather than a stale one.
+            DebugLogger.recordLastRequest(
+                requestDump(
+                    request: request,
+                    response: response,
+                    receivedBody: Data(rawDump.joined(separator: "\n").utf8),
+                    transportError: "\(error)"))
+            throw error
         }
 
         // Debug: dump the entire raw response when the stream ended in an
@@ -172,6 +193,12 @@ enum LLMTransport {
         {
             debugLog("LLM", "raw stream dump (\(rawDump.count) lines):\n" + rawDump.joined(separator: "\n"))
         }
+
+        DebugLogger.recordLastRequest(
+            requestDump(
+                request: request,
+                response: response,
+                receivedBody: Data(rawDump.joined(separator: "\n").utf8)))
 
         let toolCalls = accumulator.materialize()
         for call in toolCalls {
@@ -207,9 +234,17 @@ enum LLMTransport {
             stream: false
         )
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            DebugLogger.recordLastRequest(
+                requestDump(request: request, response: nil, receivedBody: Data(), transportError: "\(error)"))
+            throw error
+        }
 
         if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+            DebugLogger.recordLastRequest(requestDump(request: request, response: http, receivedBody: data))
             debugLog(
                 "LLM", "HTTP \(http.statusCode) error body:\n\(String(data: data, encoding: .utf8) ?? "<non-utf8>")")
             throw provider.parseError(data, statusCode: http.statusCode)
@@ -221,10 +256,12 @@ enum LLMTransport {
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             json["error"] != nil
         {
+            DebugLogger.recordLastRequest(requestDump(request: request, response: http, receivedBody: data))
             debugLog("LLM", "HTTP 200 error body:\n\(String(data: data, encoding: .utf8) ?? "<non-utf8>")")
             throw provider.parseError(data, statusCode: http.statusCode)
         }
 
+        DebugLogger.recordLastRequest(requestDump(request: request, response: response, receivedBody: data))
         return provider.parseCompleteResponse(data)
     }
 
@@ -270,13 +307,78 @@ enum LLMTransport {
             request.setValue(value, forHTTPHeaderField: key)
         }
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            DebugLogger.recordLastRequest(
+                requestDump(request: request, response: nil, receivedBody: Data(), transportError: "\(error)"))
+            throw error
+        }
 
         if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+            DebugLogger.recordLastRequest(requestDump(request: request, response: http, receivedBody: data))
             throw strategy.parseError(data, statusCode: http.statusCode)
         }
 
+        DebugLogger.recordLastRequest(requestDump(request: request, response: response, receivedBody: data))
         return strategy.parseModelsResponse(data)
+    }
+
+    // MARK: - Last request capture
+
+    /// Builds a complete, human-readable dump of an HTTP exchange for
+    /// `last_request.log` (written by
+    /// [`DebugLogger.recordLastRequest(_:)`](src/Utilities/DebugLogger.swift) when
+    /// app debug logging is enabled): method, URL, every request header, the
+    /// request body, response status and headers, and the raw received body.
+    /// When the transport itself failed (`transportError`), no response was
+    /// received and the error is dumped instead.
+    static func requestDump(
+        request: URLRequest,
+        response: URLResponse?,
+        receivedBody: Data,
+        transportError: String? = nil
+    ) -> String {
+        var lines: [String] = []
+        lines.append("=== Request ===")
+        lines.append("\(request.httpMethod ?? "GET") \(request.url?.absoluteString ?? "<no url>")")
+        if let headers = request.allHTTPHeaderFields, !headers.isEmpty {
+            for key in headers.keys.sorted() {
+                lines.append("\(key): \(headers[key] ?? "")")
+            }
+        }
+        if let body = request.httpBody, !body.isEmpty {
+            lines.append("")
+            lines.append("=== Request body ===")
+            lines.append(String(data: body, encoding: .utf8) ?? "<non-utf8 body, \(body.count) bytes>")
+        }
+        if let transportError {
+            lines.append("")
+            lines.append("=== Transport error ===")
+            lines.append(transportError)
+            return lines.joined(separator: "\n") + "\n"
+        }
+        lines.append("")
+        lines.append("=== Response ===")
+        if let http = response as? HTTPURLResponse {
+            lines.append("HTTP \(http.statusCode)")
+            for (key, value) in http.allHeaderFields {
+                lines.append("\(key): \(value)")
+            }
+        } else if let response {
+            lines.append(String(describing: response))
+        } else {
+            lines.append("<no response>")
+        }
+        lines.append("")
+        lines.append("=== Response body ===")
+        if receivedBody.isEmpty {
+            lines.append("<empty>")
+        } else {
+            lines.append(String(data: receivedBody, encoding: .utf8) ?? "<non-utf8 body, \(receivedBody.count) bytes>")
+        }
+        return lines.joined(separator: "\n") + "\n"
     }
 
     // MARK: - Helpers
