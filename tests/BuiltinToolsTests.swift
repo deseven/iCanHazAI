@@ -197,6 +197,19 @@ extension AllAppTests {
 
     @Suite("Builtin tools: Filesystem")
     struct BuiltinFilesystemTests {
+        @Test("all tool schemas parse as valid JSON")
+        func allSchemasValidJSON() {
+            let defs = BuiltinTools.toolDefinitions(for: BuiltinTools.allGroups)
+            #expect(!defs.isEmpty)
+            for def in defs {
+                let schemaData = def.inputSchema.data(using: .utf8) ?? Data()
+                #expect(
+                    (try? JSONSerialization.jsonObject(with: schemaData)) != nil,
+                    "tool '\(def.namespacedName)' has an invalid JSON schema"
+                )
+            }
+        }
+
         @Test("pwd returns the home directory by default")
         func pwdDefault() async throws {
             let (text, err) = await Self.call("pwd", BuiltinTools.filesystemGroup, [:])

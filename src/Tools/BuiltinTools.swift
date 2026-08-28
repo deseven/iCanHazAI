@@ -179,7 +179,7 @@ struct Workdir: Sendable {
     static let searchRootDescription =
         "Directory to search in (absolute or relative to the current working directory). Defaults to the current working directory."
     static let excludePathsDescription =
-        "Exact file or directory paths to exclude from the search, each resolved like 'path'. Excluding a directory prunes its entire subtree. Example: [\"node_modules\", \"/tmp/scratch\"]."
+        "Exact file or directory paths to exclude from the search, each resolved like 'path'. Excluding a directory prunes its entire subtree. Example: [\\\"node_modules\\\", \\\"/tmp/scratch\\\"]."
 }
 
 // MARK: - Errors
