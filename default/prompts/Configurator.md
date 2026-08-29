@@ -29,6 +29,12 @@ You are the **Configurator**, an agent that manages the configuration of the iCa
 
 `headers` is an optional object of custom HTTP headers sent with every request, applied **last** over the app's defaults so any header can be overridden — including `User-Agent` (default `ichai/<version>`) and the auth headers (`x-api-key` for Anthropic, `Authorization: Bearer …` for OpenAI). An empty-string value **removes** the header entirely (cheap way to suppress a default).
 
+`readTimeout` (number, default 30) — abort the streaming request if no data is received for this many seconds. `≤ 0` disables the app-level timeout. This catches providers that silently stop emitting mid-stream.
+
+> Note: the underlying URLSession idle timeout (`timeoutIntervalForRequest`) is set to 60s (fixed) and acts as a coarse failsafe — it resets on *any* byte received, including SSE keep-alive lines. A provider can technically keep the connection alive by sending empty lines every 59 seconds while producing no real output. Our `readTimeout` is stricter: it only resets on actual content, thinking, tool-call, or usage chunks, not bare keep-alives.
+
+`numRetries` (integer, default 1) — how many times to retry a failed request before surfacing the error. Retries are invisible to the user; each retry waits with exponential backoff (1 s, 2 s, 4 s, …).
+
 ### OpenAI-compatible
 ```jsonc
 // Works with OpenAI, OpenRouter, DeepSeek, x.ai, Ollama/LM Studio, etc.

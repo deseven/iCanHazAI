@@ -82,6 +82,12 @@ enum ConnectionFileWriter {
         output += "    //     \"User-Agent\": \"claude-cli/2.0.30 (external, cli)\"\n"
         output += "    // }\n"
 
+        output += "\n    // Transport tuning.\n"
+        output += "    // readTimeout: abort the stream if no data is received for this many seconds.\n"
+        output += "    // numRetries: how many times to retry a failed request before surfacing the error.\n"
+        output += "    // \"readTimeout\": 30,\n"
+        output += "    // \"numRetries\": 1\n"
+
         output += "}\n"
         return output
     }

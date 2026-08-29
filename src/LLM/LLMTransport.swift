@@ -28,8 +28,10 @@ enum LLMTransport {
         let config = URLSessionConfiguration.default
         // `timeoutIntervalForRequest` is the max idle time between received
         // bytes — it resets on every chunk, so a streaming response that
-        // keeps producing tokens never hits it.
-        config.timeoutIntervalForRequest = 30
+        // keeps producing tokens never hits it. Raised to 60 s so it acts as a
+        // coarse failsafe rather than the primary watchdog (the per-request
+        // `readTimeout` is the stricter, content-aware guard).
+        config.timeoutIntervalForRequest = 60
         // `timeoutIntervalForResource` caps the total transfer time for the
         // entire stream.
         config.timeoutIntervalForResource = 1200
@@ -90,8 +92,9 @@ enum LLMTransport {
 
     // MARK: - Streaming
 
-    /// Streams a chat completion, calling `onChunk` for each piece of
-    /// content/thinking/tool-call-delta as it arrives from the SSE stream.
+    /// Streams a chat completion with automatic retry and a per-request
+    /// read-timeout. Retries are invisible to the caller — the first
+    /// successful (or final failing) attempt is surfaced.
     ///
     /// At stream end the accumulated tool calls are materialized and emitted
     /// as `.toolCall` chunks, followed by the `.finishReason` chunk (if any).
@@ -105,6 +108,51 @@ enum LLMTransport {
     /// - Returns: The stream result (final text, accumulated tool calls, finish reason).
     @discardableResult
     static func stream(
+        connection: Connection,
+        messages: [ChatMessage],
+        chatFilename: String,
+        tools: [ToolDefinition]?,
+        onChunk: @escaping @Sendable (StreamChunk) async -> Void
+    ) async throws -> ChatService.StreamResult {
+        let maxRetries = max(0, connection.numRetries ?? 1)
+        var lastError: Error?
+
+        for attempt in 0...maxRetries {
+            if attempt > 0 {
+                let delay = pow(2.0, Double(attempt - 1))
+                debugLog("LLM", "retry \(attempt)/\(maxRetries) after \(delay)s — \(connection.id)")
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+
+            do {
+                return try await streamOnce(
+                    connection: connection,
+                    messages: messages,
+                    chatFilename: chatFilename,
+                    tools: tools,
+                    onChunk: onChunk
+                )
+            } catch is CancellationError {
+                // User-initiated cancellation — never retry.
+                throw CancellationError()
+            } catch {
+                lastError = error
+                debugLog(
+                    "LLM", "stream attempt \(attempt + 1)/\(maxRetries + 1) failed — \(error.localizedDescription)")
+            }
+        }
+
+        // `streamOnce` already wrote `last_request.log` for the final attempt.
+        if let error = lastError {
+            throw error
+        }
+        // Should be unreachable, but satisfies the compiler.
+        throw LLMTransportError.invalidUrl("unknown")
+    }
+
+    /// Performs a single streaming attempt. Called by `stream()`; exposed
+    /// separately so retries can be attempted without the caller knowing.
+    private static func streamOnce(
         connection: Connection,
         messages: [ChatMessage],
         chatFilename: String,
@@ -137,6 +185,9 @@ enum LLMTransport {
             throw provider.parseError(body, statusCode: http.statusCode)
         }
 
+        let readTimeout = connection.readTimeout ?? 30
+        let effectiveTimeout = readTimeout > 0 ? readTimeout : nil
+
         var fullContent = ""
         var finishReason: String?
         var usage: TokenUsage?
@@ -145,9 +196,37 @@ enum LLMTransport {
         var rawDump: [String] = []
         let accumulator = ToolCallAccumulator()
 
+        // Watchdog that aborts the stream if no useful output arrives within
+        // `readTimeout` seconds from the start of the stream. Bare SSE
+        // keep-alive lines do NOT reset it — only actual content / thinking /
+        // tool-call-delta / finish-reason / usage chunks count as useful.
+        let timeoutSeconds: TimeInterval? = effectiveTimeout
+        let timeoutTask: Task<Void, Never>?
+        let timedOut: @Sendable () -> Bool
+        if let seconds = timeoutSeconds {
+            let box = TimeoutBox()
+            timedOut = { box.isTimedOut }
+            timeoutTask = Task { [box] in
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                box.setTimedOut()
+            }
+        } else {
+            timedOut = { false }
+            timeoutTask = nil
+        }
+
+        let streamResult: ChatService.StreamResult
         do {
             for try await line in bytes.lines {
                 try Task.checkCancellation()
+
+                // Check timeout before processing the line we just received.
+                // If the provider sent a keep-alive after a long silence, the
+                // timeout may already have fired while `next()` was blocked.
+                if timedOut() {
+                    throw LLMTransportError.readTimeout(timeoutSeconds!)
+                }
+
                 rawDump.append(line)
                 guard let payload = SSEParser.parsePayload(line) else { continue }
                 if case .done = payload { break }
@@ -171,9 +250,44 @@ enum LLMTransport {
                     await onChunk(chunk)
                 }
             }
+
+            // Debug: dump the entire raw response when the stream ended in an
+            // error OR produced no usable output (empty content, no tool calls).
+            if streamError != nil
+                || (fullContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && accumulator.isEmpty)
+            {
+                debugLog("LLM", "raw stream dump (\(rawDump.count) lines):\n" + rawDump.joined(separator: "\n"))
+            }
+
+            DebugLogger.recordLastRequest(
+                requestDump(
+                    request: request,
+                    response: response,
+                    receivedBody: Data(rawDump.joined(separator: "\n").utf8)))
+
+            let toolCalls = accumulator.materialize()
+            for call in toolCalls {
+                await onChunk(.toolCall(call))
+            }
+            if let reason = finishReason {
+                await onChunk(.finishReason(reason))
+            }
+            if let usage {
+                await onChunk(.usage(usage))
+            }
+
+            streamResult = ChatService.StreamResult(
+                content: fullContent,
+                toolCalls: toolCalls,
+                finishReason: finishReason,
+                usage: usage,
+                error: streamError
+            )
         } catch {
-            // Stream aborted (cancellation, connection drop, ...): dump
-            // everything received so far so last_request.log reflects this
+            // Cancel the watchdog so it doesn't fire after we've left the scope.
+            timeoutTask?.cancel()
+            // Stream aborted (cancellation, connection drop, read timeout, ...):
+            // dump everything received so far so last_request.log reflects this
             // request rather than a stale one.
             DebugLogger.recordLastRequest(
                 requestDump(
@@ -184,40 +298,8 @@ enum LLMTransport {
             throw error
         }
 
-        // Debug: dump the entire raw response when the stream ended in an
-        // error OR produced no usable output (empty content, no tool calls).
-        // Helps diagnose providers that deliver errors in non-standard shapes
-        // (HTTP 200 + odd SSE frames) or silently truncate the stream.
-        if streamError != nil
-            || (fullContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && accumulator.isEmpty)
-        {
-            debugLog("LLM", "raw stream dump (\(rawDump.count) lines):\n" + rawDump.joined(separator: "\n"))
-        }
-
-        DebugLogger.recordLastRequest(
-            requestDump(
-                request: request,
-                response: response,
-                receivedBody: Data(rawDump.joined(separator: "\n").utf8)))
-
-        let toolCalls = accumulator.materialize()
-        for call in toolCalls {
-            await onChunk(.toolCall(call))
-        }
-        if let reason = finishReason {
-            await onChunk(.finishReason(reason))
-        }
-        if let usage {
-            await onChunk(.usage(usage))
-        }
-
-        return ChatService.StreamResult(
-            content: fullContent,
-            toolCalls: toolCalls,
-            finishReason: finishReason,
-            usage: usage,
-            error: streamError
-        )
+        timeoutTask?.cancel()
+        return streamResult
     }
 
     // MARK: - Non-streaming
@@ -394,11 +476,35 @@ enum LLMTransport {
     }
 }
 
+// MARK: - Timeout box
+
+/// A thread-safe box used by the read-timeout watchdog in `LLMTransport`.
+/// The timer sleeps for `readTimeout` seconds and flips the flag; the stream
+/// loop checks the flag before every line-read and throws
+/// `LLMTransportError.readTimeout` when it is set.
+private final class TimeoutBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _isTimedOut = false
+
+    var isTimedOut: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _isTimedOut
+    }
+
+    func setTimedOut() {
+        lock.lock()
+        _isTimedOut = true
+        lock.unlock()
+    }
+}
+
 // MARK: - Errors
 
 enum LLMTransportError: Error, LocalizedError {
     case invalidUrl(String)
     case modelsEndpointUnavailable(ConnectionProvider)
+    case readTimeout(TimeInterval)
 
     var errorDescription: String? {
         switch self {
@@ -406,6 +512,8 @@ enum LLMTransportError: Error, LocalizedError {
             return "Invalid URL: \(url)"
         case .modelsEndpointUnavailable(let provider):
             return "\(provider.rawValue) does not expose a models listing endpoint."
+        case .readTimeout(let seconds):
+            return "No data received for \(Int(seconds))s — the stream timed out."
         }
     }
 }

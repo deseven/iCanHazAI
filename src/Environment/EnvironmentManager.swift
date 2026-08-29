@@ -691,7 +691,9 @@ final class EnvironmentManager: @unchecked Sendable {
             model: config.model,
             imageInput: config.imageInput ?? false,
             requestParameters: config.requestParameters,
-            headers: config.headers
+            headers: config.headers,
+            readTimeout: config.readTimeout,
+            numRetries: config.numRetries
         )
     }
 

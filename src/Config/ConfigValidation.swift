@@ -55,6 +55,12 @@ enum ConfigValidation {
                     "connection field \"headers\" must be an object of strings (value for \"\(k)\" is not a string)")
             }
         }
+        if let v = obj["readTimeout"], !(v is Double || v is Int) {
+            throw ConfigValidationError("connection field \"readTimeout\" must be a number")
+        }
+        if let v = obj["numRetries"], !(v is Int) {
+            throw ConfigValidationError("connection field \"numRetries\" must be an integer")
+        }
         do {
             return try JSONC.decode(data, as: ConnectionConfig.self)
         } catch {

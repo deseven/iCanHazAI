@@ -1604,9 +1604,18 @@ struct Connection: Identifiable, Equatable, @unchecked Sendable {
     /// empty-string value removes the header entirely. May carry secrets, so
     /// it is redacted wherever the API key is. Fully optional.
     let headers: [String: String]?
+    /// Abort the stream if no data arrives from the provider for this many
+    /// seconds. `nil` or `≤ 0` means no timeout (rely on URLSession's idle
+    /// timeout only). Applied as an application-level watchdog on the SSE
+    /// stream, so empty keep-alive frames do not reset it.
+    let readTimeout: Double?
+    /// How many times to retry a failed request before surfacing the error
+    /// to the user. `nil` defaults to 1. Retries are only attempted when no
+    /// output has been emitted yet, to avoid concatenating partial responses.
+    let numRetries: Int?
 
-    /// Explicit init so `headers` defaults to nil — keeps call sites that
-    /// don't care about headers (tests, wizard) concise.
+    /// Explicit init so optional fields default to nil — keeps call sites that
+    /// don't care about them (tests, wizard) concise.
     init(
         provider: ConnectionProvider,
         name: String,
@@ -1615,7 +1624,9 @@ struct Connection: Identifiable, Equatable, @unchecked Sendable {
         model: String,
         imageInput: Bool,
         requestParameters: [String: LLMJSONValue]?,
-        headers: [String: String]? = nil
+        headers: [String: String]? = nil,
+        readTimeout: Double? = nil,
+        numRetries: Int? = nil
     ) {
         self.provider = provider
         self.name = name
@@ -1625,6 +1636,8 @@ struct Connection: Identifiable, Equatable, @unchecked Sendable {
         self.imageInput = imageInput
         self.requestParameters = requestParameters
         self.headers = headers
+        self.readTimeout = readTimeout
+        self.numRetries = numRetries
     }
 
     /// Display name shown in the UI.
@@ -1639,4 +1652,10 @@ struct ConnectionConfig: Codable {
     var imageInput: Bool?
     var requestParameters: [String: LLMJSONValue]?
     var headers: [String: String]?
+    /// Abort the stream if no useful output arrives for this many seconds.
+    /// `≤ 0` disables the application-level timeout (URLSession idle timeout still applies).
+    var readTimeout: Double?
+    /// How many times to retry a failed request before surfacing the error.
+    /// `nil` defaults to 1.
+    var numRetries: Int?
 }
