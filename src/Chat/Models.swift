@@ -1604,14 +1604,28 @@ struct Connection: Identifiable, Equatable, @unchecked Sendable {
     /// empty-string value removes the header entirely. May carry secrets, so
     /// it is redacted wherever the API key is. Fully optional.
     let headers: [String: String]?
-    /// Abort the stream if no data arrives from the provider for this many
-    /// seconds. `nil` or `≤ 0` means no timeout (rely on URLSession's idle
-    /// timeout only). Applied as an application-level watchdog on the SSE
-    /// stream, so empty keep-alive frames do not reset it.
+    /// Abort the request if **no data at all** arrives from the provider for
+    /// this many seconds — response headers, SSE lines, and keep-alive
+    /// comments all count. Catches dead connections: offline network,
+    /// blackholed connects, dropped sockets, unresponsive servers. `nil`
+    /// applies the 30 s default; `≤ 0` disables this layer.
     let readTimeout: Double?
+    /// Abort the request if no **useful output** arrives for this many
+    /// seconds. Only content, thinking, tool-call deltas, finish reasons, and
+    /// usage refresh it — bare keep-alives do not. Catches providers that
+    /// keep the connection alive while producing nothing (endless pings,
+    /// wedged generation). `nil` applies the 60 s default; `≤ 0` disables
+    /// this layer.
+    let progressTimeout: Double?
+    /// Hard cap on a single request attempt (connect + headers + entire
+    /// stream), regardless of activity. Each retry attempt gets a fresh
+    /// budget. `nil` applies the 3600 s default; `≤ 0` disables this layer.
+    let transportTimeout: Double?
     /// How many times to retry a failed request before surfacing the error
     /// to the user. `nil` defaults to 1. Retries are only attempted when no
-    /// output has been emitted yet, to avoid concatenating partial responses.
+    /// output has been emitted yet, to avoid concatenating partial responses,
+    /// and offline-class failures (no network, DNS failure, HTTP 4xx) are
+    /// surfaced without retrying.
     let numRetries: Int?
 
     /// Explicit init so optional fields default to nil — keeps call sites that
@@ -1626,6 +1640,8 @@ struct Connection: Identifiable, Equatable, @unchecked Sendable {
         requestParameters: [String: LLMJSONValue]?,
         headers: [String: String]? = nil,
         readTimeout: Double? = nil,
+        progressTimeout: Double? = nil,
+        transportTimeout: Double? = nil,
         numRetries: Int? = nil
     ) {
         self.provider = provider
@@ -1637,6 +1653,8 @@ struct Connection: Identifiable, Equatable, @unchecked Sendable {
         self.requestParameters = requestParameters
         self.headers = headers
         self.readTimeout = readTimeout
+        self.progressTimeout = progressTimeout
+        self.transportTimeout = transportTimeout
         self.numRetries = numRetries
     }
 
@@ -1652,9 +1670,15 @@ struct ConnectionConfig: Codable {
     var imageInput: Bool?
     var requestParameters: [String: LLMJSONValue]?
     var headers: [String: String]?
-    /// Abort the stream if no useful output arrives for this many seconds.
-    /// `≤ 0` disables the application-level timeout (URLSession idle timeout still applies).
+    /// Abort if no data at all arrives for this many seconds — headers and
+    /// keep-alives count. `nil` → 30 s default; `≤ 0` disables the layer.
     var readTimeout: Double?
+    /// Abort if no useful output arrives for this many seconds — keep-alives
+    /// do not count. `nil` → 60 s default; `≤ 0` disables the layer.
+    var progressTimeout: Double?
+    /// Hard cap on a single request attempt regardless of activity.
+    /// `nil` → 3600 s default; `≤ 0` disables the layer.
+    var transportTimeout: Double?
     /// How many times to retry a failed request before surfacing the error.
     /// `nil` defaults to 1.
     var numRetries: Int?

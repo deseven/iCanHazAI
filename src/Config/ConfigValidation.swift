@@ -58,6 +58,12 @@ enum ConfigValidation {
         if let v = obj["readTimeout"], !(v is Double || v is Int) {
             throw ConfigValidationError("connection field \"readTimeout\" must be a number")
         }
+        if let v = obj["progressTimeout"], !(v is Double || v is Int) {
+            throw ConfigValidationError("connection field \"progressTimeout\" must be a number")
+        }
+        if let v = obj["transportTimeout"], !(v is Double || v is Int) {
+            throw ConfigValidationError("connection field \"transportTimeout\" must be a number")
+        }
         if let v = obj["numRetries"], !(v is Int) {
             throw ConfigValidationError("connection field \"numRetries\" must be an integer")
         }

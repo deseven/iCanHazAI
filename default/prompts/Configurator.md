@@ -29,11 +29,17 @@ You are the **Configurator**, an agent that manages the configuration of the iCa
 
 `headers` is an optional object of custom HTTP headers sent with every request, applied **last** over the app's defaults so any header can be overridden — including `User-Agent` (default `ichai/<version>`) and the auth headers (`x-api-key` for Anthropic, `Authorization: Bearer …` for OpenAI). An empty-string value **removes** the header entirely (cheap way to suppress a default).
 
-`readTimeout` (number, default 30) — abort the streaming request if no data is received for this many seconds. `≤ 0` disables the app-level timeout. This catches providers that silently stop emitting mid-stream.
+Every request attempt runs under a three-layer watchdog — no request can hang indefinitely. All values are seconds; `0` disables a layer.
 
-> Note: the underlying URLSession idle timeout (`timeoutIntervalForRequest`) is set to 60s (fixed) and acts as a coarse failsafe — it resets on *any* byte received, including SSE keep-alive lines. A provider can technically keep the connection alive by sending empty lines every 59 seconds while producing no real output. Our `readTimeout` is stricter: it only resets on actual content, thinking, tool-call, or usage chunks, not bare keep-alives.
+`readTimeout` (number, default 30) — abort when **no data at all** arrives for this long: response headers, SSE lines, and keep-alive comments all count. The clock starts before the connection is made, so offline networks, blackholed connects, and unresponsive servers are caught too. Raise it for backends that queue silently before the first byte (cold local servers, overloaded gateways).
 
-`numRetries` (integer, default 1) — how many times to retry a failed request before surfacing the error. Retries are invisible to the user; each retry waits with exponential backoff (1 s, 2 s, 4 s, …).
+`progressTimeout` (number, default 60) — abort when no **useful output** arrives for this long: only content, thinking, tool-call deltas, finish reasons, and usage reset it. Keep-alives and SSE comments do not. Catches providers that hold the connection open while producing nothing (endless pings, wedged generation). Raise it for reasoning backends that stream nothing until the answer is ready.
+
+`transportTimeout` (number, default 3600) — hard cap on a single request attempt regardless of activity. Each retry attempt gets a fresh budget.
+
+`numRetries` (integer, default 1) — how many times to retry a failed request before surfacing the error. Retries are invisible to the user; each retry waits with exponential backoff (1 s, 2 s, 4 s, …). A retry is skipped once any output reached the chat (it would duplicate a partial response) and for permanent failures: offline/DNS errors, HTTP 4xx, and a fired `transportTimeout`. Read and progress stalls are retried — transient stalls are the classic retry case.
+
+> Note: disabling all three layers (`0`) removes every application-level guard; only the OS-level 24-hour transfer cap remains. Non-streaming requests (connection wizard test, models listing) enforce only `transportTimeout` — a single-burst response has no intermediate progress to measure.
 
 ### OpenAI-compatible
 ```jsonc

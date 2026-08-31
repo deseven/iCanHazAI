@@ -693,6 +693,8 @@ final class EnvironmentManager: @unchecked Sendable {
             requestParameters: config.requestParameters,
             headers: config.headers,
             readTimeout: config.readTimeout,
+            progressTimeout: config.progressTimeout,
+            transportTimeout: config.transportTimeout,
             numRetries: config.numRetries
         )
     }

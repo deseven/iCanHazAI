@@ -525,7 +525,11 @@ enum ConfiguratorTools {
             model: config.model,
             imageInput: config.imageInput ?? false,
             requestParameters: config.requestParameters,
-            headers: config.headers
+            headers: config.headers,
+            readTimeout: config.readTimeout,
+            progressTimeout: config.progressTimeout,
+            transportTimeout: config.transportTimeout,
+            numRetries: config.numRetries
         )
         let messages = [ChatMessage(role: .user, content: "say hi")]
         let answer = try await ChatService.shared.complete(connection: connection, messages: messages)

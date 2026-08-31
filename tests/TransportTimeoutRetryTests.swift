@@ -6,33 +6,55 @@ import Testing
 
 @testable import iCanHazAI
 
-// Tests for read timeout, retry behaviour, and the new connection fields
-// (`readTimeout`, `numRetries`) that control them.
+// Tests for the three-layer transport timeout config (`readTimeout`,
+// `progressTimeout`, `transportTimeout`), retry behaviour, and their
+// classification. Live watchdog behaviour is covered in
+// `TransportWatchdogTests`.
 extension AllAppTests {
     @Suite("Transport timeout and retry")
     struct TransportTimeoutRetryTests {
 
         // MARK: - Connection config decoding
 
-        @Test("Connection decodes readTimeout and numRetries")
+        @Test("Connection decodes all timeout fields and numRetries")
         func connectionDecodesNewFields() throws {
-            let jsonc = #"{"model":"m","readTimeout":60,"numRetries":3}"#
+            let jsonc = #"{"model":"m","readTimeout":60,"progressTimeout":90,"transportTimeout":7200,"numRetries":3}"#
             let config = try ConfigValidation.decodeConnection(Data(jsonc.utf8))
             #expect(config.readTimeout == 60)
+            #expect(config.progressTimeout == 90)
+            #expect(config.transportTimeout == 7200)
             #expect(config.numRetries == 3)
         }
 
-        @Test("Connection defaults for new fields are nil")
+        @Test("Connection timeout fields default to nil")
         func connectionDefaultsAreNil() throws {
             let jsonc = #"{"model":"m"}"#
             let config = try ConfigValidation.decodeConnection(Data(jsonc.utf8))
             #expect(config.readTimeout == nil)
+            #expect(config.progressTimeout == nil)
+            #expect(config.transportTimeout == nil)
             #expect(config.numRetries == nil)
         }
 
         @Test("readTimeout rejects non-number")
         func readTimeoutRejectsNonNumber() {
             let jsonc = #"{"model":"m","readTimeout":"bad"}"#
+            #expect(throws: ConfigValidationError.self) {
+                _ = try ConfigValidation.decodeConnection(Data(jsonc.utf8))
+            }
+        }
+
+        @Test("progressTimeout rejects non-number")
+        func progressTimeoutRejectsNonNumber() {
+            let jsonc = #"{"model":"m","progressTimeout":"bad"}"#
+            #expect(throws: ConfigValidationError.self) {
+                _ = try ConfigValidation.decodeConnection(Data(jsonc.utf8))
+            }
+        }
+
+        @Test("transportTimeout rejects non-number")
+        func transportTimeoutRejectsNonNumber() {
+            let jsonc = #"{"model":"m","transportTimeout":true}"#
             #expect(throws: ConfigValidationError.self) {
                 _ = try ConfigValidation.decodeConnection(Data(jsonc.utf8))
             }
@@ -48,9 +70,9 @@ extension AllAppTests {
 
         // MARK: - Connection model wiring
 
-        @Test("Connection readTimeout and numRetries are wired through")
+        @Test("Connection timeout fields are wired through")
         func connectionFieldsWired() throws {
-            let jsonc = #"{"model":"m","readTimeout":45,"numRetries":2}"#
+            let jsonc = #"{"model":"m","readTimeout":45,"progressTimeout":75,"transportTimeout":1800,"numRetries":2}"#
             let config = try ConfigValidation.decodeConnection(Data(jsonc.utf8))
             let conn = Connection(
                 provider: .openai,
@@ -61,30 +83,122 @@ extension AllAppTests {
                 imageInput: false,
                 requestParameters: nil,
                 readTimeout: config.readTimeout,
+                progressTimeout: config.progressTimeout,
+                transportTimeout: config.transportTimeout,
                 numRetries: config.numRetries
             )
             #expect(conn.readTimeout == 45)
+            #expect(conn.progressTimeout == 75)
+            #expect(conn.transportTimeout == 1800)
             #expect(conn.numRetries == 2)
         }
 
-        @Test("Connection defaults readTimeout to 30 and numRetries to 1 in transport")
-        func connectionDefaultsUsedByTransport() {
+        // MARK: - TimeoutPolicy resolution
+
+        @Test("TimeoutPolicy applies layer defaults for nil values")
+        func timeoutPolicyDefaults() {
             let conn = Connection(
                 provider: .openai, name: "c", baseUrl: nil, apiKey: nil, model: "m",
                 imageInput: false, requestParameters: nil
             )
-            #expect(conn.readTimeout == nil)
-            #expect(conn.numRetries == nil)
+            let policy = TimeoutPolicy.resolve(conn)
+            #expect(policy.read == LLMTransport.defaultReadTimeout)
+            #expect(policy.progress == LLMTransport.defaultProgressTimeout)
+            #expect(policy.transport == LLMTransport.defaultTransportTimeout)
         }
 
-        // MARK: - LLMTransportError
+        @Test("TimeoutPolicy disables a layer on zero")
+        func timeoutPolicyZeroDisables() {
+            let conn = Connection(
+                provider: .openai, name: "c", baseUrl: nil, apiKey: nil, model: "m",
+                imageInput: false, requestParameters: nil,
+                readTimeout: 0, progressTimeout: 0, transportTimeout: 0
+            )
+            let policy = TimeoutPolicy.resolve(conn)
+            #expect(policy.read == nil)
+            #expect(policy.progress == nil)
+            #expect(policy.transport == nil)
+        }
 
-        @Test("readTimeout error description is human-readable")
-        func readTimeoutErrorDescription() {
-            let error = LLMTransportError.readTimeout(30)
-            let desc = error.errorDescription ?? ""
-            #expect(desc.contains("30"))
-            #expect(desc.contains("timed out"))
+        @Test("TimeoutPolicy keeps explicit positive values")
+        func timeoutPolicyExplicitValues() {
+            let conn = Connection(
+                provider: .openai, name: "c", baseUrl: nil, apiKey: nil, model: "m",
+                imageInput: false, requestParameters: nil,
+                readTimeout: 5, progressTimeout: 10, transportTimeout: 15
+            )
+            let policy = TimeoutPolicy.resolve(conn)
+            #expect(policy.read == 5)
+            #expect(policy.progress == 10)
+            #expect(policy.transport == 15)
+        }
+
+        // MARK: - Retry classification
+
+        @Test("Offline-class URLErrors are not retried")
+        func offlineErrorsNotRetried() {
+            #expect(!LLMTransport.isRetryable(URLError(.notConnectedToInternet)))
+            #expect(!LLMTransport.isRetryable(URLError(.dnsLookupFailed)))
+            #expect(!LLMTransport.isRetryable(URLError(.cannotFindHost)))
+            #expect(!LLMTransport.isRetryable(URLError(.dataNotAllowed)))
+            #expect(!LLMTransport.isRetryable(URLError(.internationalRoamingOff)))
+            #expect(!LLMTransport.isRetryable(URLError(.cancelled)))
+        }
+
+        @Test("Transient URLErrors are retried")
+        func transientErrorsRetried() {
+            #expect(LLMTransport.isRetryable(URLError(.timedOut)))
+            #expect(LLMTransport.isRetryable(URLError(.networkConnectionLost)))
+            #expect(LLMTransport.isRetryable(URLError(.cannotConnectToHost)))
+        }
+
+        @Test("HTTP 4xx is not retried, 5xx is")
+        func httpStatusClassification() {
+            func llmError(_ status: Int) -> LLMError {
+                LLMError(statusCode: status, providerMessage: nil, errorType: nil, rawBody: nil, provider: .openai)
+            }
+            #expect(!LLMTransport.isRetryable(llmError(400)))
+            #expect(!LLMTransport.isRetryable(llmError(401)))
+            #expect(!LLMTransport.isRetryable(llmError(404)))
+            #expect(LLMTransport.isRetryable(llmError(500)))
+            #expect(LLMTransport.isRetryable(llmError(503)))
+        }
+
+        @Test("Transport timeout classification")
+        func transportErrorClassification() {
+            #expect(!LLMTransport.isRetryable(LLMTransportError.transportTimeout(3600)))
+            #expect(LLMTransport.isRetryable(LLMTransportError.readTimeout(30)))
+            #expect(LLMTransport.isRetryable(LLMTransportError.progressTimeout(60)))
+            #expect(!LLMTransport.isRetryable(CancellationError()))
+        }
+
+        // MARK: - Error messages
+
+        @Test("Timeout error descriptions are human-readable and distinct")
+        func timeoutErrorDescriptions() {
+            let read = LLMTransportError.readTimeout(30).errorDescription ?? ""
+            #expect(read.contains("30"))
+            #expect(read.contains("No data"))
+
+            let progress = LLMTransportError.progressTimeout(60).errorDescription ?? ""
+            #expect(progress.contains("60"))
+            #expect(progress.contains("No usable output"))
+
+            let transport = LLMTransportError.transportTimeout(3600).errorDescription ?? ""
+            #expect(transport.contains("3600"))
+            #expect(transport.contains("budget"))
+        }
+
+        // MARK: - Connection file writer
+
+        @Test("Generated connection file documents all timeout layers")
+        func writerDocumentsTimeouts() {
+            let jsonc = ConnectionFileWriter.generateJSONC(
+                provider: .openai, baseUrl: nil, apiKey: nil, model: "m", imageInput: false)
+            #expect(jsonc.contains("\"readTimeout\""))
+            #expect(jsonc.contains("\"progressTimeout\""))
+            #expect(jsonc.contains("\"transportTimeout\""))
+            #expect(jsonc.contains("\"numRetries\""))
         }
 
         // MARK: - Retry delay math
