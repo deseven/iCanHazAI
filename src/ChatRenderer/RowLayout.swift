@@ -41,7 +41,7 @@ struct RowLayout: Sendable {
 
     var collapsibleHeader: CGFloat { theme.scaled(28) }
     /// A collapsed tool block also shows its status on a second line.
-    var collapsibleHeaderWithStatus: CGFloat { theme.scaled(54) }
+    var collapsibleHeaderWithStatus: CGFloat { theme.scaled(46) }
     var pendingHeight: CGFloat { theme.scaled(22) }
     var segmentGap: CGFloat { theme.scaled(10) }
     var resultImageHeight: CGFloat { theme.scaled(240) }

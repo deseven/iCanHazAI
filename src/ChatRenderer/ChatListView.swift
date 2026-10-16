@@ -1,4 +1,5 @@
 import AppKit
+import QuickLookUI
 
 /// A virtualized message list: NSScrollView + a flipped document view whose
 /// height is the sum of per-row heights. Only rows near the viewport get views.
@@ -68,6 +69,7 @@ final class ChatListView: NSView {
     private var adjusting = false
     private let pass = PassToken()
     private var pendingPass: Task<Void, Never>?
+    private var previewURLs: [URL] = []
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -116,6 +118,7 @@ final class ChatListView: NSView {
         rebuildIndex()
         recomputeOffsets()
         pinnedToBottom = true
+        updateJumpButton()
         guard textWidth > 0 else { return }
         measureTail()
         scrollToBottom()
@@ -231,7 +234,8 @@ final class ChatListView: NSView {
         withAdjusting { document.setFrameSize(NSSize(width: bounds.width, height: documentHeight)) }
         if pinnedToBottom { scrollToBottom() }
         layoutRows()
-        jumpButton.frame = NSRect(x: bounds.midX - 16, y: 14, width: 32, height: 32)
+        updateJumpButton()
+        jumpButton.frame = NSRect(x: bounds.maxX - 32 - 20, y: 14, width: 32, height: 32)
     }
 
     override func viewDidEndLiveResize() {
@@ -652,13 +656,21 @@ final class ChatListView: NSView {
         NSWorkspace.shared.open(url)
     }
 
-    /// Images open in the default app, like documents. (A Quick Look panel
-    /// driven from the responder chain never showed up in the real window.)
+    /// Shows the message's images in the shared Quick Look panel. The panel is
+    /// driven directly through its data source rather than the responder chain
+    /// (`acceptsPreviewPanelControl`), which never presented in the real window.
     private func previewImage(messageID: String, filename: String) {
-        guard let i = indexByID[messageID],
-            let info = rows[i].model.attachments.first(where: { $0.kind == .image && $0.filename == filename })
-        else { return }
-        openAttachment(info)
+        guard let i = indexByID[messageID] else { return }
+        let urls = rows[i].model.attachments.filter { $0.kind == .image }.compactMap { attachmentURL($0) }
+        guard let start = urls.firstIndex(where: { $0.lastPathComponent == filename }) else { return }
+        previewURLs = urls
+        guard let panel = QLPreviewPanel.shared() else { return }
+        panel.dataSource = self
+        panel.delegate = self
+        panel.reloadData()
+        panel.currentPreviewItemIndex = start
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
     }
 
     // MARK: Background pass
@@ -757,6 +769,16 @@ final class ChatListView: NSView {
     }
 }
 
+extension ChatListView: QLPreviewPanelDataSource, QLPreviewPanelDelegate {
+    nonisolated func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        MainActor.assumeIsolated { previewURLs.count }
+    }
+
+    nonisolated func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
+        MainActor.assumeIsolated { previewURLs[index] as NSURL }
+    }
+}
+
 /// Fixed-size output buffer for `concurrentPerform`: every iteration writes a
 /// distinct index, so no locking is needed.
 private final class ResultSlots<T: Sendable>: @unchecked Sendable {
@@ -800,6 +822,7 @@ final class PassToken: @unchecked Sendable {
     extension ChatListView {
         var testIsPinned: Bool { pinnedToBottom }
         var testRowCount: Int { rows.count }
+        var testJumpButtonVisible: Bool { !jumpButton.isHidden }
         var testDocumentHeight: CGFloat { documentHeight }
         var testTextWidth: CGFloat { textWidth }
         var testExactCount: Int { rows.filter { $0.measuredWidth == textWidth }.count }
@@ -836,6 +859,7 @@ final class PassToken: @unchecked Sendable {
             pinnedToBottom = false
             setScrollY(scrollView.documentVisibleRect.minY + dy)
             layoutRows()
+            updateJumpButton()
         }
 
         func testBottomActionsVisible(of id: String) -> Bool? { visibleViews[id]?.showsBottomActions }

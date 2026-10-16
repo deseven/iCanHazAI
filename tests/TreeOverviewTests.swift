@@ -131,6 +131,15 @@ extension AllAppTests {
             #expect(root?.snippet.hasSuffix("…") == true)
         }
 
+        @Test("snippet shows the text without markdown markup")
+        func snippetStripsMarkdown() {
+            let user = Fixtures.message(
+                role: .user, content: "> hello **how** are `you`?\n\n- [a](https://x.example)",
+                timestamp: Date(timeIntervalSince1970: 1))
+            let root = ChatRenderQueue.buildTreeOverview(Fixtures.chat(messages: [user]))
+            #expect(root?.snippet == "hello how are you? a")
+        }
+
         @Test("snippet falls back to (empty) for a message with empty content")
         func snippetEmptyContent() {
             let assistant = Fixtures.message(role: .assistant, content: "", timestamp: Date(timeIntervalSince1970: 1))

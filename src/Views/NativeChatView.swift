@@ -27,9 +27,10 @@ struct NativeChatView: View {
                 .onChange(of: store.preferencesExpandToolUse) { _, _ in controller.updatePreferences() }
                 .onChange(of: store.preferencesInterfaceScale) { _, _ in controller.updatePreferences() }
 
-            // The chat is still being read from disk: the list would show the
-            // previous chat.
-            if store.selectedChatID != nil, store.selectedChatItem?.chat == nil {
+            // The selected chat is still being read from disk or rendered: the
+            // list would show the previous chat (or a half-built one) until
+            // its snapshot has been applied.
+            if let id = store.selectedChatID, store.selectedChatItem?.chat == nil || controller.shownChatID != id {
                 Color(nsColor: .windowBackgroundColor)
                 ProgressView()
                     .controlSize(.large)
@@ -80,7 +81,8 @@ final class ChatListController: ObservableObject {
     /// reach the actor in exactly the order they were issued here.
     private var renderQueueTail: Task<Void, Never>?
 
-    private var shownChatID: String?
+    /// The chat the list currently shows; nil while blank.
+    @Published private(set) var shownChatID: String?
     private var shownState = ChatRenderState()
     private var expandThinking = false
     private var expandToolUse = false

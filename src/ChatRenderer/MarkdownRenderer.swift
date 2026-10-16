@@ -205,6 +205,50 @@ enum MarkdownRenderer {
         return text
     }
 
+    /// The text a markdown source reads as, without any markup (`> hi **you**` → `hi you`),
+    /// on one line. Only a leading part of the source is parsed: callers want a snippet.
+    static func plainText(_ markdown: String, parsing limit: Int = 1000) -> String {
+        _ = registerExtensions
+        guard let parser = cmark_parser_new(CMARK_OPT_DEFAULT) else { return markdown }
+        defer { cmark_parser_free(parser) }
+        for name in ["table", "strikethrough", "tasklist", "autolink"] {
+            if let ext = cmark_find_syntax_extension(name) {
+                cmark_parser_attach_syntax_extension(parser, ext)
+            }
+        }
+        var source = String(markdown.prefix(limit))
+        source.withUTF8 { buf in
+            buf.withMemoryRebound(to: CChar.self) { cmark_parser_feed(parser, $0.baseAddress, $0.count) }
+        }
+        guard let doc = cmark_parser_finish(parser) else { return markdown }
+        defer { cmark_node_free(doc) }
+        var out = ""
+        collectPlainText(doc, into: &out)
+        return out.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    private static func collectPlainText(_ node: CMNode, into out: inout String) {
+        let type = cmark_node_get_type(node)
+        switch type {
+        case CMARK_NODE_TEXT, CMARK_NODE_CODE, CMARK_NODE_HTML_INLINE, CMARK_NODE_CODE_BLOCK, CMARK_NODE_HTML_BLOCK:
+            if let literal = cmark_node_get_literal(node) { out += String(cString: literal) }
+        case CMARK_NODE_SOFTBREAK, CMARK_NODE_LINEBREAK:
+            out += " "
+        default:
+            var child = cmark_node_first_child(node)
+            while let n = child {
+                collectPlainText(n, into: &out)
+                child = cmark_node_next(n)
+            }
+        }
+        let inline: [cmark_node_type] = [
+            CMARK_NODE_TEXT, CMARK_NODE_CODE, CMARK_NODE_HTML_INLINE, CMARK_NODE_EMPH, CMARK_NODE_STRONG,
+            CMARK_NODE_LINK, CMARK_NODE_IMAGE, CMARK_NODE_SOFTBREAK, CMARK_NODE_LINEBREAK,
+        ]
+        let name = cmark_node_get_type_string(node).map { String(cString: $0) }
+        if !inline.contains(type), name != "strikethrough" { out += " " }
+    }
+
     static func plain(_ text: String, theme: Theme, mono: Bool = true, color: NSColor = .labelColor) -> RenderedText {
         let text = clipped(text, theme: theme)
         let p = NSMutableParagraphStyle()

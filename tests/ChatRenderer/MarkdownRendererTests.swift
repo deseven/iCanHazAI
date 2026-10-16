@@ -10,6 +10,15 @@ extension AllAppTests {
 
         private let theme = Theme()
 
+        @Test("plain text drops the markup and joins blocks on one line")
+        func plainText() {
+            #expect(MarkdownRenderer.plainText("> hello **how** are you?") == "hello how are you?")
+            #expect(MarkdownRenderer.plainText("# Title\n\nsome ~~old~~ `code`\nnext") == "Title some old code next")
+            #expect(MarkdownRenderer.plainText("```swift\nlet x = 1\n```") == "let x = 1")
+            #expect(MarkdownRenderer.plainText("| a | b |\n|---|---|\n| 1 | 2 |") == "a b 1 2")
+            #expect(MarkdownRenderer.plainText("![alt text](https://x.example/i.png)") == "alt text")
+        }
+
         private func render(_ markdown: String, theme: Theme? = nil) -> RenderedText {
             MarkdownRenderer.render(markdown, theme: theme ?? self.theme)
         }

@@ -260,9 +260,10 @@ actor ChatRenderQueue {
         )
     }
 
-    /// A short snippet (≤100 chars) of a message's content, for the node card.
+    /// A short snippet (≤100 chars) of a message's content, for the node card,
+    /// with the markdown markup stripped.
     private static func snippet(of msg: ChatMessage) -> String {
-        let trimmed = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = MarkdownRenderer.plainText(msg.content)
         if trimmed.isEmpty {
             if msg.error != nil { return "(error)" }
             if let calls = msg.toolCalls, !calls.isEmpty { return "tool call: \(calls.first?.name ?? "")" }

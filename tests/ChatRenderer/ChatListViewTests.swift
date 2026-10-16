@@ -446,6 +446,17 @@ extension AllAppTests {
             #expect(h.list.testViewsConsistent())
         }
 
+        @Test("opening another chat hides the scroll-to-bottom button")
+        func newChatHidesJumpButton() {
+            let h = Harness()
+            h.list.setMessages(ChatRendererFixtures.chat(200))
+            h.list.testScroll(by: -2000)
+            #expect(h.list.testJumpButtonVisible)
+            h.list.setMessages(ChatRendererFixtures.chat(200))
+            #expect(h.list.testIsPinned)
+            #expect(!h.list.testJumpButtonVisible)
+        }
+
         @Test("replacing the messages together with the context renders with the new context")
         func setMessagesWithContext() {
             let h = Harness()

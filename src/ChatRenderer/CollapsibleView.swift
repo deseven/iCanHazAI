@@ -161,7 +161,7 @@ final class CollapsibleView: PanelView {
 
         let afterTitle = title.frame.maxX + 8 * s
         if showsStatusLine {
-            let lineCenter = firstLine + (geometry.header - firstLine) / 2
+            let lineCenter = firstLine - 3 * s + (geometry.header - firstLine) / 2
             let x = placeBadge(from: 46 * s, centerY: lineCenter)
             statusText.sizeToFit()
             statusText.frame = NSRect(
