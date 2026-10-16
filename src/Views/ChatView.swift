@@ -174,6 +174,10 @@ struct ChatView: View {
             isInputFocused = true
             focusToken &+= 1
         }
+        .onChange(of: store.chatInputFocusRequest) { _, _ in
+            isInputFocused = true
+            focusToken &+= 1
+        }
         .fileImporter(
             isPresented: $filePicker,
             allowedContentTypes: AttachmentPickerTypes.supported,

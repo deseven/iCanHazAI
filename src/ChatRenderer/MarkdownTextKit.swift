@@ -40,6 +40,7 @@ enum TextMeasurer {
 
 final class MarkdownLayoutManager: NSLayoutManager {
     var theme = Theme()
+    var search: SearchHighlight?
 
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         if let storage = textStorage, let container = textContainers.first, storage.length > 0 {
@@ -48,6 +49,7 @@ final class MarkdownLayoutManager: NSLayoutManager {
             drawInlineCode(storage, container, chars, origin)
             drawQuotes(storage, chars, origin)
             drawRules(storage, container, chars, origin)
+            drawSearch(storage, container, chars, origin)
         }
         // Selection highlight is drawn by super, so it must come after our fills.
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
@@ -137,6 +139,39 @@ final class MarkdownLayoutManager: NSLayoutManager {
         }
     }
 
+    /// Painted under the text, so glyph colors (syntax highlighting included) stay readable.
+    private func drawSearch(
+        _ storage: NSTextStorage, _ container: NSTextContainer, _ chars: NSRange, _ origin: NSPoint
+    ) {
+        guard let search, !search.ranges.isEmpty else { return }
+        let all = NSRange(location: 0, length: storage.length)
+        for (i, range) in search.ranges.enumerated() {
+            let r = NSIntersectionRange(range, all)
+            guard r.length > 0, NSIntersectionRange(r, chars).length > 0 else { continue }
+            let isCurrent = search.current == i
+            (isCurrent
+                ? NSColor.systemOrange.withAlphaComponent(0.75)
+                : NSColor.systemYellow.withAlphaComponent(0.4)).setFill()
+            let glyphs = glyphRange(forCharacterRange: r, actualCharacterRange: nil)
+            enumerateLineFragments(forGlyphRange: glyphs) { lineRect, _, _, lineGlyphs, _ in
+                let sub = NSIntersectionRange(glyphs, lineGlyphs)
+                guard sub.length > 0 else { return }
+                var rect = self.boundingRect(forGlyphRange: sub, in: container)
+                if let font = storage.attribute(
+                    .font, at: self.characterIndexForGlyph(at: sub.location), effectiveRange: nil) as? NSFont
+                {
+                    let baseline = lineRect.minY + self.location(forGlyphAt: sub.location).y
+                    rect.origin.y = baseline - font.ascender
+                    rect.size.height = font.ascender - font.descender
+                }
+                rect = rect.insetBy(dx: -self.theme.scaled(1), dy: -self.theme.scaled(1))
+                    .offsetBy(dx: origin.x, dy: origin.y)
+                let radius = self.theme.scaled(3)
+                NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+            }
+        }
+    }
+
     private func drawQuotes(_ storage: NSTextStorage, _ chars: NSRange, _ origin: NSPoint) {
         var seen = Set<ObjectIdentifier>()
         NSColor.quaternaryLabelColor.setFill()
@@ -180,6 +215,14 @@ final class MarkdownTextView: NSTextView {
             (layoutManager as? MarkdownLayoutManager)?.theme = theme
             needsDisplay = true
             updateCopyButtons()
+        }
+    }
+
+    var searchHighlight: SearchHighlight? {
+        didSet {
+            guard searchHighlight != oldValue else { return }
+            (layoutManager as? MarkdownLayoutManager)?.search = searchHighlight
+            needsDisplay = true
         }
     }
 

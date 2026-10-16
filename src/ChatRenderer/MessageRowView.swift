@@ -30,6 +30,28 @@ final class MessageRowView: FlippedView {
     private var collapsibles: [CollapsibleView] = []
     private var attachments: [AttachmentsView] = []
     private var errors: [ErrorBlockView] = []
+    /// The message body's text view (never a panel), which search matches live in.
+    private var bodyText: MarkdownTextView?
+
+    var search: SearchHighlight? {
+        didSet { if search != oldValue { applySearch() } }
+    }
+
+    private func applySearch() {
+        bodyText?.searchHighlight = search
+    }
+
+    /// The match's bounds in this view's coordinates, once the body is laid out.
+    func rect(ofSearchRange range: NSRange) -> NSRect? {
+        guard let tv = bodyText, !tv.isHidden, let lm = tv.layoutManager, let tc = tv.textContainer else { return nil }
+        let r = NSIntersectionRange(range, NSRange(location: 0, length: lm.textStorage?.length ?? 0))
+        guard r.length > 0 else { return nil }
+        var rect = lm.boundingRect(
+            forGlyphRange: lm.glyphRange(forCharacterRange: r, actualCharacterRange: nil), in: tc)
+        rect.origin.x += tv.textContainerOrigin.x
+        rect.origin.y += tv.textContainerOrigin.y
+        return convert(rect, from: tv)
+    }
 
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -136,6 +158,7 @@ final class MessageRowView: FlippedView {
         let (frames, _) = layout.blockFrames(rendered, heights: row.heights, open: open)
         var counts = PoolCounts()
         var showsPending = false
+        bodyText = nil
         for (i, block) in rendered.blocks.enumerated() {
             let f = frames[i]
             switch block {
@@ -166,6 +189,8 @@ final class MessageRowView: FlippedView {
             case .text(let text, let panel):
                 let tv = take(&texts, &counts.texts) { MarkdownTextView() }
                 tv.theme = theme
+                tv.searchHighlight = nil
+                if !panel { bodyText = tv }
                 if panel {
                     let p = take(&panels, &counts.panels) { PanelView() }
                     p.cornerRadius = theme.scaled(7)
@@ -190,6 +215,7 @@ final class MessageRowView: FlippedView {
                 v.configure(text, layout: layout)
             }
         }
+        applySearch()
         pendingSpinner.setActive(showsPending)
         for v in texts[counts.texts...] { v.isHidden = true }
         for v in panels[counts.panels...] { v.isHidden = true }

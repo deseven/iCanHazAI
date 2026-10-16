@@ -45,6 +45,86 @@ struct NativeChatView: View {
                 )
             }
         }
+        .overlay(alignment: .topTrailing) {
+            if controller.searchVisible && controller.treeOverview == nil {
+                ChatSearchBar(controller: controller)
+                    .padding(.top, 10)
+                    .padding(.trailing, 18)
+                    .transition(.opacity)
+            }
+        }
+    }
+}
+
+/// The in-chat search field: match count and previous/next buttons, like a browser's.
+private struct ChatSearchBar: View {
+    @ObservedObject var controller: ChatListController
+    @FocusState private var focused: Bool
+
+    private var summary: String {
+        guard !controller.searchQuery.isEmpty else { return "" }
+        let s = controller.searchStatus
+        guard let current = s.current, s.count > 0 else { return "No results" }
+        return "\(current + 1) of \(s.count)"
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Find in chat", text: $controller.searchQuery)
+                .textFieldStyle(.plain)
+                .frame(width: 180)
+                .focused($focused)
+                .onKeyPress(.return, phases: .down) { press in
+                    controller.stepSearch(press.modifiers.contains(.shift) ? -1 : 1)
+                    return .handled
+                }
+                .onKeyPress(.escape, phases: .down) { _ in
+                    controller.closeSearch()
+                    return .handled
+                }
+            Text(summary)
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 62, alignment: .trailing)
+            Divider().frame(height: 14)
+            Button {
+                controller.stepSearch(-1)
+            } label: {
+                Image(systemName: "chevron.up")
+            }
+            .help("Previous match (⇧⌘G)")
+            Button {
+                controller.stepSearch(1)
+            } label: {
+                Image(systemName: "chevron.down")
+            }
+            .help("Next match (⌘G)")
+            Button {
+                controller.closeSearch()
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .help("Close (Esc)")
+        }
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.12)))
+        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+        .onAppear { focus() }
+        .onChange(of: controller.searchFocusRequest) { _, _ in focus() }
+    }
+
+    /// Focuses the field with its text selected, so typing replaces the last query.
+    private func focus() {
+        focused = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(50))
+            if focused { NSApp.sendAction(#selector(NSResponder.selectAll(_:)), to: nil, from: nil) }
+        }
     }
 }
 
@@ -73,6 +153,14 @@ final class ChatListController: ObservableObject {
     }
     private var treeOverviewTask: Task<Void, Never>?
 
+    @Published private(set) var searchVisible = false
+    @Published var searchQuery = "" {
+        didSet { if searchVisible { listView.setSearchQuery(searchQuery) } }
+    }
+    @Published private(set) var searchStatus = ChatSearchStatus()
+    /// Bumped on every Find request so an already open bar takes focus again.
+    @Published private(set) var searchFocusRequest = 0
+
     private weak var store: AppViewModel?
     private lazy var renderQueue = ChatRenderQueue { [weak self] ops in
         await self?.apply(ops)
@@ -90,6 +178,7 @@ final class ChatListController: ObservableObject {
     init() {
         listView.onAction = { [weak self] action in self?.perform(action) }
         listView.onPinnedChange = { [weak self] atBottom in self?.store?.selectedChatAtBottom = atBottom }
+        listView.onSearchChange = { [weak self] status in self?.searchStatus = status }
     }
 
     // MARK: - Binding to the store
@@ -230,14 +319,32 @@ final class ChatListController: ObservableObject {
         enqueue(.scrollTo(messageID: messageID))
     }
 
+    /// Shows the search bar (or refocuses it) and searches for the last query.
     func startSearch() {
-        // TODO: native search
+        guard treeOverview == nil else { return }
+        searchVisible = true
+        searchFocusRequest &+= 1
+        listView.setSearchQuery(searchQuery)
+    }
+
+    func closeSearch(refocusInput: Bool = true) {
+        guard searchVisible else { return }
+        searchVisible = false
+        listView.setSearchQuery("")
+        if refocusInput { store?.focusChatInput() }
+    }
+
+    /// Find Next / Find Previous. Opens the bar if it isn't, like Find does.
+    func stepSearch(_ direction: Int) {
+        guard searchVisible else { return startSearch() }
+        listView.stepSearch(direction)
     }
 
     /// Projects and lays out the selected chat's tree off the main actor, then
     /// shows it.
     func enterTreeOverview() {
         guard let store, let chat = store.selectedChatItem?.chat else { return }
+        closeSearch(refocusInput: false)
         let scale = CGFloat(ChatFeaturesConfig.normalizedInterfaceScale(store.preferencesInterfaceScale) / 100)
         treeOverviewTask?.cancel()
         treeOverviewTask = Task {

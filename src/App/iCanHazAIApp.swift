@@ -273,6 +273,14 @@ struct iCanHazAIApp: App {
                     AppViewModel.shared?.startSearchInChat()
                 }
                 .keyboardShortcut("f", modifiers: .command)
+                Button("Find Next") {
+                    AppViewModel.shared?.findInChat(direction: 1)
+                }
+                .keyboardShortcut("g", modifiers: .command)
+                Button("Find Previous") {
+                    AppViewModel.shared?.findInChat(direction: -1)
+                }
+                .keyboardShortcut("g", modifiers: [.shift, .command])
                 Button("Filter Chat List…") {
                     AppViewModel.shared?.focusChatListFilter()
                 }

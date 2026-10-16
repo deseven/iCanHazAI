@@ -32,6 +32,9 @@ final class ChatListView: NSView {
     /// pinned to the bottom or stops being so.
     var onPinnedChange: ((Bool) -> Void)?
 
+    /// Called whenever the number of matches or the current one changes.
+    var onSearchChange: ((ChatSearchStatus) -> Void)?
+
     private let scrollView = NSScrollView()
     private let document = FlippedView()
     private let jumpButton = NSButton()
@@ -70,6 +73,11 @@ final class ChatListView: NSView {
     private let pass = PassToken()
     private var pendingPass: Task<Void, Never>?
     private var previewURLs: [URL] = []
+
+    private let searchIndex = ChatSearchIndex()
+    private var searchTask: Task<Void, Never>?
+    private var searchScheduled = false
+    private var searchRevealPending = false
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -119,6 +127,7 @@ final class ChatListView: NSView {
         recomputeOffsets()
         pinnedToBottom = true
         updateJumpButton()
+        scheduleSearch(delay: .zero)
         guard textWidth > 0 else { return }
         measureTail()
         scrollToBottom()
@@ -134,6 +143,7 @@ final class ChatListView: NSView {
         let i = rows.count - 1
         applyHeights([(i, ensureExact(i) ?? row.height)])
         layoutRows()
+        scheduleSearch()
     }
 
     func insert(_ model: ChatRowModel, at index: Int) {
@@ -145,6 +155,7 @@ final class ChatListView: NSView {
         restore(anchor)
         layoutRows()
         schedulePass()
+        scheduleSearch()
     }
 
     func update(_ model: ChatRowModel) {
@@ -157,6 +168,7 @@ final class ChatListView: NSView {
         row.measuredWidth = -1
         if let h = ensureExact(i) { applyHeights([(i, h)]) }
         layoutRows()
+        scheduleSearch()
     }
 
     func delete(id: String) {
@@ -173,6 +185,7 @@ final class ChatListView: NSView {
         }
         restore(anchor)
         layoutRows()
+        scheduleSearch()
     }
 
     /// Runs several edits as one, so the scroll position is settled once at the
@@ -221,6 +234,114 @@ final class ChatListView: NSView {
         updateJumpButton()
         visibleViews[id]?.flash()
     }
+
+    // MARK: Search
+
+    /// Sets the text to look for; empty clears the highlights. A new query
+    /// scrolls to its first match at or after the current position.
+    func setSearchQuery(_ query: String) {
+        guard searchIndex.setQuery(query) else { return }
+        if query.isEmpty {
+            searchTask?.cancel()
+            searchScheduled = false
+            searchRevealPending = false
+            applySearchHighlights()
+            reportSearch()
+        } else {
+            scheduleSearch(reveal: true, delay: .zero)
+        }
+    }
+
+    /// Moves to the next (1) or previous (-1) match, wrapping around.
+    func stepSearch(_ direction: Int) {
+        guard searchIndex.isActive, !searchIndex.matches.isEmpty else { return }
+        searchIndex.step(direction)
+        applySearchHighlights()
+        reportSearch()
+        if let match = searchIndex.currentMatch { revealSearchMatch(match) }
+    }
+
+    private func reportSearch() {
+        onSearchChange?(searchIndex.status)
+    }
+
+    private func applySearchHighlights() {
+        for (id, v) in visibleViews { v.search = searchIndex.highlight(forRow: id) }
+    }
+
+    /// Rescans soon. Changes arriving before the scan starts share it, which also
+    /// caps the rescan rate while a reply streams in.
+    private func scheduleSearch(reveal: Bool = false, delay: Duration = .milliseconds(120)) {
+        guard searchIndex.isActive else { return }
+        searchRevealPending = searchRevealPending || reveal
+        guard !searchScheduled else { return }
+        searchScheduled = true
+        searchTask = Task { @MainActor [weak self] in
+            if delay > .zero { try? await Task.sleep(for: delay) }
+            guard !Task.isCancelled, let self else { return }
+            self.searchScheduled = false
+            await self.runSearch()
+        }
+    }
+
+    private func runSearch() async {
+        guard searchIndex.isActive else { return }
+        let reveal = searchRevealPending
+        searchRevealPending = false
+        let inputs = rows.compactMap { row -> SearchRowInput? in
+            ChatSearch.isSearchable(row.model) ? SearchRowInput(id: row.model.id, content: row.model.content) : nil
+        }
+        let applied = await searchIndex.refresh(
+            inputs: inputs, theme: theme, rowIndex: indexByID, anchor: searchAnchor())
+        guard applied else {
+            searchRevealPending = searchRevealPending || reveal
+            return
+        }
+        applySearchHighlights()
+        reportSearch()
+        if reveal, let match = searchIndex.currentMatch { revealSearchMatch(match) }
+    }
+
+    /// Where the next current match is looked for: the current match itself if
+    /// it still exists, else the top of the viewport.
+    private func searchAnchor() -> (row: Int, location: Int) {
+        if let m = searchIndex.currentMatch, let i = indexByID[m.rowID] { return (i, m.range.location) }
+        return (rowIndex(atY: scrollView.documentVisibleRect.minY), 0)
+    }
+
+    /// Brings a match into view, centered unless it's already comfortably visible.
+    /// Rows far away are first scrolled to (measuring as they come into view)
+    /// so the match's position inside the row can be read from its text view.
+    private func revealSearchMatch(_ match: SearchMatch) {
+        guard textWidth > 0, let i = indexByID[match.rowID] else { return }
+        func matchRect() -> NSRect? {
+            guard let view = visibleViews[match.rowID], let r = view.rect(ofSearchRange: match.range) else {
+                return nil
+            }
+            return document.convert(r, from: view)
+        }
+        func comfortable(_ r: NSRect) -> Bool {
+            let v = scrollView.documentVisibleRect
+            return r.minY >= v.minY + searchTopMargin && r.maxY <= v.maxY - 24
+        }
+        if let r = matchRect(), comfortable(r) { return }
+        pinnedToBottom = false
+        for _ in 0..<2 {
+            if let h = ensureExact(i) { applyHeights([(i, h)]) }
+            setScrollY(offsets[i] - rowLayout.blockGap)
+            layoutRows()
+        }
+        if let r = matchRect() {
+            let height = scrollView.documentVisibleRect.height
+            setScrollY(min(r.midY - height / 2, r.minY - searchTopMargin - 20))
+            layoutRows()
+        }
+        pinnedToBottom = documentHeight - scrollView.contentView.bounds.maxY < 30
+        updateJumpButton()
+    }
+
+    /// Room kept clear at the top of the viewport for the search bar floating over it.
+    private var searchTopMargin: CGFloat { 56 }
 
     // MARK: Layout
 
@@ -345,6 +466,7 @@ final class ChatListView: NSView {
             view.configure(
                 row, context: context, isFirst: i == 0, textWidth: textWidth,
                 open: row.rendered.map(policy.mask) ?? [], layout: layout, contextVersion: contextVersion)
+            view.search = searchIndex.highlight(forRow: id)
             let headerBottom = offsets[i] + layout.top + layout.header
             view.showsBottomActions = headerBottom <= visibleTop && offsets[i + 1] > visibleTop
         }
@@ -592,6 +714,7 @@ final class ChatListView: NSView {
     private func recycle(_ v: MessageRowView) {
         v.isHidden = true
         v.isHovered = false
+        v.search = nil
         v.cancelFlash()
         pool.append(v)
     }
@@ -874,5 +997,20 @@ final class PassToken: @unchecked Sendable {
         func testHeight(of id: String) -> CGFloat? { indexByID[id].map { rows[$0].height } }
         var testVisibleIDs: Set<String> { Set(visibleViews.keys) }
         var testRowIDs: [String] { rows.map(\.model.id) }
+        var testSearchStatus: ChatSearchStatus { searchIndex.status }
+        var testSearchMatches: [SearchMatch] { searchIndex.matches }
+        var testViewHighlight: [String: SearchHighlight] {
+            visibleViews.compactMapValues { $0.search }
+        }
+
+        /// Whether the current match is inside the viewport (and clear of the search bar).
+        var testCurrentMatchVisible: Bool {
+            guard let m = searchIndex.currentMatch, let v = visibleViews[m.rowID],
+                let r = v.rect(ofSearchRange: m.range)
+            else { return false }
+            let rect = document.convert(r, from: v)
+            let visible = scrollView.documentVisibleRect
+            return rect.minY >= visible.minY + searchTopMargin && rect.maxY <= visible.maxY
+        }
     }
 #endif

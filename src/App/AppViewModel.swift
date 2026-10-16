@@ -1500,6 +1500,19 @@ final class AppViewModel: ObservableObject {
         chatListController?.startSearch()
     }
 
+    /// Find Next (1) / Find Previous (-1) in the chat.
+    func findInChat(direction: Int) {
+        guard selectedChatItem != nil else { return }
+        chatListController?.stepSearch(direction)
+    }
+
+    /// Bumped to hand keyboard focus back to the message input.
+    @Published var chatInputFocusRequest = 0
+
+    func focusChatInput() {
+        chatInputFocusRequest &+= 1
+    }
+
     /// Incremented to ask the chat sidebar to focus its filter field
     /// (Option-Cmd-F). A counter rather than a bool so repeated invocations
     /// each fire `.onChange`.
