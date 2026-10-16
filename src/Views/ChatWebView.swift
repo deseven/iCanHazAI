@@ -153,10 +153,8 @@ struct ChatWebView: View {
 /// the same window.
 @MainActor
 final class ChatWebViewModel: ObservableObject {
-    /// The live web view. Created lazily and torn down when the host window
-    /// stays occluded/minimized/closed for >15s to free the WebContent process.
-    /// The renderer is purely representational, so it can be recreated and
-    /// the current chat snapshot replayed on demand.
+    /// The live web view. Created lazily when the host view is first made and
+    /// kept alive for the lifetime of this model.
     private(set) var webView: WKWebView?
     /// The scheme handler serving chat images via `ichai://`.
     private let imageSchemeHandler = ImageSchemeHandler()
@@ -201,30 +199,10 @@ final class ChatWebViewModel: ObservableObject {
     private var expandThinkingEnabled: Bool = false
     private var expandToolUseEnabled: Bool = false
 
-    /// Host container returned to SwiftUI; the web view is added/removed as a
-    /// subview so we can tear it down and recreate it without invalidating the
-    /// representable.
+    /// Host container returned to SwiftUI; the web view is embedded as a subview.
     private var hostView: ChatWebViewHostView?
     private var userContentController: WKUserContentController?
     private var config: WKWebViewConfiguration?
-    /// The window whose visibility we track, if any.
-    private weak var observedWindow: NSWindow?
-    /// Pending teardown-after-15s timer.
-    private var killTask: Task<Void, Never>?
-    /// Pending one-shot fallback coverage check (20s after window goes inactive
-    /// but isn't minimized/occluded).
-    private var coverageTask: Task<Void, Never>?
-    /// True when the web view has been torn down and not yet restored.
-    private var isTornDown: Bool = false
-    /// Grace period (seconds) before killing the WebContent process after the
-    /// host window becomes non-visible (occluded/minimized/closed).
-    private static let killDelaySeconds: Int = 15
-    /// Delay (seconds) before running the one-shot fallback coverage check
-    /// after the window becomes inactive but not minimized/occluded.
-    private static let coverageDelaySeconds: Int = 20
-    /// Minimum fraction of our window's area that the frontmost window must
-    /// cover for us to consider the webview not visible.
-    private static let coverageThreshold: Double = 0.9
 
     init() {}
 
@@ -233,18 +211,15 @@ final class ChatWebViewModel: ObservableObject {
         NotificationCenter.default.removeObserver(self)
     }
 
-    // MARK: - Lifecycle (teardown / restore on window occlusion)
+    // MARK: - Lifecycle
 
     /// Returns the host container SwiftUI should display. The web view is
-    /// created lazily and embedded as a subview; it can be torn down and
-    /// recreated without invalidating the representable.
+    /// created lazily and embedded as a subview.
     func makeHostView() -> NSView {
         if hostView == nil {
             let host = ChatWebViewHostView()
             host.autoresizesSubviews = true
-            host.onMoveToWindow = { [weak self] _ in
-                self?.reattachToCurrentWindow()
-            }
+
             hostView = host
         }
         ensureWebView()
@@ -276,223 +251,7 @@ final class ChatWebViewModel: ObservableObject {
         webView = wv
         userContentController = ucc
         config = cfg
-        isTornDown = false
         debugLog("Renderer", "webview created")
-    }
-
-    /// Kills the WebContent process (via the private `_close` API, the only
-    /// reliable way to terminate it promptly) and drops the web view. State
-    /// lives in `AppViewModel`, so `restoreWebView()` can replay the snapshot.
-    func teardownWebView() {
-        killTask?.cancel()
-        killTask = nil
-        guard let webView else { return }
-        debugLog("Renderer", "tearing down webview to free memory")
-        webView.stopLoading()
-        userContentController?.removeScriptMessageHandler(forName: "bridge")
-        webView.perform(NSSelectorFromString("_close"))
-        webView.removeFromSuperview()
-        self.webView = nil
-        userContentController = nil
-        config = nil
-        webReady = false
-        pendingMessages = []
-        isTornDown = true
-        enqueueRenderJob(.reset)
-    }
-
-    /// Recreates the web view (if needed) and replays the current chat snapshot.
-    /// Safe to call when the web view already exists — it just reloads + pushes.
-    private func restoreWebView() {
-        debugLog("Renderer", "restoring webview after window became visible")
-        if webView == nil {
-            pendingMessages = []
-            ensureWebView()
-        }
-        guard webView != nil, store != nil else { return }
-        if !webReady {
-            loadPage()
-        }
-        pushSnapshot()
-    }
-
-    // MARK: - Window visibility tracking
-
-    /// (Re)attaches occlusion/close/key observers to the window currently
-    /// hosting the web view. Called whenever the host view moves to a window.
-    private func reattachToCurrentWindow() {
-        let window = hostView?.window
-        if observedWindow === window { return }
-        if let old = observedWindow {
-            for name in Self.observedNotifications {
-                NotificationCenter.default.removeObserver(self, name: name, object: old)
-            }
-        }
-        observedWindow = window
-        guard let window else { return }
-        for name in Self.observedNotifications {
-            NotificationCenter.default.addObserver(
-                self, selector: #selector(windowVisibilityChanged), name: name, object: window)
-        }
-        windowVisibilityChanged()
-    }
-
-    private static let observedNotifications: [Notification.Name] = [
-        NSWindow.didChangeOcclusionStateNotification,
-        NSWindow.willCloseNotification,
-        NSWindow.didBecomeKeyNotification,
-        NSWindow.didResignKeyNotification,
-        NSWindow.didDeminiaturizeNotification,
-        NSWindow.didMiniaturizeNotification,
-    ]
-
-    @objc private func windowVisibilityChanged() {
-        guard let window = observedWindow, window === hostView?.window else {
-            debugLog("Renderer", "visibility: no observed window → schedule kill")
-            scheduleKill()
-            return
-        }
-        // Active (key/main) window is in front → definitely visible.
-        // Minimized or fully-occluded → definitely not visible.
-        // Otherwise (inactive but on screen, not minimized) → ambiguous; the
-        // fallback coverage check decides after a grace period.
-        let isKeyOrMain = window.isKeyWindow || window.isMainWindow
-        let isMinimized = window.isMiniaturized
-        let isOccluded = !window.occlusionState.contains(.visible)
-        debugLog(
-            "Renderer",
-            "visibility: key=\(window.isKeyWindow) main=\(window.isMainWindow) minimized=\(isMinimized) occluded=\(isOccluded) visible=\(window.isVisible)"
-        )
-
-        if isKeyOrMain {
-            // Definitely visible: cancel any pending kill/coverage check.
-            killTask?.cancel()
-            killTask = nil
-            coverageTask?.cancel()
-            coverageTask = nil
-            if isTornDown { restoreWebView() }
-        } else if isMinimized || isOccluded {
-            // Definitely hidden: kill after the grace period.
-            coverageTask?.cancel()
-            coverageTask = nil
-            scheduleKill()
-        } else {
-            // Inactive but on screen and not minimized/occluded. The occlusion
-            // machinery didn't fire (a sliver of the window is visible), so we
-            // schedule the one-shot fallback coverage check.
-            killTask?.cancel()
-            killTask = nil
-            scheduleCoverageCheck()
-        }
-    }
-
-    private func scheduleKill() {
-        if killTask != nil { return }
-        debugLog("Renderer", "scheduling kill in \(ChatWebViewModel.killDelaySeconds)s")
-        killTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(ChatWebViewModel.killDelaySeconds))
-            guard !Task.isCancelled, let self else { return }
-            self.teardownWebView()
-        }
-    }
-
-    /// One-shot fallback: 20s after the window becomes inactive (but not
-    /// minimized/occluded), checks whether the frontmost window fully covers
-    /// our window's rect (inset by 10px). If so, the webview isn't visible and
-    /// we tear it down. Runs only once per inactive period.
-    private func scheduleCoverageCheck() {
-        if coverageTask != nil { return }
-        debugLog("Renderer", "scheduling coverage check in \(ChatWebViewModel.coverageDelaySeconds)s")
-        coverageTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(ChatWebViewModel.coverageDelaySeconds))
-            guard !Task.isCancelled, let self else { return }
-            self.performCoverageCheck()
-        }
-    }
-
-    private func performCoverageCheck() {
-        coverageTask = nil
-        guard let window = observedWindow, window === hostView?.window else {
-            debugLog("Renderer", "coverage check: no observed window")
-            return
-        }
-        // If the window became key again in the meantime, nothing to do.
-        if window.isKeyWindow || window.isMainWindow {
-            debugLog("Renderer", "coverage check: window is key/main again, aborting")
-            return
-        }
-        let ourRect = window.frame
-        guard let ourWindowID = window.windowNumber as Int? else {
-            debugLog("Renderer", "coverage check: no window number")
-            return
-        }
-        // Enumerate all on-screen layer-0 windows front-to-back, find ours, and
-        // union the rects of every window above ours. If that union covers
-        // >= coverageThreshold of our window's area, the webview isn't visible.
-        guard let (ourRectFound, coveringUnion) = Self.coveringUnionAbove(windowID: ourWindowID) else {
-            debugLog("Renderer", "coverage check: could not enumerate windows")
-            return
-        }
-        guard ourRectFound else {
-            debugLog("Renderer", "coverage check: our window not found in window list")
-            return
-        }
-        // Same-screen check: the covering union's midpoint must be on the same
-        // screen as our window's midpoint.
-        guard Self.sameScreen(ourRect, coveringUnion) else {
-            debugLog("Renderer", "coverage check: different screens, aborting")
-            return
-        }
-        let intersection = ourRect.intersection(coveringUnion)
-        let ourArea = ourRect.width * ourRect.height
-        let coveredArea = intersection.isNull ? 0 : intersection.width * intersection.height
-        let ratio = ourArea > 0 ? coveredArea / ourArea : 0
-        let covered = ratio >= ChatWebViewModel.coverageThreshold
-        debugLog(
-            "Renderer",
-            "coverage check: ourRect=\(ourRect) union=\(coveringUnion) ourArea=\(ourArea) coveredArea=\(coveredArea) ratio=\(ratio) covered=\(covered)"
-        )
-        if covered {
-            debugLog("Renderer", "fallback coverage check: window covered by windows above → killing webview")
-            teardownWebView()
-        }
-    }
-
-    /// Enumerates on-screen layer-0 windows front-to-back, finds the window
-    /// matching `windowID`, and returns the union of all layer-0 window rects
-    /// that are above it in z-order. Returns (found, unionRect). If our window
-    /// isn't found, returns (false, .null).
-    private static func coveringUnionAbove(windowID: Int) -> (Bool, CGRect)? {
-        guard let info = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else {
-            return nil
-        }
-        var union = CGRect.null
-        var found = false
-        for w in info {
-            let layer = (w[kCGWindowLayer as String] as? Int) ?? 0
-            guard layer == 0 else { continue }
-            let id = (w[kCGWindowNumber as String] as? Int) ?? -1
-            if id == windowID {
-                found = true
-                break
-            }
-            guard let bounds = w[kCGWindowBounds as String] as? [String: CGFloat] else { continue }
-            let x = bounds["X"] ?? 0
-            let y = bounds["Y"] ?? 0
-            let wv = bounds["Width"] ?? 0
-            let h = bounds["Height"] ?? 0
-            union = union.union(CGRect(x: x, y: y, width: wv, height: h))
-        }
-        return (found, union)
-    }
-
-    /// Returns true if both rects' midpoints lie on the same NSScreen.
-    private static func sameScreen(_ a: CGRect, _ b: CGRect) -> Bool {
-        let midA = CGPoint(x: a.midX, y: a.midY)
-        let midB = CGPoint(x: b.midX, y: b.midY)
-        let screenA = NSScreen.screens.first { $0.frame.contains(midA) }
-        let screenB = NSScreen.screens.first { $0.frame.contains(midB) }
-        return screenA != nil && screenA === screenB
     }
 
     // MARK: - Page loading
@@ -901,16 +660,8 @@ private struct ChatWebViewRepresentable: NSViewRepresentable {
     }
 }
 
-/// Container view that hosts the `WKWebView` as a subview. Notifies the model
-/// when it moves to a window so occlusion observers can be (re)attached.
-final class ChatWebViewHostView: NSView {
-    var onMoveToWindow: ((NSWindow?) -> Void)?
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        onMoveToWindow?(window)
-    }
-}
+/// Container view that hosts the `WKWebView` as a subview.
+final class ChatWebViewHostView: NSView {}
 
 // MARK: - Wire types (Swift <-> JSON)
 

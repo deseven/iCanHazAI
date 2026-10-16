@@ -50,6 +50,10 @@ struct ChatInfoSidebar: View {
                         } else {
                             InfoCell(label: "Tokens", value: "N/A")
                         }
+                        InfoCell(
+                            label: "Current Context",
+                            value: item.contextSize?.displayValue ?? "N/A"
+                        )
                     }
                     if let snapshot = toolSnapshot {
                         if !snapshot.builtin.isEmpty {

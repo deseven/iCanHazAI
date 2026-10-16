@@ -39,8 +39,9 @@ extension AllAppTests {
                 Issue.record("Expected usage chunk")
                 return
             }
-            #expect(usage.tokensUsed == 947_150)
-            #expect(usage.inputTokens == 100)
+            // Input includes cache writes (fresh input): 100 + 323 000.
+            #expect(usage.tokensUsed == 1_270_150)
+            #expect(usage.inputTokens == 323_100)
             #expect(usage.outputTokens == 50)
             #expect(usage.cachedInputTokens == 947_000)
             #expect(usage.cacheCreationTokens == 323_000)
@@ -67,11 +68,37 @@ extension AllAppTests {
                 Issue.record("Expected usage chunk at index 1")
                 return
             }
-            #expect(usage.tokensUsed == 993_100)
-            #expect(usage.inputTokens == 100)
+            #expect(usage.tokensUsed == 1_316_100)
+            #expect(usage.inputTokens == 323_100)
             #expect(usage.outputTokens == 46_000)
             #expect(usage.cachedInputTokens == 947_000)
             #expect(usage.cacheCreationTokens == 323_000)
+        }
+
+        @Test("Anthropic message_delta input usage overrides smaller message_start values")
+        func anthropicMessageDeltaInputOverride() throws {
+            let provider = AnthropicProvider()
+            let acc = ToolCallAccumulator()
+            acc.setInputTokens(10, cached: 0, creation: 0)
+            let data = try JSONSerialization.data(withJSONObject: [
+                "type": "message_delta",
+                "delta": ["stop_reason": "end_turn"],
+                "usage": [
+                    "input_tokens": 20,
+                    "cache_read_input_tokens": 5_000,
+                    "cache_creation_input_tokens": 1_000,
+                    "output_tokens": 300,
+                ],
+            ])
+            let chunks = provider.parseStreamChunk(data, accumulator: acc)
+            guard case .usage(let usage) = chunks[1] else {
+                Issue.record("Expected usage chunk at index 1")
+                return
+            }
+            #expect(usage.inputTokens == 1_020)
+            #expect(usage.cachedInputTokens == 5_000)
+            #expect(usage.outputTokens == 300)
+            #expect(usage.tokensUsed == 6_320)
         }
 
         @Test("Anthropic message_start without caching fields defaults to zero")
@@ -348,4 +375,41 @@ func breakdownComponentsOrder() {
     let outputOnly = TokenUsage(tokensUsed: 50, outputTokens: 50)
     #expect(outputOnly.breakdownTitle == "Output")
     #expect(outputOnly.breakdownValue == "50")
+}
+
+// MARK: - Context size
+
+@Test("context size uses the last reported usage plus an estimate for later messages")
+func contextSizeReportedPlusTail() {
+    let usage = TokenUsage(tokensUsed: 1_150, inputTokens: 100, outputTokens: 50, cachedInputTokens: 1_000)
+    let messages = [
+        ChatMessage(role: .user, content: "hello"),  // 5
+        ChatMessage(role: .assistant, content: "world!", tokenUsage: usage),  // 6
+        ChatMessage(role: .user, content: String(repeating: "a", count: 40)),  // 40
+    ]
+    let ctx = ChatContextSize(messages: messages)
+    #expect(ctx?.tokens == 1_160)  // 1150 reported + 40 / 4 estimated
+    #expect(ctx?.isEstimated == true)
+    #expect(ctx?.displayValue == "~1 160")
+}
+
+@Test("context size is exact when the last message carries reported usage")
+func contextSizeReportedOnly() {
+    let usage = TokenUsage(tokensUsed: 150, inputTokens: 100, outputTokens: 50)
+    let messages = [
+        ChatMessage(role: .user, content: "hi"),
+        ChatMessage(role: .assistant, content: "yo", tokenUsage: usage),
+    ]
+    let ctx = ChatContextSize(messages: messages)
+    #expect(ctx?.tokens == 150)
+    #expect(ctx?.isEstimated == false)
+    #expect(ctx?.displayValue == "150")
+}
+
+@Test("context size is fully estimated without usage and nil for empty chats")
+func contextSizeEstimatedAndEmpty() {
+    let ctx = ChatContextSize(messages: [ChatMessage(role: .user, content: String(repeating: "x", count: 10))])
+    #expect(ctx?.tokens == 3)
+    #expect(ctx?.isEstimated == true)
+    #expect(ChatContextSize(messages: []) == nil)
 }

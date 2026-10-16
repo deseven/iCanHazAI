@@ -1040,6 +1040,13 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
         )
     }
 
+    /// Current context size of the active branch, or nil when the chat is
+    /// unloaded or has no content. See `ChatContextSize`.
+    var contextSize: ChatContextSize? {
+        guard let chat = chat else { return nil }
+        return ChatContextSize(messages: chat.activeMessages)
+    }
+
     /// Total token count (input + output + cached) across all assistant
     /// responses. Convenience alias of `tokenUsage?.tokensUsed`.
     var tokenCount: Int? {

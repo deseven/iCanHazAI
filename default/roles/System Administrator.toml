@@ -4,7 +4,6 @@ icon = "terminal"
 accent = "green"
 connection_override_allowed = true
 mcps_override_allowed = true
-working_directory = "~"
 
 [features]
 with_attachments = true
@@ -16,6 +15,8 @@ auto_allow_all = true
 [filesystem]
 tools = ["read_file", "write_file"]
 auto_allow = ["read_file"]
+
+[code]
 
 [shell]
 tools = ["shell"]

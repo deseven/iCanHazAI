@@ -285,14 +285,19 @@ struct AnthropicProvider: LLMProvider {
             {
                 let cached = input["cache_read_input_tokens"] as? Int ?? 0
                 let creation = input["cache_creation_input_tokens"] as? Int ?? 0
-                let total = inputTokens + cached + outputTokens
+                // Anthropic's `input_tokens` excludes both cache reads and cache
+                // writes. Cache writes are fresh (non-cached) input, so they
+                // belong in "input"; otherwise it shows only the tiny uncached
+                // tail of the prompt.
+                let freshInput = inputTokens + creation
+                let total = freshInput + cached + outputTokens
                 accumulator.setInputTokens(inputTokens, cached: cached, creation: creation)
                 // Anthropic sometimes reports full usage in message_start already.
                 chunks.append(
                     .usage(
                         TokenUsage(
                             tokensUsed: total,
-                            inputTokens: inputTokens,
+                            inputTokens: freshInput,
                             outputTokens: outputTokens,
                             cachedInputTokens: cached,
                             cacheCreationTokens: creation
@@ -307,13 +312,20 @@ struct AnthropicProvider: LLMProvider {
             if let usage = json["usage"] as? [String: Any],
                 let outputTokens = usage["output_tokens"] as? Int
             {
-                let (input, cached, creation) = accumulator.getInputTokens()
-                let total = input + cached + outputTokens
+                var (input, cached, creation) = accumulator.getInputTokens()
+                // Newer API versions (and some proxies) report cumulative input
+                // usage in message_delta; prefer it when it is larger than what
+                // message_start gave us.
+                input = max(input, usage["input_tokens"] as? Int ?? 0)
+                cached = max(cached, usage["cache_read_input_tokens"] as? Int ?? 0)
+                creation = max(creation, usage["cache_creation_input_tokens"] as? Int ?? 0)
+                let freshInput = input + creation
+                let total = freshInput + cached + outputTokens
                 chunks.append(
                     .usage(
                         TokenUsage(
                             tokensUsed: total,
-                            inputTokens: input,
+                            inputTokens: freshInput,
                             outputTokens: outputTokens,
                             cachedInputTokens: cached,
                             cacheCreationTokens: creation
