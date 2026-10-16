@@ -584,7 +584,8 @@ final class ChatListView: NSView {
         case .toggle(let key): toggle(key)
         case .collapse(let key): collapse(key)
         case .openAttachment(let info): openAttachment(info)
-        case .previewImage(let messageID, let filename): previewImage(messageID: messageID, filename: filename)
+        case .previewAttachment(let messageID, let filename):
+            previewAttachment(messageID: messageID, filename: filename)
         }
     }
 
@@ -656,12 +657,14 @@ final class ChatListView: NSView {
         NSWorkspace.shared.open(url)
     }
 
-    /// Shows the message's images in the shared Quick Look panel. The panel is
+    /// Shows the message's previewable attachments in the shared Quick Look panel. The panel is
     /// driven directly through its data source rather than the responder chain
     /// (`acceptsPreviewPanelControl`), which never presented in the real window.
-    private func previewImage(messageID: String, filename: String) {
+    private func previewAttachment(messageID: String, filename: String) {
         guard let i = indexByID[messageID] else { return }
-        let urls = rows[i].model.attachments.filter { $0.kind == .image }.compactMap { attachmentURL($0) }
+        let urls = rows[i].model.attachments
+            .filter { QuickLookSupport.canPreview(filename: $0.filename, kind: $0.kind) }
+            .compactMap { attachmentURL($0) }
         guard let start = urls.firstIndex(where: { $0.lastPathComponent == filename }) else { return }
         previewURLs = urls
         guard let panel = QLPreviewPanel.shared() else { return }

@@ -240,7 +240,7 @@ final class AttachmentsView: FlippedView {
                 width: side, height: side)
             v.toolTip = info.displayName
             v.onClick = { [weak self] in
-                self?.onEvent?(.previewImage(messageID: messageID, filename: info.filename))
+                self?.onEvent?(.previewAttachment(messageID: messageID, filename: info.filename))
             }
             if let directory {
                 let url = directory.appendingPathComponent(info.filename)
@@ -255,7 +255,13 @@ final class AttachmentsView: FlippedView {
             let v = take(&chips, i) { DocumentChipView() }
             v.configure(info, maxWidth: width, layout: layout)
             v.frame.origin = NSPoint(x: 0, y: y)
-            v.onClick = { [weak self] in self?.onEvent?(.openAttachment(info)) }
+            v.onClick = { [weak self] in
+                if QuickLookSupport.canPreview(filename: info.filename, kind: info.kind) {
+                    self?.onEvent?(.previewAttachment(messageID: messageID, filename: info.filename))
+                } else {
+                    self?.onEvent?(.openAttachment(info))
+                }
+            }
             y = v.frame.maxY + layout.chipGap
         }
         for v in chips.dropFirst(block.documents.count) { v.isHidden = true }

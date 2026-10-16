@@ -43,7 +43,7 @@ enum RowEvent {
     case toggle(key: String)
     case collapse(key: String)
     case openAttachment(ChatRowModel.AttachmentInfo)
-    case previewImage(messageID: String, filename: String)
+    case previewAttachment(messageID: String, filename: String)
 }
 
 /// Which collapsible blocks are open. Defaults come from the preferences, so
