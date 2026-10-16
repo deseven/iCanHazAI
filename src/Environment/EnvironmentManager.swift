@@ -193,11 +193,16 @@ final class EnvironmentManager: @unchecked Sendable {
     /// filename. Temporary chats are routed to the system temp directory so no
     /// attachments ever touch the chats folder. Created on demand.
     func attachmentsDirectory(for chatFilename: String) -> URL {
-        let name = (chatFilename as NSString).deletingPathExtension
-        let base = Self.isTemporaryChatFilename(chatFilename) ? temporaryAttachmentsRoot : chatsURL
-        let dir = base.appendingPathComponent(name, isDirectory: true)
+        let dir = attachmentsDirectoryURL(for: chatFilename)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    /// Same location as `attachmentsDirectory(for:)`, without creating it.
+    func attachmentsDirectoryURL(for chatFilename: String) -> URL {
+        let name = (chatFilename as NSString).deletingPathExtension
+        let base = Self.isTemporaryChatFilename(chatFilename) ? temporaryAttachmentsRoot : chatsURL
+        return base.appendingPathComponent(name, isDirectory: true)
     }
 
     /// Saves attachment data for a chat, returning the on-disk URL.

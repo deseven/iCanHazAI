@@ -249,8 +249,7 @@ extension Array where Element == ToolCall {
 /// file is written to disk. The request builders send the image as an image
 /// block on vision-capable connections and `fallback` (classification + OCR)
 /// as text on vision-incapable ones, exactly like user-attached images. The
-/// renderer loads the image via the `ichai://` scheme handler, which serves
-/// the bytes from the chat data.
+/// renderer decodes the image from the chat data.
 struct ToolResultImage: Codable, Equatable, Sendable {
     /// The processed image bytes (resized/re-encoded), base64-encoded for
     /// persistence in the chat JSON.
@@ -292,8 +291,7 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
     var summary: ToolSummary.Status?
     /// A processed image, present when `read_file` read an image. The bytes
     /// live here (no attachment file on disk); the request builders and the
-    /// `ichai://` scheme handler read them from the chat data. Nil for all
-    /// other results.
+    /// renderer read them from the chat data. Nil for all other results.
     var image: ToolResultImage?
 
     enum CodingKeys: String, CodingKey {

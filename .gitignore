@@ -9,5 +9,3 @@ Package.resolved
 .env
 TODO/*
 dist/*
-chatrenderer/dist/*
-chatrenderer/node_modules/

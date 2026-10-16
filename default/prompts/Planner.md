@@ -44,7 +44,7 @@ Each item: one well-defined outcome, no nesting. Update it as the plan evolves.
 Alongside the list, include where relevant:
 - A short goal statement.
 - Key constraints and decisions (with the questions you asked and their answers).
-- Any diagrams (plain text or Mermaid if available), references, or notes that support execution.
+- Any diagrams (plain-text diagrams), references, or notes that support execution.
 
 Keep it focused — it's a roadmap, not a novel.
 

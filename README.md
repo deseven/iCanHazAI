@@ -14,7 +14,7 @@ To address the elephant in the room: there are many AI chat apps and agentic har
 
 ## Features
 
-- native macOS app: Swift backend, heavily optimized web-based chat rendering (Markdown, code, Mermaid, KaTeX), low resource usage
+- native macOS app: Swift backend, fully native chat rendering (Markdown, tables, code blocks) built on AppKit and TextKit, fast on huge chats, low resource usage
 - extensive BYOK support: Anthropic, OpenAI, or any OpenAI-compatible API (OpenRouter, Together, DeepSeek, local servers like Ollama/LM Studio, and countless others)
 - roles: clearly defined templates bundling a prompt, a connection, tools, and a working directory — several bundled, easy to create your own
 - agentic toolset: built-in filesystem/code/shell/utils/web tool groups with per-tool approval and optional directory isolation; file editing uses the [oh-my-pi](https://github.com/can1357/oh-my-pi) hashline patch format for optimistic-concurrency edits

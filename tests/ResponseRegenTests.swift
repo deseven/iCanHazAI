@@ -3,9 +3,8 @@ import Testing
 
 @testable import iCanHazAI
 
-/// Tests for response regeneration: the feature-flag resolution, the
-/// follow-on message count helper used by the delete/edit sheets, and the
-/// `regenerate` bridge message encode/decode round-trip.
+/// Tests for response regeneration: the feature-flag resolution and the
+/// follow-on message count helper used by the delete/edit sheets.
 extension AllAppTests {
     @Suite("Response regen")
     struct ResponseRegenTests {
@@ -73,75 +72,6 @@ extension AllAppTests {
         func missingMessageFollowOn() {
             let chat = Fixtures.simpleChat()
             #expect(ChatView.followOnMessageCount(for: UUID(), in: chat) == 0)
-        }
-
-        // MARK: - Bridge message encode/decode
-
-        @Test("regenerate bridge message round-trips")
-        func regenerateBridgeRoundTrip() throws {
-            let id = UUID().uuidString
-            let original = BridgeMessageData.regenerate(messageId: id)
-            let data = try JSONEncoder().encode(original)
-            let decoded = try JSONDecoder().decode(BridgeMessageData.self, from: data)
-            guard case .regenerate(let decodedId) = decoded else {
-                Issue.record("expected .regenerate, got \(decoded)")
-                return
-            }
-            #expect(decodedId == id)
-        }
-
-        @Test("regenerate bridge message encodes the correct type tag")
-        func regenerateBridgeTypeTag() throws {
-            let original = BridgeMessageData.regenerate(messageId: "abc-123")
-            let data = try JSONEncoder().encode(original)
-            let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-            #expect(json["type"] as? String == "regenerate")
-            #expect(json["messageId"] as? String == "abc-123")
-        }
-
-        // MARK: - Snapshot features encode/decode
-
-        @Test("snapshot features round-trip with regen enabled")
-        func featuresRoundTripRegen() throws {
-            let features = ChatSnapshotFeaturesData(responseRegen: true, chatTrees: false)
-            let snapshot = ChatSnapshotData(
-                chatId: "test",
-                messages: [],
-                isStreaming: false,
-                roleName: nil,
-                roleAccent: nil,
-                features: features
-            )
-            let data = try JSONEncoder().encode(snapshot)
-            let decoded = try JSONDecoder().decode(ChatSnapshotData.self, from: data)
-            #expect(decoded.features.responseRegen == true)
-            #expect(decoded.features.chatTrees == false)
-        }
-
-        @Test("snapshot features round-trip with both flags enabled")
-        func featuresRoundTripBoth() throws {
-            let features = ChatSnapshotFeaturesData(responseRegen: true, chatTrees: true)
-            let snapshot = ChatSnapshotData(
-                chatId: "test",
-                messages: [],
-                isStreaming: false,
-                roleName: "Assistant",
-                roleAccent: "#FF0000",
-                features: features
-            )
-            let data = try JSONEncoder().encode(snapshot)
-            let decoded = try JSONDecoder().decode(ChatSnapshotData.self, from: data)
-            #expect(decoded.features.responseRegen == true)
-            #expect(decoded.features.chatTrees == true)
-        }
-
-        @Test("snapshot features default to false when absent")
-        func featuresDefaultFalse() throws {
-            // Encode a snapshot without the features key by manually building JSON.
-            let json = #"{"chatId":"x","messages":[],"isStreaming":false}"#
-            let decoded = try JSONDecoder().decode(ChatSnapshotData.self, from: Data(json.utf8))
-            #expect(decoded.features.responseRegen == false)
-            #expect(decoded.features.chatTrees == false)
         }
     }
 }

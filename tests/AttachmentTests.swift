@@ -395,42 +395,6 @@ extension AllAppTests {
             #expect(!committed.filename.contains(" "))
         }
 
-        // MARK: - URL encoding round-trip
-
-        @Test("URL encode/decode round-trips filenames with special characters")
-        func urlEncodingRoundTrip() {
-            let names = [
-                "report.docx",
-                "my report.docx",
-                "café résumé.pdf",
-                "100%done.png",
-                "weird:name.txt",
-            ]
-            for name in names {
-                let encoded = ImageSchemeHandler.encodeResource(name)
-                let decoded = ImageSchemeHandler.decodeResource(encoded)
-                #expect(decoded == name, "round-trip failed for \(name): encoded=\(encoded) decoded=\(decoded)")
-                // The encoded form must produce a valid URL.
-                let url = URL(string: "ichai://\(encoded)")
-                #expect(url != nil, "encoded form did not produce a valid URL for \(name)")
-            }
-        }
-
-        @Test("An attachment with spaces in the name produces a valid ichai URL")
-        func attachmentProducesValidURL() {
-            let attachment = AppAttachment(
-                kind: .image, ext: "png", filename: "my screenshot.png",
-                originalName: "my screenshot.png"
-            )
-            let encoded = ImageSchemeHandler.encodeResource(attachment.filename)
-            let urlStr = "ichai://\(encoded)"
-            let url = URL(string: urlStr)
-            #expect(url != nil)
-            // URL.host returns the decoded form; verify it round-trips.
-            #expect(url?.host == "my screenshot.png")
-            #expect(ImageSchemeHandler.decodeResource(encoded) == "my screenshot.png")
-        }
-
         // MARK: - Backward compatibility
 
         @Test("An old attachment without a filename field decodes with a UUID fallback")

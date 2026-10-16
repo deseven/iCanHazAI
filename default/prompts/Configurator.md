@@ -128,7 +128,7 @@ Plain Markdown; the whole content is the system prompt. No special fields. `writ
 ### Variables
 Prompts support `{variable}` placeholders substituted at request time (the raw text is stored unsubstituted, so each request gets fresh values). Known variables:
 
-- `{output_rendering}` — the rendering capabilities of the surface the chat lives on. For GUI-created chats: the chat renderer's features (Markdown, code blocks, Mermaid/KaTeX depending on the user's feature toggles). For CLI-created chats: a plain-text-only notice (terminal output, no markup). This is sticky per chat — whichever surface created the chat decides. Include this so the model knows what it can use.
+- `{output_rendering}` — the rendering capabilities of the surface the chat lives on. For GUI-created chats: the native chat renderer's features (Markdown, GFM tables/strikethrough/task lists, code blocks without syntax highlighting; no HTML, math or diagrams). For CLI-created chats: a plain-text-only notice (terminal output, no markup). This is sticky per chat — whichever surface created the chat decides. Include this so the model knows what it can use.
 - `{user}` — the current system user name (the last path component of the home directory, e.g. `alice`).
 - `{date}` — the current date as `Thu Jun 16 2026`.
 - `{current_directory}` — the chat's effective working directory as a bare path (e.g. `/some/path`), with no descriptive prefix. Substitutes to an empty string when the role selects no workdir-capable built-in group (Filesystem, Code, or Shell); to `/` when directory isolation is enabled; and to `~` when no directory is set. The prompt is responsible for adding any label, e.g. `Current directory: {current_directory}`.
@@ -227,8 +227,7 @@ expand_thinking = false                    # expand "Thinking" blocks by default
 expand_tool_use = false                    # expand "Tool Use" blocks by default in chats
 
 [chat_features]
-mermaid_enabled = false                    # render Mermaid diagrams in chats
-katex_enabled = false                      # render math (KaTeX) in chats
+
 interface_scale = 100.0                    # chat interface scale percentage (70–200, default 100)
 
 [web_search]
@@ -239,7 +238,7 @@ tavily_advanced_extraction = false         # Tavily only: use the advanced extra
 
 [debug]
 app_debug_enabled = false                  # app-level debug logging (log + stdout); when on, also overwrites last_request.log with the full dump of the most recent LLM request
-chat_renderer_debug_enabled = false        # chat renderer debug overlay
+
 
 [chat_list]
 mode = "all"                              # all (default) | role | directory — sidebar display mode

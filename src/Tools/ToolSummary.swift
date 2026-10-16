@@ -85,7 +85,7 @@ enum ToolSummary {
             return Status(kind: .error, label: "error", description: firstLine(result.content))
         }
         // A read_file on an image carries the processed image on `result.image`;
-        // the renderer shows it in the expanded view via the `ichai://` scheme,
+        // the renderer shows it in the expanded view,
         // so the collapsed description is empty (the "done" badge says it all).
         if result.image != nil {
             return Status(kind: .done, label: "done", description: "")
@@ -225,10 +225,23 @@ extension ToolSummary {
         return keys
     }
 
-    fileprivate struct ArgEntry {
+    struct ArgEntry: Equatable, Sendable {
         let key: String
         let value: String
         let multiline: Bool
+    }
+
+    /// Display entries of a tool-call arguments (or JSON-object result)
+    /// string, in source key order. Nil when the string isn't a JSON object.
+    static func argumentEntries(_ args: String) -> [ArgEntry]? {
+        guard let obj = parseJSONObject(args) else { return nil }
+        return parseArgs(args, object: obj)
+    }
+
+    /// True when the arguments are blank or an empty object.
+    static func isEmptyArgs(_ args: String) -> Bool {
+        let trimmed = args.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed == "{}"
     }
 
     /// Port of the renderer's `parseToolArgs`: one display entry per top-level
@@ -248,6 +261,8 @@ extension ToolSummary {
                 return ArgEntry(
                     key: key, value: isBool(n) ? (n.boolValue ? "true" : "false") : n.stringValue, multiline: false)
             }
+            if let array = v as? [Any], array.isEmpty { return ArgEntry(key: key, value: "[]", multiline: false) }
+            if let dict = v as? [String: Any], dict.isEmpty { return ArgEntry(key: key, value: "{}", multiline: false) }
             let json = prettyJSON(v)
             return ArgEntry(key: key, value: json, multiline: json.contains("\n"))
         }

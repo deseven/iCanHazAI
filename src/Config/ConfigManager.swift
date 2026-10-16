@@ -16,13 +16,13 @@ struct AppConfig: Codable, Equatable {
     var general: GeneralConfig = GeneralConfig()
     /// Chat behaviour toggles: default expansion of thinking / tool use blocks.
     var chatBehaviour: ChatBehaviourConfig = ChatBehaviourConfig()
-    /// Chat feature toggles: Mermaid and KaTeX rendering.
+    /// Chat rendering preferences (interface scale).
     var chatFeatures: ChatFeaturesConfig = ChatFeaturesConfig()
     /// Web search provider settings for the built-in `web` tool group.
     var webSearch: WebSearchConfig = WebSearchConfig()
     /// Chat list sidebar display mode and filter selection.
     var chatList: ChatListConfig = ChatListConfig()
-    /// Debug preferences: chat renderer debug overlay.
+    /// Debug preferences: app debug logging.
     var debug: DebugConfig = DebugConfig()
     /// Window position and size for the UI layer.
     var window: WindowConfig?
@@ -93,14 +93,8 @@ struct ChatBehaviourConfig: Codable, Equatable {
     }
 }
 
-/// `[chat_features]` group — rendering feature toggles.
+/// `[chat_features]` group — chat rendering preferences.
 struct ChatFeaturesConfig: Codable, Equatable {
-    /// Whether Mermaid diagram rendering is enabled in the chat view.
-    /// Nil/missing → false.
-    var mermaidEnabled: Bool?
-    /// Whether KaTeX math rendering is enabled in the chat view.
-    /// Nil/missing → false.
-    var katexEnabled: Bool?
     /// Chat renderer interface scale, as a percentage. Nil/missing → 100.
     var interfaceScale: Double?
 
@@ -112,8 +106,7 @@ struct ChatFeaturesConfig: Codable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case mermaidEnabled = "mermaid_enabled"
-        case katexEnabled = "katex_enabled"
+
         case interfaceScale = "interface_scale"
     }
 }
@@ -197,13 +190,9 @@ struct DebugConfig: Codable, Equatable {
     /// Whether the app-level debug logging (`debugLog`) is enabled.
     /// Nil/missing → false.
     var appDebugEnabled: Bool?
-    /// Whether the chat renderer debug overlay is enabled.
-    /// Nil/missing → false.
-    var chatRendererDebugEnabled: Bool?
 
     enum CodingKeys: String, CodingKey {
         case appDebugEnabled = "app_debug_enabled"
-        case chatRendererDebugEnabled = "chat_renderer_debug_enabled"
     }
 }
 
@@ -366,7 +355,7 @@ actor ConfigManager {
         if let stashed = ConfigManager.bootstrapBox.get() {
             debugLog(
                 "Config",
-                "consuming synchronously-bootstrapped config (app_debug=\(stashed.config.debug.appDebugEnabled ?? false), chat_renderer_debug=\(stashed.config.debug.chatRendererDebugEnabled ?? false))"
+                "consuming synchronously-bootstrapped config (app_debug=\(stashed.config.debug.appDebugEnabled ?? false))"
             )
             config = stashed.config
             didLoad = true
@@ -396,7 +385,7 @@ actor ConfigManager {
             config = try ConfigValidation.decodeAppConfig(data)
             debugLog(
                 "Config",
-                "loaded successfully (app_debug=\(config.debug.appDebugEnabled ?? false), chat_renderer_debug=\(config.debug.chatRendererDebugEnabled ?? false))"
+                "loaded successfully (app_debug=\(config.debug.appDebugEnabled ?? false))"
             )
         } catch {
             debugLog("Config", "⚠️ failed to decode config: \(error) — using defaults and overwriting the file")
@@ -433,7 +422,7 @@ actor ConfigManager {
             config = try ConfigValidation.decodeAppConfig(data)
             debugLog(
                 "Config",
-                "reloaded successfully (app_debug=\(config.debug.appDebugEnabled ?? false), chat_renderer_debug=\(config.debug.chatRendererDebugEnabled ?? false))"
+                "reloaded successfully (app_debug=\(config.debug.appDebugEnabled ?? false))"
             )
         } catch {
             // The external edit produced an undecodable config. Keep the
@@ -549,14 +538,6 @@ actor ConfigManager {
         config.window
     }
 
-    func getMermaidEnabled() -> Bool {
-        config.chatFeatures.mermaidEnabled ?? false
-    }
-
-    func getKatexEnabled() -> Bool {
-        config.chatFeatures.katexEnabled ?? false
-    }
-
     func getInterfaceScale() -> Double {
         ChatFeaturesConfig.normalizedInterfaceScale(config.chatFeatures.interfaceScale)
     }
@@ -571,10 +552,6 @@ actor ConfigManager {
 
     func getAppDebugEnabled() -> Bool {
         config.debug.appDebugEnabled ?? false
-    }
-
-    func getChatRendererDebugEnabled() -> Bool {
-        config.debug.chatRendererDebugEnabled ?? false
     }
 
     func getWebSearchConfig() -> WebSearchConfig {
@@ -617,16 +594,6 @@ actor ConfigManager {
         persist()
     }
 
-    func setMermaidEnabled(_ enabled: Bool) {
-        config.chatFeatures.mermaidEnabled = enabled
-        persist()
-    }
-
-    func setKatexEnabled(_ enabled: Bool) {
-        config.chatFeatures.katexEnabled = enabled
-        persist()
-    }
-
     func setInterfaceScale(_ scale: Double) {
         config.chatFeatures.interfaceScale = ChatFeaturesConfig.normalizedInterfaceScale(scale)
         persist()
@@ -644,11 +611,6 @@ actor ConfigManager {
 
     func setAppDebugEnabled(_ enabled: Bool) {
         config.debug.appDebugEnabled = enabled
-        persist()
-    }
-
-    func setChatRendererDebugEnabled(_ enabled: Bool) {
-        config.debug.chatRendererDebugEnabled = enabled
         persist()
     }
 

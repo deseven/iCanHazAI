@@ -53,8 +53,7 @@ enum LLMTransport {
     static let defaultTransportTimeout: TimeInterval = 3600
 
     /// The shared URLSession. A dedicated configuration keeps LLM traffic
-    /// isolated from the app's other URL activity (image scheme handler,
-    /// MCP, etc.) and avoids contention on the shared session's queue.
+    /// isolated from the app's other URL activity (MCP, etc.) and avoids contention on the shared session's queue.
     private static let session: URLSession = {
         let config = URLSessionConfiguration.default
         // Coarse OS-level idle failsafe. Streaming requests override it

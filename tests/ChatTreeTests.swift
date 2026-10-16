@@ -493,32 +493,6 @@ extension AllAppTests {
             #expect(chat.messages.count == 1)
         }
 
-        // MARK: - Bridge message encode/decode
-
-        @Test("switchBranch bridge message round-trips")
-        func switchBranchBridgeRoundTrip() throws {
-            let id = UUID().uuidString
-            let original = BridgeMessageData.switchBranch(messageId: id, direction: -1)
-            let data = try JSONEncoder().encode(original)
-            let decoded = try JSONDecoder().decode(BridgeMessageData.self, from: data)
-            guard case .switchBranch(let decodedId, let dir) = decoded else {
-                Issue.record("expected .switchBranch, got \(decoded)")
-                return
-            }
-            #expect(decodedId == id)
-            #expect(dir == -1)
-        }
-
-        @Test("switchBranch bridge message encodes the correct type tag")
-        func switchBranchBridgeTypeTag() throws {
-            let original = BridgeMessageData.switchBranch(messageId: "abc-123", direction: 1)
-            let data = try JSONEncoder().encode(original)
-            let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-            #expect(json["type"] as? String == "switchBranch")
-            #expect(json["messageId"] as? String == "abc-123")
-            #expect(json["direction"] as? Int == 1)
-        }
-
         // MARK: - Snapshot siblings projection
 
         @Test("projectActiveMessages stamps siblings for branch heads")

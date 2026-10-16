@@ -35,7 +35,7 @@ enum MainSplitLayout {
 /// real `NSSplitView` hosting the SwiftUI panes.
 ///
 /// Why AppKit: a pure-SwiftUI divider drag re-rendered the whole window
-/// (webview included) on every mouse-moved — visible jitter — and overlay
+/// (chat list included) on every mouse-moved — visible jitter — and overlay
 /// hit areas don't extend past a view's bounds, leaving a ~1pt grab zone.
 /// `NSSplitView` does hit-testing, cursor changes, and live dragging itself,
 /// exactly like the `NavigationSplitView` it replaces, but the delegate

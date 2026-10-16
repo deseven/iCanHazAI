@@ -18,6 +18,8 @@ let package = Package(
         .package(url: "https://github.com/tonyarnold/Differ.git", from: "1.4.4"),
         // Fuzzy search for the role/MCP/directory pickers.
         .package(url: "https://github.com/krisk/fuse-swift.git", from: "1.4.0"),
+        // CommonMark/GFM parser for the native chat renderer (walked directly).
+        .package(url: "https://github.com/swiftlang/swift-cmark.git", from: "0.9.0"),
         .package(path: "shared/ProcessExit"),
         .package(path: "shared/LoginShell"),
     ],
@@ -32,6 +34,8 @@ let package = Package(
                 .product(name: "LoginShell", package: "LoginShell"),
                 .product(name: "Differ", package: "Differ"),
                 .product(name: "Fuse", package: "fuse-swift"),
+                .product(name: "cmark-gfm", package: "swift-cmark"),
+                .product(name: "cmark-gfm-extensions", package: "swift-cmark"),
             ],
             path: "src"
         ),
@@ -45,6 +49,8 @@ let package = Package(
                 .product(name: "FSEventsWrapper", package: "FSEventsWrapper"),
                 .product(name: "Differ", package: "Differ"),
                 .product(name: "Fuse", package: "fuse-swift"),
+                .product(name: "cmark-gfm", package: "swift-cmark"),
+                .product(name: "cmark-gfm-extensions", package: "swift-cmark"),
             ],
             path: "tests"
         ),

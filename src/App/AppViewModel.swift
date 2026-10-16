@@ -54,7 +54,7 @@ final class AppViewModel: ObservableObject {
     @Published var mcps: [MCPServer] = []
     @Published var selectedChatID: String? {
         didSet {
-            // Once the user opens a chat awaiting approval, the renderer shows
+            // Once the user opens a chat awaiting approval, the list shows
             // its Allow/Deny buttons directly — no need to keep blinking it.
             if let id = selectedChatID { blinkingChatIDs.remove(id) }
             // Chat-related sheets (role picker, workdir picker, pending
@@ -93,13 +93,13 @@ final class AppViewModel: ObservableObject {
     /// Width of the chat info sidebar. Drag-resizable, never collapsible
     /// (it's shown/hidden wholesale instead).
     @Published var chatInfoSidebarWidth: CGFloat = SidebarSizing.defaultChatInfoWidth
-    /// Message id pending an edit action (set by the web view bridge; consumed
+    /// Message id pending an edit action (set by the chat list; consumed
     /// by ChatView's edit sheet).
     @Published var pendingEditMessageID: UUID?
-    /// Message id pending a delete action (set by the web view bridge;
+    /// Message id pending a delete action (set by the chat list;
     /// consumed by ChatView's delete confirmation sheet).
     @Published var pendingDeleteMessageID: UUID?
-    /// Tool-call id pending a deny-reason sheet (set by the web view bridge
+    /// Tool-call id pending a deny-reason sheet (set by the chat list
     /// when the user presses Deny; consumed by ChatView's deny sheet).
     @Published var pendingDenyToolCallID: String?
     /// Filenames of chats awaiting tool-call approval that aren't currently
@@ -136,11 +136,10 @@ final class AppViewModel: ObservableObject {
     @Published var preferencesDefaultConnection: String? = nil
     @Published var preferencesDefaultRole: String? = "Assistant"
     @Published var preferencesUtilityConnection: String? = nil
-    @Published var preferencesMermaidEnabled: Bool = false
-    @Published var preferencesKatexEnabled: Bool = false
+
     @Published var preferencesInterfaceScale: Double = ChatFeaturesConfig.defaultInterfaceScale
     @Published var preferencesAppDebugEnabled: Bool = false
-    @Published var preferencesChatRendererDebugEnabled: Bool = false
+
     @Published var preferencesExpandThinking: Bool = false
     @Published var preferencesExpandToolUse: Bool = false
     @Published var preferencesWebSearchProvider: String = "none"
@@ -189,11 +188,11 @@ final class AppViewModel: ObservableObject {
     private let engine = ChatEngine.shared
     private let config = ConfigManager.shared
     private var subscription: Task<Void, Never>?
-    /// Weak reference to the active web view model, set when
-    /// `ChatWebView.bind(store:)` is called. Used to push snapshots
-    /// synchronously in `apply(.chatsChanged)` so the web view reflects
+    /// Weak reference to the active chat list controller, set when
+    /// `ChatListController.bind(store:)` is called. Used to push snapshots
+    /// synchronously in `apply(.chatsChanged)` so the list reflects
     /// tool-call state before the engine proceeds to execute the tool.
-    weak var chatWebViewModel: ChatWebViewModel?
+    weak var chatListController: ChatListController?
 
     // MARK: - Ctrl+Tab chat switching state
 
@@ -251,11 +250,10 @@ final class AppViewModel: ObservableObject {
             let rs = await config.getChatInfoSidebarVisible()
             let lw = await config.getChatListSidebarWidth()
             let iw = await config.getChatInfoSidebarWidth()
-            let me = await config.getMermaidEnabled()
-            let ke = await config.getKatexEnabled()
+
             let scale = await config.getInterfaceScale()
             let ad = await config.getAppDebugEnabled()
-            let cd = await config.getChatRendererDebugEnabled()
+
             let et = await config.getExpandThinking()
             let eu = await config.getExpandToolUse()
             let ws = await config.getWebSearchConfig()
@@ -264,11 +262,10 @@ final class AppViewModel: ObservableObject {
             preferencesDefaultRole = dr
             preferencesUtilityConnection = uc
             workingDirectories = wd
-            preferencesMermaidEnabled = me
-            preferencesKatexEnabled = ke
+
             preferencesInterfaceScale = scale
             preferencesAppDebugEnabled = ad
-            preferencesChatRendererDebugEnabled = cd
+
             preferencesExpandThinking = et
             preferencesExpandToolUse = eu
             preferencesWebSearchProvider = ws.provider ?? "none"
@@ -680,26 +677,6 @@ final class AppViewModel: ObservableObject {
         )
     }
 
-    var bindingMermaidEnabled: Binding<Bool> {
-        Binding(
-            get: { self.preferencesMermaidEnabled },
-            set: { newValue in
-                self.preferencesMermaidEnabled = newValue
-                Task { await self.config.setMermaidEnabled(newValue) }
-            }
-        )
-    }
-
-    var bindingKatexEnabled: Binding<Bool> {
-        Binding(
-            get: { self.preferencesKatexEnabled },
-            set: { newValue in
-                self.preferencesKatexEnabled = newValue
-                Task { await self.config.setKatexEnabled(newValue) }
-            }
-        )
-    }
-
     var bindingInterfaceScale: Binding<Double> {
         Binding(
             get: { self.preferencesInterfaceScale },
@@ -718,16 +695,6 @@ final class AppViewModel: ObservableObject {
                 self.preferencesAppDebugEnabled = newValue
                 DebugLogger.setEnabled(newValue)
                 Task { await self.config.setAppDebugEnabled(newValue) }
-            }
-        )
-    }
-
-    var bindingChatRendererDebugEnabled: Binding<Bool> {
-        Binding(
-            get: { self.preferencesChatRendererDebugEnabled },
-            set: { newValue in
-                self.preferencesChatRendererDebugEnabled = newValue
-                Task { await self.config.setChatRendererDebugEnabled(newValue) }
             }
         )
     }
@@ -812,7 +779,7 @@ final class AppViewModel: ObservableObject {
             // Content-gated publishing. During streaming the engine emits a
             // coalesced chatsChanged on every token flush, but the only thing
             // that changed is the selected chat's message text — which the
-            // webview already receives via `pushSnapshot()` below (not through
+            // chat list already receives via `pushSnapshot()` below (not through
             // SwiftUI). Reassigning `chatItems`/`chatSummaries` unconditionally
             // here gave every subscriber a brand-new array identity each token,
             // invalidating the ENTIRE view tree (the observed main-thread
@@ -889,12 +856,12 @@ final class AppViewModel: ObservableObject {
                 Task { await engine.markViewed(filename: selected) }
             }
             // Push the snapshot synchronously in the same main-actor turn so
-            // the web view reflects tool-call state before the engine resumes
+            // the list reflects tool-call state before the engine resumes
             // to execute the tool. Pass the fresh records: `chatItems` is
             // content-gated above, so during streaming it lags the engine —
-            // the webview must render from the live snapshot, not the stale
+            // the list must render from the live snapshot, not the stale
             // published array.
-            chatWebViewModel?.pushSnapshot(records: records)
+            chatListController?.pushSnapshot(records: records)
         case .rolesChanged(let roles):
             self.roles = roles
             refreshPreferences()
@@ -939,7 +906,7 @@ final class AppViewModel: ObservableObject {
             } else {
                 // Bring the pending tool block (with its Allow/Deny buttons,
                 // always at the bottom) into view.
-                chatWebViewModel?.scrollToBottom()
+                chatListController?.scrollToBottom()
             }
             requestAttentionIfNeeded()
         case .toolApprovalResolved(let filename, _):
@@ -974,19 +941,19 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Resolves a pending tool-call approval. Called from the web view bridge
+    /// Resolves a pending tool-call approval. Called from the chat list
     /// when the user presses Allow (and from the deny sheet on confirm).
     /// Forces the chat to the bottom so the follow-up assistant message stays
     /// in view as it streams in.
     func allowToolCall(callID: String) {
-        chatWebViewModel?.scrollToBottom()
+        chatListController?.scrollToBottom()
         Task { await engine.resolveToolCallApproval(callID: callID, approval: .allow) }
     }
 
     /// Resolves a pending tool-call approval and remembers the tool as
     /// auto-approved for this chat ("Allow for this chat" button).
     func allowToolCallForChat(callID: String) {
-        chatWebViewModel?.scrollToBottom()
+        chatListController?.scrollToBottom()
         Task { await engine.allowToolCallForChat(callID: callID) }
     }
 
@@ -994,7 +961,7 @@ final class AppViewModel: ObservableObject {
     /// Forces the chat to the bottom so the follow-up assistant message stays
     /// in view as it streams in.
     func denyToolCall(callID: String, reason: String) {
-        chatWebViewModel?.scrollToBottom()
+        chatListController?.scrollToBottom()
         Task { await engine.resolveToolCallApproval(callID: callID, approval: .deny(reason: reason)) }
     }
 
@@ -1331,7 +1298,7 @@ final class AppViewModel: ObservableObject {
     /// reads. Used to gate `chatItems` publishing (see `apply(.chatsChanged)`):
     /// during streaming the only per-token change is the selected chat's
     /// message *text* (`content`/`thinking`), which SwiftUI never reads — it
-    /// renders through the webview via `pushSnapshot()`. Everything else a view
+    /// renders through the native chat list via `pushSnapshot()`. Everything else a view
     /// can observe (flags, selection metadata, title, message structure, tool
     /// calls, errors, token usage) is compared here; if none changed, the
     /// @Published array is left untouched so subscribers aren't invalidated.
@@ -1355,7 +1322,7 @@ final class AppViewModel: ObservableObject {
             }
             // Loaded-chat structure. We compare everything EXCEPT the message
             // text bodies (content/thinking), which stream in per token and
-            // are only consumed by the webview.
+            // are only consumed by the chat list.
             if chatsUIRelevantChanged(a.chat, b.chat) { return true }
         }
         return false
@@ -1420,14 +1387,14 @@ final class AppViewModel: ObservableObject {
         guard let filename = selectedChatID else { return }
         // Pin to the bottom regardless of where the user had scrolled, so the
         // outgoing message and the streaming reply stay in view.
-        chatWebViewModel?.scrollToBottom()
+        chatListController?.scrollToBottom()
         Task { await engine.sendMessage(filename: filename, text: text, pendingAttachments: pendingAttachments) }
     }
 
     func retryLastMessage() {
         guard let filename = selectedChatID else { return }
         // Pin to the bottom so the regenerated reply stays in view.
-        chatWebViewModel?.scrollToBottom()
+        chatListController?.scrollToBottom()
         Task { await engine.retryLastMessage(filename: filename) }
     }
 
@@ -1435,7 +1402,7 @@ final class AppViewModel: ObservableObject {
     /// selected chat. Pins to the bottom so the new reply stays in view.
     func regenerateMessage(assistantMessageID: UUID) {
         guard let filename = selectedChatID else { return }
-        chatWebViewModel?.scrollToBottom()
+        chatListController?.scrollToBottom()
         Task { await engine.regenerate(filename: filename, assistantMessageID: assistantMessageID) }
     }
 
@@ -1460,8 +1427,8 @@ final class AppViewModel: ObservableObject {
     @Published var treeOverviewOpen: Bool = false
 
     /// Toggles the tree overview mode for the selected chat. When opening,
-    /// computes the projection and sends it to the renderer; when closing,
-    /// sends `exitTreeOverview`. No-op while streaming (the overview blocks
+    /// shows the tree overview; when closing,
+    /// hides it. No-op while streaming (the overview blocks
     /// interactions anyway).
     func toggleTreeOverview() {
         if treeOverviewOpen {
@@ -1475,13 +1442,13 @@ final class AppViewModel: ObservableObject {
     func openTreeOverview() {
         guard let item = selectedChatItem, item.chat != nil else { return }
         treeOverviewOpen = true
-        chatWebViewModel?.enterTreeOverview()
+        chatListController?.enterTreeOverview()
     }
 
     /// Closes the tree overview mode.
     func closeTreeOverview() {
         treeOverviewOpen = false
-        chatWebViewModel?.exitTreeOverview()
+        chatListController?.exitTreeOverview()
     }
 
     /// Jumps to a message from the tree overview: resolves the path to the
@@ -1500,21 +1467,20 @@ final class AppViewModel: ObservableObject {
             await engine.activatePath(filename: filename, messageID: targetUUID)
             // Close the overview (if it was open) and push the snapshot.
             if wasOpen {
-                chatWebViewModel?.exitTreeOverview()
+                chatListController?.exitTreeOverview()
             }
-            // Give the renderer a frame to apply the new snapshot before
-            // scrolling to the target message.
+            // The scroll is queued behind the snapshot, so it lands once the
+            // list shows the new active path.
             pushSnapshotAfterBranchSwitch()
-            try? await Task.sleep(for: .milliseconds(50))
-            chatWebViewModel?.scrollToMessage(messageID)
+            chatListController?.scrollToMessage(messageID)
         }
     }
 
     /// Pushes a fresh snapshot after a branch switch triggered from the
-    /// overview, so the renderer reflects the new active path before the
+    /// overview, so the list reflects the new active path before the
     /// scroll-to-message lands.
     private func pushSnapshotAfterBranchSwitch() {
-        chatWebViewModel?.pushSnapshot()
+        chatListController?.pushSnapshot()
     }
 
     func stopStreaming() {
@@ -1528,10 +1494,10 @@ final class AppViewModel: ObservableObject {
     }
 
     /// Opens the in-chat search bar (Cmd-F). No-op when no chat is selected.
-    /// Focuses the web view and asks the renderer to show its search form.
+    /// Asks the chat list to show its search form.
     func startSearchInChat() {
         guard selectedChatItem != nil else { return }
-        chatWebViewModel?.startSearch()
+        chatListController?.startSearch()
     }
 
     /// Incremented to ask the chat sidebar to focus its filter field
@@ -1632,7 +1598,7 @@ final class AppViewModel: ObservableObject {
             selectedChatID = filename
             await engine.selectChat(filename: filename)
             await engine.markViewed(filename: filename)
-            chatWebViewModel?.scrollToBottom()
+            chatListController?.scrollToBottom()
             await engine.sendMessage(filename: filename, text: message)
         }
     }

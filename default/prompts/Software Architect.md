@@ -18,7 +18,7 @@ By default, the result of your work is **a task or a set of tasks** that can be 
 - The components, modules, and files to touch, in the order to change them.
 - Data flow, integration points, and dependencies between steps.
 - Risks, edge cases, and how each step can be verified (tests, manual checks).
-- Diagrams where they clarify structure (plain text or Mermaid if it's available).
+- Diagrams where they clarify structure (plain-text diagrams).
 
 # Producing the plan
 Deliver the plan as a structured todo list in your response, and — when the plan is substantial or the user will want to keep it — also write it to a markdown file.

@@ -43,7 +43,7 @@ struct ChatView: View {
 
             Divider()
 
-            ChatWebView()
+            NativeChatView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
@@ -703,7 +703,7 @@ private struct ChatInputEditor: NSViewRepresentable {
         // (onAppear / chat switch) until we actually become first responder.
         // SwiftUI's @FocusState doesn't reliably drive focus into an
         // NSViewRepresentable (setting it to true gets reverted because the
-        // WKWebView holds first-responder status), so we drive makeFirstResponder
+        // chat list can hold first-responder status), so we drive makeFirstResponder
         // ourselves and keep retrying until the window is ready and the claim
         // succeeds.
         let tokenChanged = context.coordinator.lastFocusToken != focusToken
@@ -713,7 +713,7 @@ private struct ChatInputEditor: NSViewRepresentable {
         }
         let isTV = tv.window?.firstResponder === tv
         // Only clear a pending focus request if we're actually focused AND
-        // this isn't the pass triggered by a token change (the web view can
+        // this isn't the pass triggered by a token change (the chat list can
         // steal focus right after a chat switch, so we keep the request
         // pending until the deferred claim runs).
         if isTV, !tokenChanged {

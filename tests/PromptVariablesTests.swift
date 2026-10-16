@@ -149,16 +149,14 @@ extension AllAppTests {
 
         // MARK: - Dynamic values
 
-        @Test("renderingCapabilities advertises enabled features and hides disabled ones")
+        @Test("renderingCapabilities advertises the native renderer's features and limits")
         func renderingCapabilities() {
-            let both = PromptVariables.renderingCapabilities(mermaid: true, katex: true)
-            #expect(both.contains("KaTeX"))
-            #expect(both.contains("Mermaid"))
-            #expect(!both.contains("NOT supported"))
-
-            let neither = PromptVariables.renderingCapabilities(mermaid: false, katex: false)
-            #expect(neither.contains("LaTeX math is NOT supported"))
-            #expect(neither.contains("Mermaid diagrams are NOT supported"))
+            let text = PromptVariables.renderingCapabilities()
+            #expect(text.contains("tables, strikethrough, and task lists"))
+            #expect(text.contains("no syntax highlighting"))
+            #expect(text.contains("NOT supported: HTML"))
+            #expect(text.contains("LaTeX math, Mermaid"))
+            #expect(text.hasSuffix("\n"))
         }
 
         @Test("currentDate is formatted as 'EEE MMM d yyyy'")

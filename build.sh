@@ -122,13 +122,6 @@ do_clean_dist() {
 
 do_resolve_deps() { swift package resolve; }
 
-do_build_web() {
-    (
-        cd "$loc/chatrenderer"
-        npm install --no-audit --no-fund
-        npm run build
-    )
-}
 
 # One `swift build` builds the app. Dev = arm64 only; otherwise universal (arm64+x86_64).
 do_build_swift() {
@@ -141,21 +134,6 @@ do_build_swift() {
 
 do_run_app_tests() { swift test --filter AllAppTests; }
 
-do_typecheck_web() {
-    (
-        cd "$loc/chatrenderer"
-        npm install --no-audit --no-fund
-        npm run typecheck
-    )
-}
-
-do_run_web_tests() {
-    (
-        cd "$loc/chatrenderer"
-        npm install --no-audit --no-fund
-        npm test
-    )
-}
 
 do_clean_app_cache() {
     # Drop the SwiftData chat-metadata cache. The app self-heals an
@@ -170,14 +148,14 @@ do_clean_app_cache() {
 
 do_create_bundle() {
     local app="$loc/dist/$name.app"
-    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/ChatRenderer" "$app/Contents/Resources/Default"
+    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/Default"
 
     cp "$buildDir/$name" "$app/Contents/MacOS/$name"
     cp "$loc/Info.plist" "$app/Contents/Info.plist"
     cp "$loc/res/main.icns" "$app/Contents/Resources/"
     cp -R "$loc/default/prompts" "$app/Contents/Resources/Default/prompts"
     cp -R "$loc/default/roles" "$app/Contents/Resources/Default/roles"
-    cp "$loc/chatrenderer/dist/"* "$app/Contents/Resources/ChatRenderer/"
+
 }
 
 do_codesign() {
@@ -311,8 +289,6 @@ if [ "$mode" != "test" ]; then
 fi
 
 if [ "$mode" = "test" ]; then
-    add "Typechecking chatrenderer..." "chatrenderer typecheck failed"    do_typecheck_web
-    add "Running chatrenderer tests..."  "chatrenderer tests failed"            do_run_web_tests
     add "Running app tests..."        "app tests failed"                          do_run_app_tests
     run_pipeline
     echo ""
@@ -321,7 +297,7 @@ if [ "$mode" = "test" ]; then
 fi
 
 add "Resolving dependencies..."      "failed to resolve dependencies"            do_resolve_deps
-add "Building chatrenderer..." "failed to build chat renderer"            do_build_web
+
 add "Compiling app..." "failed to compile $shortName"             do_build_swift
 add "Creating APP bundle..."         "failed to create app bundle"               do_create_bundle
 

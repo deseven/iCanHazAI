@@ -3,59 +3,77 @@
 
 import Foundation
 
+/// Chat-wide inputs that travel with the rows. `roleAccent` is the role's
+/// accent alias; the main actor resolves it to a dynamic color.
+struct ChatRenderState: Sendable, Equatable {
+    var roleName: String?
+    var roleIcon: String?
+    var roleAccent: String?
+    var features = ChatRowFeatures()
+    var isStreaming = false
+}
+
+/// What the list has to do to reach the state a job describes.
+enum RenderOp: Sendable, Equatable {
+    /// Chat switch in progress: drop everything that's shown.
+    case unload
+    /// Replace everything.
+    case snapshot(chatID: String, rows: [ChatRowModel], state: ChatRenderState)
+    /// Chat-wide inputs changed without a change of chat.
+    case state(ChatRenderState)
+    case insert(ChatRowModel, at: Int)
+    case update(ChatRowModel)
+    case delete(id: String)
+    /// Bring a message into view and highlight it.
+    case scrollTo(messageID: String)
+}
+
 /// A unit of work for `ChatRenderQueue`.
 enum RenderJob: Sendable {
-    /// Wipe the diff state (the renderer was reloaded/blanked); the next
-    /// snapshot for any chat is sent in full. Drops every queued job — they
-    /// were computed against the pre-reset state.
-    case reset
-    /// Tell the renderer to blank itself (chat switch in progress). Drops any
-    /// queued snapshots — a blanked renderer has no use for them.
+    /// Blank the list (chat switch in progress). Drops any queued snapshots, a
+    /// blanked list has no use for them, and makes the next snapshot a full one.
     case unload
     /// Render the given chat state, diffed against the last rendered state.
     /// A snapshot is self-contained: it supersedes an earlier queued (not yet
     /// processed) snapshot, so only the latest one is kept. The full `Chat`
     /// is passed so the queue can project the active path and compute
     /// per-message sibling metadata for branch switching.
-    case snapshot(
-        chatId: String, chat: Chat, isStreaming: Bool, roleName: String?, roleAccent: String?,
-        features: ChatSnapshotFeaturesData)
+    case snapshot(chatId: String, chat: Chat, state: ChatRenderState)
+    /// Scroll to a message once everything queued before has been applied.
+    case scrollTo(messageID: String)
 }
 
-/// Serializes and off-loads the expensive part of the Swift → renderer bridge:
-/// projecting `ChatMessage`s into their wire shape, diffing against the last
-/// rendered state, JSON-encoding, and JS-escaping. All of that used to run on
-/// the main actor inside `pushSnapshot()` and visibly froze the UI on large
-/// chats.
+/// Moves the expensive part of feeding the list off the main actor:
+/// projecting `ChatMessage`s into rows and diffing them against the last
+/// rendered state. All of that used to run on the main actor inside
+/// `pushSnapshot()` and visibly froze the UI on large chats.
 ///
-/// Jobs are processed strictly in enqueue order; each resulting JS statement
+/// Jobs are processed strictly in enqueue order; each resulting batch of ops
 /// hops to the main actor via the injected `deliver` closure, and the queue
-/// awaits that hop before processing the next job, so the renderer receives
-/// messages in exactly this order.
+/// awaits that hop before processing the next job, so the list receives ops in
+/// exactly this order.
 actor ChatRenderQueue {
-    private let deliver: @Sendable (String) async -> Void
+    /// Replacing the list is cheaper than applying this many structural edits
+    /// one by one (a branch switch changes a whole tail of messages at once).
+    static let bulkEditThreshold = 16
 
-    // Diff state — the last state we generated bridge messages for.
+    private let deliver: @Sendable ([RenderOp]) async -> Void
+
+    // Diff state: what the list has been told so far.
     private var renderedChatId: String?
-    private var lastMessages: [String: ChatMessageData] = [:]
-    private var lastMessageIds: [String] = []
-    private var lastStreamingState: Bool = false
-    private var lastRoleName: String? = nil
-    private var lastRoleAccent: String? = nil
-    private var lastFeatures: ChatSnapshotFeaturesData? = nil
+    private var lastRows: [String: ChatRowModel] = [:]
+    private var lastIds: [String] = []
+    private var lastState = ChatRenderState()
 
     private var pending: [RenderJob] = []
     private var draining = false
 
-    init(deliver: @escaping @Sendable (String) async -> Void) {
+    init(deliver: @escaping @Sendable ([RenderOp]) async -> Void) {
         self.deliver = deliver
     }
 
     func enqueue(_ job: RenderJob) {
         switch job {
-        case .reset:
-            pending.removeAll()
-            pending.append(job)
         case .unload:
             pending.removeAll { if case .snapshot = $0 { return true } else { return false } }
             pending.append(job)
@@ -65,6 +83,8 @@ actor ChatRenderQueue {
             } else {
                 pending.append(job)
             }
+        case .scrollTo:
+            pending.append(job)
         }
         guard !draining else { return }
         draining = true
@@ -83,175 +103,119 @@ actor ChatRenderQueue {
 
     private func process(_ job: RenderJob) async {
         switch job {
-        case .reset:
-            clearDiffState()
         case .unload:
-            // The renderer blanks itself, so the next snapshot must be full.
             clearDiffState()
-            await send(.unload)
-        case .snapshot(let chatId, let chat, let isStreaming, let roleName, let roleAccent, let features):
-            await processSnapshot(
-                chatId: chatId, chat: chat, isStreaming: isStreaming, roleName: roleName, roleAccent: roleAccent,
-                features: features)
+            await deliver([.unload])
+        case .snapshot(let chatId, let chat, let state):
+            let ops = diff(chatId: chatId, chat: chat, state: state)
+            if !ops.isEmpty { await deliver(ops) }
+        case .scrollTo(let messageID):
+            await deliver([.scrollTo(messageID: messageID)])
         }
     }
 
     private func clearDiffState() {
         renderedChatId = nil
-        lastMessages = [:]
-        lastMessageIds = []
-        lastStreamingState = false
-        lastRoleName = nil
-        lastRoleAccent = nil
-        lastFeatures = nil
+        lastRows = [:]
+        lastIds = []
+        lastState = ChatRenderState()
     }
 
-    /// Diffs the given chat state against the last rendered state and sends
-    /// incremental updates (updateMessage / addMessage / deleteMessage) when
-    /// possible. Falls back to a full snapshot on chat switch, role/accent
-    /// change, feature-flag change, or streaming end. Projects the active
-    /// path (for forked chats) and computes per-message sibling metadata.
-    private func processSnapshot(
-        chatId: String, chat: Chat, isStreaming: Bool, roleName: String?, roleAccent: String?,
-        features: ChatSnapshotFeaturesData
-    ) async {
-        let currentMessages = Self.projectActiveMessages(chat)
+    private func remember(_ rows: [ChatRowModel]) {
+        lastRows = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        lastIds = rows.map(\.id)
+    }
 
-        // A role/accent/features change affects things the renderer derives
-        // from the snapshot (assistant title, regen button visibility), which
-        // incremental message diffs wouldn't reflect, so force a fresh full
-        // snapshot. A branch switch changes many message ids — the existing
-        // delete/add diffing handles it, but verify efficiency on deep chats
-        // and fall back to a forced full snapshot on switches if the diff
-        // gets pathological.
-        if chatId != renderedChatId || roleName != lastRoleName || roleAccent != lastRoleAccent
-            || features != lastFeatures
-        {
+    /// Diffs the given chat state against the last rendered state. A chat
+    /// switch, or a change too big to apply piecemeal, is a full snapshot;
+    /// anything else is incremental. Chat-wide inputs (role, features,
+    /// streaming) are separate from the rows: the list reconfigures instead of
+    /// re-rendering.
+    private func diff(chatId: String, chat: Chat, state: ChatRenderState) -> [RenderOp] {
+        let rows = Self.projectActiveMessages(chat)
+        let ids = rows.map(\.id)
+
+        func fullSnapshot() -> [RenderOp] {
             renderedChatId = chatId
-            lastStreamingState = isStreaming
-            lastRoleName = roleName
-            lastRoleAccent = roleAccent
-            lastFeatures = features
-            remember(currentMessages, ids: currentMessages.map(\.id))
-            await send(
-                .snapshot(
-                    snapshot: ChatSnapshotData(
-                        chatId: chatId, messages: currentMessages, isStreaming: isStreaming, roleName: roleName,
-                        roleAccent: roleAccent, features: features)))
-            return
+            lastState = state
+            remember(rows)
+            return [.snapshot(chatID: chatId, rows: rows, state: state)]
         }
 
-        if isStreaming != lastStreamingState {
-            lastStreamingState = isStreaming
-            if !isStreaming {
-                remember(currentMessages, ids: currentMessages.map(\.id))
-                await send(
-                    .snapshot(
-                        snapshot: ChatSnapshotData(
-                            chatId: chatId, messages: currentMessages, isStreaming: false, roleName: roleName,
-                            roleAccent: roleAccent, features: features)))
-                return
-            } else {
-                await send(.streaming(chatId: chatId, isStreaming: true))
+        guard chatId == renderedChatId else { return fullSnapshot() }
+
+        let oldIds = Set(lastIds)
+        let newIds = Set(ids)
+        let removed = lastIds.filter { !newIds.contains($0) }
+        let added = ids.indices.filter { !oldIds.contains(ids[$0]) }
+        // Insert-by-index relies on the survivors keeping their relative order.
+        let survivorsKeepOrder = lastIds.filter(newIds.contains) == ids.filter(oldIds.contains)
+        if removed.count + added.count > Self.bulkEditThreshold || !survivorsKeepOrder { return fullSnapshot() }
+
+        var ops: [RenderOp] = []
+        let stateChanged = state != lastState
+        // Streaming ends after the final content is in, so rows that only
+        // looked "running" are re-rendered once with their settled content.
+        let streamingEnded = lastState.isStreaming && !state.isStreaming
+        if stateChanged && !streamingEnded { ops.append(.state(state)) }
+        for id in removed { ops.append(.delete(id: id)) }
+        for (index, row) in rows.enumerated() {
+            if !oldIds.contains(row.id) {
+                ops.append(.insert(row, at: index))
+            } else if let old = lastRows[row.id], old != row {
+                ops.append(.update(row))
             }
         }
+        if stateChanged && streamingEnded { ops.append(.state(state)) }
 
-        let currentIds = currentMessages.map(\.id)
-        let oldIds = Set(lastMessageIds)
-        let newIds = Set(currentIds)
-
-        for id in lastMessageIds where !newIds.contains(id) {
-            await send(.deleteMessage(chatId: chatId, messageId: id))
-        }
-
-        for (index, msg) in currentMessages.enumerated() {
-            if !oldIds.contains(msg.id) {
-                await send(.addMessage(chatId: chatId, message: msg, index: index))
-            } else if let old = lastMessages[msg.id], old != msg {
-                await send(.updateMessage(chatId: chatId, message: msg))
-            }
-        }
-
-        remember(currentMessages, ids: currentIds)
-    }
-
-    private func remember(_ messages: [ChatMessageData], ids: [String]) {
-        lastMessages = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
-        lastMessageIds = ids
-    }
-
-    // MARK: - Encoding
-
-    private func send(_ message: HostMessageData) async {
-        guard let js = Self.encodeToJS(message) else { return }
-        await deliver(js)
-    }
-
-    /// Encodes a host message as a `window.chatHost.postMessage('...')` JS
-    /// statement. Pure and thread-safe; small messages are encoded on the
-    /// main actor directly via this helper.
-    static func encodeToJS(_ message: HostMessageData) -> String? {
-        guard let json = try? JSONEncoder().encode(message),
-            let jsonString = String(data: json, encoding: .utf8)
-        else { return nil }
-        let escaped = jsonString.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-        return "window.chatHost && window.chatHost.postMessage('\(escaped)');"
+        lastState = state
+        remember(rows)
+        return ops
     }
 
     // MARK: - Projection
 
-    /// Projects the chat's active messages into the wire shape, folding
-    /// `tool`-role result messages onto the preceding assistant message's
-    /// `toolResults` (matched by `callID`) so the renderer shows each result
-    /// in the same inline tool block as the call that issued it. The folded
-    /// `tool` messages are dropped from the returned list. Also stamps
-    /// per-message sibling metadata (index/count within a fork group) for
-    /// branch switching. This is a pure view projection — storage keeps the
-    /// natural provider shape (one `tool`-role message per result).
-    static func projectActiveMessages(_ chat: Chat) -> [ChatMessageData] {
-        let activeMessages = chat.activeMessages
-        var out: [ChatMessageData] = []
+    /// Projects the chat's active messages into rows, folding `tool`-role
+    /// result messages onto the preceding assistant message's `toolResults`
+    /// (matched by `callID`) so the list shows each result in the same inline
+    /// tool block as the call that issued it. The folded `tool` messages are
+    /// dropped from the returned list. Also stamps per-message sibling metadata
+    /// (index/count within a fork group) for branch switching. This is a pure
+    /// view projection — storage keeps the natural provider shape (one
+    /// `tool`-role message per result).
+    static func projectActiveMessages(_ chat: Chat) -> [ChatRowModel] {
+        var out: [ChatRowModel] = []
         var lastAssistantOutIndex: Int? = nil
-        for msg in activeMessages {
+        for msg in chat.activeMessages {
             if msg.role == .tool, let results = msg.toolResults, !results.isEmpty {
                 if let aIdx = lastAssistantOutIndex {
-                    var folded = out[aIdx].toolResults ?? []
-                    for r in results {
-                        let imageData = r.image.map {
-                            ChatMessageData.ToolResultData.ToolResultImageData(
-                                mimeType: $0.mimeType, fallback: $0.fallback)
-                        }
+                    var folded = out[aIdx].toolResults
+                    for r in results.map(ChatRowModel.ToolResult.init) {
                         if let i = folded.firstIndex(where: { $0.callID == r.callID }) {
-                            folded[i] = ChatMessageData.ToolResultData(
-                                callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming,
-                                isDenied: r.isDenied, isCancelled: r.isCancelled, summary: r.summary, image: imageData)
+                            folded[i] = r
                         } else {
-                            folded.append(
-                                ChatMessageData.ToolResultData(
-                                    callID: r.callID, content: r.content, isError: r.isError,
-                                    isStreaming: r.isStreaming, isDenied: r.isDenied, isCancelled: r.isCancelled,
-                                    summary: r.summary, image: imageData))
+                            folded.append(r)
                         }
                     }
                     out[aIdx].toolResults = folded
                 }
                 continue
             }
-            var data = msg.webData
+            var row = ChatRowModel(msg)
             if msg.role == .assistant {
-                data.toolResults = nil
+                row.toolResults = []
                 lastAssistantOutIndex = out.count
             }
-            // Stamp sibling metadata for fork members (count > 1).
             let siblings = chat.siblings(of: msg.id)
             if siblings.count > 1 {
-                data.siblings = ChatMessageData.SiblingsData(index: siblings.index, count: siblings.count)
+                row.siblings = ChatRowModel.Siblings(index: siblings.index, count: siblings.count)
             }
-            out.append(data)
+            out.append(row)
         }
         return out
     }
+
+    // MARK: - Tree overview
 
     /// Builds the tree overview projection: a nested tree mirroring the chat's
     /// structure. Each node is a drawn card (the conversation root or one
@@ -309,44 +273,34 @@ actor ChatRenderQueue {
         let endIndex = trimmed.index(trimmed.startIndex, offsetBy: 100)
         return String(trimmed[..<endIndex]) + "…"
     }
+}
 
-    /// Legacy projection for tests that pass a flat message array. Used only
-    /// by tests that don't need tree metadata.
-    static func projectToolResults(_ messages: [ChatMessage]) -> [ChatMessageData] {
-        var out: [ChatMessageData] = []
-        var lastAssistantOutIndex: Int? = nil
-        for msg in messages {
-            if msg.role == .tool, let results = msg.toolResults, !results.isEmpty {
-                if let aIdx = lastAssistantOutIndex {
-                    var folded = out[aIdx].toolResults ?? []
-                    for r in results {
-                        let imageData = r.image.map {
-                            ChatMessageData.ToolResultData.ToolResultImageData(
-                                mimeType: $0.mimeType, fallback: $0.fallback)
-                        }
-                        if let i = folded.firstIndex(where: { $0.callID == r.callID }) {
-                            folded[i] = ChatMessageData.ToolResultData(
-                                callID: r.callID, content: r.content, isError: r.isError, isStreaming: r.isStreaming,
-                                isDenied: r.isDenied, isCancelled: r.isCancelled, summary: r.summary, image: imageData)
-                        } else {
-                            folded.append(
-                                ChatMessageData.ToolResultData(
-                                    callID: r.callID, content: r.content, isError: r.isError,
-                                    isStreaming: r.isStreaming, isDenied: r.isDenied, isCancelled: r.isCancelled,
-                                    summary: r.summary, image: imageData))
-                        }
-                    }
-                    out[aIdx].toolResults = folded
-                }
-                continue
-            }
-            var data = msg.webData
-            if msg.role == .assistant {
-                data.toolResults = nil
-                lastAssistantOutIndex = out.count
-            }
-            out.append(data)
-        }
-        return out
-    }
+/// A node in the tree overview projection: the conversation root, or one
+/// branch-head of a split. The projection mirrors the chat's tree structure
+/// directly — each node is a drawn card, and its `split` (when present) holds
+/// the alternative continuations, each headed by its own node. Everything
+/// between drawn nodes collapses into the node's `messageCount` (shown as a
+/// "{n} messages" badge).
+struct TreeNodeData: Equatable, Sendable {
+    /// The message id this node represents (used for goto-on-click).
+    let id: String
+    /// The message role ("user", "assistant", "tool", "system").
+    let role: String
+    /// A short snippet of the message content (≤100 chars), for the node card.
+    let snippet: String
+    /// Number of messages in this branch segment: from this node up to (and
+    /// including) the next split's owner, or to the end of the branch.
+    let messageCount: Int
+    /// Whether this node lies on the active path (root → active leaf).
+    let isActive: Bool
+    /// The split this node's segment ends in. Absent → the segment runs to a
+    /// leaf (the end of the branch).
+    let split: TreeSplitData?
+}
+
+/// A fork point: the alternative continuations after a node's segment, each
+/// headed by its own node. Exactly one branch is active (has `isActive`).
+struct TreeSplitData: Equatable, Sendable {
+    /// The branch heads, in order.
+    let branches: [TreeNodeData]
 }

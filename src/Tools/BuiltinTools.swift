@@ -208,8 +208,7 @@ struct ToolOutput {
     var isError: Bool
     /// Present when `read_file` read an image. The processed image bytes are
     /// stored on the `ToolResult` (no attachment file is written to disk); the
-    /// renderer loads them via the `ichai://` scheme handler, which serves
-    /// from the chat data. `fallback` carries the classification+OCR text used
+    /// renderer decodes them from the chat data. `fallback` carries the classification+OCR text used
     /// in place of the image on vision-incapable connections.
     var image: ProcessedToolImage?
 
@@ -225,8 +224,7 @@ struct ToolOutput {
 /// builders pick between the image block and the fallback text based on the
 /// connection's vision capability, just like user-attached images. Unlike
 /// attachments, no file is written to disk — the bytes live on the `ToolResult`
-/// and are served to the renderer via the `ichai://` scheme handler (which
-/// looks them up from the chat data).
+/// and the renderer decodes them from the chat data.
 struct ProcessedToolImage: Sendable {
     /// The processed image bytes (resized/re-encoded).
     let data: Data

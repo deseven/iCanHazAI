@@ -220,23 +220,6 @@ private struct ChatFeaturesTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            PrefRow(
-                title: "Mermaid",
-                description: "Render Mermaid diagrams from fenced `mermaid` code blocks."
-            ) {
-                Toggle("", isOn: store.bindingMermaidEnabled)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-            }
-
-            PrefRow(
-                title: "KaTeX",
-                description: "Render LaTeX math using `$...$` for inline and `$$...$$` for block equations."
-            ) {
-                Toggle("", isOn: store.bindingKatexEnabled)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-            }
 
             PrefRow(
                 title: "Interface Scale",
@@ -345,16 +328,6 @@ private struct DebugTab: View {
                     "Mirror timestamped debug logs to stdout for app startup, config loading, FSEvents, wizards, LLM requests, streaming, MCP servers, and tool calls. Logs are always written to ~/iCanHazAI/app.log regardless."
             ) {
                 Toggle("", isOn: store.bindingAppDebugEnabled)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-            }
-
-            PrefRow(
-                title: "Chat Renderer Debug",
-                description:
-                    "Show an on-screen debug overlay in the chat renderer with timestamps for message loads, edits, deletions, and streaming events."
-            ) {
-                Toggle("", isOn: store.bindingChatRendererDebugEnabled)
                     .labelsHidden()
                     .toggleStyle(.switch)
             }

@@ -1576,15 +1576,14 @@ actor ChatEngine {
     /// current date) and the raw prompt text stays available for editing.
     private func systemMessage(for chat: Chat) async -> ChatMessage? {
         guard let promptContent = systemPromptContent(for: chat) else { return nil }
-        let mermaid = await ConfigManager.shared.getMermaidEnabled()
-        let katex = await ConfigManager.shared.getKatexEnabled()
+
         let role = self.role(for: chat)
         // The rendering target is sticky per chat: whichever surface created
         // the chat (GUI vs CLI) decides what capabilities are advertised.
         let outputRendering =
             chat.outputRendering == .plain
             ? PromptVariables.plainTextRendering()
-            : PromptVariables.renderingCapabilities(mermaid: mermaid, katex: katex)
+            : PromptVariables.renderingCapabilities()
         let workdir = effectiveWorkingDirectory(for: chat)
         let values: [String: String] = [
             "output_rendering": outputRendering,

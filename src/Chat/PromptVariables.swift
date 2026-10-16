@@ -195,31 +195,17 @@ enum PromptVariables {
 
     // MARK: - Variable values
 
-    /// The `{output_rendering}` value: a description of the chat renderer's
-    /// capabilities, built from the current feature toggles so disabled
-    /// features are not advertised to the model.
-    static func renderingCapabilities(mermaid: Bool, katex: Bool) -> String {
-        var lines: [String] = [
-            "Your responses are rendered in a chat UI with the following features:",
-            "- GitHub-Flavored Markdown (tables, strikethrough, task lists, autolinks)",
-            "- Syntax-highlighted code blocks (fenced with a language tag)",
-        ]
-        if katex {
-            lines.append("- LaTeX math via KaTeX: use `$...$` for inline and `$$...$$` for block equations")
-        } else {
-            lines.append("- LaTeX math is NOT supported")
-        }
-        if mermaid {
-            lines.append("- Mermaid diagrams: use a fenced code block with language `mermaid`")
-        } else {
-            lines.append("- Mermaid diagrams are NOT supported")
-        }
-        lines.append(contentsOf: [
-            "- Inline HTML is allowed",
-            "",
-            "Use these features where appropriate to make your answers clearer.",
-        ])
-        return lines.joined(separator: "\n") + "\n"
+    /// The `{output_rendering}` value: a description of what the native chat
+    /// renderer supports.
+    static func renderingCapabilities() -> String {
+        """
+        Your responses are rendered in a native chat UI that supports:
+        - Markdown: headings, emphasis, links, lists, blockquotes, horizontal rules
+        - Code blocks (fenced; no syntax highlighting) and inline code
+        - GitHub-Flavored Markdown tables, strikethrough, and task lists
+        NOT supported: HTML (shown as raw source), LaTeX math, Mermaid or other diagrams, embedded images (shown as links).
+        Use these features where appropriate to make your answers clearer.
+        """ + "\n"
     }
 
     /// The `{output_rendering}` value for chats created via the CLI: responses

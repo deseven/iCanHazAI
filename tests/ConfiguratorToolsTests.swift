@@ -200,15 +200,30 @@ extension AllAppTests {
                 expand_tool_use = false
 
                 [chat_features]
-                mermaid_enabled = false
-                katex_enabled = false
+                interface_scale = 100
 
                 [debug]
                 app_debug_enabled = false
-                chat_renderer_debug_enabled = false
                 """
             let config = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
             #expect(config.general.workingDirectories == ["/Users/me/proj1", "/Users/me/proj2"])
+        }
+
+        @Test("AppConfig ignores keys of removed preferences")
+        func ignoresRemovedKeys() throws {
+            let toml = """
+                [chat_features]
+                mermaid_enabled = true
+                katex_enabled = true
+                interface_scale = 120
+
+                [debug]
+                app_debug_enabled = true
+                chat_renderer_debug_enabled = true
+                """
+            let config = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
+            #expect(config.chatFeatures.interfaceScale == 120)
+            #expect(config.debug.appDebugEnabled == true)
         }
 
         @Test("AppConfig decodes working_directories as nil when omitted")
@@ -225,12 +240,10 @@ extension AllAppTests {
                 expand_tool_use = false
 
                 [chat_features]
-                mermaid_enabled = false
-                katex_enabled = false
+                interface_scale = 100
 
                 [debug]
                 app_debug_enabled = false
-                chat_renderer_debug_enabled = false
                 """
             let config = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
             #expect(config.general.workingDirectories == nil)
@@ -289,11 +302,8 @@ extension AllAppTests {
             #expect(config.general.defaultRole == nil)
             #expect(config.chatBehaviour.expandThinking == nil)
             #expect(config.chatBehaviour.expandToolUse == nil)
-            #expect(config.chatFeatures.mermaidEnabled == nil)
-            #expect(config.chatFeatures.katexEnabled == nil)
             #expect(config.chatFeatures.interfaceScale == nil)
             #expect(config.debug.appDebugEnabled == nil)
-            #expect(config.debug.chatRendererDebugEnabled == nil)
             #expect(config.window == nil)
         }
 
@@ -308,7 +318,7 @@ extension AllAppTests {
             let config = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
             #expect(config.general.defaultRole == "Assistant")
             #expect(config.chatBehaviour.expandThinking == nil)
-            #expect(config.chatFeatures.mermaidEnabled == nil)
+            #expect(config.chatFeatures.interfaceScale == nil)
             #expect(config.debug.appDebugEnabled == nil)
         }
 
