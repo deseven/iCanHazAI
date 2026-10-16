@@ -14,7 +14,7 @@ To address the elephant in the room: there are many AI chat apps and agentic har
 
 ## Features
 
-- native macOS app: Swift backend, fully native chat rendering (Markdown, tables, code blocks) built on AppKit and TextKit, fast on huge chats, low resource usage
+- native macOS app: Swift backend, fully native chat rendering (Markdown, tables, code blocks with syntax highlighting) built on AppKit and TextKit, fast on huge chats, low resource usage
 - extensive BYOK support: Anthropic, OpenAI, or any OpenAI-compatible API (OpenRouter, Together, DeepSeek, local servers like Ollama/LM Studio, and countless others)
 - roles: clearly defined templates bundling a prompt, a connection, tools, and a working directory — several bundled, easy to create your own
 - agentic toolset: built-in filesystem/code/shell/utils/web tool groups with per-tool approval and optional directory isolation; file editing uses the [oh-my-pi](https://github.com/can1357/oh-my-pi) hashline patch format for optimistic-concurrency edits
@@ -106,6 +106,11 @@ A `YYYY-MM-DD HH-mm-ss.json` file in `Chats/`, with a numeric suffix like ` (2)`
 This builds the app and launches it. See `build.sh` for additional build modes (`dev-release`, `release`, `clean`).
 
 Run `./build.sh test` for tests.
+
+
+## Third-Party Notices
+
+Syntax highlighting uses [tree-sitter](https://github.com/tree-sitter/tree-sitter) with the grammars of the `tree-sitter` and `tree-sitter-grammars` GitHub organizations plus [tree-sitter-swift](https://github.com/alex-pinkus/tree-sitter-swift). The Python, JavaScript, CSS, Lua and YAML external scanners are vendored in `shared/TreeSitterScanners` (each with its license) because those packages' manifests fail to include them. The code colors are from [GitHub's Primer theme](https://github.com/primer/github-vscode-theme) (MIT).
 
 
 ## Help & Support

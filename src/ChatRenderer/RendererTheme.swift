@@ -18,12 +18,27 @@ enum MDAttr {
 
 final class CodeBlockMarker: NSObject, @unchecked Sendable {
     let indent: CGFloat
+    /// The fence's language marker as written.
     let language: String?
+    /// The source as written (real newlines), for the copy button and language detection.
+    let code: String
     var range = NSRange(location: 0, length: 0)
-    init(indent: CGFloat, language: String?) {
+    /// Unlabeled code that wasn't colored while building: the showing view detects its
+    /// language later and colors it itself (the cached string stays plain).
+    let needsDetection: Bool
+    /// Main-thread state: set by the view that completes the detection, so the header label
+    /// survives the string being shown again.
+    var detectedLanguage: String?
+
+    init(indent: CGFloat, language: String?, code: String, needsDetection: Bool = false) {
         self.indent = indent
         self.language = language
+        self.code = code
+        self.needsDetection = needsDetection
     }
+
+    /// Shown in the block's header.
+    var label: String { language ?? detectedLanguage ?? "code" }
 }
 
 final class QuoteMarker: NSObject, @unchecked Sendable {

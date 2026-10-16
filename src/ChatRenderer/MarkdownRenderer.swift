@@ -10,14 +10,19 @@ struct RenderedText: @unchecked Sendable {
     let topInset: CGFloat
     let bottomInset: CGFloat
     let tables: [TableSpec]
+    let codeBlocks: [CodeBlockMarker]
     private let variants = VariantCache()
     private let heights = HeightCache()
 
-    init(string: NSAttributedString, topInset: CGFloat, bottomInset: CGFloat, tables: [TableSpec] = []) {
+    init(
+        string: NSAttributedString, topInset: CGFloat, bottomInset: CGFloat, tables: [TableSpec] = [],
+        codeBlocks: [CodeBlockMarker] = []
+    ) {
         self.string = string
         self.topInset = topInset
         self.bottomInset = bottomInset
         self.tables = tables
+        self.codeBlocks = codeBlocks
     }
 
     func height(forWidth width: CGFloat) -> CGFloat {
@@ -418,7 +423,8 @@ private final class MarkdownBuilder {
         out.endEditing()
         for t in tables { t.measureContent(in: out) }
         return RenderedText(
-            string: out, topInset: topInset, bottomInset: paragraphs.last?.extraAfter ?? 0, tables: tables)
+            string: out, topInset: topInset, bottomInset: paragraphs.last?.extraAfter ?? 0, tables: tables,
+            codeBlocks: paragraphs.compactMap(\.code))
     }
 
     /// Kerning (not real spaces, so copied text stays intact) around inline
@@ -554,14 +560,16 @@ private final class MarkdownBuilder {
             if code.hasSuffix("\n") { code.removeLast() }
             let info = cmark_node_get_fence_info(node).map { String(cString: $0) } ?? ""
             let lang = info.split(separator: " ").first.map(String.init)
-            let st = monoState(ctx)
-            emitCodeBlock(language: lang?.isEmpty == false ? lang : nil, ctx) { self.append(code, self.style(st)) }
+            let label = lang?.isEmpty == false ? lang : nil
+            // A stated language is followed, even an unsupported one; only unlabeled code is guessed.
+            emitCodeBlock(
+                label: label, code: code, syntax: label.flatMap { SyntaxLanguage.from(marker: $0) },
+                detect: label == nil && SyntaxHighlighter.isDetectable(code), ctx)
 
         case CMARK_NODE_HTML_BLOCK:
             var html = literal(node)
             while html.hasSuffix("\n") { html.removeLast() }
-            let st = monoState(ctx)
-            emitCodeBlock(language: "html", ctx) { self.append(html, self.style(st)) }
+            emitCodeBlock(label: "html", code: html, syntax: .html, detect: false, ctx)
 
         case CMARK_NODE_THEMATIC_BREAK:
             flushMarker(ctx)
@@ -687,21 +695,32 @@ private final class MarkdownBuilder {
 
     /// The whole block is a single paragraph with U+2028 line separators, so
     /// its padding maps onto paragraph spacing and drawing needs one range.
-    /// `content` must use U+2028 instead of newlines.
-    func emitCodeBlock(language: String?, _ ctx: BlockContext, content: () -> Void) {
+    ///
+    /// A known `syntax` is highlighted right here. With `detect`, a previously cached detection
+    /// is applied; otherwise the block is left plain and `needsDetection` tells the view to
+    /// run it in the background.
+    func emitCodeBlock(label: String?, code: String, syntax: SyntaxLanguage?, detect: Bool, _ ctx: BlockContext) {
         flushMarker(ctx)
-        let marker = CodeBlockMarker(indent: ctx.indent, language: language)
-        let label = language != nil ? theme.codeLabelHeight : 0
+        var result: SyntaxHighlighter.Result?
+        if let syntax {
+            result = SyntaxHighlighter.shared.highlight(code, as: syntax)
+        } else if detect {
+            result = SyntaxHighlighter.shared.cached(code, language: nil)
+        }
+        let marker = CodeBlockMarker(
+            indent: ctx.indent, language: label, code: code, needsDetection: detect && result == nil)
+        if label == nil { marker.detectedLanguage = result?.language?.displayName }
         var inner = ctx
         inner.indent += theme.codePadH
-        let pstyle = paragraphStyle(inner, before: theme.codePadV + label, lineSpacing: theme.codeLineSpacing)
+        let pstyle = paragraphStyle(
+            inner, before: theme.codePadV + theme.codeLabelHeight, lineSpacing: theme.codeLineSpacing)
         pstyle.tailIndent = -theme.codePadH
         pstyle.paragraphSpacing = theme.codePadV
         pstyle.lineBreakMode = .byCharWrapping
 
         let start = length
         let textStart = text.endIndex
-        content()
+        appendCode(code, spans: result?.spans ?? [], ctx)
         if length == start {
             append(" ", style(monoState(ctx)))
         } else {
@@ -711,6 +730,31 @@ private final class MarkdownBuilder {
         }
         marker.range = NSRange(location: start, length: length - start)
         endParagraph(start: start, style: pstyle, ctx, code: marker, extraAfter: theme.codePadV)
+    }
+
+    /// `spans` are UTF-16 ranges of `code`; the gaps between them keep the base color.
+    func appendCode(_ code: String, spans: [SyntaxSpan], _ ctx: BlockContext) {
+        let base = monoState(ctx)
+        guard !spans.isEmpty else {
+            append(code, style(base))
+            return
+        }
+        let ns = NSString(string: code)
+        var position = 0
+        for span in spans where span.range.location >= position && NSMaxRange(span.range) <= ns.length {
+            if span.range.location > position {
+                append(
+                    ns.substring(with: NSRange(location: position, length: span.range.location - position)),
+                    style(base))
+            }
+            var colored = base
+            colored.color = SyntaxTheme.color(for: span.token)
+            append(ns.substring(with: span.range), style(colored))
+            position = NSMaxRange(span.range)
+        }
+        if position < ns.length {
+            append(ns.substring(from: position), style(base))
+        }
     }
 
     // MARK: Paragraph plumbing

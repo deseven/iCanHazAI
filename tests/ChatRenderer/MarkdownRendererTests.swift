@@ -167,7 +167,7 @@ extension AllAppTests {
             #expect(!text.string.string.contains("\n"))
         }
 
-        @Test("an indented code block has no language")
+        @Test("an indented code block has no language marker")
         func indentedCode() throws {
             let text = render("    one\n    two")
             #expect(text.string.string == "one\u{2028}two")
@@ -189,7 +189,7 @@ extension AllAppTests {
             #expect(plain.bottomInset == 0)
 
             let unlabelled = render("```\ncode\n```")
-            #expect(unlabelled.topInset == theme.codePadV)
+            #expect(unlabelled.topInset == theme.codePadV + theme.codeLabelHeight)
             #expect(unlabelled.bottomInset == theme.codePadV)
 
             let labelled = render("```py\ncode\n```")
@@ -200,7 +200,7 @@ extension AllAppTests {
             #expect(trailing.bottomInset == theme.codePadV)
 
             let leading = render("```\ncode\n```\n\ntext")
-            #expect(leading.topInset == theme.codePadV)
+            #expect(leading.topInset == theme.codePadV + theme.codeLabelHeight)
             #expect(leading.bottomInset == 0)
         }
 

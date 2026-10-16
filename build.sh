@@ -156,6 +156,9 @@ do_create_bundle() {
     cp -R "$loc/default/prompts" "$app/Contents/Resources/Default/prompts"
     cp -R "$loc/default/roles" "$app/Contents/Resources/Default/roles"
 
+    # Tree-sitter highlight queries (and the grammars' licenses) for the chat renderer.
+    cp -R "$loc/res/syntax" "$app/Contents/Resources/Syntax"
+
 }
 
 do_codesign() {

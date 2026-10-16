@@ -153,7 +153,8 @@ extension AllAppTests {
         func renderingCapabilities() {
             let text = PromptVariables.renderingCapabilities()
             #expect(text.contains("tables, strikethrough, and task lists"))
-            #expect(text.contains("no syntax highlighting"))
+            #expect(text.contains("Fenced code blocks with syntax highlighting"))
+            #expect(text.contains("language marker right after the opening fence"))
             #expect(text.contains("NOT supported: HTML"))
             #expect(text.contains("LaTeX math, Mermaid"))
             #expect(text.hasSuffix("\n"))

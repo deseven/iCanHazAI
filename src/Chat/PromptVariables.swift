@@ -201,7 +201,7 @@ enum PromptVariables {
         """
         Your responses are rendered in a native chat UI that supports:
         - Markdown: headings, emphasis, links, lists, blockquotes, horizontal rules
-        - Code blocks (fenced; no syntax highlighting) and inline code
+        - Fenced code blocks with syntax highlighting (always put the language marker right after the opening fence if you want the code to be highlighted for the user) and inline code
         - GitHub-Flavored Markdown tables, strikethrough, and task lists
         NOT supported: HTML (shown as raw source), LaTeX math, Mermaid or other diagrams, embedded images (shown as links).
         Use these features where appropriate to make your answers clearer.

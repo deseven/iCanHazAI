@@ -73,16 +73,23 @@ final class MarkdownLayoutManager: NSLayoutManager {
         return (first.minY, bottom)
     }
 
+    /// The box of a code block (header row included) in text container coordinates.
+    func codeBlockRect(_ m: CodeBlockMarker) -> NSRect? {
+        guard let storage = textStorage, let container = textContainers.first,
+            let ext = verticalExtent(of: m.range, in: storage)
+        else { return nil }
+        let label = theme.codeLabelHeight
+        return NSRect(
+            x: m.indent, y: ext.top - theme.codePadV - label, width: container.size.width - m.indent,
+            height: ext.bottom - ext.top + theme.codePadV * 2 + label)
+    }
+
     private func drawCodeBlocks(
         _ storage: NSTextStorage, _ container: NSTextContainer, _ chars: NSRange, _ origin: NSPoint
     ) {
         storage.enumerateAttribute(MDAttr.codeBlock, in: chars) { value, _, _ in
-            guard let m = value as? CodeBlockMarker, let ext = verticalExtent(of: m.range, in: storage) else { return }
-            let label = m.language != nil ? theme.codeLabelHeight : 0
-            let rect = NSRect(
-                x: origin.x + m.indent, y: origin.y + ext.top - theme.codePadV - label,
-                width: container.size.width - m.indent,
-                height: ext.bottom - ext.top + theme.codePadV * 2 + label)
+            guard let m = value as? CodeBlockMarker, var rect = codeBlockRect(m) else { return }
+            rect = rect.offsetBy(dx: origin.x, dy: origin.y)
             let path = NSBezierPath(roundedRect: rect, xRadius: theme.codeCornerRadius, yRadius: theme.codeCornerRadius)
             Theme.codeBackground.setFill()
             path.fill()
@@ -92,14 +99,12 @@ final class MarkdownLayoutManager: NSLayoutManager {
                 roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: theme.codeCornerRadius,
                 yRadius: theme.codeCornerRadius
             ).stroke()
-            if let lang = m.language {
-                (lang as NSString).draw(
-                    at: NSPoint(x: rect.minX + theme.codePadH, y: rect.minY + theme.scaled(6)),
-                    withAttributes: [
-                        .font: NSFont.systemFont(ofSize: theme.codeLabelFontSize, weight: .medium),
-                        .foregroundColor: NSColor.tertiaryLabelColor,
-                    ])
-            }
+            (m.label as NSString).draw(
+                at: NSPoint(x: rect.minX + theme.codePadH, y: rect.minY + theme.scaled(6)),
+                withAttributes: [
+                    .font: NSFont.systemFont(ofSize: theme.codeLabelFontSize, weight: .medium),
+                    .foregroundColor: NSColor.tertiaryLabelColor,
+                ])
         }
     }
 
@@ -174,8 +179,13 @@ final class MarkdownTextView: NSTextView {
             guard theme != oldValue else { return }
             (layoutManager as? MarkdownLayoutManager)?.theme = theme
             needsDisplay = true
+            updateCopyButtons()
         }
     }
+
+    private var codeBlocks: [CodeBlockMarker] = []
+    private var copyButtons: [CodeCopyButton] = []
+    private var detectionTask: Task<Void, Never>?
 
     convenience init() {
         let storage = NSTextStorage()
@@ -209,6 +219,84 @@ final class MarkdownTextView: NSTextView {
         renderedSource = string
         topInset = text.topInset
         textStorage?.setAttributedString(string)
+        detectionTask?.cancel()
+        detectionTask = nil
+        codeBlocks = text.codeBlocks
+        updateCopyButtons()
+        detectLanguages(for: string)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        if !codeBlocks.isEmpty { updateCopyButtons() }
+    }
+
+    // MARK: Code blocks
+
+    private func updateCopyButtons() {
+        guard let lm = layoutManager as? MarkdownLayoutManager else { return }
+        let side = theme.scaled(16)
+        let header = theme.codePadV + theme.codeLabelHeight
+        var used = 0
+        for marker in codeBlocks {
+            guard let rect = lm.codeBlockRect(marker) else { continue }
+            let button: CodeCopyButton
+            if used < copyButtons.count {
+                button = copyButtons[used]
+            } else {
+                button = CodeCopyButton()
+                addSubview(button)
+                copyButtons.append(button)
+            }
+            used += 1
+
+            button.code = marker.code
+            button.symbolSize = theme.scaled(11)
+            button.isHidden = false
+            button.frame = NSRect(
+                x: rect.maxX - side - theme.scaled(6), y: topInset + rect.minY + (header - side) / 2, width: side,
+                height: side)
+        }
+        for button in copyButtons[used...] { button.isHidden = true }
+    }
+
+    /// Unlabeled code is colored after the first, plain render: cached verdicts apply at once,
+    /// the rest are detected in the background. The short delay keeps a streaming message,
+    /// which replaces its string every few milliseconds, from starting work that's thrown away.
+    private func detectLanguages(for string: NSAttributedString) {
+        var remaining: [CodeBlockMarker] = []
+        for marker in codeBlocks where marker.needsDetection {
+            if let hit = SyntaxHighlighter.shared.cached(marker.code, language: nil) {
+                apply(hit, to: marker)
+            } else {
+                remaining.append(marker)
+            }
+        }
+        guard !remaining.isEmpty else { return }
+        detectionTask = Task(priority: .utility) { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            for marker in remaining {
+                guard !Task.isCancelled, let result = await SyntaxHighlighter.shared.detect(marker.code) else {
+                    return
+                }
+                guard let self, self.renderedSource === string else { return }
+                self.apply(result, to: marker)
+            }
+        }
+    }
+
+    /// Colors only; the font is untouched, so layout and heights stay valid.
+    private func apply(_ result: SyntaxHighlighter.Result, to marker: CodeBlockMarker) {
+        marker.detectedLanguage = result.language?.displayName
+        needsDisplay = true
+        guard let storage = textStorage, !result.spans.isEmpty else { return }
+        storage.beginEditing()
+        for span in result.spans {
+            let range = NSRange(location: marker.range.location + span.range.location, length: span.range.length)
+            guard NSMaxRange(range) <= NSMaxRange(marker.range), NSMaxRange(range) <= storage.length else { continue }
+            storage.addAttribute(.foregroundColor, value: SyntaxTheme.color(for: span.token), range: range)
+        }
+        storage.endEditing()
     }
 
     /// Only web and mail links leave the app; anything else (relative or
@@ -241,5 +329,28 @@ final class MarkdownTextView: NSTextView {
 
     override func scrollWheel(with event: NSEvent) {
         nextResponder?.scrollWheel(with: event)
+    }
+
+    // NSTextView re-applies the I-beam on every mouse move and cursor update, overriding the
+    // button's own cursor, so a copy button under the pointer has to win here.
+    private func isOverCopyButton(_ event: NSEvent) -> Bool {
+        let point = convert(event.locationInWindow, from: nil)
+        return copyButtons.contains { !$0.isHidden && $0.frame.contains(point) }
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        if isOverCopyButton(event) {
+            NSCursor.pointingHand.set()
+        } else {
+            super.mouseMoved(with: event)
+        }
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        if isOverCopyButton(event) {
+            NSCursor.pointingHand.set()
+        } else {
+            super.cursorUpdate(with: event)
+        }
     }
 }
