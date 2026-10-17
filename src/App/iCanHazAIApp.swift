@@ -113,8 +113,20 @@ final class MainWindowController {
     private var window: NSWindow?
     private var frameTracker: WindowFrameTracker?
     private var creationInFlight = false
+    private var closeObserver: NSObjectProtocol?
+
+    /// The main window, once created (it stays around hidden after being closed).
+    var mainWindow: NSWindow? { window }
 
     private init() {}
+
+    private func trackVisibility(_ window: NSWindow) {
+        closeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { AppViewModel.shared?.mainWindowVisible = false }
+        }
+    }
 
     /// Creates and shows the main window. Called from the loader's
     /// `startupReadyHandler` once loading is complete. No-op if the window
@@ -123,6 +135,7 @@ final class MainWindowController {
         if let window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            AppViewModel.shared?.mainWindowVisible = true
             return
         }
         guard !creationInFlight else { return }
@@ -153,6 +166,7 @@ final class MainWindowController {
             window.toolbarStyle = .unified
             window.isReleasedWhenClosed = false
             self.window = window
+            trackVisibility(window)
 
             debugLog("App", "creating main window")
             trackWindowFrame(window)
@@ -181,6 +195,7 @@ final class MainWindowController {
             applyMinSize()
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            store.mainWindowVisible = true
             debugLog("App", "main window shown — \(window.frame)")
         }
     }
@@ -389,6 +404,19 @@ struct iCanHazAIApp: App {
                     AppViewModel.shared?.createNewTemporaryChat()
                 }
                 .keyboardShortcut("t", modifiers: [.option, .command])
+                Divider()
+                Button("Export Current Chat as HTML…") {
+                    ChatExportController.shared.start(.html)
+                }
+                .disabled(!viewModel.canExportCurrentChat)
+                Button("Export Current Chat as PDF…") {
+                    ChatExportController.shared.start(.pdf)
+                }
+                .disabled(!viewModel.canExportCurrentChat)
+                Button("Print Current Chat…") {
+                    ChatExportController.shared.start(.print)
+                }
+                .disabled(!viewModel.canExportCurrentChat)
             }
         }
     }

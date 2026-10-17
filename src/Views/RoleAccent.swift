@@ -70,6 +70,27 @@ enum RoleAccent {
     }
 }
 
+extension RoleAccent {
+    /// A CSS `light-dark()` color for an alias, with each side resolved from macOS in the
+    /// matching appearance (system colors differ between light and dark). Falls back to
+    /// the macOS accent color like the app does.
+    @MainActor
+    static func cssLightDark(for alias: String?) -> String {
+        let color = nsColor(for: alias) ?? NSColor.controlAccentColor
+        func hex(_ name: NSAppearance.Name) -> String {
+            var out = "#808080"
+            NSAppearance(named: name)?.performAsCurrentDrawingAppearance {
+                guard let c = color.usingColorSpace(.sRGB) else { return }
+                out = String(
+                    format: "#%02X%02X%02X", Int(round(c.redComponent * 255)), Int(round(c.greenComponent * 255)),
+                    Int(round(c.blueComponent * 255)))
+            }
+            return out
+        }
+        return "light-dark(\(hex(.aqua)), \(hex(.darkAqua)))"
+    }
+}
+
 extension Role {
     /// Accent color for this role: the TOML `accent` alias resolved to an
     /// adaptive system color, falling back to the macOS accent color.

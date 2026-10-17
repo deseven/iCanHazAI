@@ -159,6 +159,9 @@ do_create_bundle() {
     # Tree-sitter highlight queries (and the grammars' licenses) for the chat renderer.
     cp -R "$loc/res/syntax" "$app/Contents/Resources/Syntax"
 
+    # HTML template for chat export / PDF / print.
+    cp -R "$loc/res/export" "$app/Contents/Resources/Export"
+
 }
 
 do_codesign() {

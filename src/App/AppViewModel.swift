@@ -43,6 +43,10 @@ final class AppViewModel: ObservableObject {
     // MARK: - Published state (mirrored from the engine)
 
     @Published var chatItems: [ChatRecord] = []
+    /// Whether the main window is currently open (it persists hidden after being closed).
+    @Published var mainWindowVisible = false
+    /// An export or print is being prepared; the Chat menu items are disabled meanwhile.
+    @Published var chatExportRunning = false
     /// Cheap, message-free projection of `chatItems` for the sidebar. The
     /// sidebar observes this instead of `chatItems` so a busy chat's per-token
     /// emits don't force it to re-diff full message arrays for every chat.
@@ -1017,6 +1021,15 @@ final class AppViewModel: ObservableObject {
     /// Whether the selected chat currently has an active streaming request.
     var isStreaming: Bool {
         selectedChatItem?.isStreaming ?? false
+    }
+
+    /// Whether the Chat menu's export/print items are available: the main window
+    /// is open and the selected chat has messages and isn't streaming.
+    var canExportCurrentChat: Bool {
+        guard mainWindowVisible, !chatExportRunning, let item = selectedChatItem, !item.isStreaming,
+            let chat = item.chat
+        else { return false }
+        return !chat.messages.isEmpty
     }
 
     /// Whether a "stop after current iteration" request is pending for the
