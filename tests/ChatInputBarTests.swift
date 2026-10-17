@@ -294,6 +294,33 @@ extension AllAppTests {
             #expect(h.bar.frame.height == minHeight + AttachmentChipsView.height + ChatInputBarView.chipsSpacing)
         }
 
+        @Test("queued messages open a strip above the bar and push the list up")
+        func queueStrip() {
+            let h = Harness()
+            let listBefore = h.list.frame
+            h.pane.queueView.setItems(["one", "two"])
+            let strip = h.pane.queueView.frame
+            #expect(!h.pane.queueView.isHidden)
+            #expect(strip.height == h.pane.queueView.preferredHeight)
+            #expect(strip.minY == inset.height + h.bar.frame.height + ChatPaneView.queueGap)
+            #expect(h.list.frame.minY == strip.maxY + inset.height + 1)
+            #expect(h.list.frame.maxY == listBefore.maxY)
+
+            h.pane.queueView.setItems([])
+            #expect(h.pane.queueView.isHidden)
+            #expect(h.list.frame == listBefore)
+        }
+
+        @Test("the strip shows at most three rows, folding the rest into a count")
+        func queueStripCap() {
+            let view = QueuedMessagesView()
+            view.setItems(["1", "2", "3", "4", "5"])
+            #expect(
+                view.preferredHeight
+                    == CGFloat(QueuedMessagesView.maxRows) * QueuedMessagesView.rowHeight
+                    + QueuedMessagesView.verticalPadding * 2)
+        }
+
         @Test("resizing the pane keeps the list and bar consistent")
         func paneResize() {
             let h = Harness()

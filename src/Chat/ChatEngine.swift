@@ -1141,6 +1141,7 @@ actor ChatEngine {
                     cachedLastActivity: info.lastActivity,
                     isStreaming: existing?.isStreaming ?? false,
                     stopAfterIteration: existing?.stopAfterIteration ?? false,
+                    queuedMessages: existing?.queuedMessages ?? [],
                     hasUnreadActivity: existing?.hasUnreadActivity ?? false,
                     lastError: existing?.lastError,
                     createdAt: existing?.createdAt ?? info.lastActivity
@@ -1174,6 +1175,7 @@ actor ChatEngine {
                     cachedLastActivity: info.lastActivity,
                     isStreaming: existing?.isStreaming ?? false,
                     stopAfterIteration: existing?.stopAfterIteration ?? false,
+                    queuedMessages: existing?.queuedMessages ?? [],
                     hasUnreadActivity: existing?.hasUnreadActivity ?? false,
                     lastError: existing?.lastError,
                     createdAt: existing?.createdAt ?? info.lastActivity
@@ -1723,13 +1725,34 @@ actor ChatEngine {
         debugLog(
             "Chat", "sendMessage — chat=\(filename), text length=\(text.count), attachments=\(pendingAttachments.count)"
         )
-        // Ensure the chat is loaded before sending.
+        // A stopped stream may still be unwinding; its cleanup would clobber
+        // the new stream's state. If a live stream is running instead (or one
+        // started while waiting), the message joins the queue.
+        guard await awaitStreamUnwind(filename: filename) else {
+            guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return false }
+            records[idx].queuedMessages.append(QueuedMessage(text: text, attachments: pendingAttachments))
+            emit(.chatsChanged(records))
+            return true
+        }
         await ensureChatLoaded(filename: filename)
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return false }
         guard let chat = records[idx].chat else { return false }
         guard let connection = effectiveConnection(for: chat) else {
             emit(.error("Please select a connection in the status bar."))
             return false
+        }
+
+        // Messages still queued (the stream was stopped or failed before they
+        // could go out) travel together with this one as a single user message.
+        var text = text
+        var pendingAttachments = pendingAttachments
+        if !records[idx].queuedMessages.isEmpty {
+            let queued = records[idx].queuedMessages
+            records[idx].queuedMessages = []
+            let combined = QueuedMessage.combine(
+                queued + [QueuedMessage(text: text, attachments: pendingAttachments)])
+            text = combined.text
+            pendingAttachments = combined.attachments
         }
 
         var baseChat = chat
@@ -1777,11 +1800,7 @@ actor ChatEngine {
         // the role's `with_attachments` flag, but a CLI-driven send against
         // a chat whose role doesn't allow attachments drops them here so they
         // never reach the request payload.
-        let roleAllowsAttachments = self.role(for: baseChat)?.hasAttachments ?? false
-        let effectiveAttachments = roleAllowsAttachments ? pendingAttachments : []
-        let committed: [Attachment] = effectiveAttachments.compactMap {
-            AttachmentManager.commit($0, chatFilename: filename)
-        }
+        let committed = commitAttachments(pendingAttachments, for: baseChat, filename: filename)
 
         // Build the message list including the system prompt from the role's
         // prompt (or the chat's per-chat prompt override when allowed), with
@@ -1816,6 +1835,115 @@ actor ChatEngine {
         // if this chat doesn't have a title yet.
         maybeGenerateChatName(filename: filename)
 
+        return true
+    }
+
+    /// Writes pending attachments to disk and returns their persisted refs.
+    /// Empty when the chat's role doesn't allow attachments.
+    private func commitAttachments(
+        _ pending: [PendingAttachment], for chat: Chat, filename: String
+    ) -> [Attachment] {
+        guard role(for: chat)?.hasAttachments ?? false else { return [] }
+        return pending.compactMap { AttachmentManager.commit($0, chatFilename: filename) }
+    }
+
+    // MARK: - Message queue
+
+    /// Queues a message written while the chat streams. It goes out as part of
+    /// one combined user message at the next iteration boundary of the tool loop.
+    /// If the stream already ended there is nothing to wait for, so it is sent
+    /// right away (together with anything still queued).
+    func queueMessage(filename: String, text: String, pendingAttachments: [PendingAttachment]) async {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        guard records[idx].isStreaming else {
+            await sendMessage(filename: filename, text: text, pendingAttachments: pendingAttachments)
+            return
+        }
+        records[idx].queuedMessages.append(QueuedMessage(text: text, attachments: pendingAttachments))
+        emit(.chatsChanged(records))
+    }
+
+    /// Discards every queued message of the chat.
+    func clearQueuedMessages(filename: String) {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }),
+            !records[idx].queuedMessages.isEmpty
+        else { return }
+        records[idx].queuedMessages = []
+        emit(.chatsChanged(records))
+    }
+
+    /// Stops the stream (if one is running) and sends the queued messages —
+    /// plus `extra`, the message typed in the input — as one user message.
+    ///
+    /// The old stream must have fully unwound (results trimmed, chat saved)
+    /// before the new request starts, so this waits for its task. The actor is
+    /// free meanwhile, which is deliberate: the queue is read only afterwards,
+    /// so a cancel issued while the stream is stopping is honoured, and a
+    /// stream someone else started in the gap is not run over.
+    func sendQueuedMessagesNow(filename: String, extra: QueuedMessage? = nil) async {
+        if isStreaming(filename: filename) {
+            stopStreaming(filename: filename)
+        }
+        let free = await awaitStreamUnwind(filename: filename)
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        if !free {
+            if let extra {
+                records[idx].queuedMessages.append(extra)
+                emit(.chatsChanged(records))
+            }
+            return
+        }
+        guard extra != nil || !records[idx].queuedMessages.isEmpty else { return }
+        await sendMessage(filename: filename, text: extra?.text ?? "", pendingAttachments: extra?.attachments ?? [])
+    }
+
+    /// `stopStreaming` flips `isStreaming` off at once, but the cancelled task
+    /// keeps running until it unwinds: it then calls `finishStream`, which
+    /// clears `streamTasks` and `isStreaming` and releases the chat. A new
+    /// stream started in that window would be clobbered by this cleanup, so
+    /// every path that starts a stream first waits here. Returns false when a
+    /// stream is running (a live one, or one started while waiting), in which
+    /// case the caller must not start another.
+    private func awaitStreamUnwind(filename: String) async -> Bool {
+        if !isStreaming(filename: filename), let task = streamTasks[filename] {
+            task.cancel()
+            await task.value
+        }
+        return !isStreaming(filename: filename)
+    }
+
+    private func hasQueuedMessages(filename: String) -> Bool {
+        records.first(where: { $0.filename == filename })?.queuedMessages.isEmpty == false
+    }
+
+    /// Iteration boundary of the tool loop: the model has stopped and every tool
+    /// call it made has its result in `history`. If messages are queued, appends
+    /// them as one user message (after the tool results, if any) plus a fresh
+    /// assistant placeholder, and returns true so the loop sends another request.
+    /// A pending "stop after streaming" is consumed: the queued message is the
+    /// reason to keep going. Does nothing once the task is cancelled, which
+    /// leaves the queue for whoever cancelled it.
+    private func continueWithQueuedMessages(
+        filename: String, connection: Connection, history: inout [ChatMessage]
+    ) -> Bool {
+        guard !Task.isCancelled,
+            let idx = records.firstIndex(where: { $0.filename == filename }),
+            !records[idx].queuedMessages.isEmpty,
+            var chat = records[idx].chat
+        else { return false }
+        let queued = records[idx].queuedMessages
+        records[idx].queuedMessages = []
+        records[idx].stopAfterIteration = false
+
+        let combined = QueuedMessage.combine(queued)
+        let committed = commitAttachments(combined.attachments, for: chat, filename: filename)
+        let userMessage = ChatMessage(
+            role: .user, content: combined.text, attachments: committed.isEmpty ? nil : committed)
+        debugLog("Stream", "sending \(queued.count) queued message(s) — chat=\(filename)")
+        chat.appendToActiveLeaf(userMessage)
+        records[idx].chat = chat
+        history.append(userMessage)
+        appendAssistantMessage(filename: filename, connection: connection)
         return true
     }
 
@@ -1987,7 +2115,7 @@ actor ChatEngine {
     /// No-ops when the chat is streaming, the message can't be found, isn't an
     /// assistant message, or is the first message in the chat (empty prefix).
     func regenerate(filename: String, assistantMessageID: UUID) async {
-        guard !isStreaming(filename: filename) else { return }
+        guard await awaitStreamUnwind(filename: filename) else { return }
         await ensureChatLoaded(filename: filename)
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         guard let chat = records[idx].chat else { return }
@@ -2055,7 +2183,7 @@ actor ChatEngine {
     /// and re-runs the request from that user message — the standard
     /// "re-send my last message" behavior.
     func retryLastMessage(filename: String) async {
-        guard !isStreaming(filename: filename) else { return }
+        guard await awaitStreamUnwind(filename: filename) else { return }
         await ensureChatLoaded(filename: filename)
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         guard let chat = records[idx].chat else { return }
@@ -2191,6 +2319,18 @@ actor ChatEngine {
                         finishStream(filename: filename)
                         return
                     }
+                    // Messages queued during the answer go out now, in a
+                    // request that already contains this final answer.
+                    if hasQueuedMessages(filename: filename), !Task.isCancelled {
+                        if let answer = records.first(where: { $0.filename == filename })?.chat?.activeMessages
+                            .last(where: { $0.role == .assistant })
+                        {
+                            history.append(answer)
+                        }
+                        if continueWithQueuedMessages(filename: filename, connection: connection, history: &history) {
+                            continue
+                        }
+                    }
                     finishStream(filename: filename)
                     return
                 }
@@ -2270,6 +2410,13 @@ actor ChatEngine {
                     // Mirror into the working history so the next stream
                     // request includes it.
                     history.append(ChatMessage(role: .tool, content: "", toolResults: [toolResult]))
+                }
+
+                // Queued messages ride along with the tool results: one
+                // request with the results followed by a single user block.
+                // This takes precedence over "stop after streaming".
+                if continueWithQueuedMessages(filename: filename, connection: connection, history: &history) {
+                    continue
                 }
 
                 // "Stop after streaming" requested: the current iteration is
@@ -3248,6 +3395,7 @@ actor ChatEngine {
     /// edits stay in-place text fixes (no request re-run — nothing to
     /// regenerate from).
     func editMessage(filename: String, messageID: UUID, newText: String) async {
+        _ = await awaitStreamUnwind(filename: filename)
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         await ensureChatLoaded(filename: filename)
         guard var chat = records[idx].chat else { return }

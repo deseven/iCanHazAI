@@ -14,6 +14,7 @@ struct ChatInputFacts: Equatable {
     var lastMessageIsFromUser = false
     var isStreaming = false
     var stopAfterIterationPending = false
+    var queuedCount = 0
 
     /// Whether the message input is disabled (the chat's role is missing).
     var inputDisabled: Bool { !hasValidRole }
@@ -25,7 +26,7 @@ struct ChatInputFacts: Equatable {
         // Directory-relevant tools (Filesystem/Code) require a working
         // directory before requests can be sent.
         if workdirRequired { return false }
-        if hasAttachments || hasText { return true }
+        if hasAttachments || hasText || queuedCount > 0 { return true }
         // Empty input is allowed when the last message is from the user —
         // pressing send triggers the assistant reply on that message.
         return lastMessageIsFromUser

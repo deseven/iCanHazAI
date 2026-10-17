@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import Testing
 
 @testable import iCanHazAI
@@ -120,6 +121,15 @@ extension AllAppTests {
             #expect(!facts.actionEnabled(hasText: true, hasAttachments: true))
         }
 
+        @Test("queued messages enable sending with an empty input")
+        func queuedMessagesEnable() {
+            var facts = ready()
+            facts.queuedCount = 2
+            #expect(facts.actionEnabled(hasText: false, hasAttachments: false))
+            facts.hasConnection = false
+            #expect(!facts.actionEnabled(hasText: false, hasAttachments: false))
+        }
+
         @Test("while streaming the button stays enabled to stop")
         func streamingAlwaysEnabled() {
             var facts = ChatInputFacts()
@@ -131,6 +141,49 @@ extension AllAppTests {
         func inputDisabled() {
             #expect(ChatInputFacts().inputDisabled)
             #expect(!ready().inputDisabled)
+        }
+    }
+
+    @Suite("Queued messages")
+    struct QueuedMessageTests {
+
+        private func attachment(_ name: String) -> PendingAttachment {
+            PendingAttachment(data: Data(name.utf8), kind: .text, originalName: name)
+        }
+
+        @Test("combining joins texts with a blank line and keeps attachment order")
+        func combine() {
+            let a = QueuedMessage(text: "first", attachments: [attachment("a")])
+            let b = QueuedMessage(text: "second")
+            let c = QueuedMessage(text: "third", attachments: [attachment("c")])
+            let combined = QueuedMessage.combine([a, b, c])
+            #expect(combined.text == "first\n\nsecond\n\nthird")
+            #expect(combined.attachments.map(\.originalName) == ["a", "c"])
+        }
+
+        @Test("attachment-only messages add no blank separators")
+        func combineAttachmentOnly() {
+            let a = QueuedMessage(text: "", attachments: [attachment("a")])
+            let b = QueuedMessage(text: "hello")
+            #expect(QueuedMessage.combine([a, b]).text == "hello")
+            #expect(QueuedMessage.combine([a]).text == "")
+        }
+
+        @Test("the preview is one line and counts attachments")
+        func preview() {
+            #expect(QueuedMessage(text: "a\nb\n\nc").preview == "a b c")
+            #expect(
+                QueuedMessage(text: "hi", attachments: [attachment("x"), attachment("y")]).preview == "\u{1F4CE}2 hi")
+            #expect(QueuedMessage(text: "", attachments: [attachment("x")]).preview == "\u{1F4CE}1")
+        }
+
+        @Test("the queue takes part in record equality")
+        func recordEquality() {
+            var a = ChatRecord(filename: "x.json")
+            let b = a
+            a.queuedMessages = [QueuedMessage(text: "q")]
+            #expect(a != b)
+            #expect(AppViewModel.recordsUIRelevantChanged(from: [b], to: [a]))
         }
     }
 }

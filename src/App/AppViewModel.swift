@@ -952,6 +952,28 @@ final class AppViewModel: ObservableObject {
         Task { await engine.resolveToolCallApproval(callID: callID, approval: .deny(reason: reason)) }
     }
 
+    /// The tool call of the selected chat that awaits approval, if any. Calls
+    /// are approved one at a time, so there is at most one. Nil while the deny
+    /// sheet is up, which keeps the hotkeys from firing behind it.
+    var pendingApprovalCallID: String? {
+        guard pendingDenyToolCallID == nil, let chat = selectedChatItem?.chat else { return nil }
+        return chat.activeMessages.last(where: { $0.role == .assistant })?
+            .toolCalls?.first(where: \.pendingApproval)?.id
+    }
+
+    /// Menu/hotkey entry points: act on the selected chat's pending approval.
+    func allowPendingToolCall() {
+        if let id = pendingApprovalCallID { allowToolCall(callID: id) }
+    }
+
+    func allowPendingToolCallForChat() {
+        if let id = pendingApprovalCallID { allowToolCallForChat(callID: id) }
+    }
+
+    func denyPendingToolCall() {
+        if let id = pendingApprovalCallID { pendingDenyToolCallID = id }
+    }
+
     // MARK: - Wizard completion
 
     /// Called after the connection wizard finishes. Refreshes preferences and
@@ -999,6 +1021,11 @@ final class AppViewModel: ObservableObject {
     /// then the stream stops without another model request.
     var stopAfterIterationPending: Bool {
         selectedChatItem?.stopAfterIteration ?? false
+    }
+
+    /// Messages queued in the selected chat while it streams.
+    var selectedChatQueuedMessages: [QueuedMessage] {
+        selectedChatItem?.queuedMessages ?? []
     }
 
     /// The role assigned to the selected chat, if any (and if it still exists).
@@ -1296,6 +1323,7 @@ final class AppViewModel: ObservableObject {
             // Record-level scalars.
             if a.isStreaming != b.isStreaming
                 || a.stopAfterIteration != b.stopAfterIteration
+                || a.queuedMessages != b.queuedMessages
                 || a.hasUnreadActivity != b.hasUnreadActivity
                 || a.lastError != b.lastError
                 || a.cachedName != b.cachedName
@@ -1376,6 +1404,33 @@ final class AppViewModel: ObservableObject {
         // outgoing message and the streaming reply stay in view.
         chatListController?.scrollToBottom()
         Task { await engine.sendMessage(filename: filename, text: text, pendingAttachments: pendingAttachments) }
+    }
+
+    /// Queues a message for the selected (streaming) chat; it is sent when the
+    /// current answer ends.
+    func queueMessage(_ text: String, pendingAttachments: [PendingAttachment] = []) {
+        guard let filename = selectedChatID else { return }
+        Task { await engine.queueMessage(filename: filename, text: text, pendingAttachments: pendingAttachments) }
+    }
+
+    /// Stops the selected chat's stream and sends the queue plus this message now.
+    func sendMessageImmediately(_ text: String, pendingAttachments: [PendingAttachment] = []) {
+        guard let filename = selectedChatID else { return }
+        chatListController?.scrollToBottom()
+        let extra = QueuedMessage(text: text, attachments: pendingAttachments)
+        Task { await engine.sendQueuedMessagesNow(filename: filename, extra: extra) }
+    }
+
+    /// Stops the selected chat's stream and sends the queued messages now.
+    func sendQueuedMessagesNow() {
+        guard let filename = selectedChatID else { return }
+        chatListController?.scrollToBottom()
+        Task { await engine.sendQueuedMessagesNow(filename: filename) }
+    }
+
+    func clearQueuedMessages() {
+        guard let filename = selectedChatID else { return }
+        Task { await engine.clearQueuedMessages(filename: filename) }
     }
 
     func retryLastMessage() {

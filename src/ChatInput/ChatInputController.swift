@@ -14,6 +14,7 @@ import UniformTypeIdentifiers
 @MainActor
 final class ChatInputController: ObservableObject {
     let bar = ChatInputBarView()
+    let queueView = QueuedMessagesView()
 
     private weak var store: AppViewModel?
     private var storeChanges: AnyCancellable?
@@ -31,8 +32,10 @@ final class ChatInputController: ObservableObject {
         bar.onAction = { [weak self] in self?.handleAction() }
         bar.onAttach = { [weak self] in self?.showFilePicker() }
         bar.onRemoveAttachment = { [weak self] id in self?.removeAttachment(id) }
+        queueView.onSendNow = { [weak self] in self?.store?.sendQueuedMessagesNow() }
+        queueView.onDiscard = { [weak self] in self?.store?.clearQueuedMessages() }
         bar.textView.returnHandler = { [weak self] in
-            self?.send()
+            self?.submit()
             return true
         }
         bar.textView.attachmentPasteHandler = { [weak self] in self?.pasteAttachments() ?? false }
@@ -93,6 +96,7 @@ final class ChatInputController: ObservableObject {
             lastFocusRequest = store.chatInputFocusRequest
             requestFocus()
         }
+        let queued = store.selectedChatQueuedMessages
         facts = ChatInputFacts(
             supportsAttachments: store.selectedChatSupportsAttachments,
             hasValidRole: store.selectedChatHasValidRole,
@@ -100,7 +104,9 @@ final class ChatInputController: ObservableObject {
             workdirRequired: store.selectedChatWorkdirRequired,
             lastMessageIsFromUser: store.selectedChatLastMessageIsFromUser,
             isStreaming: store.isStreaming,
-            stopAfterIterationPending: store.stopAfterIterationPending)
+            stopAfterIterationPending: store.stopAfterIterationPending,
+            queuedCount: queued.count)
+        queueView.setItems(queued.map(\.preview))
         updateBarState()
     }
 
@@ -108,7 +114,9 @@ final class ChatInputController: ObservableObject {
     /// only a struct comparison, because `facts` is cached.
     private func updateBarState() {
         let action: ChatInputAction
-        if facts.stopAfterIterationPending {
+        if facts.isStreaming && hasContent && !facts.inputDisabled {
+            action = optionHeld ? .sendImmediately : .queue
+        } else if facts.stopAfterIterationPending {
             action = .finishing
         } else if facts.isStreaming {
             action = .stop(afterIteration: optionHeld)
@@ -118,7 +126,7 @@ final class ChatInputController: ObservableObject {
         }
         bar.state = ChatInputBarState(
             showsAttachButton: facts.supportsAttachments,
-            attachEnabled: !facts.isStreaming && !facts.inputDisabled,
+            attachEnabled: !facts.inputDisabled,
             inputEnabled: !facts.inputDisabled,
             action: action)
     }
@@ -149,9 +157,11 @@ final class ChatInputController: ObservableObject {
 
     // MARK: Sending
 
+    private var hasContent: Bool { bar.hasNonBlankText || !attachments.isEmpty }
+
     private func handleAction() {
         guard let store else { return }
-        if store.isStreaming {
+        if store.isStreaming && !hasContent {
             // Holding Option requests a graceful stop: the current iteration
             // (model response + its tool calls) finishes, then the stream
             // stops without another model request.
@@ -162,23 +172,51 @@ final class ChatInputController: ObservableObject {
             }
             return
         }
-        send()
+        submit()
+    }
+
+    /// Return key and button: while streaming, what was typed is queued (or,
+    /// with Option held, sent right away); otherwise it is sent.
+    private func submit() {
+        guard let store else { return }
+        guard store.isStreaming else {
+            send()
+            return
+        }
+        guard hasContent, !facts.inputDisabled else { return }
+        let (text, sending) = takeInput()
+        if NSEvent.modifierFlags.contains(.option) {
+            store.sendMessageImmediately(text, pendingAttachments: sending)
+        } else {
+            store.queueMessage(text, pendingAttachments: sending)
+        }
+    }
+
+    /// Returns the typed text and pending attachments and clears the input.
+    private func takeInput() -> (String, [PendingAttachment]) {
+        let text = bar.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sending = attachments
+        attachments = []
+        bar.setAttachments([], animated: true)
+        bar.setText("", animated: true)
+        return (text, sending)
     }
 
     private func send() {
         guard let store, store.selectedChatHasConnection, !store.isStreaming else { return }
-        let text = bar.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let sending = attachments
-        // Empty input with no attachments: if the last message is from the
-        // user, trigger a regenerate of the assistant reply on that message.
-        if text.isEmpty && sending.isEmpty {
+        // Empty input with no attachments: send what is still queued (after a
+        // stop or an error), or else, if the last message is from the user,
+        // trigger a regenerate of the assistant reply on that message.
+        if !hasContent {
+            if facts.queuedCount > 0 {
+                store.sendQueuedMessagesNow()
+                return
+            }
             guard store.selectedChatLastMessageIsFromUser else { return }
             store.retryLastMessage()
             return
         }
-        attachments = []
-        bar.setAttachments([], animated: true)
-        bar.setText("", animated: true)
+        let (text, sending) = takeInput()
         store.sendMessage(text, pendingAttachments: sending)
     }
 

@@ -33,4 +33,4 @@ Keep comments minimal. Don't describe the obvious — focus only on:
 - Things genuinely worth noting
 
 # General Guidance
-Don't overthink. If something is unclear, ask. If you hit a difficult problem, explain it first and ask for advice before proceeding. Prefer using internal tools for reading and writing the project files.
+Don't overthink. If something is unclear, ask. If you hit a difficult problem, explain it first and ask for advice before proceeding. If you see an existing back in the code you touch - fix it. Prefer using internal tools for reading and writing the project files.

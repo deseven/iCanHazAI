@@ -10,6 +10,10 @@ enum ChatInputAction: Equatable {
     case stop(afterIteration: Bool)
     /// A "stop after streaming" request is pending: nothing to press.
     case finishing
+    /// Streaming with something typed: the message waits for the answer to end.
+    case queue
+    /// Same, with Option held: stop and send now.
+    case sendImmediately
 }
 
 /// Everything the bar shows that comes from outside it.
@@ -319,6 +323,14 @@ final class ChatInputBarView: NSView, NSTextViewDelegate {
             actionButton.toolTip = afterIteration ? "Stop After Streaming" : "Stop (hold ⌥ to stop after streaming)"
         case .finishing:
             actionButton.toolTip = "Finishing the current iteration…"
+        case .queue:
+            show(symbol: "arrow.up.right.circle.fill", color: .controlAccentColor)
+            actionButton.isEnabled = true
+            actionButton.toolTip = "Queue the message"
+        case .sendImmediately:
+            show(symbol: "arrowshape.up.circle.fill", color: .controlAccentColor)
+            actionButton.isEnabled = true
+            actionButton.toolTip = "Send immediately"
         }
         let finishing = state.action == .finishing
         actionButton.isHidden = finishing

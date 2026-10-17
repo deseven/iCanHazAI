@@ -138,7 +138,7 @@ private struct NativeChatRepresentable: NSViewRepresentable {
     let searchVisible: Bool
 
     func makeNSView(context: Context) -> ChatPaneView {
-        ChatPaneView(listView: controller.listView, inputBar: input.bar)
+        ChatPaneView(listView: controller.listView, inputBar: input.bar, queueView: input.queueView)
     }
 
     func updateNSView(_ pane: ChatPaneView, context: Context) {

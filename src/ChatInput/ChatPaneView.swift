@@ -13,8 +13,11 @@ import SwiftUI
 /// with the bar instead of being resized a frame later by a separate layout
 /// system (influenced by the input in Telegram's macOS client). The height
 /// is a retargetable tween, so typing mid-animation redirects it smoothly.
+/// The strip of queued messages above the bar grows and shrinks the same way.
 final class ChatPaneView: NSView {
     static let barInsets = NSSize(width: 12, height: 10)
+    /// Space between the queue strip and the bar.
+    static let queueGap: CGFloat = 6
     static let animationDuration: CFTimeInterval = 0.2
 
     /// The tallest the bar may grow: a share of the pane, but never less than
@@ -25,6 +28,7 @@ final class ChatPaneView: NSView {
 
     let listView: ChatListView
     let inputBar: ChatInputBarView
+    let queueView: QueuedMessagesView
 
     private let separator = NSBox()
     private var loadingCover: LoadingCoverView?
@@ -32,17 +36,22 @@ final class ChatPaneView: NSView {
     private var searchHost: PaneHostingView?
 
     private var tween = ValueTween(value: ChatInputBarView.minHeight)
+    /// Height of the queue strip plus its gap; zero while nothing is queued.
+    private var queueTween = ValueTween(value: 0)
     private var displayLink: CADisplayLink?
 
-    init(listView: ChatListView, inputBar: ChatInputBarView) {
+    init(listView: ChatListView, inputBar: ChatInputBarView, queueView: QueuedMessagesView = QueuedMessagesView()) {
         self.listView = listView
         self.inputBar = inputBar
+        self.queueView = queueView
         super.init(frame: .zero)
         separator.boxType = .separator
         addSubview(listView)
         addSubview(separator)
         addSubview(inputBar)
+        addSubview(queueView)
         inputBar.onHeightInvalidated = { [weak self] animated in self?.syncInputHeight(animated: animated) }
+        queueView.onHeightInvalidated = { [weak self] animated in self?.syncQueueHeight(animated: animated) }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -108,6 +117,7 @@ final class ChatPaneView: NSView {
             inputBar.layoutSubtreeIfNeeded()
         }
         syncInputHeight(animated: false, layingOut: true)
+        syncQueueHeight(animated: false, layingOut: true)
         applyFrames()
     }
 
@@ -122,7 +132,7 @@ final class ChatPaneView: NSView {
             startDisplayLink()
         } else {
             tween.jump(to: target)
-            stopDisplayLink()
+            if queueTween.isFinished { stopDisplayLink() }
         }
         if !layingOut {
             applyFrames()
@@ -130,6 +140,21 @@ final class ChatPaneView: NSView {
             // scroll-to-caret can run against the stale, smaller one.
             inputBar.layoutSubtreeIfNeeded()
         }
+    }
+
+    /// Same as `syncInputHeight`, for the queue strip.
+    private func syncQueueHeight(animated: Bool, layingOut: Bool = false) {
+        let strip = queueView.preferredHeight
+        let target = strip > 0 ? strip + Self.queueGap : 0
+        guard target != queueTween.target else { return }
+        if animated, canAnimate {
+            queueTween.retarget(to: target, now: CACurrentMediaTime(), duration: Self.animationDuration)
+            startDisplayLink()
+        } else {
+            queueTween.jump(to: target)
+            if tween.isFinished { stopDisplayLink() }
+        }
+        if !layingOut { applyFrames() }
     }
 
     private var canAnimate: Bool {
@@ -141,7 +166,8 @@ final class ChatPaneView: NSView {
     private func applyFrames() {
         let scale = window?.backingScaleFactor ?? 2
         let barHeight = (tween.value * scale).rounded() / scale
-        let regionHeight = barHeight + Self.barInsets.height * 2
+        let queueBlock = (queueTween.value * scale).rounded() / scale
+        let regionHeight = barHeight + queueBlock + Self.barInsets.height * 2
         let width = bounds.width
         let listHeight = max(0, bounds.height - regionHeight - 1)
 
@@ -149,6 +175,9 @@ final class ChatPaneView: NSView {
         inputBar.frame = NSRect(
             x: Self.barInsets.width, y: Self.barInsets.height,
             width: max(0, width - Self.barInsets.width * 2), height: barHeight)
+        queueView.frame = NSRect(
+            x: Self.barInsets.width, y: Self.barInsets.height + barHeight + Self.queueGap,
+            width: max(0, width - Self.barInsets.width * 2), height: max(0, queueBlock - Self.queueGap))
         separator.frame = NSRect(x: 0, y: regionHeight, width: width, height: 1)
         let listFrame = NSRect(x: 0, y: regionHeight + 1, width: width, height: listHeight)
         listView.frame = listFrame
@@ -178,9 +207,11 @@ final class ChatPaneView: NSView {
     }
 
     @objc private func step(_ link: CADisplayLink) {
-        tween.advance(now: CACurrentMediaTime())
+        let now = CACurrentMediaTime()
+        tween.advance(now: now)
+        queueTween.advance(now: now)
         applyFrames()
-        if tween.isFinished { stopDisplayLink() }
+        if tween.isFinished, queueTween.isFinished { stopDisplayLink() }
     }
 
     override func viewDidMoveToWindow() {
@@ -188,6 +219,7 @@ final class ChatPaneView: NSView {
         if window == nil {
             stopDisplayLink()
             tween.jump(to: tween.target)
+            queueTween.jump(to: queueTween.target)
         }
     }
 

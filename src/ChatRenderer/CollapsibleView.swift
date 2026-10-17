@@ -1,14 +1,15 @@
 import AppKit
 
 /// "This tool call needs your approval." with Allow once / Allow for this chat / Deny.
+/// The buttons carry their hotkeys (app menu commands, see `iCanHazAIApp`).
 final class ApprovalView: FlippedView {
     var onEvent: ((RowEvent) -> Void)?
 
     private var callID = ""
     private let label = NSTextField(labelWithString: "This tool call needs your approval.")
-    private let allowOnce = NSButton(title: "Allow once", target: nil, action: nil)
-    private let allowForChat = NSButton(title: "Allow for this chat", target: nil, action: nil)
-    private let deny = NSButton(title: "Deny", target: nil, action: nil)
+    private let allowOnce = NSButton(title: "Allow once  ⌘Y", target: nil, action: nil)
+    private let allowForChat = NSButton(title: "Allow for this chat  ⌥⌘Y", target: nil, action: nil)
+    private let deny = NSButton(title: "Deny  ⌘N", target: nil, action: nil)
 
     override init(frame: NSRect) {
         super.init(frame: frame)

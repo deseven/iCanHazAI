@@ -922,6 +922,35 @@ extension Chat {
 
 // MARK: - ChatRecord
 
+/// A message the user wrote while the chat was streaming. It waits in the
+/// chat's queue (runtime-only, never persisted) until the engine can send it.
+struct QueuedMessage: Identifiable, Equatable, Sendable {
+    let id: UUID
+    var text: String
+    var attachments: [PendingAttachment]
+
+    init(id: UUID = UUID(), text: String, attachments: [PendingAttachment] = []) {
+        self.id = id
+        self.text = text
+        self.attachments = attachments
+    }
+
+    /// Merges queued messages into the single user message the model gets:
+    /// texts separated by a blank line, attachments concatenated in order.
+    static func combine(_ messages: [QueuedMessage]) -> (text: String, attachments: [PendingAttachment]) {
+        let text = messages.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
+        return (text, messages.flatMap(\.attachments))
+    }
+
+    /// One-line form for the queue strip: line breaks flattened, with a paperclip
+    /// count when attachments are included. Truncation is left to the label.
+    var preview: String {
+        let flat = text.split(whereSeparator: \.isNewline).joined(separator: " ")
+        guard !attachments.isEmpty else { return flat }
+        return flat.isEmpty ? "\u{1F4CE}\(attachments.count)" : "\u{1F4CE}\(attachments.count) \(flat)"
+    }
+}
+
 /// A chat plus its live runtime status, as owned by `ChatEngine`.
 /// This is the UI-facing representation that flows through `AppViewModel`.
 ///
@@ -952,6 +981,9 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
     /// stream finishes the in-flight model response and any tool calls it
     /// emitted, then stops without sending the results back to the model.
     var stopAfterIteration: Bool
+    /// Messages written during streaming, sent together as one user message at
+    /// the next iteration boundary (see `ChatEngine.continueWithQueuedMessages`).
+    var queuedMessages: [QueuedMessage]
     /// Whether this chat has new activity (a finished stream or new message)
     /// since the user last viewed it.
     var hasUnreadActivity: Bool
@@ -991,8 +1023,8 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
         filename: String, chat: Chat? = nil, snapshotStore: SnapshotStore? = nil, cachedName: String? = nil,
         cachedRole: String? = nil, cachedModificationTime: Date = Date(), cachedArchive: Bool = false,
         cachedWorkingDirectory: String? = nil, cachedLastActivity: Date = .distantPast, isStreaming: Bool = false,
-        stopAfterIteration: Bool = false, hasUnreadActivity: Bool = false, lastError: String? = nil,
-        createdAt: Date = Date(), isTemporary: Bool = false
+        stopAfterIteration: Bool = false, queuedMessages: [QueuedMessage] = [], hasUnreadActivity: Bool = false,
+        lastError: String? = nil, createdAt: Date = Date(), isTemporary: Bool = false
     ) {
         self.filename = filename
         self.chat = chat
@@ -1005,6 +1037,7 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
         self.cachedLastActivity = cachedLastActivity
         self.isStreaming = isStreaming
         self.stopAfterIteration = stopAfterIteration
+        self.queuedMessages = queuedMessages
         self.hasUnreadActivity = hasUnreadActivity
         self.lastError = lastError
         self.createdAt = createdAt
@@ -1101,6 +1134,7 @@ struct ChatRecord: Identifiable, Equatable, Sendable {
         if lhs.chat != rhs.chat { return false }
         if lhs.isStreaming != rhs.isStreaming { return false }
         if lhs.stopAfterIteration != rhs.stopAfterIteration { return false }
+        if lhs.queuedMessages != rhs.queuedMessages { return false }
         if lhs.hasUnreadActivity != rhs.hasUnreadActivity { return false }
         if lhs.lastError != rhs.lastError { return false }
         if lhs.createdAt != rhs.createdAt { return false }

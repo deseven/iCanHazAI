@@ -296,6 +296,30 @@ struct iCanHazAIApp: App {
                 }
                 .keyboardShortcut("b", modifiers: [.option, .command])
                 .disabled(!viewModel.isStreaming || viewModel.stopAfterIterationPending)
+                if viewModel.pendingApprovalCallID != nil {
+                    Divider()
+                    Button("Allow Tool Call") {
+                        AppViewModel.shared?.allowPendingToolCall()
+                    }
+                    .keyboardShortcut("y", modifiers: .command)
+                    Button("Allow Tool Call for This Chat") {
+                        AppViewModel.shared?.allowPendingToolCallForChat()
+                    }
+                    .keyboardShortcut("y", modifiers: [.option, .command])
+                    Button("Deny Tool Call…") {
+                        AppViewModel.shared?.denyPendingToolCall()
+                    }
+                    .keyboardShortcut("n", modifiers: .command)
+                }
+                if !viewModel.selectedChatQueuedMessages.isEmpty {
+                    Divider()
+                    Button("Send Queued Messages Now") {
+                        AppViewModel.shared?.sendQueuedMessagesNow()
+                    }
+                    Button("Discard Queued Messages") {
+                        AppViewModel.shared?.clearQueuedMessages()
+                    }
+                }
             }
             CommandGroup(replacing: .appSettings) {
                 Button("Preferences...") {

@@ -52,7 +52,8 @@ To address the elephant in the room: there are many AI chat apps and agentic har
 ## Usage Notes
 
 - **CLI**: `ichai "your message"` sends a one-shot message, `command | ichai "..."` pipes input in, `ichai -i` starts an interactive session. Run `ichai -h` for the full list of features. The app starts itself (without a window) when needed.
-- **Tool approvals**: when a model calls a tool, approve it once or pick "Allow for this chat"; roles can also pre-approve tools via `auto_allow`. The state of tool approval can also be controlled in the Chat Info sidebar to the right.
+- **Tool approvals**: when a model calls a tool, approve it once (⌘Y) or pick "Allow for this chat" (⌥⌘Y), or deny it (⌘N) with an optional reason; roles can also pre-approve tools via `auto_allow`. The state of tool approval can also be controlled in the Chat Info sidebar to the right.
+- **Messages while streaming**: you can keep writing while the model works. Return queues the message (shown above the input); queued messages go out together as a single user message once the model finishes its current step — along with its tool results, if it made tool calls. Hold ⌥ to send immediately instead: this stops the current response and sends your message plus anything queued (⌥Return works too). The queue strip has buttons to send everything now or discard it. With nothing typed, the stop button stays a stop button (hold ⌥ for "stop after current step", ⌘B / ⌥⌘B). A hard stop or an error leaves the queue in place instead of sending it.
 - **SSH**: any working directory can be remote — use the scp form `host:/absolute/path` (or `user@host:/path`; a bare `host:` means the remote home) as a role's `working_directory` or type it into the per-chat directory picker, which will browse the remote for you. Auth must be pre-configured so `ssh host` works without prompts (keys, `~/.ssh/config`) — interactive auth is not supported.
 
 
