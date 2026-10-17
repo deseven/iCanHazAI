@@ -831,6 +831,7 @@ struct ConnectionWizardView: View {
         let url = dir.appendingPathComponent("\(name).jsonc")
         try? jsonc.data(using: .utf8)?.write(to: url, options: .atomic)
         savedFileURL = url
+        Task { await ChatEngine.shared.applyConfigChange(.connections) }
     }
 }
 

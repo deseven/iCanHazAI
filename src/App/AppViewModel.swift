@@ -320,7 +320,7 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Reloads preferences (call after FSEvents changes to connections/roles).
+    /// Reloads preferences (call after changes to connections/roles/config).
     func refreshPreferences() {
         loadPreferences()
     }
@@ -1808,7 +1808,14 @@ final class AppViewModel: ObservableObject {
         Task { await config.setWorkingDirectories(snapshot) }
     }
 
-    /// Triggers a full MCP configuration pass ("File > Reload MCPs…"). Resets
+    /// Re-reads the given entities from disk (the "Reload …" menu items) —
+    /// a manual fallback for files edited outside the app, since the data
+    /// directory is not watched.
+    func reloadFromDisk(_ change: ConfigChange) {
+        Task { await engine.applyConfigChange(change) }
+    }
+
+    /// Triggers a full MCP configuration pass ("MCP > Reinitialize MCP Servers…"). Resets
     /// all configured MCPs and their tools cache, then re-connects and
     /// re-queries every server. The overlay is shown while in progress.
     func reloadMCPs() {

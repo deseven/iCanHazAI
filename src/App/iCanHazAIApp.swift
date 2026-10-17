@@ -349,6 +349,9 @@ struct iCanHazAIApp: App {
                 Button("Reveal Connections in Finder…") {
                     NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.connectionsURL])
                 }
+                Button("Reload Connections…") {
+                    AppViewModel.shared?.reloadFromDisk(.connections)
+                }
                 Divider()
                 Button("New Connection…") {
                     ConnectionWizardView.show(onFinish: { AppViewModel.shared?.refreshAfterWizard() })
@@ -379,6 +382,9 @@ struct iCanHazAIApp: App {
                 Button("Reveal Prompts in Finder…") {
                     NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.promptsURL])
                 }
+                Button("Reload Prompts…") {
+                    AppViewModel.shared?.reloadFromDisk(.prompts)
+                }
             }
 
             CommandMenu("Role") {
@@ -386,6 +392,9 @@ struct iCanHazAIApp: App {
                     .disabled(true)
                 Button("Reveal Roles in Finder…") {
                     NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.rolesURL])
+                }
+                Button("Reload Roles…") {
+                    AppViewModel.shared?.reloadFromDisk(.roles)
                 }
             }
 

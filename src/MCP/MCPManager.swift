@@ -216,7 +216,8 @@ actor MCPManager {
     /// servers for their tool lists in parallel, discards servers that fail,
     /// stops on-demand stdio servers, and reports live status via
     /// `statusHandler`. Called on app start (via `ChatEngine.start()`) and
-    /// from the "File > Reload MCPs…" menu item (after a full reset).
+    /// from the "MCP > Reinitialize MCP Servers…" menu item. Always starts with a
+    /// full reset, killing every current connection.
     ///
     /// If `servers` is empty, this is a no-op (the overlay is skipped by the
     /// caller). Returns the final configuration state so the caller can emit
@@ -336,7 +337,7 @@ actor MCPManager {
     }
 
     /// Full reset: disconnects all servers and clears all caches. Used before
-    /// a fresh `configure` pass (e.g. "File > Reload MCPs…").
+    /// a fresh `configure` pass.
     func resetAll() async {
         debugLog("MCP", "resetAll — clearing all connections and caches")
         await disconnectAll()

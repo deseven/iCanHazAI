@@ -1254,7 +1254,7 @@ enum EngineEvent: Sendable {
     /// existing `.configChanged` / `.rolesChanged` / `.promptsChanged` /
     /// `.connectionsChanged` event for each resource.
     case loaderActivity(LoaderActivity)
-    /// `config.toml` was reloaded from disk (external edit picked up via FSEvents).
+    /// `config.toml` was reloaded from disk or cleaned by reference validation.
     /// The UI should refresh its cached preferences from `ConfigManager`.
     case configChanged
     /// The engine is waiting for the user to approve a tool call. The UI uses

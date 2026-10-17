@@ -12,8 +12,9 @@ import TOML
 /// ([`JSONC`](src/Utilities/JSONC.swift) for connections, [`TOMLDecoder`](src/Config/ConfigManager.swift)
 /// for MCP/role/app configs) before anything is written to disk. A write that
 /// fails validation is rejected outright; a write that passes is saved to the
-/// data directory and picked up by the standard FSEvents reload routines, so
-/// nothing is "applied" directly here.
+/// data directory and immediately applied by reporting the change to
+/// [`ChatEngine`](src/Chat/ChatEngine.swift) (the disk is not watched).
+/// Applying happens before the tool returns, so the model sees a finished state.
 ///
 /// The tools are injected by [`ChatEngine`](src/Chat/ChatEngine.swift) when the chat's
 /// role is [`configuratorRoleName`](src/Config/ConfiguratorTools.swift), and dispatched
@@ -166,15 +167,22 @@ enum ConfiguratorTools {
     /// onto the chat's `tool`-role message. Async because the live `*_check`
     /// tools spawn subprocesses / make network requests.
     static func call(name: String, arguments: String, callID: String) async -> ToolResult {
-        await call(name: name, arguments: arguments, callID: callID, env: EnvironmentManager.shared)
+        await call(
+            name: name, arguments: arguments, callID: callID, env: EnvironmentManager.shared,
+            apply: { await ChatEngine.shared.applyConfigChange($0) })
     }
 
     /// Testable entry point that takes an explicit environment, so tests can
     /// point the tools at a throwaway temp directory instead of `~/iCanHazAI`.
-    static func call(name: String, arguments: String, callID: String, env: EnvironmentManager) async -> ToolResult {
+    /// `apply` is invoked after every successful write/delete to make the
+    /// engine pick up the change; tests leave it nil.
+    static func call(
+        name: String, arguments: String, callID: String, env: EnvironmentManager,
+        apply: (@Sendable (ConfigChange) async -> Void)? = nil
+    ) async -> ToolResult {
         do {
             let args = try argsDict(arguments)
-            let outcome = try await dispatch(name: name, args: args, env: env)
+            let outcome = try await dispatch(name: name, args: args, env: env, apply: apply)
             return ToolResult(callID: callID, content: outcome.content, isError: outcome.isError)
         } catch let err as ConfiguratorToolError {
             return ToolResult(callID: callID, content: err.message, isError: true)
@@ -187,9 +195,16 @@ enum ConfiguratorTools {
 
     /// Routes a parsed argument map to the matching tool implementation.
     /// Returns the result text and whether it represents an error.
-    private static func dispatch(name: String, args: [String: Any], env: EnvironmentManager) async throws -> (
-        content: String, isError: Bool
-    ) {
+    private static func dispatch(
+        name: String, args: [String: Any], env: EnvironmentManager,
+        apply: (@Sendable (ConfigChange) async -> Void)?
+    ) async throws -> (content: String, isError: Bool) {
+        /// Reports a completed write/delete to the engine, then returns the
+        /// tool's success message.
+        func applied(_ change: ConfigChange, _ message: String) async -> (content: String, isError: Bool) {
+            await apply?(change)
+            return (message, false)
+        }
         switch name {
         case "list_connections":
             return (listConnections(env: env), false)
@@ -227,42 +242,46 @@ enum ConfiguratorTools {
         case "write_connection":
             let id = try stringArg(args, "id")
             let content = try stringArg(args, "content")
-            return (try writeConnection(id: id, content: content, env: env), false)
+            let message = try writeConnection(id: id, content: content, env: env)
+            return await applied(.connections, message)
         case "write_mcp":
             let n = try validated(try stringArg(args, "name"))
             let content = try stringArg(args, "content")
-            return (try writeMCP(name: n, content: content, env: env), false)
+            let message = try writeMCP(name: n, content: content, env: env)
+            return await applied(.mcp(n), message)
         case "write_role":
             let n = try validated(try stringArg(args, "name"), protected: true)
             let content = try stringArg(args, "content")
-            return (try writeRole(name: n, content: content, env: env), false)
+            let message = try writeRole(name: n, content: content, env: env)
+            return await applied(.role(n), message)
         case "write_prompt":
             let n = try validated(try stringArg(args, "name"), protected: true)
             let content = try stringArg(args, "content")
-            return (try writePrompt(name: n, content: content, env: env), false)
+            let message = try writePrompt(name: n, content: content, env: env)
+            return await applied(.prompt(n), message)
         case "write_config":
             let content = try stringArg(args, "content")
-            return (try writeConfig(content: content, env: env), false)
+            let message = try writeConfig(content: content, env: env)
+            return await applied(.config, message)
         case "delete_connection":
             let id = try stringArg(args, "id")
-            return (try deleteConnection(id: id, env: env), false)
+            let message = try deleteConnection(id: id, env: env)
+            return await applied(.connections, message)
         case "delete_mcp":
             let n = try validated(try stringArg(args, "name"))
-            return (
-                try delete(url: env.mcpsURL.appendingPathComponent("\(n).toml"), label: "MCP \"\(n)\"", env: env), false
-            )
+            let message = try delete(
+                url: env.mcpsURL.appendingPathComponent("\(n).toml"), label: "MCP \"\(n)\"", env: env)
+            return await applied(.mcp(n), message)
         case "delete_role":
             let n = try validated(try stringArg(args, "name"), protected: true)
-            return (
-                try delete(url: env.rolesURL.appendingPathComponent("\(n).toml"), label: "Role \"\(n)\"", env: env),
-                false
-            )
+            let message = try delete(
+                url: env.rolesURL.appendingPathComponent("\(n).toml"), label: "Role \"\(n)\"", env: env)
+            return await applied(.role(n), message)
         case "delete_prompt":
             let n = try validated(try stringArg(args, "name"), protected: true)
-            return (
-                try delete(url: env.promptsURL.appendingPathComponent("\(n).md"), label: "Prompt \"\(n)\"", env: env),
-                false
-            )
+            let message = try delete(
+                url: env.promptsURL.appendingPathComponent("\(n).md"), label: "Prompt \"\(n)\"", env: env)
+            return await applied(.prompt(n), message)
         case "check_mcp_stdio":
             let command = try stringArg(args, "command")
             return (try await mcpStdioCheck(command: command), false)
@@ -357,21 +376,21 @@ enum ConfiguratorTools {
         let dir = env.connectionsURL.appendingPathComponent(provider.rawValue)
         let url = dir.appendingPathComponent("\(name).jsonc")
         try write(url: url, content: content, env: env)
-        return "Connection \"\(provider.rawValue)/\(name)\" saved. It will be applied automatically in a second."
+        return "Connection \"\(provider.rawValue)/\(name)\" saved and applied."
     }
 
     private static func writeMCP(name: String, content: String, env: EnvironmentManager) throws -> String {
         _ = try ConfigValidation.decodeMCP(Data(content.utf8))
         let url = env.mcpsURL.appendingPathComponent("\(name).toml")
         try write(url: url, content: content, env: env)
-        return "MCP \"\(name)\" saved. It will be applied automatically in a second."
+        return "MCP \"\(name)\" saved and applied."
     }
 
     private static func writeRole(name: String, content: String, env: EnvironmentManager) throws -> String {
         _ = try ConfigValidation.decodeRole(Data(content.utf8), references: env.knownRoleReferences())
         let url = env.rolesURL.appendingPathComponent("\(name).toml")
         try write(url: url, content: content, env: env)
-        return "Role \"\(name)\" saved. It will be applied automatically in a second."
+        return "Role \"\(name)\" saved and applied."
     }
 
     private static func writePrompt(name: String, content: String, env: EnvironmentManager) throws -> String {
@@ -387,14 +406,14 @@ enum ConfiguratorTools {
         }
         let url = env.promptsURL.appendingPathComponent("\(name).md")
         try write(url: url, content: content, env: env)
-        return "Prompt \"\(name)\" saved. It will be applied automatically in a second."
+        return "Prompt \"\(name)\" saved and applied."
     }
 
     private static func writeConfig(content: String, env: EnvironmentManager) throws -> String {
         _ = try ConfigValidation.decodeAppConfig(Data(content.utf8))
         let url = env.rootURL.appendingPathComponent("config.toml")
         try write(url: url, content: content, env: env)
-        return "App config saved. It will be applied automatically in a second."
+        return "App config saved and applied."
     }
 
     /// Atomically writes `content` to `url`, creating parent directories.
@@ -415,7 +434,7 @@ enum ConfiguratorTools {
         }
         debugLog("FileWrite", "configurator delete \(env.relativePath(url))")
         try fm.removeItem(at: url)
-        return "\(label) removed. The change will be applied automatically in a second."
+        return "\(label) removed and the change applied."
     }
 
     private static func deleteConnection(id: String, env: EnvironmentManager) throws -> String {

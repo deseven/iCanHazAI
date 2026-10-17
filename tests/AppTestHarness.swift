@@ -1,4 +1,3 @@
-import FSEventsWrapper
 import Foundation
 import Testing
 
@@ -12,12 +11,10 @@ import Testing
 
 enum AppTestError: Error, CustomStringConvertible {
     case storeInitFailed
-    case eventTimeout(description: String)
 
     var description: String {
         switch self {
         case .storeInitFailed: return "ChatStore(env:) returned nil"
-        case .eventTimeout(let d): return "timed out waiting for FSEvent: \(d)"
         }
     }
 }
@@ -59,8 +56,7 @@ final class TempEnv: @unchecked Sendable {
     // MARK: - Direct disk access (bypasses the store)
 
     /// Writes a chat JSON straight to disk with the same encoder settings the
-    /// store uses, simulating an external editor or any writer the store is
-    /// unaware of. Used to drive FSEvents / external-change tests.
+    /// store uses, simulating a writer the store is unaware of.
     func writeChatDirect(_ chat: Chat, filename: String) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -70,7 +66,7 @@ final class TempEnv: @unchecked Sendable {
 
     /// Overwrites a chat file's contents without changing the store's cache —
     /// used to simulate an external modification (the store's cached mod time
-    /// then goes stale until `handleExternalChange` is called).
+    /// then goes stale until the next `startupSync`).
     func modifyChatDirect(_ filename: String, transform: (inout Chat) -> Void) throws {
         var chat = try readChatDirect(filename)
         transform(&chat)
@@ -106,97 +102,6 @@ final class TempEnv: @unchecked Sendable {
     func setModificationDate(_ filename: String, _ date: Date) throws {
         let rounded = Date(timeIntervalSince1970: date.timeIntervalSince1970.rounded())
         try fm.setAttributes([.modificationDate: rounded], ofItemAtPath: chatURL(filename).path)
-    }
-}
-
-// MARK: - FSEvent collection
-
-/// A lock-protected accumulator for `FSEvent`s delivered by an
-/// `EnvironmentWatcher`. The watcher's callback fires on a background dispatch
-/// queue (FSEventsWrapper schedules on `DispatchQueue.global()`), so a plain
-/// array isn't safe to touch from the test thread.
-final class FSEventBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var events: [FSEvent] = []
-
-    func append(_ event: FSEvent) {
-        lock.lock()
-        events.append(event)
-        lock.unlock()
-    }
-    func snapshot() -> [FSEvent] {
-        lock.lock()
-        defer { lock.unlock() }
-        return events
-    }
-    func clear() {
-        lock.lock()
-        events.removeAll(keepingCapacity: false)
-        lock.unlock()
-    }
-}
-
-/// Wraps an `EnvironmentWatcher` for a root path, collecting every delivered
-/// `FSEvent` into an `FSEventBox`. Mirrors how `ChatEngine.startWatching()`
-/// sets up its single root watch, but exposes the raw events for assertions.
-final class FSEventCollector: @unchecked Sendable {
-
-    private let box = FSEventBox()
-    private let watcher: EnvironmentWatcher
-
-    init(rootPath: String) {
-        let box = self.box
-        // The watcher must exist at the path; create it if missing so the
-        // stream actually starts (EnvironmentWatcher is a no-op if the root
-        // doesn't exist yet).
-        try? FileManager.default.createDirectory(atPath: rootPath, withIntermediateDirectories: true)
-        watcher = EnvironmentWatcher(rootPath: rootPath) { event in box.append(event) }
-        watcher.start()
-    }
-
-    func snapshot() -> [FSEvent] { box.snapshot() }
-    func clear() { box.clear() }
-
-    /// Polls until at least one collected event matches the predicate, or the
-    /// timeout elapses. FSEvents has ~100ms latency (the watcher's
-    /// `updateInterval`) plus dispatch overhead, so we poll every 50ms.
-    @discardableResult
-    func waitFor(matching predicate: (FSEvent) -> Bool, timeout: TimeInterval = 6) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if box.snapshot().contains(where: predicate) { return true }
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-        return false
-    }
-
-    /// Waits for any event whose path ends with the given filename.
-    @discardableResult
-    func waitForFile(_ filename: String, timeout: TimeInterval = 6) -> Bool {
-        waitFor(matching: { eventPath($0)?.hasSuffix(filename) ?? false }, timeout: timeout)
-    }
-}
-
-/// Extracts the path payload from any `FSEvent` case that carries one.
-func eventPath(_ event: FSEvent) -> String? {
-    switch event {
-    case .generic(let p, _, _),
-        .mustScanSubDirs(let p, _),
-        .rootChanged(let p, _),
-        .volumeMounted(let p, _, _),
-        .volumeUnmounted(let p, _, _),
-        .itemCreated(let p, _, _, _),
-        .itemRemoved(let p, _, _, _),
-        .itemInodeMetadataModified(let p, _, _, _),
-        .itemRenamed(let p, _, _, _),
-        .itemDataModified(let p, _, _, _),
-        .itemFinderInfoModified(let p, _, _, _),
-        .itemOwnershipModified(let p, _, _, _),
-        .itemXattrModified(let p, _, _, _),
-        .itemClonedAtPath(let p, _, _, _):
-        return p
-    case .eventIdsWrapped, .streamHistoryDone:
-        return nil
     }
 }
 

@@ -268,8 +268,8 @@ final class EnvironmentManager: @unchecked Sendable {
     }
 
     /// Loads and decodes a single chat file by filename. Returns nil if the
-    /// file is missing or undecodable. Used by the FSEvents per-file router so
-    /// only the changed file is reloaded instead of scanning the whole directory.
+    /// file is missing or undecodable. Used when a single chat is opened, so only
+    /// that file is read instead of scanning the whole directory.
     func loadSingleChat(filename: String) -> Chat? {
         let url = chatsURL.appendingPathComponent(filename)
         debugLog("FileRead", "reading \(relativePath(url))")

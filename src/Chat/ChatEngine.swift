@@ -1,7 +1,6 @@
 // Copyright (C) 2026 Ivan Novohatski <https://d7.wtf/>
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import FSEventsWrapper
 import Foundation
 
 /// The UI-free core of the app. Owns all chat/connection/role state and
@@ -9,8 +8,10 @@ import Foundation
 /// any window and can later be driven by a CLI.
 ///
 /// Subscribers receive state updates via an `AsyncStream<EngineEvent>`.
-/// The engine reconciles disk changes with in-memory state so that chats
-/// currently being streamed are never clobbered by a disk reload.
+/// Config entities (connections, roles, prompts, MCPs, `config.toml`) are read
+/// from disk at startup and whenever an internal writer reports a change via
+/// [`applyConfigChanges(_:)`](#); the disk is not watched. Reloads never
+/// clobber chats currently being streamed.
 actor ChatEngine {
 
     static let shared = ChatEngine()
@@ -24,8 +25,7 @@ actor ChatEngine {
     /// The chat data abstraction layer. Owns the SwiftData metadata cache and
     /// all chat file I/O. The engine never reads/writes chat files directly.
     private let store = ChatStore.shared
-    /// Custom MCP servers loaded from disk (`~/iCanHazAI/mcp/*.toml`), kept in
-    /// sync via FSEvents. Built-in tool groups (Utils/Filesystem/Code/Shell)
+    /// Custom MCP servers loaded from disk (`~/iCanHazAI/MCPs/*.toml`). Built-in tool groups (Utils/Filesystem/Code/Shell)
     /// are no longer MCP servers — they run in-process via
     /// [`BuiltinTools`](src/Tools/BuiltinTools.swift).
     private var customMcps: [MCPServer] = []
@@ -39,10 +39,10 @@ actor ChatEngine {
     /// delay; the engine only carries the logical state.
     private(set) var mcpConfiguration: MCPConfigurationState = .empty
     /// Guards against concurrent MCP configuration passes (e.g. a launch
-    /// configure racing with an FSEvent-driven reconfigure).
+    /// configure racing with a single-server reconfigure).
     private var isConfiguringMCPs = false
     /// A single-flight queue of pending server reconfigures, keyed by server
-    /// name. Coalesces a burst of FSEvents for the same server into one
+    /// name. Coalesces a burst of changes for the same server into one
     /// reconfigure. Cleared once the reconfigure completes.
     private var pendingReconfigures: [String: Task<Void, Never>] = [:]
     /// Guards `pendingReconfigures` re-entrancy.
@@ -136,46 +136,6 @@ actor ChatEngine {
     private var namingInProgress: Set<String> = []
 
     private let env = EnvironmentManager.shared
-    private var watcher: EnvironmentWatcher?
-
-    // MARK: - Self-write suppression & debouncing
-
-    /// Paths we just wrote ourselves, mapped to the time their suppression
-    /// expires. Events for these paths are ignored until the expiry passes.
-    /// This is per-path: writing `chats/foo.json` does not suppress events for
-    /// `chats/bar.json`. Replaces the former global `selfWriteSuppressionUntil`.
-    private var selfWriteSuppressedPaths: [String: Date] = [:]
-    /// How long after one of our own saves we ignore FSEvents for that path.
-    /// Covers the atomic-write burst (temp file create → temp remove → rename).
-    private let selfWriteSuppressionInterval: TimeInterval = 1.0
-    /// Accumulated unique file paths awaiting a debounced reload, mapped to the
-    /// latest (kind, event) seen for that path. A burst of events across many
-    /// files is coalesced into a single flush once the burst settles.
-    private var pendingReloads: [String: (kind: FileKind, event: FSEvent)] = [:]
-    /// The single global debounce task. Reset on every incoming event; when it
-    /// fires (1s after the last event) all accumulated paths are reloaded.
-    private var pendingReloadTask: Task<Void, Never>?
-    /// Settle interval for debouncing of external FSEvents: 1s after the last
-    /// event, all unique files that changed are reloaded together.
-    private let reloadDebounceInterval: UInt64 = 1_000_000_000  // 1s
-    /// Paths for which we've already logged a self-write suppression line in
-    /// the current burst. Prevents the atomic-write event storm (temp create,
-    /// temp rename, target rename, target modify, …) from producing one
-    /// "suppressed" log line per event. Cleared shortly after the suppression
-    /// window expires so a later external write is logged again.
-    private var loggedSuppressionForPath: Set<String> = []
-
-    /// The file kind classification used by the event router to dispatch
-    /// per-file reloads. `nil` means the path should be ignored (noise).
-    private enum FileKind: Sendable {
-        case chat
-        case role
-        case prompt
-        case connectionOpenai
-        case connectionAnthropic
-        case mcp
-        case config
-    }
 
     // MARK: - Event bus
 
@@ -183,7 +143,7 @@ actor ChatEngine {
 
     private init() {}
 
-    /// Starts loading and watching the environment. Must be called once at launch.
+    /// Loads the environment. Must be called once at launch.
     /// Whether `start()` has already run. Idempotency guard.
     private var didStart = false
 
@@ -192,9 +152,8 @@ actor ChatEngine {
         didStart = true
         // Consume the synchronously-bootstrapped config before anything else
         // runs. This guarantees `didLoad` is true (and the in-memory config
-        // reflects disk) before the FSEvents watcher is started, so no
-        // event-driven `validateReferences()` can race ahead of the initial
-        // load and persist a wiped/empty config.
+        // reflects disk) before any reload-driven `validateReferences()` can
+        // run and persist a wiped/empty config.
         await ConfigManager.shared.load()
         debugLog("Engine", "start — ensuring directories and wiring MCP handlers")
         env.ensureDirectories()
@@ -203,20 +162,8 @@ actor ChatEngine {
         env.deleteAllTemporaryAttachments()
         // Seed bundled default prompts/roles into the user directory (copies
         // only missing files, so user edits are preserved). Done before the
-        // FSEvents watcher starts so the copies don't trigger reload bursts.
+        // initial load so the seeded files are picked up by it.
         env.seedDefaults()
-        // Wire the ConfigManager self-write hook so our own config.toml writes
-        // are registered in the per-path suppression registry before the
-        // atomic-write burst hits FSEvents.
-        let configPath = env.rootURL.appendingPathComponent("config.toml").path
-        Task {
-            await ConfigManager.shared.setWillWriteConfigHook { [configPath] in
-                // The hook runs on the ConfigManager actor; hop into the engine to
-                // register the suppressed path. We use a non-isolated registration
-                // method so we don't deadlock waiting on the engine actor.
-                ChatEngine.shared.registerSelfWrite(path: configPath)
-            }
-        }
         // Wire MCPManager errors into the engine's error event bus so the UI
         // can surface connection failures without crashing the stream.
         Task {
@@ -257,7 +204,6 @@ actor ChatEngine {
             replaceConfigErrors(kind: kind, with: snapshot.errors.filter { $0.kind == kind })
         }
         loadFromCache()
-        startWatching()
         debugLog(
             "Engine",
             "start complete — \(records.count) chats, \(connections.count) connections, \(mcps.count) MCP servers, \(roles.count) roles, \(prompts.count) prompts"
@@ -333,285 +279,62 @@ actor ChatEngine {
         emit(.chatsChanged(records))
     }
 
-    // MARK: - Watching
+    // MARK: - Config reloading
 
-    private func startWatching() {
-        // Single root watch on ~/iCanHazAI. FSEvents watches recursively; each
-        // event carries the full path of the affected file. The callback hops
-        // back into the actor via a Task.
-        watcher = EnvironmentWatcher(rootPath: env.rootURL.path) { [weak self] event in
-            Task { [weak self] in
-                await self?.handleFSEvent(event)
-            }
-        }
-        watcher?.start()
+    /// Re-reads the given config entities from disk and applies them to the
+    /// in-memory state. The disk is not watched, so every internal writer
+    /// (Configurator tools, wizards, "Reload …" menu items) calls this after
+    /// writing. Returns once the in-memory state, subscribers and
+    /// `config.toml` references are up to date; MCP servers are reconfigured
+    /// in the background.
+    func applyConfigChange(_ change: ConfigChange) async {
+        await applyConfigChanges([change])
     }
 
-    // MARK: - FSEvent router
+    func applyConfigChanges(_ changes: [ConfigChange]) async {
+        var unique: [ConfigChange] = []
+        for change in changes where !unique.contains(change) { unique.append(change) }
+        guard !unique.isEmpty else { return }
+        debugLog("Reload", "applying \(unique.count) config change(s): \(unique)")
 
-    /// The central event router. Every incoming `FSEvent` is classified by
-    /// path and type, checked against the per-path self-write suppression
-    /// registry, debounced globally, and dispatched to the appropriate
-    /// per-kind handler.
-    private func handleFSEvent(_ event: FSEvent) {
-        switch event {
-        case .mustScanSubDirs(let path, let reason):
-            debugLog(
-                "FSEvents",
-                "mustScanSubDirs at \(env.relativePath(URL(fileURLWithPath: path))) — reason=\(reason) → full rescan")
-            fullRescan()
-            return
-        case .rootChanged(let path, _):
-            debugLog("FSEvents", "rootChanged at \(path) → full rescan")
-            fullRescan()
-            return
-        // Ignore these event types entirely — they don't affect content.
-        case .itemInodeMetadataModified, .itemXattrModified,
-            .itemOwnershipModified, .itemFinderInfoModified,
-            .volumeMounted, .volumeUnmounted,
-            .eventIdsWrapped, .streamHistoryDone, .generic:
-            return
-        // Content-affecting events — classify and route below.
-        case .itemCreated(_, let itemType, _, _),
-            .itemRemoved(_, let itemType, _, _),
-            .itemDataModified(_, let itemType, _, _),
-            .itemRenamed(_, let itemType, _, _),
-            .itemClonedAtPath(_, let itemType, _, _):
-            // Ignore directory events — we only care about files.
-            guard itemType == .file else { return }
-            break
-        }
-
-        let path: String
-        switch event {
-        case .itemCreated(let p, _, _, _),
-            .itemRemoved(let p, _, _, _),
-            .itemDataModified(let p, _, _, _),
-            .itemRenamed(let p, _, _, _),
-            .itemClonedAtPath(let p, _, _, _):
-            path = p
-        default:
-            return
-        }
-
-        // Classify the path. Unknown paths are noise (image subdirs, temp
-        // files, .DS_Store, etc.) and are ignored early — without logging,
-        // since the atomic-write temp files would otherwise spam the log.
-        guard let kind = classifyPath(path) else {
-            return
-        }
-
-        // Per-path self-write suppression: if we just wrote this file, ignore
-        // the resulting event burst. The atomic-write produces several events
-        // (temp create/rename, target rename/modify); we log only the first
-        // suppressed event per path so a single self-write is one log line.
-        if isSuppressed(path) {
-            if !loggedSuppressionForPath.contains(path) {
-                loggedSuppressionForPath.insert(path)
-                debugLog("FSEvents", "suppressed (self-write) — \(env.relativePath(URL(fileURLWithPath: path)))")
-                // Clear the flag after the suppression window so a later
-                // external write to the same path is logged again.
-                let clearPath = path
-                Task { [weak self] in
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)
-                    await self?.clearLoggedSuppression(clearPath)
-                }
-            }
-            return
-        }
-
-        // Per-path debounce: collapse a burst of events for the same file into
-        // a single reload.
-        scheduleReload(path: path, kind: kind, event: event)
-    }
-
-    /// A short label for an FSEvent, for logging.
-    private func eventLabel(_ event: FSEvent) -> String {
-        switch event {
-        case .itemCreated: return "itemCreated"
-        case .itemRemoved: return "itemRemoved"
-        case .itemDataModified: return "itemDataModified"
-        case .itemRenamed: return "itemRenamed"
-        case .itemClonedAtPath: return "itemCloned"
-        case .mustScanSubDirs: return "mustScanSubDirs"
-        case .rootChanged: return "rootChanged"
-        case .itemInodeMetadataModified: return "itemInodeMetaMod"
-        case .itemXattrModified: return "itemXattrMod"
-        case .itemOwnershipModified: return "itemOwnerMod"
-        case .itemFinderInfoModified: return "itemFinderInfoMod"
-        case .volumeMounted: return "volumeMounted"
-        case .volumeUnmounted: return "volumeUnmounted"
-        case .eventIdsWrapped: return "eventIdsWrapped"
-        case .streamHistoryDone: return "streamHistoryDone"
-        case .generic: return "generic"
-        }
-    }
-
-    /// Maps an absolute path to a file kind, or nil if the path is noise.
-    /// Chat image subdirectories, atomic-write temp files, .DS_Store, and
-    /// any path outside our target file patterns return nil.
-    private func classifyPath(_ path: String) -> FileKind? {
-        let url = URL(fileURLWithPath: path)
-        let ext = url.pathExtension.lowercased()
-        let name = url.lastPathComponent
-
-        // config.toml at the root.
-        if name == "config.toml", url.deletingLastPathComponent().path == env.rootURL.path {
-            return .config
-        }
-        // chats/*.json — but ignore anything under chats/<name>/ (image dirs).
-        if url.deletingLastPathComponent().path == env.chatsURL.path, ext == "json" {
-            return .chat
-        }
-        // roles/*.toml
-        if url.deletingLastPathComponent().path == env.rolesURL.path, ext == "toml" {
-            return .role
-        }
-        // prompts/*.md
-        if url.deletingLastPathComponent().path == env.promptsURL.path, ext == "md" {
-            return .prompt
-        }
-        // connections/openai/*.jsonc
-        if url.deletingLastPathComponent().path == env.openaiConnectionsURL.path, ext == "jsonc" {
-            return .connectionOpenai
-        }
-        // connections/anthropic/*.jsonc
-        if url.deletingLastPathComponent().path == env.anthropicConnectionsURL.path, ext == "jsonc" {
-            return .connectionAnthropic
-        }
-        // mcp/*.toml
-        if url.deletingLastPathComponent().path == env.mcpsURL.path, ext == "toml" {
-            return .mcp
-        }
-        return nil
-    }
-
-    // MARK: - Per-path self-write suppression
-
-    /// Lock-protected suppression registry shared between the actor-isolated
-    /// engine and the non-isolated `registerSelfWrite` entry point (called by
-    /// the ConfigManager actor). Lives outside the actor's isolation so it can
-    /// be mutated from any thread without hopping.
-    private final class SuppressionRegistry: @unchecked Sendable {
-        private let lock = NSLock()
-        private var entries: [String: Date] = [:]
-
-        /// Registers a path as just-written, with the given expiry.
-        func register(_ path: String, expiry: Date) {
-            lock.lock()
-            entries[path] = expiry
-            lock.unlock()
-        }
-
-        /// Drains and returns all pending registrations, clearing the box.
-        /// Called from the actor when checking suppression so new entries from
-        /// other actors are merged in.
-        func drain() -> [String: Date] {
-            lock.lock()
-            let copy = entries
-            entries.removeAll()
-            lock.unlock()
-            return copy
-        }
-    }
-    private let suppressionRegistry = SuppressionRegistry()
-
-    /// Non-actor-isolated registration entry point. Safe to call from any
-    /// actor/thread (e.g. the ConfigManager `willWriteConfig` hook).
-    nonisolated func registerSelfWrite(path: String) {
-        let expiry = Date().addingTimeInterval(1.0)
-        suppressionRegistry.register(path, expiry: expiry)
-        debugLog("FSEvents", "registered self-write suppression for \(path) until \(expiry)")
-    }
-
-    /// Actor-isolated check: returns true if the path is currently suppressed.
-    /// Merges pending registrations from the lock-protected registry first so
-    /// we don't miss registrations from other actors.
-    private func isSuppressed(_ path: String) -> Bool {
-        // Pull any new registrations from the lock-protected registry.
-        for (k, v) in suppressionRegistry.drain() {
-            selfWriteSuppressedPaths[k] = v
-        }
-
-        let now = Date()
-        // Prune expired entries.
-        selfWriteSuppressedPaths = selfWriteSuppressedPaths.filter { $0.value > now }
-        return selfWriteSuppressedPaths[path] != nil
-    }
-
-    /// Actor-isolated registration, used by the engine's own save call sites.
-    private func markSelfWrite(path: String) {
-        selfWriteSuppressedPaths[path] = Date().addingTimeInterval(selfWriteSuppressionInterval)
-    }
-
-    /// Clears the "already logged suppression" flag for a path so a later
-    /// external write to the same path produces a log line again.
-    private func clearLoggedSuppression(_ path: String) {
-        loggedSuppressionForPath.remove(path)
-    }
-
-    // MARK: - Global debouncing
-
-    /// Records the path and (re)arms the single global debounce task. Every
-    /// incoming event resets the 1s timer; when it finally fires, all unique
-    /// paths accumulated in `pendingReloads` are reloaded together.
-    private func scheduleReload(path: String, kind: FileKind, event: FSEvent) {
-        pendingReloads[path] = (kind, event)
-        pendingReloadTask?.cancel()
-        let interval = reloadDebounceInterval
-        pendingReloadTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: interval)
-            guard !Task.isCancelled else { return }
-            await self?.flushPendingReloads()
-        }
-        debugLog(
-            "FSEvents",
-            "armed debounce for \(env.relativePath(URL(fileURLWithPath: path))) (\(pendingReloads.count) pending)")
-    }
-
-    /// Drains all accumulated reloads once the debounce settles. Each unique
-    /// path is reloaded via its latest recorded event, then config references
-    /// are validated once for the whole batch.
-    private func flushPendingReloads() {
-        pendingReloadTask = nil
-        let batch = pendingReloads
-        pendingReloads.removeAll(keepingCapacity: false)
-        guard !batch.isEmpty else { return }
-        debugLog("FSEvents", "flushing \(batch.count) debounced reload(s)")
         // Surface the Application resources in this batch to the loader so it
         // can show a partial "Application" column while the reload runs.
         // `counts` is the on-disk total per resource (drives the
         // success/warning/failed derivation); `refreshCounts` is how many items
-        // are actually being refreshed in this batch (drives the subtitle, e.g.
-        // "1 entry" for a single-file edit). The matching "completed" signal is
-        // the per-resource changed event emitted by the handlers below. MCP /
-        // chat files are excluded — MCPs are reported via `.mcpConfiguration`.
+        // are actually being refreshed (drives the subtitle, e.g. "1 entry" for
+        // a single-file change). The matching "completed" signal is the
+        // per-resource changed event emitted by the reload below.
         var appCounts: [AppResource: Int] = [:]
         var refreshCounts: [AppResource: Int] = [:]
-        for (_, entry) in batch {
-            if let r = appResource(for: entry.kind) {
-                appCounts[r] = resourceTotalCount(r)
-                refreshCounts[r, default: 0] += 1
+        for change in unique {
+            if let r = change.appResource {
+                let total = resourceTotalCount(r)
+                appCounts[r] = total
+                refreshCounts[r, default: 0] += change.refreshCount(total: total)
             }
         }
         if !appCounts.isEmpty {
             emit(.loaderActivity(LoaderActivity(counts: appCounts, refreshCounts: refreshCounts)))
         }
-        for (path, entry) in batch {
-            executeReload(path: path, kind: entry.kind, event: entry.event)
-        }
-        Task { await ConfigManager.shared.validateReferences() }
-    }
 
-    /// Maps a file kind to the Application resource it belongs to, or nil for
-    /// kinds the loader doesn't report (chats, MCPs).
-    private func appResource(for kind: FileKind) -> AppResource? {
-        switch kind {
-        case .config: return .configuration
-        case .connectionOpenai, .connectionAnthropic: return .connections
-        case .prompt: return .prompts
-        case .role: return .roles
-        case .mcp, .chat: return nil
+        for change in unique {
+            switch change {
+            case .config:
+                await ConfigManager.shared.reload()
+                emit(.configChanged)
+            case .connections: reloadConnections()
+            case .roles: revalidateRoles()
+            case .role(let name): reloadRole(name: name)
+            case .prompts: reloadPrompts()
+            case .prompt(let name): reloadPrompt(name: name)
+            case .mcp(let name): reloadMCP(name: name)
+            }
+        }
+
+        // Reference validation may clear a default connection/role that no
+        // longer exists; let the UI pick up the cleaned config.
+        if await ConfigManager.shared.validateReferences() {
+            emit(.configChanged)
         }
     }
 
@@ -628,240 +351,106 @@ actor ChatEngine {
         }
     }
 
-    /// Executes the single-file reload for a debounced event. Dispatches to the
-    /// per-kind handler based on the event type.
-    private func executeReload(path: String, kind: FileKind, event: FSEvent) {
-        let url = URL(fileURLWithPath: path)
-        let relPath = env.relativePath(url)
-        debugLog("FSEvents", "executing reload — kind=\(kind), path=\(relPath)")
-
-        switch kind {
-        case .chat:
-            handleChatFileEvent(event, url: url)
-        case .role:
-            handleRoleFileEvent(event, url: url)
-        case .prompt:
-            handlePromptFileEvent(event, url: url)
-        case .connectionOpenai, .connectionAnthropic:
-            handleConnectionFileEvent(event, url: url)
-        case .mcp:
-            handleMCPFileEvent(event, url: url)
-        case .config:
-            handleConfigFileEvent(event, url: url)
-        }
+    /// Reloads the full connection set — connection files are few and the
+    /// merge logic for per-file updates is fiddly (id depends on
+    /// provider+name).
+    private func reloadConnections() {
+        let result = env.loadConnectionsReportingErrors()
+        connections = result.loaded
+        replaceConfigErrors(kind: .connection, with: result.errors)
+        emit(.connectionsChanged(connections))
+        revalidateRoles()
     }
 
-    // MARK: - Per-kind handlers
-
-    /// Handles an FSEvent for a chat file. External modifications reload the
-    /// chat via the store (which updates the cache), then update the in-memory
-    /// record only if the chat was already loaded. Chats that are not loaded
-    /// are left unloaded — their cache metadata is updated by the store.
-    /// `itemRenamed` is treated as removed(old) + created(new); since the
-    /// wrapper fires two events, each is handled independently here.
-    private func handleChatFileEvent(_ event: FSEvent, url: URL) {
-        let filename = url.lastPathComponent
-        switch event {
-        case .itemCreated, .itemClonedAtPath, .itemDataModified, .itemRenamed:
-            // Ask the store to reload from disk and update the cache.
-            let chat = store.handleExternalChange(filename: filename)
-            guard chat != nil else {
-                debugLog("FSEvents", "chat reload failed (undecodable/missing) — \(filename)")
-                return
-            }
-            // Streaming chat protection: don't clobber in-memory streaming state.
-            if let idx = records.firstIndex(where: { $0.filename == filename }), records[idx].isStreaming {
-                debugLog("FSEvents", "chat \(filename) is streaming — keeping in-memory state")
-                return
-            }
-            // Refresh cache metadata for the sidebar. Only swap in the
-            // reloaded content when the chat was already loaded (the user has
-            // it open); an unloaded chat stays unloaded — its cache metadata
-            // is enough for the sidebar, and loading it here would pin it in
-            // memory with no event to release it.
-            if let info = store.getEntry(filename: filename) {
-                if let idx = records.firstIndex(where: { $0.filename == filename }) {
-                    if records[idx].chat != nil {
-                        records[idx].chat = chat
-                    }
-                    records[idx].cachedName = info.name
-                    records[idx].cachedRole = info.role
-                    records[idx].cachedModificationTime = info.modificationTime
-                    records[idx].cachedArchive = info.archive
-                    records[idx].cachedWorkingDirectory = info.workingDirectory
-                    records[idx].cachedLastActivity = info.lastActivity
-                    records[idx].lastError = nil
-                } else {
-                    // New chat appeared on disk — never loaded.
-                    records.append(
-                        ChatRecord(
-                            filename: filename,
-                            chat: nil,
-                            cachedName: info.name,
-                            cachedRole: info.role,
-                            cachedModificationTime: info.modificationTime,
-                            cachedArchive: info.archive,
-                            cachedWorkingDirectory: info.workingDirectory,
-                            cachedLastActivity: info.lastActivity
-                        ))
-                }
-            }
-            sortAndEmit()
-        case .itemRemoved:
-            // Remove from store cache, cancel streaming, and remove the record.
-            store.handleExternalDeletion(filename: filename)
-            streamTasks[filename]?.cancel()
-            streamTasks[filename] = nil
-            env.deleteAllAttachments(for: filename)
-            records.removeAll(where: { $0.filename == filename })
-            if selectedFilename == filename { selectedFilename = nil }
-            emit(.chatsChanged(records))
-        default:
-            break
-        }
-    }
-
-    /// Handles an FSEvent for a role TOML file.
-    private func handleRoleFileEvent(_ event: FSEvent, url: URL) {
-        let name = url.deletingPathExtension().lastPathComponent
+    /// Reloads a single role and merges it into the in-memory list. A missing
+    /// or undecodable file removes the role.
+    private func reloadRole(name: String) {
         // Protected built-ins are served from the bundle and never modified
-        // via the user directory — ignore any user-dir events for them so a
-        // user shadow file can't clobber or remove the built-in role.
+        // via the user directory — ignore them so a user shadow file can't
+        // clobber or remove the built-in role.
         if EnvironmentManager.protectedBundleNames.contains(name) { return }
-        switch event {
-        case .itemCreated, .itemClonedAtPath, .itemDataModified, .itemRenamed:
-            // Reload the single role and merge into the in-memory list.
-            let (role, error) = env.loadSingleRoleReportingError(name: name, references: knownRoleReferences())
-            if let role {
-                if let idx = roles.firstIndex(where: { $0.name == name }) {
-                    roles[idx] = role
-                } else {
-                    roles.append(role)
-                    roles.sort { $0.name < $1.name }
-                }
-                clearConfigError(kind: .role, name: name)
+        let (role, error) = env.loadSingleRoleReportingError(name: name, references: knownRoleReferences())
+        if let role {
+            if let idx = roles.firstIndex(where: { $0.name == name }) {
+                roles[idx] = role
             } else {
-                // File gone or undecodable — treat as removal.
-                roles.removeAll(where: { $0.name == name })
-                if let error {
-                    setConfigError(error)
-                } else {
-                    clearConfigError(kind: .role, name: name)
-                }
+                roles.append(role)
+                roles.sort { $0.name < $1.name }
             }
-            emit(.rolesChanged(roles))
-        case .itemRemoved:
-            roles.removeAll(where: { $0.name == name })
             clearConfigError(kind: .role, name: name)
-            emit(.rolesChanged(roles))
-        default:
-            break
+        } else {
+            roles.removeAll(where: { $0.name == name })
+            if let error {
+                setConfigError(error)
+            } else {
+                clearConfigError(kind: .role, name: name)
+            }
         }
+        emit(.rolesChanged(roles))
     }
 
-    /// Handles an FSEvent for a prompt file.
-    private func handlePromptFileEvent(_ event: FSEvent, url: URL) {
-        let name = url.deletingPathExtension().lastPathComponent
-        // Protected built-ins are served from the bundle and never modified
-        // via the user directory — ignore any user-dir events for them.
+    /// Reloads a single prompt and merges it into the in-memory list. A missing
+    /// or undecodable file removes the prompt.
+    private func reloadPrompt(name: String) {
         if EnvironmentManager.protectedBundleNames.contains(name) { return }
-        switch event {
-        case .itemCreated, .itemClonedAtPath, .itemDataModified, .itemRenamed:
-            let (prompt, error) = env.loadSinglePromptReportingError(name: name)
-            if let prompt {
-                if let idx = prompts.firstIndex(where: { $0.name == name }) {
-                    prompts[idx] = prompt
-                } else {
-                    prompts.append(prompt)
-                    prompts.sort { $0.name < $1.name }
-                }
-                clearConfigError(kind: .prompt, name: name)
+        let (prompt, error) = env.loadSinglePromptReportingError(name: name)
+        if let prompt {
+            if let idx = prompts.firstIndex(where: { $0.name == name }) {
+                prompts[idx] = prompt
             } else {
-                prompts.removeAll(where: { $0.name == name })
-                if let error {
-                    setConfigError(error)
-                } else {
-                    clearConfigError(kind: .prompt, name: name)
-                }
+                prompts.append(prompt)
+                prompts.sort { $0.name < $1.name }
             }
-            emit(.promptsChanged(prompts))
-            revalidateRoles()
-        case .itemRemoved:
-            prompts.removeAll(where: { $0.name == name })
             clearConfigError(kind: .prompt, name: name)
-            emit(.promptsChanged(prompts))
-            revalidateRoles()
-        default:
-            break
-        }
-    }
-
-    /// Handles an FSEvent for a connection file (openai or anthropic).
-    private func handleConnectionFileEvent(_ event: FSEvent, url: URL) {
-        // For connections, the simplest correct approach is to reload the full
-        // set — connection files are few and the merge logic for per-file
-        // updates is fiddly (id depends on provider+name). This is still far
-        // cheaper than the old full-tree scan.
-        switch event {
-        case .itemCreated, .itemClonedAtPath, .itemDataModified, .itemRenamed, .itemRemoved:
-            let result = env.loadConnectionsReportingErrors()
-            connections = result.loaded
-            replaceConfigErrors(kind: .connection, with: result.errors)
-            emit(.connectionsChanged(connections))
-            revalidateRoles()
-        default:
-            break
-        }
-    }
-
-    /// Handles an FSEvent for an MCP config file. On create/modify/rename, the
-    /// server config is (re)loaded into memory and a single-flight reconfigure
-    /// is scheduled for that server in `MCPManager`. On remove, the server is
-    /// forgotten (disconnected + caches cleared). Every change revalidates
-    /// roles, since they may reference the added/removed server.
-    private func handleMCPFileEvent(_ event: FSEvent, url: URL) {
-        let name = url.deletingPathExtension().lastPathComponent
-        switch event {
-        case .itemCreated, .itemClonedAtPath, .itemDataModified, .itemRenamed:
-            let (server, error) = env.loadSingleMCPReportingError(name: name)
-            if let server {
-                if let idx = customMcps.firstIndex(where: { $0.name == name }) {
-                    customMcps[idx] = server
-                } else {
-                    customMcps.append(server)
-                }
-                rebuildMcpList()
-                clearConfigError(kind: .mcpConfig, name: name)
-                // Single-flight reconfigure: coalesce a burst of events for the
-                // same server into one reconfigure. The reconfigure will clear
-                // (or set) the runtime failure for this server.
-                scheduleReconfigure(server)
+        } else {
+            prompts.removeAll(where: { $0.name == name })
+            if let error {
+                setConfigError(error)
             } else {
-                // Undecodable — treat as removal.
-                customMcps.removeAll(where: { $0.name == name })
-                rebuildMcpList()
-                if let error {
-                    setConfigError(error)
-                    // A server with a broken config can't run; drop any stale
-                    // runtime failure so only the config error is shown.
-                    clearConfigError(kind: .mcpFailure, name: name)
-                } else {
-                    clearConfigError(kind: .mcpConfig, name: name)
-                    clearConfigError(kind: .mcpFailure, name: name)
-                }
-                scheduleForget(name)
+                clearConfigError(kind: .prompt, name: name)
             }
-            revalidateRoles()
-        case .itemRemoved:
-            customMcps.removeAll(where: { $0.name == name })
+        }
+        emit(.promptsChanged(prompts))
+        revalidateRoles()
+    }
+
+    private func reloadPrompts() {
+        let result = env.loadAllPromptsReportingErrors()
+        prompts = result.loaded
+        replaceConfigErrors(kind: .prompt, with: result.errors)
+        emit(.promptsChanged(prompts))
+        revalidateRoles()
+    }
+
+    /// Reloads one MCP config. On success the server is (re)loaded into memory
+    /// and a single-flight reconfigure is scheduled in `MCPManager`; a missing
+    /// or undecodable file forgets the server (disconnect + caches cleared).
+    /// Roles are revalidated since they may reference the changed server.
+    private func reloadMCP(name: String) {
+        let (server, error) = env.loadSingleMCPReportingError(name: name)
+        if let server {
+            if let idx = customMcps.firstIndex(where: { $0.name == name }) {
+                customMcps[idx] = server
+            } else {
+                customMcps.append(server)
+            }
             rebuildMcpList()
             clearConfigError(kind: .mcpConfig, name: name)
-            clearConfigError(kind: .mcpFailure, name: name)
+            // The reconfigure clears (or sets) the runtime failure for this server.
+            scheduleReconfigure(server)
+        } else {
+            customMcps.removeAll(where: { $0.name == name })
+            rebuildMcpList()
+            if let error {
+                setConfigError(error)
+            } else {
+                clearConfigError(kind: .mcpConfig, name: name)
+            }
+            // A server with a broken config can't run; forgetting it also
+            // drops any stale runtime failure so only the config error shows.
             scheduleForget(name)
-            revalidateRoles()
-        default:
-            break
         }
+        revalidateRoles()
     }
 
     /// The reference sets roles are validated against, built from in-memory
@@ -882,7 +471,7 @@ actor ChatEngine {
     /// Reloads all roles against the current reference sets. Called when a
     /// connection, prompt, or MCP config appears/disappears so roles
     /// referencing it flip between valid and invalid without waiting for a
-    /// role-file event.
+    /// role reload.
     private func revalidateRoles() {
         let result = env.loadAllRolesReportingErrors(references: knownRoleReferences())
         roles = result.loaded
@@ -890,81 +479,39 @@ actor ChatEngine {
         emit(.rolesChanged(roles))
     }
 
-    /// Handles an FSEvent for `config.toml`. Reloads the config and emits
-    /// `.configChanged` so the UI refreshes its cached preferences.
-    private func handleConfigFileEvent(_ event: FSEvent, url: URL) {
-        switch event {
-        case .itemCreated, .itemClonedAtPath, .itemDataModified, .itemRenamed:
-            Task {
-                await ConfigManager.shared.reload()
-                self.emit(.configChanged)
-            }
-        case .itemRemoved:
-            // Config deleted — keep current in-memory state; nothing to reload.
-            break
-        default:
-            break
-        }
-    }
-
-    // MARK: - Full rescan fallback
-
-    /// Full rescan of all environment state. Used as a fallback for
-    /// `mustScanSubDirs` / `rootChanged` events (dropped events). Reconciles
-    /// the chat cache with disk and re-runs the MCP configuration pass since
-    /// the set of servers may have changed in ways we couldn't track per-file.
-    private func fullRescan() {
-        // A full rescan reloads every Application resource; surface it to the
-        // loader so the user sees what's being reconciled.
-        emit(
-            .loaderActivity(
-                LoaderActivity(counts: [
-                    .connections: env.connectionCount(),
-                    .prompts: env.promptCount(),
-                    .roles: env.roleCount(),
-                ])))
-        // Load in dependency order: connections / MCPs / prompts first, then
-        // roles (validated against them), then chats.
-        let snapshot = env.loadEnvironment()
-        connections = snapshot.connections
-        customMcps = snapshot.mcps
-        rebuildMcpList()
-        prompts = snapshot.prompts
-        roles = snapshot.roles
-        for kind in [ConfigError.Kind.connection, .mcpConfig, .prompt, .role] {
-            replaceConfigErrors(kind: kind, with: snapshot.errors.filter { $0.kind == kind })
-        }
-        fullRescanChats()
-        emit(.rolesChanged(roles))
-        emit(.promptsChanged(prompts))
-        emit(.connectionsChanged(connections))
-        emit(.mcpsChanged(mcps))
-        configureMCPs()
-    }
-
     // MARK: - MCP configuration flow
 
-    /// Runs a full MCP configuration pass: reloads configs from disk and drives
-    /// `MCPManager.configure`, which connects stdio servers, queries tools,
-    /// discards failures, and stops on-demand stdio servers. Reports live
-    /// status via `handleMCPConfigurationState`. Skipped (no-op) when no MCPs
-    /// are configured. Guards against concurrent passes.
+    /// Runs a full MCP configuration pass from scratch: re-reads every MCP
+    /// config from disk, then drives `MCPManager.configure`, which first kills
+    /// all current connections and caches, then connects stdio servers,
+    /// queries tools, discards failures, and stops on-demand stdio servers.
+    /// Reports live status via `handleMCPConfigurationState`. Guards against
+    /// concurrent passes.
     ///
-    /// Called on launch (from `start()`) and from "File > Reload MCPs…".
+    /// Called on launch (from `start()`) and from "MCP > Reinitialize MCP
+    /// Servers…".
     func configureMCPs() {
         guard !isConfiguringMCPs else {
             debugLog("MCP", "configureMCPs — already in progress, skipping")
             return
         }
-        // Reload the freshest configs from disk so the pass uses current state.
+        // Single-server reconfigures queued earlier would race the reset.
+        for task in pendingReconfigures.values { task.cancel() }
+        pendingReconfigures.removeAll()
         let mcpsResult = env.loadMCPsReportingErrors()
         customMcps = mcpsResult.loaded
         rebuildMcpList()
         replaceConfigErrors(kind: .mcpConfig, with: mcpsResult.errors)
-        // Builtins are always present, so the list is never empty; the
-        // configure pass initializes every server (in-house included).
+        // Runtime failures of servers that no longer exist (or no longer
+        // decode) are stale; the configure pass reports the rest afresh.
+        let loadedNames = Set(customMcps.map(\.name))
+        for error in currentConfigErrors() where error.kind == .mcpFailure && !loadedNames.contains(error.entityName) {
+            clearConfigError(kind: .mcpFailure, name: error.entityName)
+        }
         isConfiguringMCPs = true
         let snapshot = mcps
+        // Roles may reference servers that were added or removed on disk.
+        revalidateRoles()
         Task { [weak self] in
             guard let self else { return }
             _ = await MCPManager.shared.configure(snapshot)
@@ -979,7 +526,7 @@ actor ChatEngine {
     }
 
     /// Schedules a single-flight reconfigure for one server. Coalesces a burst
-    /// of FSEvents for the same server into one `MCPManager.reconfigure` call.
+    /// of changes for the same server into one `MCPManager.reconfigure` call.
     func scheduleReconfigure(_ server: MCPServer) {
         let name = server.name
         pendingReconfigures[name]?.cancel()
@@ -1047,18 +594,6 @@ actor ChatEngine {
             }
         }
         emit(.mcpConfiguration(state))
-    }
-
-    /// Reloads custom MCP servers from disk and rebuilds the combined list
-    /// (in-house + custom). The runtime configuration is performed separately
-    /// by `configureMCPs()` (on launch and "Reload MCPs…") or
-    /// `scheduleReconfigure` (on per-file FSEvents).
-    private func reloadMCPs() {
-        let mcpsResult = env.loadMCPsReportingErrors()
-        customMcps = mcpsResult.loaded
-        rebuildMcpList()
-        replaceConfigErrors(kind: .mcpConfig, with: mcpsResult.errors)
-        debugLog("MCP", "reloaded \(customMcps.count) custom server config(s) from disk")
     }
 
     /// Rebuilds the `mcps` list (custom servers sorted by name) and emits the
@@ -1152,40 +687,6 @@ actor ChatEngine {
         // Drop bookkeeping for chats that no longer exist.
         let validIDs = Set(records.map { $0.id })
         streamTasks = streamTasks.filter { validIDs.contains($0.key) }
-    }
-
-    /// Full rescan of chat state from disk. Used as a fallback for
-    /// `mustScanSubDirs` / `rootChanged` FSEvents. Rebuilds the cache from
-    /// scratch by reconciling with disk, then populates records (with
-    /// `chat = nil`). In-memory loaded chats are preserved.
-    private func fullRescanChats() {
-        let entries = store.startupSync()
-        var newRecords: [ChatRecord] = []
-        for info in entries {
-            let existing = records.first(where: { $0.filename == info.filename })
-            newRecords.append(
-                ChatRecord(
-                    filename: info.filename,
-                    chat: existing?.chat,
-                    cachedName: info.name,
-                    cachedRole: info.role,
-                    cachedModificationTime: info.modificationTime,
-                    cachedArchive: info.archive,
-                    cachedWorkingDirectory: info.workingDirectory,
-                    cachedLastActivity: info.lastActivity,
-                    isStreaming: existing?.isStreaming ?? false,
-                    stopAfterIteration: existing?.stopAfterIteration ?? false,
-                    queuedMessages: existing?.queuedMessages ?? [],
-                    hasUnreadActivity: existing?.hasUnreadActivity ?? false,
-                    lastError: existing?.lastError,
-                    createdAt: existing?.createdAt ?? info.lastActivity
-                ))
-        }
-        sortRecordsByActivity(&newRecords)
-        records = newRecords
-        let validIDs = Set(records.map { $0.id })
-        streamTasks = streamTasks.filter { validIDs.contains($0.key) }
-        emit(.chatsChanged(records))
     }
 
     /// Orders records so the chat with the most recent activity comes first.
@@ -1307,8 +808,6 @@ actor ChatEngine {
         cliDriven.remove(filename)
         cliAllowAll.remove(filename)
         cliInteractive.remove(filename)
-        // Suppress the FSEvent for the file we're about to remove.
-        markSelfWrite(path: env.chatsURL.appendingPathComponent(filename).path)
         store.deleteChat(filename: filename)
         env.deleteAllAttachments(for: filename)
         records.removeAll(where: { $0.filename == filename })
@@ -1430,9 +929,8 @@ actor ChatEngine {
     }
 
     /// Persists a chat to disk via the store and updates the in-memory record
-    /// (without clobbering streaming/unread flags). Marks a per-path self-write
-    /// suppression so the resulting FSEvents don't trigger a redundant reload.
-    /// Also updates the cached metadata from the store.
+    /// (without clobbering streaming/unread flags). Also updates the cached
+    /// metadata from the store.
     /// Temporary chats are never persisted — only the in-memory record
     /// is updated. Empty chats (no messages and no title) are also never
     /// persisted: they're in-memory placeholders until the first message is
@@ -1457,7 +955,6 @@ actor ChatEngine {
             }
             return
         }
-        markSelfWrite(path: env.chatsURL.appendingPathComponent(filename).path)
         store.saveChat(chat, filename: filename)
         if let idx = records.firstIndex(where: { $0.filename == filename }) {
             records[idx].chat = chat
@@ -3200,7 +2697,6 @@ actor ChatEngine {
             return
         }
         if !records[idx].isTemporary {
-            markSelfWrite(path: env.chatsURL.appendingPathComponent(filename).path)
             store.saveChat(finalChat, filename: filename)
         }
         if let info = store.getEntry(filename: filename) {

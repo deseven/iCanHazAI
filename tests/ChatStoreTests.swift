@@ -25,10 +25,7 @@ private func suppressingStderr<T>(_ body: () throws -> T) rethrows -> T {
 ///
 /// These exercise the store's full contract: save/load round-trips, cache
 /// upsert/lookup, deletion, `startupSync` reconciliation (fresh, stale, missing,
-/// undecodable), and the external-change hooks (`handleExternalChange` /
-/// `handleExternalDeletion`) that the FSEvents router in
-/// [`ChatEngine`](src/Chat/ChatEngine.swift) calls. The FSEvents delivery itself is
-/// covered by [`ChatStoreFSEventsTests`](tests/ChatStoreTests.swift) below.
+/// undecodable).
 ///
 /// Each test gets its own `TempEnv` (fresh temp root + fresh ChatStore + fresh
 /// SQLite cache), so there's no cross-test state. The suite is nested under
@@ -416,64 +413,6 @@ extension AllAppTests {
             #expect(entries.first?.name == "Heal")
         }
 
-        // MARK: - External change hooks
-
-        @Test("handleExternalChange reloads an externally-written file and updates the cache")
-        func handleExternalChangeReloads() throws {
-            try env.writeChatDirect(Fixtures.chat(title: "External"), filename: "ext.json")
-            #expect(env.store.getEntry(filename: "ext.json") == nil)  // not yet in cache
-
-            let chat = env.store.handleExternalChange(filename: "ext.json")
-            #expect(chat?.title == "External")
-
-            let entry = try #require(env.store.getEntry(filename: "ext.json"))
-            #expect(entry.name == "External")
-            #expect(entry.modificationTime == env.modificationDate("ext.json"))
-        }
-
-        @Test("handleExternalChange updates an existing cache entry in place")
-        func handleExternalChangeUpserts() throws {
-            env.store.saveChat(Fixtures.chat(title: "V1"), filename: "ext.json")
-            try env.writeChatDirect(Fixtures.chat(title: "V2"), filename: "ext.json")
-
-            let chat = env.store.handleExternalChange(filename: "ext.json")
-            #expect(chat?.title == "V2")
-            #expect(env.store.getAllEntries().count == 1)
-            #expect(env.store.getEntry(filename: "ext.json")?.name == "V2")
-        }
-
-        @Test("handleExternalChange returns nil for a missing file")
-        func handleExternalChangeMissing() {
-            #expect(env.store.handleExternalChange(filename: "ghost.json") == nil)
-            #expect(env.store.getEntry(filename: "ghost.json") == nil)
-        }
-
-        @Test("handleExternalChange returns nil for an undecodable file")
-        func handleExternalChangeUndecodable() throws {
-            try Data("{ broken".utf8).write(to: env.chatURL("bad.json"))
-            #expect(env.store.handleExternalChange(filename: "bad.json") == nil)
-            #expect(env.store.getEntry(filename: "bad.json") == nil)
-        }
-
-        @Test("handleExternalDeletion removes the cache entry but leaves the file")
-        func handleExternalDeletion() throws {
-            env.store.saveChat(Fixtures.simpleChat(), filename: "a.json")
-            #expect(env.store.getEntry(filename: "a.json") != nil)
-
-            env.store.handleExternalDeletion(filename: "a.json")
-
-            #expect(env.store.getEntry(filename: "a.json") == nil)
-            // handleExternalDeletion only reconciles the cache; the file itself is
-            // the FSEvents router's concern (a removed-file event implies it's gone).
-            #expect(env.diskFilenames() == ["a.json"])
-        }
-
-        @Test("handleExternalDeletion is safe for an unknown filename")
-        func handleExternalDeletionUnknown() {
-            env.store.handleExternalDeletion(filename: "ghost.json")
-            #expect(env.store.getAllEntries() == [])
-        }
-
         // MARK: - Delegates
 
         @Test("newChatFilename produces a timestamped .json filename")
@@ -508,83 +447,12 @@ extension AllAppTests {
     }
 }  // extension AllAppTests
 
-// MARK: - FSEvents integration
+// MARK: - shouldPersist
 
-/// Verifies that [`EnvironmentWatcher`](src/Environment/EnvironmentWatcher.swift) actually
-/// delivers FSEvents for chat-file changes, and that routing those events
-/// through the store's external-change hooks (as
-/// [`ChatEngine.handleFSEvent`](src/Chat/ChatEngine.swift:279) does) keeps the cache
-/// in sync. These are real filesystem events on a temp directory, so they use
-/// generous timeouts via [`FSEventCollector`](tests/AppTestHarness.swift).
 extension AllAppTests {
 
-    @Suite("ChatStore.FSEvents", .serialized, .timeLimit(.minutes(2)))
-    struct ChatStoreFSEventsTests {
-
-        let env: TempEnv
-        init() throws { env = try TempEnv() }
-
-        @Test("watcher delivers an event when a chat file is created externally")
-        func eventOnCreate() throws {
-            let collector = FSEventCollector(rootPath: env.rootURL.path)
-            defer { _ = collector }  // keep watcher alive for the test duration
-
-            try env.writeChatDirect(Fixtures.chat(title: "Created"), filename: "created.json")
-
-            #expect(collector.waitForFile("created.json"), "expected an FSEvent for created.json")
-        }
-
-        @Test("watcher delivers an event when a chat file is modified externally")
-        func eventOnModify() throws {
-            try env.writeChatDirect(Fixtures.chat(title: "V1"), filename: "m.json")
-            let collector = FSEventCollector(rootPath: env.rootURL.path)
-            defer { _ = collector }
-
-            try env.modifyChatDirect("m.json") { $0.title = "V2" }
-
-            #expect(collector.waitForFile("m.json"))
-        }
-
-        @Test("watcher delivers an event when a chat file is deleted externally")
-        func eventOnDelete() throws {
-            try env.writeChatDirect(Fixtures.chat(title: "Doomed"), filename: "del.json")
-            let collector = FSEventCollector(rootPath: env.rootURL.path)
-            defer { _ = collector }
-
-            env.deleteChatDirect("del.json")
-
-            #expect(collector.waitForFile("del.json"))
-        }
-
-        @Test("routing a create event through the store populates the cache")
-        func createEventUpdatesCache() throws {
-            let collector = FSEventCollector(rootPath: env.rootURL.path)
-            defer { _ = collector }
-            try env.writeChatDirect(Fixtures.chat(title: "Synced"), filename: "sync.json")
-
-            // Wait for the event, then do what the engine does on a chat-file event.
-            #expect(collector.waitForFile("sync.json"))
-            let chat = try #require(env.store.handleExternalChange(filename: "sync.json"))
-            #expect(chat.title == "Synced")
-            #expect(env.store.getEntry(filename: "sync.json")?.name == "Synced")
-        }
-
-        @Test("routing a delete event through the store clears the cache entry")
-        func deleteEventClearsCache() throws {
-            env.store.saveChat(Fixtures.chat(title: "Cached"), filename: "gone.json")
-            #expect(env.store.getEntry(filename: "gone.json") != nil)
-
-            let collector = FSEventCollector(rootPath: env.rootURL.path)
-            defer { _ = collector }
-            env.deleteChatDirect("gone.json")
-            #expect(collector.waitForFile("gone.json"))
-
-            // The engine routes a removed-file chat event to handleExternalDeletion.
-            env.store.handleExternalDeletion(filename: "gone.json")
-            #expect(env.store.getEntry(filename: "gone.json") == nil)
-        }
-
-        // MARK: - shouldPersist
+    @Suite("Chat.shouldPersist")
+    struct ChatShouldPersistTests {
 
         @Test("shouldPersist is false for a chat with no messages and no title")
         func shouldPersistEmptyUntitled() {

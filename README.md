@@ -23,7 +23,7 @@ To address the elephant in the room: there are many AI chat apps and agentic har
 - remote work: seamless SSH working directories for agentic sessions on remote machines
 - CLI: one-shot and interactive modes, piping, unlimited concurrency — run ten chats in the CLI, ten more in the GUI, continue any of them anywhere
 - attachments: attach images, plain text, and documents (docx/doc/odt/rtf/pdf) to any chat on any connection — images on non-vision connections get a local text fallback
-- clean configuration/data structure in a single directory (`~/iCanHazAI`), all plain text, hot-reloaded on external edits and errors gracefully handled
+- clean configuration/data structure in a single directory (`~/iCanHazAI`)
 - bundled Configurator role that edits the configuration for you
 - in-chat search (⌘F): browser-style find over user and assistant message text with match count, next/previous (⌘G / ⇧⌘G) and highlighting
 - chat list modes: browse all chats, filter by role, or filter by working directory — the sidebar adapts and new chats inherit the active filter
@@ -76,7 +76,7 @@ On first launch, iCanHazAI creates its data directory at `~/iCanHazAI`:
 └── app.sock         # CLI control socket
 ```
 
-Everything lives directly in your home folder as plain text, so you can edit it with any editor. All files are watched — editing, adding, or removing them reloads the affected data automatically, no restart needed.
+Everything lives directly in your home folder as plain text, so you can inspect it with any editor.
 
 ### Connection
 

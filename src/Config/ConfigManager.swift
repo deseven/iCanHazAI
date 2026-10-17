@@ -221,7 +221,7 @@ struct WindowConfig: Codable, Equatable {
 /// UI-free singleton actor that owns the app config file at `~/iCanHazAI/config.toml`.
 /// Every modification triggers an immediate TOML write so the file is always in a
 /// correct state. Validation of connection/role references happens on load and
-/// can be re-triggered by callers (e.g. after FSEvents).
+/// can be re-triggered by callers (e.g. after entities are reloaded).
 ///
 /// Startup ordering: [`bootstrapSynchronously()`](src/Config/ConfigManager.swift) must be
 /// called once at the very beginning of `applicationWillFinishLaunching`, before
@@ -240,19 +240,13 @@ actor ConfigManager {
     private(set) var config = AppConfig()
 
     /// Whether `load()` has completed at least once. Validation/persistence is
-    /// suppressed until the config has been read from disk, otherwise an
-    /// FSEvent-triggered `validateReferences()` that fires *before* the initial
-    /// load would wipe `default_connection` / `utility_connection` (which are
-    /// still nil in the default `AppConfig()` and would be persisted as such).
+    /// suppressed until the config has been read from disk, otherwise a
+    /// `validateReferences()` that fires *before* the initial load would wipe
+    /// `default_connection` / `utility_connection` (which are still nil in the
+    /// default `AppConfig()` and would be persisted as such).
     private var didLoad = false
 
     private let fileURL: URL
-
-    /// Hook called immediately before `persist()` writes `config.toml` to disk.
-    /// Set by `ChatEngine` at startup so the engine can register the config
-    /// file path in its per-path self-write suppression registry, preventing
-    /// the resulting FSEvents burst from triggering a redundant reload.
-    var willWriteConfig: (@Sendable () -> Void)?
 
     private init() {
         fileURL = EnvironmentManager.shared.rootURL.appendingPathComponent("config.toml")
@@ -295,8 +289,8 @@ actor ConfigManager {
     ///  - `DebugLogger.enabled` reflects the user's preference from the first
     ///    log line onward, and
     ///  - the actor's `load()` can consume the already-decoded config without
-    ///    re-reading the file, so no launch-time FSEvent/atomic-write race can
-    ///    produce an empty config that would later be persisted as defaults.
+    ///    re-reading the file, so no launch-time read can produce an empty
+    ///    config that would later be persisted as defaults.
     ///
     /// If the file is missing, defaults are used (a normal first launch — no
     /// overwrite). If the file exists but fails to decode, defaults are used
@@ -322,12 +316,6 @@ actor ConfigManager {
                 "⚠️ failed to decode app config on startup — using defaults; the broken file will be overwritten")
         }
         bootstrapBox.set(decoded, decodeFailed: decodeFailed)
-    }
-
-    /// Registers the self-write hook used to suppress FSEvents for our own
-    /// writes to `config.toml`. Called once by `ChatEngine` at startup.
-    func setWillWriteConfigHook(_ hook: @escaping @Sendable () -> Void) {
-        willWriteConfig = hook
     }
 
     // MARK: - Load / Save
@@ -397,18 +385,19 @@ actor ConfigManager {
     }
 
     /// Re-reads `config.toml` from disk and updates in-memory state. Called
-    /// when an FSEvent for `config.toml` arrives (external edit). Unlike
-    /// `load()`, this is not idempotent — it always re-reads the file. After
-    /// loading, validates references and persists if anything was cleaned up.
+    /// after `config.toml` was written by something other than this actor
+    /// (e.g. the Configurator tools). Unlike `load()`, this is not idempotent —
+    /// it always re-reads the file. After loading, validates references and
+    /// persists if anything was cleaned up.
     func reload() {
-        debugLog("Config", "reloading from disk (FSEvent)")
+        debugLog("Config", "reloading from disk")
         debugLog("FileRead", "reading config.toml")
         let fm = FileManager.default
         guard fm.fileExists(atPath: fileURL.path),
             let data = try? Data(contentsOf: fileURL)
         else {
             // The config file was removed or can't be read while the app is
-            // running (external edit). Restore the current live configuration
+            // running. Restore the current live configuration
             // to disk so the app keeps a working config file.
             debugLog("Config", "⚠️ config file missing on reload — restoring current live config to disk")
             lastWritten = nil
@@ -422,9 +411,9 @@ actor ConfigManager {
                 "reloaded successfully (app_debug=\(config.debug.appDebugEnabled ?? false))"
             )
         } catch {
-            // The external edit produced an undecodable config. Keep the
-            // in-memory `config` (the live state) and persist it back so the
-            // broken edit is replaced with a working file.
+            // The file is undecodable. Keep the in-memory `config` (the live
+            // state) and persist it back so the broken file is replaced with a
+            // working one.
             debugLog("Config", "⚠️ failed to decode config on reload: \(error) — restoring current live config to disk")
             lastWritten = nil
             persist()
@@ -439,7 +428,6 @@ actor ConfigManager {
     private var lastWritten: AppConfig?
     private func persist() {
         guard config != lastWritten else { return }
-        willWriteConfig?()
         debugLog("FileWrite", "writing config.toml")
         let encoder = TOMLEncoder()
         encoder.outputFormatting = .sortedKeys
@@ -455,12 +443,14 @@ actor ConfigManager {
 
     /// Checks that `default_connection`, `utility_connection`, and `default_role`
     /// still refer to existing items. Clears invalid references and persists.
-    private func validateAndSave() {
+    /// Returns whether anything was cleared and persisted.
+    @discardableResult
+    private func validateAndSave() -> Bool {
         // Suppress validation until the config has been loaded from disk at
-        // least once. Otherwise an FSEvent-triggered `validateReferences()`
-        // that races ahead of the initial `load()` would validate against the
-        // default (empty) `AppConfig()` and persist a wiped config file.
-        guard didLoad else { return }
+        // least once. Otherwise a `validateReferences()` that races ahead of
+        // the initial `load()` would validate against the default (empty)
+        // `AppConfig()` and persist a wiped config file.
+        guard didLoad else { return false }
 
         var dirty = false
 
@@ -499,12 +489,15 @@ actor ConfigManager {
         if dirty {
             persist()
         }
+        return dirty
     }
 
-    /// Re-validates connection/role references (call after FSEvents fires for
-    /// connections or roles directories). If something was cleared, the config
-    /// is persisted automatically.
-    func validateReferences() {
+    /// Re-validates connection/role references (call after connections or
+    /// roles were reloaded). If something was cleared, the config is persisted
+    /// automatically and `true` is returned so callers can refresh their view
+    /// of it.
+    @discardableResult
+    func validateReferences() -> Bool {
         validateAndSave()
     }
 

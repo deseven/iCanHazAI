@@ -9,13 +9,13 @@ import SwiftUI
 /// connection test (listTools), naming, and a final summary.
 ///
 /// MCP management mirrors the connections pattern: this wizard creates the
-/// config file; all further editing/deletion is done by the user manually on
-/// the TOML files, picked up live via `EnvironmentWatcher`/FSEvents. There is
-/// no in-app edit or delete.
+/// config file and reports it to `ChatEngine`; further editing/deletion goes
+/// through the Configurator role or manual file edits followed by
+/// "MCP → Reinitialize MCP Servers…". There is no in-app edit or delete.
 struct MCPWizardView: View {
 
     /// Called after the wizard finishes (server saved). The view model uses
-    /// this to refresh its state (the FSEvent also triggers a reload).
+    /// this to refresh its state.
     var onFinish: (() -> Void)?
 
     /// The wizard steps, in order.
@@ -879,12 +879,13 @@ struct MCPWizardView: View {
     }
 
     /// Writes the server TOML file via `EnvironmentManager.saveMCP` and records
-    /// the saved URL for the "Reveal in Finder" link. The `EnvironmentWatcher`
-    /// FSEvent triggers `MCPManager`/`ChatEngine` reload — no manual refresh.
+    /// the saved URL for the "Reveal in Finder" link, then tells the engine to
+    /// load and configure the new server.
     private func saveServer() {
         let name = sanitizedFilename(serverName)
         let server = buildServer(name: name, includeTools: true)
         EnvironmentManager.shared.saveMCP(server)
+        Task { await ChatEngine.shared.applyConfigChange(.mcp(name)) }
         savedFileURL = EnvironmentManager.shared.mcpsURL.appendingPathComponent("\(name).toml")
     }
 }

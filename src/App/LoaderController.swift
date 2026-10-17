@@ -190,8 +190,8 @@ final class LoaderController: ObservableObject {
 
     // MARK: - Usage: Application batch started
 
-    /// A batch of external Application-resource reloads just started (FSEvents
-    /// debounce flushed). Shows a single "Application" column with an
+    /// A batch of Application-resource reloads just started (an internal
+    /// config change was applied). Shows a single "Application" column with an
     /// in-progress entry per affected resource. Ignored during startup (which
     /// drives its own entries). Keeps any existing MCPs column in place so a
     /// mixed burst can show both.

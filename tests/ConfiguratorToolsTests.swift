@@ -544,5 +544,72 @@ extension AllAppTests {
             let res = await call("check_connection", env, ["id": "openai/broken"])
             #expect(res.isError)
         }
+
+        // MARK: - Applying changes
+
+        /// Collects the `ConfigChange`s the tools report to the engine.
+        private final class ChangeRecorder: @unchecked Sendable {
+            private let lock = NSLock()
+            private var _changes: [ConfigChange] = []
+            var changes: [ConfigChange] {
+                lock.lock()
+                defer { lock.unlock() }
+                return _changes
+            }
+            func record(_ change: ConfigChange) {
+                lock.lock()
+                _changes.append(change)
+                lock.unlock()
+            }
+        }
+
+        private func callRecording(_ name: String, _ env: EnvironmentManager, _ dict: [String: String]) async
+            -> (ToolResult, [ConfigChange])
+        {
+            let recorder = ChangeRecorder()
+            let result = await ConfiguratorTools.call(
+                name: name, arguments: args(dict), callID: "c", env: env, apply: { recorder.record($0) })
+            return (result, recorder.changes)
+        }
+
+        @Test("successful writes and deletes report the matching change")
+        func reportsChanges() async throws {
+            let env = try TempEnv().env
+            let cases: [(String, [String: String], ConfigChange)] = [
+                ("write_connection", ["id": "openai/gpt", "content": "{\"model\":\"gpt-4o\"}"], .connections),
+                (
+                    "write_mcp", ["name": "Tavily", "content": "transport = \"stdio\"\ncommand = \"npx\"\n"],
+                    .mcp("Tavily")
+                ),
+                ("write_prompt", ["name": "Greeter", "content": "Hi"], .prompt("Greeter")),
+                ("write_role", ["name": "Coder", "content": "prompt = \"Greeter\"\n"], .role("Coder")),
+                ("write_config", ["content": "[general]\ndefault_role = \"Assistant\"\n"], .config),
+                ("delete_role", ["name": "Coder"], .role("Coder")),
+                ("delete_prompt", ["name": "Greeter"], .prompt("Greeter")),
+                ("delete_mcp", ["name": "Tavily"], .mcp("Tavily")),
+                ("delete_connection", ["id": "openai/gpt"], .connections),
+            ]
+            for (name, arguments, expected) in cases {
+                let (result, changes) = await callRecording(name, env, arguments)
+                #expect(!result.isError, "\(name): \(result.content)")
+                #expect(changes == [expected], "\(name)")
+            }
+        }
+
+        @Test("rejected and read-only calls report no change")
+        func reportsNoChangeOnFailure() async throws {
+            let env = try TempEnv().env
+            let invalid = await callRecording("write_connection", env, ["id": "openai/bad", "content": "{ not jsonc"])
+            #expect(invalid.0.isError)
+            #expect(invalid.1.isEmpty)
+
+            let missing = await callRecording("delete_prompt", env, ["name": "Ghost"])
+            #expect(missing.0.isError)
+            #expect(missing.1.isEmpty)
+
+            let listed = await callRecording("list_connections", env, [:])
+            #expect(!listed.0.isError)
+            #expect(listed.1.isEmpty)
+        }
     }
 }

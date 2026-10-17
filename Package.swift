@@ -8,7 +8,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/mattt/swift-toml.git", from: "2.0.0"),
-        .package(url: "https://github.com/Frizlab/FSEventsWrapper.git", from: "2.1.0"),
+
         // Pinned to piersdd's fix branch (upstream PR
         // https://github.com/modelcontextprotocol/swift-sdk/pull/221, approved
         // but not yet merged) instead of the official 0.11.0 release. It fixes
@@ -51,7 +51,6 @@ let package = Package(
             name: "iCanHazAI",
             dependencies: [
                 .product(name: "TOML", package: "swift-toml"),
-                .product(name: "FSEventsWrapper", package: "FSEventsWrapper"),
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "ProcessExit", package: "ProcessExit"),
                 .product(name: "LoginShell", package: "LoginShell"),
@@ -87,7 +86,6 @@ let package = Package(
                 .product(name: "TOML", package: "swift-toml"),
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "ProcessExit", package: "ProcessExit"),
-                .product(name: "FSEventsWrapper", package: "FSEventsWrapper"),
                 .product(name: "Differ", package: "Differ"),
                 .product(name: "Fuse", package: "fuse-swift"),
                 .product(name: "cmark-gfm", package: "swift-cmark"),

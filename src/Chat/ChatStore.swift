@@ -220,7 +220,7 @@ final class ChatStore: @unchecked Sendable {
 
     /// Writes a chat to disk and updates the cache. The file modification
     /// time is read back from disk after writing so the cache exactly
-    /// matches what FSEvents will report.
+    /// matches the file.
     func saveChat(_ chat: Chat, filename: String) {
         env.saveChat(chat, filename: filename)
         let url = env.chatsURL.appendingPathComponent(filename)
@@ -234,32 +234,6 @@ final class ChatStore: @unchecked Sendable {
     /// chats that were never persisted to disk (no file, no cache entry).
     func deleteChat(filename: String) {
         env.deleteChat(filename: filename)
-        queue.sync { removeCacheEntry(filename: filename) }
-    }
-
-    // MARK: - External change handling
-
-    /// Called when an FSEvent indicates a chat file was externally modified
-    /// or created. Reloads the chat from disk, updates the cache, and returns
-    /// the new chat so the engine can update its in-memory record if needed.
-    /// Returns nil if the file is missing or undecodable.
-    @discardableResult
-    func handleExternalChange(filename: String) -> Chat? {
-        let url = env.chatsURL.appendingPathComponent(filename)
-        let modTime = url.modificationDate ?? Date()
-        guard let chat = env.loadSingleChat(filename: filename) else {
-            return nil
-        }
-        queue.sync {
-            upsertCache(filename: filename, chat: chat, modificationTime: modTime)
-        }
-        return chat
-    }
-
-    /// Called when an FSEvent indicates a chat file was externally deleted.
-    /// Removes the cache entry.
-    func handleExternalDeletion(filename: String) {
-        debugLog("ChatStore", "handleExternalDeletion — \(filename)")
         queue.sync { removeCacheEntry(filename: filename) }
     }
 

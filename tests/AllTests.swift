@@ -8,7 +8,7 @@ import Testing
 /// in each test file), and the `.serialized` trait forces the whole suite
 /// forest to run strictly sequentially — one test, in one suite, at a time.
 ///
-/// This covers the main-app suites (chat model, ChatStore, FSEvents) — which
+/// This covers the main-app suites (chat model, ChatStore) — which
 /// each spin up their own SwiftData `ModelContainer` via `ChatStore(env:)`
 /// backed by a temp SQLite file, and SwiftData contexts aren't safe to juggle
 /// across concurrent tests — plus the in-process builtin/configurator tools
