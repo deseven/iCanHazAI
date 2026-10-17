@@ -53,7 +53,7 @@ final class ChatListView: NSView {
     private var contextVersion = 0
 
     private var openPolicy: OpenPolicy {
-        OpenPolicy(thinkingByDefault: context.expandThinking, toolsByDefault: context.expandToolUse, toggled: toggled)
+        OpenPolicy(toolsByDefault: context.expandToolUse, toggled: toggled)
     }
 
     /// Rows holding a rendered string, oldest first. Everything else keeps only
@@ -502,14 +502,14 @@ final class ChatListView: NSView {
     private func contextChanged(from old: ChatRowContext) {
         guard context != old else { return }
         contextVersion += 1
-        let thinkingChanged = old.expandThinking != context.expandThinking
+
         let toolsChanged = old.expandToolUse != context.expandToolUse
         let streamingChanged = old.isStreaming != context.isStreaming
         var invalidated = false
-        if thinkingChanged || toolsChanged || streamingChanged {
+        if toolsChanged || streamingChanged {
             for row in rows {
                 let m = row.model
-                let opens = (thinkingChanged && m.hasThinking) || (toolsChanged && !m.toolCalls.isEmpty)
+                let opens = toolsChanged && !m.toolCalls.isEmpty
                 let streams = streamingChanged && m.dependsOnStreaming
                 guard opens || streams else { continue }
                 if streams {

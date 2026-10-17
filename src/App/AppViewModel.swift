@@ -140,7 +140,6 @@ final class AppViewModel: ObservableObject {
     @Published var preferencesInterfaceScale: Double = ChatFeaturesConfig.defaultInterfaceScale
     @Published var preferencesAppDebugEnabled: Bool = false
 
-    @Published var preferencesExpandThinking: Bool = false
     @Published var preferencesExpandToolUse: Bool = false
     @Published var preferencesWebSearchProvider: String = "none"
     @Published var preferencesWebSearchToken: String = ""
@@ -254,7 +253,6 @@ final class AppViewModel: ObservableObject {
             let scale = await config.getInterfaceScale()
             let ad = await config.getAppDebugEnabled()
 
-            let et = await config.getExpandThinking()
             let eu = await config.getExpandToolUse()
             let ws = await config.getWebSearchConfig()
             let clm = await config.getChatListConfig()
@@ -266,7 +264,6 @@ final class AppViewModel: ObservableObject {
             preferencesInterfaceScale = scale
             preferencesAppDebugEnabled = ad
 
-            preferencesExpandThinking = et
             preferencesExpandToolUse = eu
             preferencesWebSearchProvider = ws.provider ?? "none"
             preferencesWebSearchToken = ws.token ?? ""
@@ -695,16 +692,6 @@ final class AppViewModel: ObservableObject {
                 self.preferencesAppDebugEnabled = newValue
                 DebugLogger.setEnabled(newValue)
                 Task { await self.config.setAppDebugEnabled(newValue) }
-            }
-        )
-    }
-
-    var bindingExpandThinking: Binding<Bool> {
-        Binding(
-            get: { self.preferencesExpandThinking },
-            set: { newValue in
-                self.preferencesExpandThinking = newValue
-                Task { await self.config.setExpandThinking(newValue) }
             }
         )
     }

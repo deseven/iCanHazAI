@@ -23,7 +23,7 @@ struct NativeChatView: View {
                 }
                 .onChange(of: store.isStreaming) { _, _ in controller.pushSnapshot() }
                 .onChange(of: store.selectedRole) { _, _ in controller.pushSnapshot() }
-                .onChange(of: store.preferencesExpandThinking) { _, _ in controller.updatePreferences() }
+
                 .onChange(of: store.preferencesExpandToolUse) { _, _ in controller.updatePreferences() }
                 .onChange(of: store.preferencesInterfaceScale) { _, _ in controller.updatePreferences() }
 
@@ -172,7 +172,7 @@ final class ChatListController: ObservableObject {
     /// The chat the list currently shows; nil while blank.
     @Published private(set) var shownChatID: String?
     private var shownState = ChatRenderState()
-    private var expandThinking = false
+
     private var expandToolUse = false
 
     init() {
@@ -201,7 +201,7 @@ final class ChatListController: ObservableObject {
     /// in place.
     func updatePreferences() {
         guard let store else { return }
-        expandThinking = store.preferencesExpandThinking
+
         expandToolUse = store.preferencesExpandToolUse
         listView.interfaceScale = ChatFeaturesConfig.normalizedInterfaceScale(store.preferencesInterfaceScale)
         listView.context = makeContext()
@@ -300,7 +300,7 @@ final class ChatListController: ObservableObject {
         context.roleAccent = RoleAccent.nsColor(for: shownState.roleAccent) ?? .controlAccentColor
         context.features = shownState.features
         context.isStreaming = shownState.isStreaming
-        context.expandThinking = expandThinking
+
         context.expandToolUse = expandToolUse
         context.attachmentsDirectory = shownChatID.map { EnvironmentManager.shared.attachmentsDirectoryURL(for: $0) }
         return context

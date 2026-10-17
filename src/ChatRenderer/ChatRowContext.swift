@@ -15,7 +15,6 @@ struct ChatRowContext: Equatable {
     var roleAccent: NSColor?
     var features = ChatRowFeatures()
     var isStreaming = false
-    var expandThinking = false
     var expandToolUse = false
     /// Where the chat's attachment files live.
     var attachmentsDirectory: URL?
@@ -46,17 +45,16 @@ enum RowEvent {
     case previewAttachment(messageID: String, filename: String)
 }
 
-/// Which collapsible blocks are open. Defaults come from the preferences, so
-/// only the blocks the user flipped are stored: changing a preference flips
-/// everything that wasn't touched.
+/// Which collapsible blocks are open. Thinking blocks are closed by default and
+/// tool blocks follow the preference, so only the blocks the user flipped are
+/// stored: changing the preference flips every tool block that wasn't touched.
 struct OpenPolicy: Sendable, Equatable {
-    var thinkingByDefault = false
     var toolsByDefault = false
     var toggled: Set<String> = []
 
     func isOpen(_ block: CollapsibleBlock) -> Bool {
         if block.forcedOpen { return true }
-        let byDefault = block.kind == .thinking ? thinkingByDefault : toolsByDefault
+        let byDefault = block.kind == .thinking ? false : toolsByDefault
         return byDefault != toggled.contains(block.key)
     }
 

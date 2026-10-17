@@ -200,32 +200,35 @@ extension AllAppTests {
             #expect(h.list.testDocumentHeight == collapsed)
         }
 
-        @Test("changing the expand preferences flips every block the user didn't touch")
-        func preferenceDefaults() {
+        @Test("thinking is open and locked while it streams alone, then collapses when the answer starts")
+        func thinkingWhileStreaming() {
             let h = Harness()
-            let thinking = ChatRendererFixtures.streamingText
-            h.list.setMessages([
-                ChatRendererFixtures.message("a", thinking: thinking),
-                ChatRendererFixtures.message("b", thinking: thinking),
-            ])
-            let collapsed = h.list.testDocumentHeight
-            h.list.testToggle("a/thinking")
-            let aOpen = h.list.testDocumentHeight
-            #expect(aOpen > collapsed)
-
-            var context = h.list.context
-            context.expandThinking = true
-            h.list.context = context
-            // b opens, a (flipped by the user) closes.
+            var m = ChatRendererFixtures.message("a", thinking: ChatRendererFixtures.streamingText)
+            h.list.setMessages([m])
             #expect(h.list.testIsOpen("a/thinking") == false)
-            #expect(h.list.testIsOpen("b/thinking") == true)
-            #expect(abs(h.list.testDocumentHeight - aOpen) < 1)
+            let collapsed = h.list.testDocumentHeight
 
-            context.expandThinking = false
-            h.list.context = context
+            h.list.context.isStreaming = true
             #expect(h.list.testIsOpen("a/thinking") == true)
-            #expect(h.list.testIsOpen("b/thinking") == false)
-            #expect(abs(h.list.testDocumentHeight - aOpen) < 1)
+            #expect(h.list.testDocumentHeight > collapsed)
+            h.list.testToggle("a/thinking")
+            #expect(h.list.testIsOpen("a/thinking") == true)
+
+            m.content = "answer"
+            h.list.update(m)
+            #expect(h.list.testIsOpen("a/thinking") == false)
+            h.list.testToggle("a/thinking")
+            #expect(h.list.testIsOpen("a/thinking") == true)
+        }
+
+        @Test("a stream that ends with only thinking leaves the block collapsed")
+        func thinkingOnlyStreamEnds() {
+            let h = Harness()
+            h.list.setMessages([ChatRendererFixtures.message("a", thinking: ChatRendererFixtures.streamingText)])
+            h.list.context.isStreaming = true
+            #expect(h.list.testIsOpen("a/thinking") == true)
+            h.list.context.isStreaming = false
+            #expect(h.list.testIsOpen("a/thinking") == false)
         }
 
         @Test("tool blocks follow their own preference")

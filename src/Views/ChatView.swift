@@ -130,26 +130,25 @@ struct ChatView: View {
             }
             .background(
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(
-                        isDropTargeted
-                            ? Color.accentColor.opacity(0.07)
-                            : Color(nsColor: .controlBackgroundColor))
+                    .fill(Color(nsColor: .controlBackgroundColor))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
-                    .stroke(
-                        isDropTargeted
-                            ? Color.accentColor.opacity(0.55)
-                            : Color(nsColor: .separatorColor),
-                        lineWidth: 1
-                    )
+                    .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
             )
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
-                guard store.selectedChatSupportsAttachments else { return false }
-                return handleDrop(providers: providers)
+        }
+        .overlay {
+            if isDropTargeted && store.selectedChatSupportsAttachments {
+                DropPlaceholder()
+                    .transition(.opacity)
             }
+        }
+        .animation(.easeInOut(duration: 0.12), value: isDropTargeted)
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            guard store.selectedChatSupportsAttachments else { return false }
+            return handleDrop(providers: providers)
         }
         .onAppear {
             restoreDraft(for: store.selectedChatID)
@@ -611,7 +610,7 @@ struct ChatView: View {
         return false
     }
 
-    /// Handles drag-and-dropped files onto the input area.
+    /// Handles drag-and-dropped files anywhere on the chat pane.
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
         var accepted = false
         for provider in providers {
@@ -629,6 +628,41 @@ struct ChatView: View {
             accepted = true
         }
         return accepted
+    }
+}
+
+// MARK: - DropPlaceholder
+
+/// Full-pane overlay shown while files are dragged over the chat, inviting
+/// the user to drop them. Purely visual: hit testing is disabled so the drag
+/// session keeps reaching the `onDrop` destination underneath.
+private struct DropPlaceholder: View {
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(.regularMaterial)
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color.accentColor.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(
+                            Color.accentColor.opacity(0.7),
+                            style: StrokeStyle(lineWidth: 2, dash: [8, 6])
+                        )
+                )
+                .padding(12)
+            VStack(spacing: 10) {
+                Image(systemName: "arrow.down.doc")
+                    .font(.system(size: 44, weight: .light))
+                    .foregroundStyle(Color.accentColor)
+                Text("Drop files to attach")
+                    .font(.title2.weight(.medium))
+                Text("They will be added to your next message")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -798,6 +832,16 @@ final class ChatInputTextView: NSTextView {
     var returnHandler: (() -> Bool)?
     /// Called whenever the text layout height changes (after layout is complete).
     var contentHeightChanged: ((CGFloat) -> Void)?
+
+    /// File drags are handled by the chat pane's drop destination (as
+    /// attachments), so the text view must not claim them and insert paths.
+    override var acceptableDragTypes: [NSPasteboard.PasteboardType] {
+        let fileTypes: Set<NSPasteboard.PasteboardType> = [
+            .fileURL, .tiff, .png, .pdf, .rtfd,
+            NSPasteboard.PasteboardType("NSFilenamesPboardType"),
+        ]
+        return super.acceptableDragTypes.filter { !fileTypes.contains($0) }
+    }
 
     // MARK: Height reporting
 

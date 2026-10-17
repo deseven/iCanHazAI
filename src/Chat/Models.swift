@@ -20,6 +20,9 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     var content: String
     /// Optional thinking/reasoning content (for thinking models).
     var thinking: String?
+    /// How long the model spent thinking, in seconds. Nil when it wasn't
+    /// measured (older chats, or no thinking).
+    var thinkingDuration: TimeInterval?
     /// Optional error text captured while streaming this assistant message.
     /// When non-nil, the message is rendered as an error block with a retry button.
     var error: String?
@@ -56,7 +59,8 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     var activeBranch: Int?
 
     init(
-        id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil, error: String? = nil,
+        id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil,
+        thinkingDuration: TimeInterval? = nil, error: String? = nil,
         timestamp: Date = Date(), connectionName: String? = nil, attachments: [Attachment]? = nil,
         toolCalls: [ToolCall]? = nil, toolResults: [ToolResult]? = nil, tokenUsage: TokenUsage? = nil,
         branches: [[ChatMessage]]? = nil, activeBranch: Int? = nil
@@ -65,6 +69,7 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         self.role = role
         self.content = content
         self.thinking = thinking
+        self.thinkingDuration = thinkingDuration
         self.error = error
         self.timestamp = timestamp
         self.connectionName = connectionName
@@ -77,7 +82,7 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, role, content, thinking, error, timestamp, connectionName
+        case id, role, content, thinking, thinkingDuration, error, timestamp, connectionName
         case attachments, toolCalls, toolResults, tokenUsage
         case branches, activeBranch
     }
@@ -93,6 +98,7 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         role = (try? c.decode(MessageRole.self, forKey: .role)) ?? .user
         content = (try? c.decode(String.self, forKey: .content)) ?? ""
         thinking = try? c.decode(String.self, forKey: .thinking)
+        thinkingDuration = try? c.decode(TimeInterval.self, forKey: .thinkingDuration)
         error = try? c.decode(String.self, forKey: .error)
         timestamp = (try? c.decode(Date.self, forKey: .timestamp)) ?? Date()
         connectionName = try? c.decode(String.self, forKey: .connectionName)
@@ -120,6 +126,7 @@ extension ChatMessage {
         role = other.role
         content = other.content
         thinking = other.thinking
+        thinkingDuration = other.thinkingDuration
         error = other.error
         timestamp = other.timestamp
         connectionName = other.connectionName

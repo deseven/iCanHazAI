@@ -41,6 +41,13 @@ extension AllAppTests {
             #expect(decoded == original)
         }
 
+        @Test("ChatMessage round-trips the thinking duration")
+        func thinkingDurationRoundTrip() throws {
+            let original = ChatMessage(role: .assistant, content: "a", thinking: "t", thinkingDuration: 3.5)
+            let decoded = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(original))
+            #expect(decoded.thinkingDuration == 3.5)
+        }
+
         @Test("ChatMessage defaults optionals to nil when absent in JSON")
         func messageDecodesSparseJSON() throws {
             // Minimal JSON a legacy/external writer might produce.
@@ -51,6 +58,7 @@ extension AllAppTests {
             #expect(msg.role == .user)
             #expect(msg.content == "hi")
             #expect(msg.thinking == nil)
+            #expect(msg.thinkingDuration == nil)
             #expect(msg.error == nil)
             #expect(msg.connectionName == nil)
             #expect(msg.attachments == nil)

@@ -285,7 +285,7 @@ extension AllAppTests {
             #expect(layout.estimate(withImage, width: 600) > layout.estimate(short, width: 600) + layout.thumbnailSide)
         }
 
-        @Test("open policy: defaults come from preferences and toggles flip them")
+        @Test("open policy: tools default from the preference, thinking is closed, toggles flip them")
         func openPolicy() {
             let m = ChatRendererFixtures.message("m", content: "x", thinking: "t")
             let r = render(m)
@@ -295,12 +295,40 @@ extension AllAppTests {
             #expect(!policy.isOpen(c))
             policy.toggled = ["m/thinking"]
             #expect(policy.isOpen(c))
-            policy.thinkingByDefault = true
-            #expect(!policy.isOpen(c))
             policy.toggled = []
-            #expect(policy.isOpen(c))
             policy.toolsByDefault = true
-            #expect(policy.mask(for: r) == [true, false])
+            #expect(!policy.isOpen(c))
+            #expect(policy.mask(for: r) == [false, false])
+        }
+
+        @Test("thinking header shows the recorded duration once it's no longer streaming")
+        func thinkingTitle() {
+            var m = ChatRendererFixtures.message("m", content: "x", thinking: "t")
+            #expect(collapsible(render(m)).title == "Thinking")
+            m.thinkingDuration = 12.4
+            #expect(collapsible(render(m)).title == "Thought for 12 seconds")
+            m.content = ""
+            #expect(collapsible(render(m, streaming: true)).title == "Thinking")
+            #expect(RenderedMessage.thinkingTitle(0.2) == "Thought for 1 second")
+            #expect(RenderedMessage.thinkingTitle(0) == "Thinking")
+            #expect(RenderedMessage.thinkingTitle(60) == "Thought for 1m")
+            #expect(RenderedMessage.thinkingTitle(125) == "Thought for 2m 5s")
+        }
+
+        @Test("thinking that streams alone is locked open; any other output releases it")
+        func thinkingLock() {
+            var m = ChatRendererFixtures.message("m", thinking: "t")
+            #expect(!collapsible(render(m), at: 0).forcedOpen)
+            let streaming = collapsible(render(m, streaming: true), at: 0)
+            #expect(streaming.forcedOpen)
+            #expect(streaming.showsSpinner)
+            #expect(OpenPolicy().isOpen(streaming))
+
+            m.content = "x"
+            #expect(!collapsible(render(m, streaming: true), at: 0).forcedOpen)
+            m.content = ""
+            m.toolCalls = [.init(id: "c", name: "t", arguments: "{}")]
+            #expect(!collapsible(render(m, streaming: true), at: 0).forcedOpen)
         }
     }
 }

@@ -72,6 +72,20 @@ actor ChatEngine {
     /// In-flight streaming tasks keyed by chat filename, used for cancellation.
     private var streamTasks: [String: Task<Void, Never>] = [:]
 
+    /// The thinking phase currently streaming into a chat's assistant message.
+    /// `base` is what the message had already accumulated before this phase.
+    private struct ThinkingTimer {
+        let messageID: UUID
+        let start: ContinuousClock.Instant
+        let base: TimeInterval
+
+        var total: TimeInterval {
+            let (s, a) = (ContinuousClock.now - start).components
+            return base + Double(s) + Double(a) / 1e18
+        }
+    }
+    private var thinkingTimers: [String: ThinkingTimer] = [:]
+
     /// CLI one-shot event sinks keyed by chat filename (then by sink id).
     /// Tapped directly from `applyChunk` (uncoalesced — the CLI sees tokens as
     /// they arrive) and completed from `finishStream`. A sink that outlives
@@ -2948,8 +2962,20 @@ actor ChatEngine {
         else { return }
         switch chunk {
         case .thinking(let text):
-            chat.updateMessage(id: leafID) { $0.thinking = ($0.thinking ?? "") + text }
+            let timer: ThinkingTimer
+            if let running = thinkingTimers[filename], running.messageID == leafID {
+                timer = running
+            } else {
+                timer = ThinkingTimer(
+                    messageID: leafID, start: .now, base: chat.message(id: leafID)?.thinkingDuration ?? 0)
+                thinkingTimers[filename] = timer
+            }
+            chat.updateMessage(id: leafID) {
+                $0.thinking = ($0.thinking ?? "") + text
+                $0.thinkingDuration = timer.total
+            }
         case .content(let text):
+            endThinking(filename: filename, leafID: leafID, in: &chat)
             chat.updateMessage(id: leafID) { $0.content += text }
             if let sinks = oneShotSinks[filename] {
                 for sink in sinks.values { sink.yield(.delta(text)) }
@@ -2961,6 +2987,7 @@ actor ChatEngine {
             // in place so the UI shows the arguments populating live. The
             // final `.toolCall` chunk (emitted at stream end) replaces this
             // entry with the authoritative, complete ToolCall.
+            endThinking(filename: filename, leafID: leafID, in: &chat)
             chat.updateMessage(id: leafID) { msg in
                 var calls = msg.toolCalls ?? []
                 while calls.count <= index { calls.append(ToolCall(id: "", name: "", arguments: "")) }
@@ -2972,6 +2999,7 @@ actor ChatEngine {
         case .toolCall(let call):
             // The final, authoritative tool call emitted at stream end.
             // Replace the entry at the matching index (or append if none).
+            endThinking(filename: filename, leafID: leafID, in: &chat)
             chat.updateMessage(id: leafID) { msg in
                 var calls = msg.toolCalls ?? []
                 if let matchIdx = calls.firstIndex(where: { $0.id == call.id && !call.id.isEmpty }) {
@@ -2998,10 +3026,20 @@ actor ChatEngine {
         scheduleCoalescedEmit()
     }
 
+    /// Closes the running thinking phase (the answer or a tool call started),
+    /// stamping the elapsed time onto the message.
+    private func endThinking(filename: String, leafID: UUID, in chat: inout Chat) {
+        guard let timer = thinkingTimers[filename] else { return }
+        thinkingTimers[filename] = nil
+        guard timer.messageID == leafID else { return }
+        chat.updateMessage(id: leafID) { $0.thinkingDuration = timer.total }
+    }
+
     /// Marks a stream as finished for the given chat, persisting the final
     /// state and clearing bookkeeping.
     private func finishStream(filename: String) {
         debugLog("Stream", "end — chat=\(filename)")
+        thinkingTimers[filename] = nil
         defer { completeOneShotSinks(filename: filename) }
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else {
             streamTasks[filename] = nil

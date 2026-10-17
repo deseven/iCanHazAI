@@ -196,7 +196,6 @@ extension AllAppTests {
                 working_directories = ["/Users/me/proj1", "/Users/me/proj2"]
 
                 [chat_behaviour]
-                expand_thinking = false
                 expand_tool_use = false
 
                 [chat_features]
@@ -236,7 +235,6 @@ extension AllAppTests {
                 default_role = "Assistant"
 
                 [chat_behaviour]
-                expand_thinking = false
                 expand_tool_use = false
 
                 [chat_features]
@@ -300,7 +298,6 @@ extension AllAppTests {
             let config = try TOMLDecoder().decode(AppConfig.self, from: Data("".utf8))
             #expect(config.general.defaultConnection == nil)
             #expect(config.general.defaultRole == nil)
-            #expect(config.chatBehaviour.expandThinking == nil)
             #expect(config.chatBehaviour.expandToolUse == nil)
             #expect(config.chatFeatures.interfaceScale == nil)
             #expect(config.debug.appDebugEnabled == nil)
@@ -317,21 +314,20 @@ extension AllAppTests {
                 """
             let config = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
             #expect(config.general.defaultRole == "Assistant")
-            #expect(config.chatBehaviour.expandThinking == nil)
+            #expect(config.chatBehaviour.expandToolUse == nil)
             #expect(config.chatFeatures.interfaceScale == nil)
             #expect(config.debug.appDebugEnabled == nil)
         }
 
         @Test("AppConfig decodes a group with missing keys, substituting defaults")
         func decodesGroupWithMissingKeys() throws {
-            // [chat_behaviour] exists but only has expand_thinking — the
-            // missing expand_tool_use must default to nil rather than throwing.
+            // [chat_behaviour] exists but has no keys (and a key of a removed
+            // preference) — expand_tool_use must default to nil rather than throwing.
             let toml = """
                 [chat_behaviour]
                 expand_thinking = true
                 """
             let config = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
-            #expect(config.chatBehaviour.expandThinking == true)
             #expect(config.chatBehaviour.expandToolUse == nil)
         }
 

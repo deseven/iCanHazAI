@@ -50,6 +50,8 @@ struct ChatRowModel: Sendable, Equatable, Identifiable {
     var role: Role
     var content: String
     var thinking: String?
+    /// Seconds spent thinking; nil when it wasn't recorded.
+    var thinkingDuration: TimeInterval?
     var error: String?
     var timestamp: Date
     var connectionName: String?
@@ -73,10 +75,16 @@ extension ChatRowModel {
         streaming && role == .assistant && !hasThinking && !hasContent && toolCalls.isEmpty && !hasError
     }
 
+    /// Thinking is the only thing that has arrived so far, and more may follow.
+    func isThinkingOnly(streaming: Bool) -> Bool {
+        streaming && role == .assistant && hasThinking && !hasContent && toolCalls.isEmpty && !hasError
+    }
+
     /// Whether what the row shows (and so its height) changes with the chat's
-    /// streaming flag: the pending spinner, and "running" tool statuses.
+    /// streaming flag: the pending spinner, the open thinking block, and "running" tool statuses.
     var dependsOnStreaming: Bool {
         guard role == .assistant else { return false }
+        if isThinkingOnly(streaming: true) { return true }
         if toolCalls.contains(where: { call in !toolResults.contains { $0.callID == call.id } }) { return true }
         return isPending(streaming: true)
     }

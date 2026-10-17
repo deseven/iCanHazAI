@@ -45,7 +45,8 @@ struct CollapsibleBlock: Sendable {
     /// Collapsed one-line argument summary of a tool call.
     let summary: String
     let status: ToolSummary.Status?
-    /// Approval is pending: the block stays open so the user sees what they approve.
+    /// The block stays open and can't be toggled: a pending approval the user must see,
+    /// or thinking that is still streaming in.
     let forcedOpen: Bool
     let approvalCallID: String?
     /// Thinking is still the only thing streaming in.
@@ -80,12 +81,14 @@ struct RenderedMessage: @unchecked Sendable {
         if m.isPending(streaming: streaming) { blocks.append(.pending) }
 
         if m.hasThinking, let thinking = m.thinking {
+            let thinkingStreams = m.isThinkingOnly(streaming: streaming)
             blocks.append(
                 .collapsible(
                     CollapsibleBlock(
-                        key: "\(m.id)/thinking", kind: .thinking, symbol: "brain", title: "Thinking", summary: "",
-                        status: nil, forcedOpen: false, approvalCallID: nil,
-                        showsSpinner: streaming && !m.hasContent && m.toolCalls.isEmpty,
+                        key: "\(m.id)/thinking", kind: .thinking, symbol: "brain",
+                        title: thinkingStreams ? "Thinking" : Self.thinkingTitle(m.thinkingDuration), summary: "",
+                        status: nil, forcedOpen: thinkingStreams, approvalCallID: nil,
+                        showsSpinner: thinkingStreams,
                         body: LazyBody {
                             [
                                 .text(
@@ -125,6 +128,15 @@ struct RenderedMessage: @unchecked Sendable {
             blocks.append(.error(MarkdownRenderer.plain(error, theme: theme, mono: false, color: .systemRed)))
         }
         return RenderedMessage(blocks: blocks)
+    }
+
+    /// "Thought for 5 seconds"; without a recorded duration just "Thinking".
+    static func thinkingTitle(_ duration: TimeInterval?) -> String {
+        guard let duration, duration > 0 else { return "Thinking" }
+        let seconds = max(1, Int(duration.rounded()))
+        if seconds < 60 { return "Thought for \(seconds) second\(seconds == 1 ? "" : "s")" }
+        let (m, s) = seconds.quotientAndRemainder(dividingBy: 60)
+        return s == 0 ? "Thought for \(m)m" : "Thought for \(m)m \(s)s"
     }
 
     private static func toolBlock(_ m: ChatRowModel, call: ChatRowModel.ToolCall, streaming: Bool, theme: Theme)

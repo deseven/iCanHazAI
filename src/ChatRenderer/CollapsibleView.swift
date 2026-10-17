@@ -114,6 +114,7 @@ final class CollapsibleView: PanelView {
         cornerRadius = theme.scaled(7)
         needsDisplay = true
 
+        chevron.isHidden = block.forcedOpen
         chevron.image = .symbol(open ? "chevron.down" : "chevron.right", size: theme.scaled(10), weight: .semibold)
         symbol.image = .symbol(block.symbol, size: theme.scaled(11))
         title.font = .systemFont(ofSize: theme.scaled(12), weight: .semibold)

@@ -188,14 +188,6 @@ private struct ChatBehaviourTab: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            PrefRow(
-                title: "Expand Thinking",
-                description: "Controls whether the Thinking blocks will be expanded by default"
-            ) {
-                Toggle("", isOn: store.bindingExpandThinking)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-            }
 
             PrefRow(
                 title: "Expand Tool Use",

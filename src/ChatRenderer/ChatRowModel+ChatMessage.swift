@@ -14,6 +14,7 @@ extension ChatRowModel {
             role: Role(rawValue: message.role.rawValue) ?? .user,
             content: message.content,
             thinking: message.thinking,
+            thinkingDuration: message.thinkingDuration,
             error: message.error,
             timestamp: message.timestamp,
             connectionName: message.connectionName,

@@ -223,7 +223,7 @@ utility_connection = "openai/gpt-4o-mini"  # for utility tasks (e.g. auto-naming
 working_directories = []                   # MRU list of recently picked directories (max 30, most recent first); managed by the app — every directory picked in the per-chat picker is moved to the front
 
 [chat_behaviour]
-expand_thinking = false                    # expand "Thinking" blocks by default in chats
+
 expand_tool_use = false                    # expand "Tool Use" blocks by default in chats
 
 [chat_features]

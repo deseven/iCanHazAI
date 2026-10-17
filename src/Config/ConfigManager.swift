@@ -78,17 +78,14 @@ struct GeneralConfig: Codable, Equatable {
     }
 }
 
-/// `[chat_behaviour]` group — default expansion of thinking / tool use blocks.
+/// `[chat_behaviour]` group — default expansion of tool use blocks.
 struct ChatBehaviourConfig: Codable, Equatable {
-    /// Whether Thinking blocks are expanded by default in the chat renderer.
-    /// Nil/missing → false.
-    var expandThinking: Bool?
     /// Whether Tool Use blocks are expanded by default in the chat renderer.
     /// Nil/missing → false.
     var expandToolUse: Bool?
 
     enum CodingKeys: String, CodingKey {
-        case expandThinking = "expand_thinking"
+
         case expandToolUse = "expand_tool_use"
     }
 }
@@ -542,10 +539,6 @@ actor ConfigManager {
         ChatFeaturesConfig.normalizedInterfaceScale(config.chatFeatures.interfaceScale)
     }
 
-    func getExpandThinking() -> Bool {
-        config.chatBehaviour.expandThinking ?? false
-    }
-
     func getExpandToolUse() -> Bool {
         config.chatBehaviour.expandToolUse ?? false
     }
@@ -596,11 +589,6 @@ actor ConfigManager {
 
     func setInterfaceScale(_ scale: Double) {
         config.chatFeatures.interfaceScale = ChatFeaturesConfig.normalizedInterfaceScale(scale)
-        persist()
-    }
-
-    func setExpandThinking(_ enabled: Bool) {
-        config.chatBehaviour.expandThinking = enabled
         persist()
     }
 
