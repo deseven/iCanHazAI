@@ -68,6 +68,7 @@ final class AppViewModel: ObservableObject {
                 showRolePicker = false
                 showWorkdirPicker = false
                 showMCPPicker = false
+                showConnectionPicker = false
                 pendingEditMessageID = nil
                 pendingDeleteMessageID = nil
                 pendingDenyToolCallID = nil
@@ -152,6 +153,8 @@ final class AppViewModel: ObservableObject {
     @Published var showWorkdirPicker: Bool = false
     /// Whether the MCP picker sheet is currently shown.
     @Published var showMCPPicker: Bool = false
+    /// Whether the connection (model) picker sheet is currently shown.
+    @Published var showConnectionPicker: Bool = false
     /// Monotonic counter bumped on every MCP configuration state change, so
     /// views displaying live MCP tool lists know when to refetch.
     @Published var mcpConfigurationVersion: Int = 0
@@ -1111,9 +1114,23 @@ final class AppViewModel: ObservableObject {
         return chat.connection
     }
 
-    /// Whether the connection picker should be shown for the selected chat.
-    var selectedChatConnectionPickerVisible: Bool {
+    /// Whether the user may change the connection for the selected chat.
+    var selectedChatConnectionPickerEnabled: Bool {
         selectedRole?.connectionOverrideAllowed ?? false
+    }
+
+    /// The connection currently in effect for the selected chat, if it resolves.
+    var selectedChatConnection: Connection? {
+        guard let id = selectedChatConnectionID else { return nil }
+        return connections.first { $0.id == id }
+    }
+
+    /// Whether the connection control should be shown in the chat toolbar:
+    /// always when overrides are allowed, otherwise (display only) when the
+    /// role's connection resolves.
+    var selectedChatConnectionControlVisible: Bool {
+        guard selectedRole != nil else { return false }
+        return selectedChatConnectionPickerEnabled || selectedChatConnection != nil
     }
 
     /// The effective prompt name for the selected chat (override when allowed,

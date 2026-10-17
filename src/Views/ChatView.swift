@@ -105,6 +105,17 @@ struct ChatView: View {
                 }
             )
         }
+        .sheet(isPresented: $store.showConnectionPicker) {
+            ConnectionPickerView(
+                connections: store.connections,
+                currentID: store.selectedChatConnectionID,
+                onCancel: { store.showConnectionPicker = false },
+                onPick: { connection in
+                    store.setConnection(connection.id)
+                    store.showConnectionPicker = false
+                }
+            )
+        }
         .sheet(isPresented: $store.showMCPPicker) {
             MCPPickerView(
                 servers: store.mcps,
@@ -123,8 +134,10 @@ struct ChatView: View {
     /// when the inspector panel opens — unlike toolbar items which span the full
     /// titlebar width regardless of the inspector.
     ///
-    /// The connection picker, prompt picker, working-directory picker, and MCP
-    /// picker are shown only when the chat's role allows the corresponding
+    /// The model (connection) control is always shown; it's clickable only
+    /// when the role allows a connection override. The prompt picker,
+    /// working-directory picker, and MCP picker are shown only when the
+    /// chat's role allows the corresponding
     /// override. The MCP control is hidden entirely when no custom MCP servers
     /// are configured; without override permission it only displays the
     /// role's selection (and hides when that's empty).
@@ -134,23 +147,6 @@ struct ChatView: View {
 
         var body: some View {
             HStack(spacing: 8) {
-                if store.selectedChatConnectionPickerVisible {
-                    Picker(
-                        "Connection",
-                        selection: Binding(
-                            get: { store.selectedChatConnectionID ?? "" },
-                            set: { store.setConnection($0) }
-                        )
-                    ) {
-                        Text("No connection").tag("")
-                        ForEach(store.connections) { connection in
-                            Text(connection.displayName).tag(connection.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 220)
-                    .disabled(store.isStreaming)
-                }
 
                 if store.selectedChatPromptPickerVisible {
                     Picker(
@@ -170,11 +166,29 @@ struct ChatView: View {
                     .disabled(store.isStreaming)
                 }
 
-                // The workdir and MCP controls share the same look: an icon
-                // plus tag(s), white while the value can be (re)set via a
+                // The model, workdir and MCP controls share the same look: an
+                // icon plus tag(s), white while the value can be (re)set via a
                 // picker, grey when it's fixed. Red marks a missing required
                 // directory. `allowsHitTesting` is used instead of `disabled`
                 // so the colors aren't dimmed.
+                if store.selectedChatConnectionControlVisible {
+                    Button {
+                        store.showConnectionPicker = true
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "cpu")
+                            toolbarTag(store.selectedChatConnection?.displayName ?? "No connection")
+                        }
+                        .font(.callout)
+                        .lineLimit(1)
+                        .foregroundStyle(store.selectedChatConnectionPickerEnabled ? Color.primary : Color.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .fixedSize()
+                    .help(connectionHelp)
+                    .allowsHitTesting(store.selectedChatConnectionPickerEnabled && !store.isStreaming)
+                }
+
                 if store.selectedChatWorkdirPickerVisible {
                     Button {
                         store.showWorkdirPicker = true
@@ -249,7 +263,7 @@ struct ChatView: View {
             .frame(height: 36)
         }
 
-        /// A grey-capsule tag used by the workdir and MCP toolbar controls.
+        /// A grey-capsule tag used by the model, workdir and MCP toolbar controls.
         private func toolbarTag(_ text: String) -> some View {
             Text(text)
                 .padding(.horizontal, 5)
@@ -277,6 +291,14 @@ struct ChatView: View {
         /// by the role.
         private var mcpColor: Color {
             store.selectedChatMCPPickerEnabled ? .primary : .secondary
+        }
+
+        private var connectionHelp: String {
+            let model = store.selectedChatConnection.map { " (\($0.model))" } ?? ""
+            if store.selectedChatConnectionPickerEnabled {
+                return "Model used for this chat" + model
+            }
+            return "Model (set by role)" + model
         }
 
         private var mcpHelp: String {

@@ -1630,7 +1630,7 @@ enum ConnectionProvider: String, Codable {
     case anthropic
 }
 
-struct Connection: Identifiable, Equatable, @unchecked Sendable {
+struct Connection: Identifiable, Hashable, @unchecked Sendable {
     var id: String { "\(provider.rawValue)/\(name)" }
     let provider: ConnectionProvider
     let name: String
@@ -1708,6 +1708,10 @@ struct Connection: Identifiable, Equatable, @unchecked Sendable {
 
     /// Display name shown in the UI.
     var displayName: String { name }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
 }
 
 /// Raw structure decoded from a connection `.jsonc` file.
