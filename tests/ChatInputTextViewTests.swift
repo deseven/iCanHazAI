@@ -3,107 +3,177 @@ import Testing
 
 @testable import iCanHazAI
 
-/// Regression tests for [`ChatInputTextView`](src/Views/ChatView.swift)
-/// container sizing: the text container width must follow the view's frame on
-/// every resize, including programmatic ones (e.g. the window frame being
-/// restored to a larger size at launch). NSTextView hit-tests within its text
-/// container, so a stale narrower container left the right part of the empty
-/// input unclickable until the first text change resynced it.
+/// Tests for [`ChatInputTextView`](src/ChatInput/ChatInputTextView.swift):
+/// height measurement (which drives how tall the input bar grows) and the
+/// Return-key policy.
 extension AllAppTests {
 
-    @Suite("Chat input text view sizing")
+    @Suite("Chat input text view")
     @MainActor
     struct ChatInputTextViewTests {
 
-        /// Mirrors the production setup in `ChatInputEditor.makeNSView`.
-        private func makeView() -> ChatInputTextView {
+        private func makeView(width: CGFloat = 300) -> ChatInputTextView {
             let tv = ChatInputTextView()
-            tv.textContainerInset = NSSize(width: 4, height: 4)
-            tv.textContainer?.widthTracksTextView = false
-            tv.textContainer?.heightTracksTextView = false
+            tv.setFrameSize(NSSize(width: width, height: ChatInputTextView.lineHeight))
             return tv
         }
 
-        @Test("container width tracks frame width on programmatic resize")
-        func containerTracksFrameWidth() {
-            let tv = makeView()
-            tv.setFrameSize(NSSize(width: 300, height: 25))
-            #expect(tv.textContainer?.size.width == 292)
-            // Simulates the window being restored to a larger frame after launch.
-            tv.setFrameSize(NSSize(width: 900, height: 25))
-            #expect(tv.textContainer?.size.width == 892)
+        private var oneLine: CGFloat { ChatInputTextView.lineHeight }
+        private var lineFragment: CGFloat { ChatInputTextView.lineHeight - ChatInputTextView.insets.height * 2 }
+
+        private func keyEvent(keyCode: UInt16, characters: String, modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: 0,
+                context: nil, characters: characters, charactersIgnoringModifiers: characters,
+                isARepeat: false, keyCode: keyCode)!
         }
 
-        @Test("container width never goes negative")
-        func containerWidthClamped() {
-            let tv = makeView()
-            tv.setFrameSize(NSSize(width: 4, height: 25))
-            #expect(tv.textContainer?.size.width == 0)
+        // MARK: Height
+
+        @Test("an empty field is one line tall")
+        func emptyIsOneLine() {
+            #expect(makeView().contentHeight == oneLine)
         }
 
-        @Test("container height stays unbounded for manual height management")
-        func containerHeightUnbounded() {
+        @Test("a single line of text is one line tall")
+        func singleLine() {
             let tv = makeView()
-            tv.setFrameSize(NSSize(width: 300, height: 25))
-            #expect(tv.textContainer?.size.height == CGFloat.greatestFiniteMagnitude)
+            tv.string = "hello"
+            #expect(tv.contentHeight == oneLine)
         }
 
-        @Test("reported height grows with line count")
-        func reportedHeightGrowsWithLines() {
+        @Test("height grows by one line fragment per line")
+        func growsPerLine() {
             let tv = makeView()
-            tv.setFrameSize(NSSize(width: 300, height: 25))
-            var oneLine: CGFloat = 0
-            tv.contentHeightChanged = { oneLine = $0 }
-            tv.string = "a"
-            tv.reportContentHeight()
-            var fourLines: CGFloat = 0
-            tv.contentHeightChanged = { fourLines = $0 }
             tv.string = "a\nb\nc\nd"
-            tv.reportContentHeight()
-            #expect(oneLine > 0)
-            // The growth must be exactly three line fragments (the insets are
-            // counted once in both measurements). ±1 tolerance for the ceil
-            // rounding of the fractional line height.
-            let font = tv.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
-            let lineHeight = tv.layoutManager?.defaultLineHeight(for: font) ?? 0
-            #expect(lineHeight > 0)
-            #expect(abs((fourLines - oneLine) - 3 * lineHeight) <= 1)
+            #expect(abs(tv.contentHeight - (oneLine + 3 * lineFragment)) <= 1)
         }
 
-        /// The self-heal path in `ChatInputEditor.updateNSView` relies on
-        /// `reportContentHeight` returning the full content height even when no
-        /// text change happened — e.g. after the SwiftUI-side editor height was
-        /// reset to one line while multi-line text stayed.
-        @Test("re-reporting without a text change still measures full content")
-        func reReportWithoutTextChange() {
+        @Test("a trailing newline counts as a new, empty line")
+        func trailingNewline() {
             let tv = makeView()
-            tv.setFrameSize(NSSize(width: 300, height: 25))
-            tv.string = "a\nb\nc\nd"
-            var reported: [CGFloat] = []
-            tv.contentHeightChanged = { reported.append($0) }
-            tv.reportContentHeight()
-            // Simulate the collapsed-editor state: the view shows one line while
-            // the text holds four. A re-report must produce the same full height.
-            tv.setFrameSize(NSSize(width: 300, height: reported[0] / 4))
-            tv.reportContentHeight()
-            #expect(reported.count == 2)
-            #expect(reported[0] == reported[1])
-            #expect(tv.frame.height == reported[1])
+            tv.string = "a\n"
+            #expect(abs(tv.contentHeight - (oneLine + lineFragment)) <= 1)
         }
 
-        @Test("width change schedules a content height re-report")
-        func widthChangeSchedulesReReport() async {
+        @Test("long text wraps at the view width")
+        func wraps() {
+            let tv = makeView(width: 120)
+            tv.string = String(repeating: "word ", count: 40)
+            #expect(tv.contentHeight > oneLine + 3 * lineFragment)
+        }
+
+        @Test("narrowing the view re-wraps the text")
+        func rewrapsOnResize() {
+            let tv = makeView(width: 900)
+            tv.string = String(repeating: "word ", count: 40)
+            let wide = tv.contentHeight
+            tv.setFrameSize(NSSize(width: 150, height: tv.frame.height))
+            #expect(tv.contentHeight > wide)
+        }
+
+        @Test("without a width the measurement falls back to one line")
+        func zeroWidthFallback() {
+            let tv = ChatInputTextView()
+            tv.string = String(repeating: "word ", count: 40)
+            #expect(tv.contentHeight == oneLine)
+        }
+
+        @Test("blank text is detected without copying the string")
+        func nonBlankDetection() {
             let tv = makeView()
-            tv.setFrameSize(NSSize(width: 900, height: 25))
-            tv.string = String(repeating: "w", count: 200)
-            // Flush the async re-report scheduled by the width sync above.
-            try? await Task.sleep(for: .milliseconds(100))
-            await confirmation("height re-reported after width change") { confirm in
-                tv.contentHeightChanged = { _ in confirm() }
-                tv.setFrameSize(NSSize(width: 100, height: 25))
-                // The re-report is dispatched asynchronously from setFrameSize.
-                try? await Task.sleep(for: .milliseconds(100))
+            #expect(!tv.hasNonBlankText)
+            tv.string = " \n\t  "
+            #expect(!tv.hasNonBlankText)
+            tv.string = " \n x "
+            #expect(tv.hasNonBlankText)
+        }
+
+        // MARK: Keys
+
+        @Test("Return sends")
+        func returnSends() {
+            let tv = makeView()
+            var sent = 0
+            tv.returnHandler = {
+                sent += 1
+                return true
             }
+            tv.keyDown(with: keyEvent(keyCode: 36, characters: "\r"))
+            #expect(sent == 1)
+            #expect(tv.string.isEmpty)
+        }
+
+        @Test("keypad Enter sends")
+        func keypadEnterSends() {
+            let tv = makeView()
+            var sent = 0
+            tv.returnHandler = {
+                sent += 1
+                return true
+            }
+            tv.keyDown(with: keyEvent(keyCode: 76, characters: "\u{3}"))
+            #expect(sent == 1)
+        }
+
+        @Test("Shift+Return does not send")
+        func shiftReturnDoesNotSend() {
+            let tv = makeView()
+            var sent = 0
+            tv.returnHandler = {
+                sent += 1
+                return true
+            }
+            tv.keyDown(with: keyEvent(keyCode: 36, characters: "\r", modifiers: .shift))
+            #expect(sent == 0)
+        }
+
+        @Test("Return while an input method is composing does not send")
+        func returnDuringCompositionDoesNotSend() {
+            let tv = makeView()
+            var sent = 0
+            tv.returnHandler = {
+                sent += 1
+                return true
+            }
+            tv.setMarkedText(
+                "に", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: 0, length: 0))
+            #expect(tv.hasMarkedText())
+            tv.keyDown(with: keyEvent(keyCode: 36, characters: "\r"))
+            #expect(sent == 0)
+        }
+
+        @Test("a handler that declines leaves Return to the text view")
+        func declinedReturnFallsThrough() {
+            let tv = makeView()
+            var asked = 0
+            tv.returnHandler = {
+                asked += 1
+                return false
+            }
+            tv.keyDown(with: keyEvent(keyCode: 36, characters: "\r"))
+            #expect(asked == 1)
+        }
+
+        // MARK: Paste
+
+        @Test("paste is offered to the attachment handler first")
+        func pasteOffered() {
+            let tv = makeView()
+            var offered = 0
+            tv.attachmentPasteHandler = {
+                offered += 1
+                return true
+            }
+            tv.paste(nil)
+            #expect(offered == 1)
+        }
+
+        @Test("file drags are left to the chat pane")
+        func fileDragsRejected() {
+            let types = makeView().acceptableDragTypes
+            #expect(!types.contains(.fileURL))
+            #expect(!types.contains(.tiff))
         }
     }
 }

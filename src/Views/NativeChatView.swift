@@ -3,56 +3,58 @@
 
 import SwiftUI
 
-/// The chat area: a persistent `ChatListView` fed by `ChatListController`.
+/// The chat area: a persistent `ChatListView` fed by `ChatListController`,
+/// with the message input below it, both hosted in one `ChatPaneView`.
 /// The list is kept alive across chat switches (held by the controller), so
 /// switching chats is just a new snapshot.
 struct NativeChatView: View {
     @EnvironmentObject var store: AppViewModel
     @StateObject private var controller = ChatListController()
+    let input: ChatInputController
 
     var body: some View {
-        ZStack {
-            NativeChatRepresentable(controller: controller)
-                .onAppear { controller.bind(store: store) }
-                .onDisappear { controller.unbind() }
-                .onChange(of: store.selectedChatID) { _, newID in
-                    debugLog("Chat", "selection changed → \(newID ?? "nil")")
-                    if store.treeOverviewOpen { store.closeTreeOverview() }
-                    if newID == nil { controller.unload() }
-                    controller.pushSnapshot()
-                }
-                .onChange(of: store.isStreaming) { _, _ in controller.pushSnapshot() }
-                .onChange(of: store.selectedRole) { _, _ in controller.pushSnapshot() }
+        // The selected chat is still being read from disk or rendered: the
+        // list would show the previous chat (or a half-built one) until
+        // its snapshot has been applied.
+        let loading =
+            store.selectedChatID.map { id in
+                store.selectedChatItem?.chat == nil || controller.shownChatID != id
+            } ?? false
 
-                .onChange(of: store.preferencesExpandToolUse) { _, _ in controller.updatePreferences() }
-                .onChange(of: store.preferencesInterfaceScale) { _, _ in controller.updatePreferences() }
-
-            // The selected chat is still being read from disk or rendered: the
-            // list would show the previous chat (or a half-built one) until
-            // its snapshot has been applied.
-            if let id = store.selectedChatID, store.selectedChatItem?.chat == nil || controller.shownChatID != id {
-                Color(nsColor: .windowBackgroundColor)
-                ProgressView()
-                    .controlSize(.large)
-            }
-
-            if let content = controller.treeOverview {
-                TreeOverviewView(
-                    content: content,
-                    roleAccent: RoleAccent.color(for: store.selectedRole?.config.accent),
-                    onSelect: { store.gotoMessage(messageID: $0) },
-                    onClose: { store.closeTreeOverview() }
-                )
-            }
+        NativeChatRepresentable(
+            controller: controller,
+            input: input,
+            loading: loading,
+            treeOverview: controller.treeOverview.map { content in
+                AnyView(
+                    TreeOverviewView(
+                        content: content,
+                        roleAccent: RoleAccent.color(for: store.selectedRole?.config.accent),
+                        onSelect: { store.gotoMessage(messageID: $0) },
+                        onClose: { store.closeTreeOverview() }
+                    ))
+            },
+            searchVisible: controller.searchVisible && controller.treeOverview == nil
+        )
+        .onAppear {
+            controller.bind(store: store)
+            input.bind(store: store)
         }
-        .overlay(alignment: .topTrailing) {
-            if controller.searchVisible && controller.treeOverview == nil {
-                ChatSearchBar(controller: controller)
-                    .padding(.top, 10)
-                    .padding(.trailing, 18)
-                    .transition(.opacity)
-            }
+        .onDisappear {
+            controller.unbind()
+            input.unbind()
         }
+        .onChange(of: store.selectedChatID) { _, newID in
+            debugLog("Chat", "selection changed → \(newID ?? "nil")")
+            if store.treeOverviewOpen { store.closeTreeOverview() }
+            if newID == nil { controller.unload() }
+            controller.pushSnapshot()
+        }
+        .onChange(of: store.isStreaming) { _, _ in controller.pushSnapshot() }
+        .onChange(of: store.selectedRole) { _, _ in controller.pushSnapshot() }
+
+        .onChange(of: store.preferencesExpandToolUse) { _, _ in controller.updatePreferences() }
+        .onChange(of: store.preferencesInterfaceScale) { _, _ in controller.updatePreferences() }
     }
 }
 
@@ -130,12 +132,20 @@ private struct ChatSearchBar: View {
 
 private struct NativeChatRepresentable: NSViewRepresentable {
     let controller: ChatListController
+    let input: ChatInputController
+    let loading: Bool
+    let treeOverview: AnyView?
+    let searchVisible: Bool
 
-    func makeNSView(context: Context) -> ChatListView {
-        controller.listView
+    func makeNSView(context: Context) -> ChatPaneView {
+        ChatPaneView(listView: controller.listView, inputBar: input.bar)
     }
 
-    func updateNSView(_ nsView: ChatListView, context: Context) {}
+    func updateNSView(_ pane: ChatPaneView, context: Context) {
+        pane.setLoading(loading)
+        pane.setTreeOverview(treeOverview)
+        pane.setSearchBar(searchVisible ? AnyView(ChatSearchBar(controller: controller)) : nil)
+    }
 }
 
 /// Feeds the list and routes what the user does in it to `AppViewModel`.
