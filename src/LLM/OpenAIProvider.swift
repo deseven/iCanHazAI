@@ -72,6 +72,8 @@ struct OpenAIProvider: LLMProvider {
             }
         }
 
+        Self.applyReasoning(to: &body, model: model)
+
         if let params = model.requestParameters {
             for (key, value) in params {
                 body[key] = value.anyValue
@@ -85,6 +87,36 @@ struct OpenAIProvider: LLMProvider {
             body["stream_options"] = ["include_usage": true]
         }
         return body
+    }
+
+    /// Translates the effective reasoning setting into each provider's
+    /// dialect. Nothing is sent when the setting is nil or the model doesn't
+    /// reason, so the provider default applies.
+    static func applyReasoning(to body: inout [String: Any], model: ResolvedModel) {
+        guard let setting = model.reasoning, model.capabilities.reasoning.supported else { return }
+        let off = setting == ReasoningSetting.off
+        let level = (off || setting == ReasoningSetting.on) ? nil : setting
+        switch model.provider {
+        case .openai:
+            if off {
+                body["reasoning_effort"] = "none"
+            } else if let level {
+                body["reasoning_effort"] = level
+            }
+        case .deepseek:
+            body["thinking"] = ["type": off ? "disabled" : "enabled"]
+            if let level { body["reasoning_effort"] = level }
+        case .openrouter:
+            if off {
+                body["reasoning"] = ["enabled": false]
+            } else if let level {
+                body["reasoning"] = ["effort": level]
+            } else {
+                body["reasoning"] = ["enabled": true]
+            }
+        case .anthropic:
+            break
+        }
     }
 
     // MARK: - Message mapping

@@ -37,6 +37,20 @@ extension AllAppTests {
             #expect(stored[0].isUsed == false)
         }
 
+        @Test("reasoning flags survive the cache, on insert and on update")
+        func reasoningFlagsRoundTrip() {
+            let store = ModelCatalogStore()
+            let full = ReasoningCapability(
+                supported: true, levels: ["low", "high"], defaultLevel: nil, canDisable: true, budgetOnly: true)
+            store.upsert([model(.anthropic, "a", reasoning: full)], now: t0)
+            #expect(store.allModels()[0].model.capabilities.reasoning == full)
+            let plain = ReasoningCapability(supported: true, levels: ["low", "high"], defaultLevel: nil)
+            store.upsert([model(.anthropic, "a", reasoning: plain)], now: t0)
+            let updated = store.allModels()[0].model.capabilities.reasoning
+            #expect(updated.canDisable == false)
+            #expect(updated.budgetOnly == false)
+        }
+
         @Test("upsert updates capabilities and keeps the used flag")
         func upsertKeepsUsed() {
             let store = ModelCatalogStore()

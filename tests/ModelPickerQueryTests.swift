@@ -65,6 +65,42 @@ extension AllAppTests {
             #expect(result.contains { $0.id.name == "claude-sonnet-5-5" })
         }
 
+        @Test("aliases and dots work like the full name and the colon")
+        func aliases() {
+            for prefix in ["or.", "OR.", "openrouter.", "or:", "openrouter:"] {
+                let q = ModelPickerQuery(prefix + "llama")
+                #expect(q.provider == .openrouter, "\(prefix)")
+                #expect(q.text == "llama", "\(prefix)")
+            }
+            #expect(ModelPickerQuery("oa.gpt").provider == .openai)
+            #expect(ModelPickerQuery("an.claude").provider == .anthropic)
+            #expect(ModelPickerQuery("ds.flash").provider == .deepseek)
+            #expect(ModelPickerQuery("deepseek.flash").provider == .deepseek)
+        }
+
+        @Test("the prefix only pre-filters and never takes part in the fuzzy match")
+        func prefixIsNotFuzzy() {
+            let result = ModelPickerQuery("an.claude").filter(sample)
+            #expect(result.map(\.id.description) == ["anthropic:claude-sonnet-5-5"])
+            #expect(ModelPickerQuery("or.").filter(sample).count == 2)
+        }
+
+        @Test("a dot inside a model name is not a provider prefix")
+        func dotsInNames() {
+            for text in ["gpt-5.2", "claude-3.5", "x.llama", "orx.llama"] {
+                let q = ModelPickerQuery(text)
+                #expect(q.provider == nil, "\(text)")
+                #expect(q.text == text, "\(text)")
+            }
+        }
+
+        @Test("server search works through an alias too")
+        func aliasServerSearch() {
+            #expect(ModelPickerQuery("or.ll").openRouterSearchText == "ll")
+            #expect(ModelPickerQuery("or.l").openRouterSearchText == nil)
+            #expect(ModelPickerQuery("an.claude").openRouterSearchText == nil)
+        }
+
         @Test("server search starts for openrouter: with at least two characters")
         func serverSearchTrigger() {
             #expect(ModelPickerQuery("openrouter:ll").openRouterSearchText == "ll")

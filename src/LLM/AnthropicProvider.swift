@@ -104,6 +104,8 @@ struct AnthropicProvider: LLMProvider {
             }
         }
 
+        Self.applyReasoning(to: &body, model: model, messages: conversationMessages)
+
         if let params = model.requestParameters {
             for (key, value) in params {
                 body[key] = value.anyValue
@@ -112,6 +114,38 @@ struct AnthropicProvider: LLMProvider {
 
         if stream { body["stream"] = true }
         return body
+    }
+
+    /// Smallest and largest manual thinking budgets for models that don't
+    /// support adaptive thinking.
+    private static let minThinkingBudget = 1024
+    private static let maxThinkingBudget = 16_000
+
+    /// Translates the effective reasoning setting. `display: summarized` is
+    /// always sent with thinking on: newer models default to `omitted`, which
+    /// returns empty thinking blocks.
+    static func applyReasoning(to body: inout [String: Any], model: ResolvedModel, messages: [ChatMessage]) {
+        let capability = model.capabilities.reasoning
+        guard let setting = model.reasoning, capability.supported else { return }
+        if setting == ReasoningSetting.off {
+            body["thinking"] = ["type": "disabled"]
+            return
+        }
+        let level = setting == ReasoningSetting.on ? nil : setting
+        guard capability.budgetOnly else {
+            body["thinking"] = ["type": "adaptive", "display": "summarized"]
+            if let level { body["output_config"] = ["effort": level] }
+            return
+        }
+        // Manual-budget thinking requires the assistant's thinking blocks to be
+        // passed back during a tool-use turn. Those aren't stored with the
+        // chat, so thinking is only enabled when the request starts a turn.
+        guard messages.last?.role != .tool else { return }
+        let maxTokens = body["max_tokens"] as? Int ?? fallbackMaxTokens
+        let budget = min(maxThinkingBudget, maxTokens / 2)
+        guard budget >= minThinkingBudget else { return }
+        body["thinking"] = ["type": "enabled", "budget_tokens": budget, "display": "summarized"] as [String: Any]
+        if let level, !capability.effortLevels.isEmpty { body["output_config"] = ["effort": level] }
     }
 
     // MARK: - Message mapping

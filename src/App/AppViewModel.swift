@@ -56,6 +56,9 @@ final class AppViewModel: ObservableObject {
     @Published var prompts: [Prompt] = []
 
     @Published var providers: [ConfiguredProvider] = []
+    /// Whether the first `.providersChanged` event has arrived; until then an
+    /// empty `providers` means "not known yet", not "none configured".
+    private var providersLoaded = false
     @Published var models: [CatalogModel] = []
     @Published var mcps: [MCPServer] = []
     @Published var selectedChatID: String? {
@@ -195,6 +198,9 @@ final class AppViewModel: ObservableObject {
     /// `provider:model-id` strings; nil means "No model".
     @Published var preferencesDefaultModel: String?
     @Published var preferencesUtilityModel: String?
+    /// Whether `loadPreferences` has completed at least once, so the model
+    /// preferences above are real values rather than initial nils.
+    private var preferencesLoaded = false
 
     @Published var preferencesInterfaceScale: Double = ChatFeaturesConfig.defaultInterfaceScale
     @Published var preferencesAppDebugEnabled: Bool = false
@@ -264,11 +270,11 @@ final class AppViewModel: ObservableObject {
     // MARK: - Sheets
 
     /// Shows `sheet` over the main window, replacing the sheet that is showing
-    /// (only one at a time). The one exception is a blocking sheet — the
-    /// no-provider wizard — which nothing else may displace.
+    /// (only one at a time). While onboarding is active only its own flow
+    /// (the onboarding sheet, provider wizard and model pickers) may be shown.
     func presentSheet(_ sheet: MainSheet) {
         guard activeSheet != sheet else { return }
-        if let current = activeSheet, current.isBlocking, !sheet.isBlocking { return }
+        if onboardingActive, !sheet.isOnboardingFlow { return }
         activeSheet = sheet
     }
 
@@ -278,9 +284,73 @@ final class AppViewModel: ObservableObject {
         if activeSheet == sheet { activeSheet = nil }
     }
 
-    /// Closes the showing sheet, unless it's blocking.
+    /// Closes the showing sheet, unless onboarding is active.
     func dismissActiveSheet() {
-        if activeSheet?.isBlocking == false { activeSheet = nil }
+        if !onboardingActive { activeSheet = nil }
+    }
+
+    /// The binding the main window's `.sheet(item:)` uses. SwiftUI-initiated
+    /// dismissals (Esc, a dialog's own dismiss) while onboarding is active
+    /// land back on the onboarding sheet instead of closing it.
+    var sheetBinding: Binding<MainSheet?> {
+        Binding(
+            get: { self.activeSheet },
+            set: { newValue in
+                if newValue == nil, self.onboardingActive {
+                    if self.activeSheet != .onboarding { self.activeSheet = .onboarding }
+                } else {
+                    self.activeSheet = newValue
+                }
+            })
+    }
+
+    // MARK: - Onboarding
+
+    /// True from the moment a requirement is found unmet until the onboarding
+    /// sheet has faded out after all of them are met. Blocks every sheet
+    /// outside the onboarding flow (see `presentSheet`) and the menu commands.
+    @Published private(set) var onboardingActive = false
+
+    /// Live state of the three onboarding requirements.
+    var onboardingStatus: OnboardingStatus {
+        OnboardingStatus(
+            providerCount: providers.count,
+            defaultModel: preferencesDefaultModel,
+            utilityModel: preferencesUtilityModel)
+    }
+
+    /// Raises the onboarding sheet over whatever is showing when a requirement
+    /// is unmet. Called whenever the inputs may have changed (providers
+    /// loaded, preferences reloaded); a no-op until both have been loaded once,
+    /// so startup doesn't flash it, and while it is already active.
+    private func updateOnboarding() {
+        guard providersLoaded, preferencesLoaded, !onboardingActive else { return }
+        guard !onboardingStatus.isComplete else { return }
+        debugLog("Onboarding", "requirements unmet — showing onboarding: \(onboardingStatus)")
+        onboardingActive = true
+        activeSheet = .onboarding
+    }
+
+    /// Called by the onboarding sheet once it has faded out with everything
+    /// set up. Restores the normal UI.
+    func finishOnboarding() {
+        guard onboardingActive, onboardingStatus.isComplete else { return }
+        onboardingActive = false
+        if activeSheet == .onboarding { activeSheet = nil }
+    }
+
+    /// The provider wizard finished or was cancelled.
+    func closeProviderWizard() {
+        if onboardingActive {
+            activeSheet = .onboarding
+        } else {
+            dismissSheet(.providerWizard)
+        }
+    }
+
+    /// Where a general-model picker returns to when done.
+    private var settingsPickerReturnSheet: MainSheet {
+        onboardingActive ? .onboarding : .preferences
     }
 
     private func setSheet(_ sheet: MainSheet, shown: Bool) {
@@ -289,8 +359,10 @@ final class AppViewModel: ObservableObject {
 
     /// Brings the main window forward (creating it if needed) and shows `sheet`
     /// in it. This is how the menu items open Preferences and the wizards.
+    /// Ignored while onboarding is active, which owns the wizard and pickers.
     func presentSheetInMainWindow(_ sheet: MainSheet) {
         MainWindowController.shared.reveal()
+        guard !onboardingActive else { return }
         presentSheet(sheet)
     }
 
@@ -375,6 +447,8 @@ final class AppViewModel: ObservableObject {
             preferencesDefaultRole = dr
             preferencesDefaultModel = dm
             preferencesUtilityModel = um
+            preferencesLoaded = true
+            updateOnboarding()
             workingDirectories = wd
 
             preferencesInterfaceScale = scale
@@ -781,14 +855,15 @@ final class AppViewModel: ObservableObject {
         return models.first { $0.id == id }?.displayName ?? raw
     }
 
-    /// Hides Preferences and shows the model picker for a general model setting.
+    /// Hides Preferences (or onboarding) and shows the model picker for a
+    /// general model setting.
     func pickSettingsModel(_ setting: ModelSetting) {
         presentSheet(.settingsModelPicker(setting))
     }
 
-    /// Stores the picked model (nil clears it) and returns to Preferences.
-    func settingsModelPicked(_ setting: ModelSetting, _ id: ModelID?) {
-        let value = id?.description
+    /// Stores the picked model and returns to Preferences (or onboarding).
+    func settingsModelPicked(_ setting: ModelSetting, _ id: ModelID) {
+        let value = id.description
         switch setting {
         case .defaultModel:
             preferencesDefaultModel = value
@@ -797,8 +872,13 @@ final class AppViewModel: ObservableObject {
             preferencesUtilityModel = value
             Task { await config.setUtilityModel(value) }
         }
-        if let id { Task { await engine.markModelUsed(id) } }
-        presentSheet(.preferences)
+        Task { await engine.markModelUsed(id) }
+        presentSheet(settingsPickerReturnSheet)
+    }
+
+    /// The general-model picker was dismissed without a pick.
+    func settingsModelPickerCancelled() {
+        presentSheet(settingsPickerReturnSheet)
     }
 
     // MARK: - Preference bindings (two-way, write-through to ConfigManager)
@@ -1005,14 +1085,11 @@ final class AppViewModel: ObservableObject {
         case .providersChanged(let providers):
             self.providers = providers
             LoaderController.shared.markProvidersCompleted(providers)
-            // Clean-state flow: with no providers there's nothing to chat
-            // with, so always surface the wizard (over whatever sheet is
-            // showing). Cancelling it (via `closeAppOnCancel`) terminates the
-            // app. Repeated events are no-ops. The sheet is shown once the
-            // main window exists, so it never competes with the loader.
-            if providers.isEmpty {
-                presentSheet(.providerWizard(closeAppOnCancel: true))
-            }
+            // A removed provider can leave onboarding requirements unmet. The
+            // sheet is shown once the main window exists, so it never
+            // competes with the loader.
+            providersLoaded = true
+            updateOnboarding()
             maybePresentModelPickerForSelectedChat()
         case .modelsChanged(let models):
             self.models = models
@@ -1221,6 +1298,30 @@ final class AppViewModel: ObservableObject {
     /// chat was loaded (an unusable model is reset to nil).
     var selectedChatHasModel: Bool {
         selectedChatItem?.chat?.model != nil
+    }
+
+    /// The reasoning capability of the selected chat's model, when it has a
+    /// control worth showing.
+    var selectedChatReasoning: ReasoningCapability? {
+        guard let capability = selectedChatModel?.capabilities.reasoning, capability.isConfigurable else {
+            return nil
+        }
+        return capability
+    }
+
+    /// The reasoning setting in effect for the selected chat: its stored
+    /// choice when the model offers it, else the model's default.
+    var selectedChatReasoningSetting: String? {
+        selectedChatReasoning?.effectiveOption(for: selectedChatItem?.chat?.reasoning)
+    }
+
+    /// What a model status block shows for a `provider:model-id` string: the
+    /// provider (for the colored tag) and the display name when the model is in
+    /// the catalog, else the bare model id. "No model" when unset.
+    func modelParts(for raw: String?) -> (provider: Provider?, name: String) {
+        guard let raw else { return (nil, "No model") }
+        guard let id = ModelID(parsing: raw) else { return (nil, raw) }
+        return (id.provider, models.first { $0.id == id }?.displayName ?? id.name)
     }
 
     /// Pure decision: whether the model picker should be presented for a chat
@@ -1521,6 +1622,7 @@ final class AppViewModel: ObservableObject {
             if x.role != y.role
                 || x.title != y.title
                 || x.model != y.model
+                || x.reasoning != y.reasoning
                 || x.prompt != y.prompt
                 || x.workingDirectory != y.workingDirectory
                 || x.mcps != y.mcps
@@ -1867,6 +1969,11 @@ final class AppViewModel: ObservableObject {
     func setModel(_ modelID: String) {
         guard let filename = selectedChatID else { return }
         Task { await engine.setModel(filename: filename, modelID: modelID) }
+    }
+
+    func setReasoning(_ setting: String?) {
+        guard let filename = selectedChatID else { return }
+        Task { await engine.setReasoning(filename: filename, setting: setting) }
     }
 
     func setRole(_ roleName: String) {

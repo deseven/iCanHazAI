@@ -81,7 +81,8 @@ struct OpenRouterAdapter: ProviderAdapter {
             return ReasoningCapability(
                 supported: true,
                 levels: ReasoningLevels.sorted(JSONField.strings(reasoning["supported_efforts"])),
-                defaultLevel: reasoning["default_effort"] as? String)
+                defaultLevel: reasoning["default_effort"] as? String,
+                canDisable: JSONField.bool(reasoning["mandatory"]) == false)
         }
         if JSONField.strings(model["supported_parameters"]).contains("reasoning") {
             return ReasoningCapability(supported: true, levels: [], defaultLevel: nil)

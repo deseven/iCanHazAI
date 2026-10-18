@@ -3,22 +3,27 @@
 
 import Foundation
 
-/// The model picker's search field, parsed. A leading `<provider>:` (any case)
-/// restricts the list to that provider; the rest is fuzzy-matched.
+/// The model picker's search field, parsed. A leading provider prefix
+/// restricts the list to that provider; the rest is fuzzy-matched. The prefix
+/// is the provider name or its alias (`oa`, `an`, `ds`, `or`), in any case,
+/// followed by `.` or `:` — `or.llama` and `openrouter:llama` are the same
+/// query. It only pre-filters; it never takes part in the fuzzy match.
 struct ModelPickerQuery: Equatable {
     let provider: Provider?
     let text: String
 
-    /// Minimum characters after `openrouter:` before the server is asked.
+    /// Minimum characters after the OpenRouter prefix before the server is asked.
     static let minServerSearchLength = 2
 
     init(_ raw: String) {
         let trimmed = raw.trimmingCharacters(in: .whitespaces)
-        if let colon = trimmed.firstIndex(of: ":"),
-            let provider = Provider(rawValue: trimmed[..<colon].lowercased())
+        // The first separator decides: `gpt-5.2` or `claude-3.5` have a dot,
+        // but what precedes it is not a provider, so they stay plain text.
+        if let separator = trimmed.firstIndex(where: { $0 == ":" || $0 == "." }),
+            let provider = Provider(searchPrefix: String(trimmed[..<separator]))
         {
             self.provider = provider
-            text = String(trimmed[trimmed.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+            text = String(trimmed[trimmed.index(after: separator)...]).trimmingCharacters(in: .whitespaces)
         } else {
             provider = nil
             text = trimmed
@@ -26,7 +31,7 @@ struct ModelPickerQuery: Equatable {
     }
 
     /// The text to send to OpenRouter's server-side search, or nil when the
-    /// query isn't an `openrouter:<text>` of sufficient length.
+    /// query isn't an OpenRouter-scoped search of sufficient length.
     var openRouterSearchText: String? {
         guard provider == .openrouter, text.count >= Self.minServerSearchLength else { return nil }
         return text

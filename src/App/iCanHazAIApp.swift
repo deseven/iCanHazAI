@@ -299,146 +299,167 @@ struct iCanHazAIApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {}
             CommandGroup(after: .textEditing) {
-                Button("Find in Chat…") {
-                    AppViewModel.shared?.startSearchInChat()
-                }
-                .keyboardShortcut("f", modifiers: .command)
-                Button("Find Next") {
-                    AppViewModel.shared?.findInChat(direction: 1)
-                }
-                .keyboardShortcut("g", modifiers: .command)
-                Button("Find Previous") {
-                    AppViewModel.shared?.findInChat(direction: -1)
-                }
-                .keyboardShortcut("g", modifiers: [.shift, .command])
-                Button("Filter Chat List…") {
-                    AppViewModel.shared?.focusChatListFilter()
-                }
-                .keyboardShortcut("f", modifiers: [.option, .command])
-                Divider()
-                Button("Stop Streaming") {
-                    AppViewModel.shared?.stopStreaming()
-                }
-                .keyboardShortcut("b", modifiers: .command)
-                .disabled(!viewModel.isStreaming)
-                Button("Stop After Streaming") {
-                    AppViewModel.shared?.stopStreamingAfterIteration()
-                }
-                .keyboardShortcut("b", modifiers: [.option, .command])
-                .disabled(!viewModel.isStreaming || viewModel.stopAfterIterationPending)
-                if viewModel.pendingApprovalCallID != nil {
+                Group {
+                    Button("Find in Chat…") {
+                        AppViewModel.shared?.startSearchInChat()
+                    }
+                    .keyboardShortcut("f", modifiers: .command)
+                    Button("Find Next") {
+                        AppViewModel.shared?.findInChat(direction: 1)
+                    }
+                    .keyboardShortcut("g", modifiers: .command)
+                    Button("Find Previous") {
+                        AppViewModel.shared?.findInChat(direction: -1)
+                    }
+                    .keyboardShortcut("g", modifiers: [.shift, .command])
+                    Button("Filter Chat List…") {
+                        AppViewModel.shared?.focusChatListFilter()
+                    }
+                    .keyboardShortcut("f", modifiers: [.option, .command])
                     Divider()
-                    Button("Allow Tool Call") {
-                        AppViewModel.shared?.allowPendingToolCall()
+                    Button("Stop Streaming") {
+                        AppViewModel.shared?.stopStreaming()
                     }
-                    .keyboardShortcut("y", modifiers: .command)
-                    Button("Allow Tool Call for This Chat") {
-                        AppViewModel.shared?.allowPendingToolCallForChat()
+                    .keyboardShortcut("b", modifiers: .command)
+                    .disabled(!viewModel.isStreaming)
+                    Button("Stop After Streaming") {
+                        AppViewModel.shared?.stopStreamingAfterIteration()
                     }
-                    .keyboardShortcut("y", modifiers: [.option, .command])
-                    Button("Deny Tool Call…") {
-                        AppViewModel.shared?.denyPendingToolCall()
+                    .keyboardShortcut("b", modifiers: [.option, .command])
+                    .disabled(!viewModel.isStreaming || viewModel.stopAfterIterationPending)
+                    if viewModel.pendingApprovalCallID != nil {
+                        Divider()
+                        Button("Allow Tool Call") {
+                            AppViewModel.shared?.allowPendingToolCall()
+                        }
+                        .keyboardShortcut("y", modifiers: .command)
+                        Button("Allow Tool Call for This Chat") {
+                            AppViewModel.shared?.allowPendingToolCallForChat()
+                        }
+                        .keyboardShortcut("y", modifiers: [.option, .command])
+                        Button("Deny Tool Call…") {
+                            AppViewModel.shared?.denyPendingToolCall()
+                        }
+                        .keyboardShortcut("n", modifiers: .command)
                     }
-                    .keyboardShortcut("n", modifiers: .command)
+                    if !viewModel.selectedChatQueuedMessages.isEmpty {
+                        Divider()
+                        Button("Send Queued Messages Now") {
+                            AppViewModel.shared?.sendQueuedMessagesNow()
+                        }
+                        Button("Discard Queued Messages") {
+                            AppViewModel.shared?.clearQueuedMessages()
+                        }
+                    }
                 }
-                if !viewModel.selectedChatQueuedMessages.isEmpty {
-                    Divider()
-                    Button("Send Queued Messages Now") {
-                        AppViewModel.shared?.sendQueuedMessagesNow()
-                    }
-                    Button("Discard Queued Messages") {
-                        AppViewModel.shared?.clearQueuedMessages()
-                    }
-                }
+                .disabled(viewModel.onboardingActive)
             }
             CommandGroup(replacing: .appSettings) {
-                Button("Preferences...") {
-                    AppViewModel.shared?.presentSheetInMainWindow(.preferences)
+                Group {
+                    Button("Preferences...") {
+                        AppViewModel.shared?.presentSheetInMainWindow(.preferences)
+                    }
+                    .keyboardShortcut(",", modifiers: .command)
                 }
-                .keyboardShortcut(",", modifiers: .command)
+                .disabled(viewModel.onboardingActive)
             }
 
             CommandMenu("Provider") {
-                Button("Providers: \(viewModel.providers.count)") {}
-                    .disabled(true)
-                Button("Refresh Models…") {
-                    AppViewModel.shared?.refreshModels()
+                Group {
+                    Button("Providers: \(viewModel.providers.count)") {}
+                        .disabled(true)
+                    Button("Refresh Models…") {
+                        AppViewModel.shared?.refreshModels()
+                    }
+                    .disabled(viewModel.providers.isEmpty)
+                    Divider()
+                    Button("New Provider…") {
+                        AppViewModel.shared?.presentSheetInMainWindow(.providerWizard)
+                    }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
                 }
-                .disabled(viewModel.providers.isEmpty)
-                Divider()
-                Button("New Provider…") {
-                    AppViewModel.shared?.presentSheetInMainWindow(.providerWizard(closeAppOnCancel: false))
-                }
-                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(viewModel.onboardingActive)
             }
 
             CommandMenu("MCP") {
-                Button("MCP Servers: \(viewModel.mcps.count)") {}
-                    .disabled(true)
-                Button("Reveal MCP Servers in Finder…") {
-                    NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.mcpsURL])
+                Group {
+                    Button("MCP Servers: \(viewModel.mcps.count)") {}
+                        .disabled(true)
+                    Button("Reveal MCP Servers in Finder…") {
+                        NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.mcpsURL])
+                    }
+                    Button("Reinitialize MCP Servers…") {
+                        AppViewModel.shared?.reloadMCPs()
+                    }
+                    .keyboardShortcut("r", modifiers: [.command, .shift])
+                    Divider()
+                    Button("New MCP Server…") {
+                        AppViewModel.shared?.presentSheetInMainWindow(.mcpWizard)
+                    }
+                    .keyboardShortcut("m", modifiers: [.command, .shift])
                 }
-                Button("Reinitialize MCP Servers…") {
-                    AppViewModel.shared?.reloadMCPs()
-                }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
-                Divider()
-                Button("New MCP Server…") {
-                    AppViewModel.shared?.presentSheetInMainWindow(.mcpWizard)
-                }
-                .keyboardShortcut("m", modifiers: [.command, .shift])
+                .disabled(viewModel.onboardingActive)
             }
 
             CommandMenu("Prompt") {
-                Button("Prompts: \(viewModel.prompts.count)") {}
-                    .disabled(true)
-                Button("Reveal Prompts in Finder…") {
-                    NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.promptsURL])
+                Group {
+                    Button("Prompts: \(viewModel.prompts.count)") {}
+                        .disabled(true)
+                    Button("Reveal Prompts in Finder…") {
+                        NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.promptsURL])
+                    }
+                    Button("Reload Prompts…") {
+                        AppViewModel.shared?.reloadFromDisk(.prompts)
+                    }
                 }
-                Button("Reload Prompts…") {
-                    AppViewModel.shared?.reloadFromDisk(.prompts)
-                }
+                .disabled(viewModel.onboardingActive)
             }
 
             CommandMenu("Role") {
-                Button("Roles: \(viewModel.roles.count)") {}
-                    .disabled(true)
-                Button("Reveal Roles in Finder…") {
-                    NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.rolesURL])
+                Group {
+                    Button("Roles: \(viewModel.roles.count)") {}
+                        .disabled(true)
+                    Button("Reveal Roles in Finder…") {
+                        NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.rolesURL])
+                    }
+                    Button("Reload Roles…") {
+                        AppViewModel.shared?.reloadFromDisk(.roles)
+                    }
                 }
-                Button("Reload Roles…") {
-                    AppViewModel.shared?.reloadFromDisk(.roles)
-                }
+                .disabled(viewModel.onboardingActive)
             }
 
             CommandMenu("Chat") {
-                Button("Chats: \(viewModel.chatItems.count)") {}
-                    .disabled(true)
-                Button("Reveal Chats in Finder…") {
-                    NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.chatsURL])
+                Group {
+                    Button("Chats: \(viewModel.chatItems.count)") {}
+                        .disabled(true)
+                    Button("Reveal Chats in Finder…") {
+                        NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.chatsURL])
+                    }
+                    Divider()
+                    Button("New Chat…") {
+                        AppViewModel.shared?.createNewChat()
+                    }
+                    .keyboardShortcut("t", modifiers: .command)
+                    Button("New Temporary Chat…") {
+                        AppViewModel.shared?.createNewTemporaryChat()
+                    }
+                    .keyboardShortcut("t", modifiers: [.option, .command])
+                    Divider()
+                    Button("Export Current Chat as HTML…") {
+                        ChatExportController.shared.start(.html)
+                    }
+                    .disabled(!viewModel.canExportCurrentChat)
+                    Button("Export Current Chat as PDF…") {
+                        ChatExportController.shared.start(.pdf)
+                    }
+                    .disabled(!viewModel.canExportCurrentChat)
+                    Button("Print Current Chat…") {
+                        ChatExportController.shared.start(.print)
+                    }
+                    .disabled(!viewModel.canExportCurrentChat)
                 }
-                Divider()
-                Button("New Chat…") {
-                    AppViewModel.shared?.createNewChat()
-                }
-                .keyboardShortcut("t", modifiers: .command)
-                Button("New Temporary Chat…") {
-                    AppViewModel.shared?.createNewTemporaryChat()
-                }
-                .keyboardShortcut("t", modifiers: [.option, .command])
-                Divider()
-                Button("Export Current Chat as HTML…") {
-                    ChatExportController.shared.start(.html)
-                }
-                .disabled(!viewModel.canExportCurrentChat)
-                Button("Export Current Chat as PDF…") {
-                    ChatExportController.shared.start(.pdf)
-                }
-                .disabled(!viewModel.canExportCurrentChat)
-                Button("Print Current Chat…") {
-                    ChatExportController.shared.start(.print)
-                }
-                .disabled(!viewModel.canExportCurrentChat)
+                .disabled(viewModel.onboardingActive)
             }
         }
     }

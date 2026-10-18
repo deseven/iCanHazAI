@@ -38,10 +38,36 @@ extension AllAppTests {
             let haiku = listing.models[1]
             #expect(haiku.capabilities.reasoning.supported)
             #expect(haiku.capabilities.reasoning.levels.isEmpty)
+            // No `types` in the listing: opt-in, budget-based thinking.
+            #expect(haiku.capabilities.reasoning.canDisable)
+            #expect(haiku.capabilities.reasoning.budgetOnly)
+
+            // Adaptive thinking whose listing doesn't advertise `disabled`.
+            #expect(opus.capabilities.reasoning.canDisable == false)
+            #expect(opus.capabilities.reasoning.budgetOnly == false)
 
             let textOnly = listing.models[2]
             #expect(textOnly.capabilities.imageInput == false)
             #expect(textOnly.capabilities.reasoning == .unsupported)
+        }
+
+        @Test("Anthropic reads the supported thinking types")
+        func anthropicThinkingTypes() throws {
+            func parse(_ types: String) throws -> ReasoningCapability {
+                let json = """
+                    {"id":"m","capabilities":{"effort":{"supported":true},
+                      "thinking":{"supported":true,"types":\(types)}}}
+                    """
+                let object = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+                return try #require(AnthropicAdapter.parse(object)).capabilities.reasoning
+            }
+            let all = try parse(
+                #"{"adaptive":{"supported":true},"enabled":{"supported":true},"disabled":{"supported":true}}"#)
+            #expect(all.canDisable && !all.budgetOnly)
+            let legacy = try parse(#"{"enabled":{"supported":true},"disabled":{"supported":true}}"#)
+            #expect(legacy.canDisable && legacy.budgetOnly)
+            let always = try parse(#"{"adaptive":{"supported":true}}"#)
+            #expect(!always.canDisable && !always.budgetOnly)
         }
 
         @Test("Anthropic requests limit=1000, pages by last_id and sends its headers")
@@ -91,6 +117,7 @@ extension AllAppTests {
             #expect(flash.capabilities.reasoning.supported)
             #expect(flash.capabilities.reasoning.levels == ["low", "high", "max"])
             #expect(flash.capabilities.reasoning.defaultLevel == "high")
+            #expect(flash.capabilities.reasoning.canDisable)
 
             let pro = listing.models[1]
             #expect(pro.capabilities.imageInput == false)
@@ -154,6 +181,25 @@ extension AllAppTests {
             #expect(free.capabilities.reasoning == ReasoningCapability(supported: true, levels: [], defaultLevel: nil))
 
             #expect(listing.models[2].capabilities.reasoning == .unsupported)
+        }
+
+        @Test("OpenRouter can disable reasoning unless the model marks it mandatory")
+        func openRouterMandatory() throws {
+            func parse(_ reasoning: String) throws -> ReasoningCapability {
+                let json = #"{"id":"a/b","architecture":{},"reasoning":\#(reasoning)}"#
+                let object = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+                return try #require(OpenRouterAdapter.parse(object)).capabilities.reasoning
+            }
+            let optional = try parse(#"{"mandatory":false,"supported_efforts":["high","low","none"]}"#)
+            #expect(optional.canDisable)
+            #expect(optional.options == [ReasoningSetting.off, "low", "high"])
+            let mandatory = try parse(#"{"mandatory":true,"supported_efforts":["high","medium","low"]}"#)
+            #expect(!mandatory.canDisable)
+            #expect(mandatory.options == ["low", "medium", "high"])
+            let toggle = try parse(#"{"mandatory":false,"default_enabled":true}"#)
+            #expect(toggle.options == [ReasoningSetting.off, ReasoningSetting.on])
+            let always = try parse(#"{"mandatory":true}"#)
+            #expect(always.isConfigurable == false)
         }
 
         @Test("OpenRouter uses sort=most-popular and q, never search")

@@ -39,7 +39,7 @@ struct MainWindow: View {
             // The only sheet host: every dialog (pickers, wizards,
             // Preferences) is a case of `MainSheet`, so at most one is up and
             // presenting another replaces it.
-            .sheet(item: $store.activeSheet) { sheet in
+            .sheet(item: store.sheetBinding) { sheet in
                 MainSheetContent(sheet: sheet)
             }
             .onChange(of: store.chatInfoSidebarVisible) { _, _ in

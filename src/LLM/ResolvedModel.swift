@@ -31,6 +31,10 @@ struct ResolvedModel: Hashable, Sendable {
     /// at a mock server.
     let baseUrl: String?
     let capabilities: ModelCapabilities
+    /// The effective reasoning setting for this request: `off`, `on`, an effort
+    /// level, or nil to leave the provider's own default untouched. See
+    /// [`ReasoningSetting`](src/Providers/ModelCapabilities.swift).
+    let reasoning: String?
     /// Extra parameters inserted into every request body's root. They win over
     /// the strategy's defaults.
     let requestParameters: [String: LLMJSONValue]?
@@ -66,6 +70,7 @@ struct ResolvedModel: Hashable, Sendable {
         apiKey: String,
         baseUrl: String? = nil,
         capabilities: ModelCapabilities = .safeDefaults,
+        reasoning: String? = nil,
         requestParameters: [String: LLMJSONValue]? = nil,
         headers: [String: String]? = nil,
         readTimeout: Double? = nil,
@@ -78,12 +83,21 @@ struct ResolvedModel: Hashable, Sendable {
         self.apiKey = apiKey
         self.baseUrl = baseUrl
         self.capabilities = capabilities
+        self.reasoning = reasoning
         self.requestParameters = requestParameters
         self.headers = headers
         self.readTimeout = readTimeout
         self.progressTimeout = progressTimeout
         self.transportTimeout = transportTimeout
         self.numRetries = numRetries
+    }
+
+    func withReasoning(_ reasoning: String?) -> ResolvedModel {
+        ResolvedModel(
+            provider: provider, modelID: modelID, apiKey: apiKey, baseUrl: baseUrl, capabilities: capabilities,
+            reasoning: reasoning, requestParameters: requestParameters, headers: headers,
+            readTimeout: readTimeout, progressTimeout: progressTimeout, transportTimeout: transportTimeout,
+            numRetries: numRetries)
     }
 
     /// `provider:modelID`, used in logs.

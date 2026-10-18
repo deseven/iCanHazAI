@@ -190,10 +190,11 @@ private struct ModelSettingButton: View {
 
     var body: some View {
         let model = store.preferencesModel(for: setting)
+        let parts = store.modelParts(for: model)
         Button {
             store.pickSettingsModel(setting)
         } label: {
-            ModelStatusLabel(label: store.modelLabel(for: model), hasModel: model != nil)
+            ModelStatusLabel(provider: parts.provider, label: parts.name, hasModel: model != nil)
         }
         .buttonStyle(.borderless)
         .fixedSize()

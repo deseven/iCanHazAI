@@ -46,7 +46,7 @@ To address the elephant in the room: there are many AI chat apps and agentic har
 1. Grab the latest release from [GitHub Releases](https://github.com/deseven/icanhazai/releases/latest). If you want bleeding-edge features and the most recent changes, a [development build](https://d7.wtf/s/ichai-dev.zip) is also available — obviously, it could be unstable.
 2. Move the app to `/Applications`.
 3. If you plan to use the CLI, add `alias ichai='/Applications/iCanHazAI.app/Contents/MacOS/iCanHazAI'` to your favourite shell.
-4. Run the app and add your first provider (API key) — the wizard will guide you. Then check Preferences to tune things how you like, or just ask the Configurator role.
+4. Run the app and follow the onboarding process.
 
 
 ## Usage Notes
@@ -54,6 +54,8 @@ To address the elephant in the room: there are many AI chat apps and agentic har
 - **CLI**: `ichai "your message"` sends a one-shot message, `command | ichai "..."` pipes input in, `ichai -i` starts an interactive session. `-m provider:model-id` picks the model of a new chat (default: the role's preferred model, else the default model from Preferences). Run `ichai -h` for the full list of features. The app starts itself (without a window) when needed.
 - **Tool approvals**: when a model calls a tool, approve it once (⌘Y) or pick "Allow for this chat" (⌥⌘Y), or deny it (⌘N) with an optional reason; roles can also pre-approve tools via `auto_allow`. The state of tool approval can also be controlled in the Chat Info sidebar to the right.
 - **Messages while streaming**: you can keep writing while the model works. Return queues the message (shown above the input); queued messages go out together as a single user message once the model finishes its current step — along with its tool results, if it made tool calls. Hold ⌥ to send immediately instead: this stops the current response and sends your message plus anything queued (⌥Return works too). The queue strip has buttons to send everything now or discard it. With nothing typed, the stop button stays a stop button (hold ⌥ for "stop after current step", ⌘B / ⌥⌘B). A hard stop or an error leaves the queue in place instead of sending it.
+- **Model picker**: type a provider prefix to narrow the list to one provider — `or.`, `oa.`, `an.`, `ds.` (OpenRouter, OpenAI, Anthropic, DeepSeek), or the full name (`openrouter.`, `anthropic:`). The prefix only filters; the rest is a fuzzy search, so `an.sonnet` finds Sonnet among Anthropic models. With an OpenRouter prefix the search also reaches models outside the cached popular ones.
+- **Reasoning**: models that can reason get a reasoning control in the chat toolbar showing the current level; click it to pick another one (`Off` appears when the model can switch reasoning off). New chats use the default level the provider reports for the model, or the middle of the model's levels when it doesn't report one (e.g. Medium for low/medium/high, High for low through max) — reasoning is on whenever the model allows it. The choice is saved with the chat and survives a model switch only if the new model offers exactly the same level; otherwise it goes back to the default. The utility model always runs with reasoning off (or the lowest level when it can't be turned off) to stay fast.
 - **SSH**: any working directory can be remote — use the scp form `host:/absolute/path` (or `user@host:/path`; a bare `host:` means the remote home) as a role's `working_directory` or type it into the per-chat directory picker, which will browse the remote for you. Auth must be pre-configured so `ssh host` works without prompts (keys, `~/.ssh/config`) — interactive auth is not supported.
 
 
@@ -75,29 +77,7 @@ On first launch, iCanHazAI creates its data directory at `~/iCanHazAI`:
 └── app.sock         # CLI control socket
 ```
 
-Everything lives directly in your home folder as plain text, so you can inspect it with any editor.
-
-### Provider
-
-Providers aren't files: you add one with **Provider → New Provider…** and enter its API key. Supported are OpenAI, Anthropic, DeepSeek and OpenRouter, one key per provider. Keys are stored in `.storage/`, each encrypted with AES-GCM under a key derived from this Mac's hardware UUID (the web search token from Preferences is kept there too). The development and release apps use different data directories, so they keep separate keys, and nothing readable lands in `config.toml` or reaches the Configurator role. A copy of the data directory is useless on another Mac, but this doesn't protect against code running as you on this one. Keys that can't be decrypted (e.g. after moving the directory) are discarded, and the New Provider wizard opens when none are left. There is no way to edit or delete a key in the app yet.
-
-The model list and each model's capabilities (image input, context size, reasoning) are loaded automatically — on start, after adding a provider, every 24 hours, or on demand via **Provider → Refresh Models…** — and cached, so everything works offline. Every new chat starts with a model picker, unless a model is preselected — a **Default Model** in Preferences → General, or a role's `preferred_model` (which takes precedence; if that model no longer exists the chat starts with no model). The **Utility Model** (also in Preferences → General) handles background tasks like naming chats — pick a fast, cheap one; without it chats are named after their first message. Models are identified as `provider:model-id` (e.g. `anthropic:claude-sonnet-5-5`). Typing `openrouter:` in the picker searches all of OpenRouter, beyond its most popular models.
-
-### MCP
-
-A `{name}.toml` file in `MCPs/` describing how to reach an MCP server: either stdio (a command executed via your login shell) or http (a streamable HTTP endpoint with an optional bearer token). Supports an optional tool allowlist, a name prefix for its tools, and a run policy — always-on servers start with the app, on-demand ones spin up on first use and shut down when idle.
-
-### Prompt
-
-A `{name}.md` file in `Prompts/` — the entire file content is the system prompt. Prompts support `{variable}` placeholders substituted at request time: `{date}`, `{user}`, `{current_directory}`, `{output_rendering}` (markup capabilities of the chat's surface), and `{load_first_available:AGENTS.md,CLAUDE.md,...}` for pulling in project instructions.
-
-### Role
-
-A `{name}.toml` file in `Roles/` — a template for new chats combining a prompt, a working directory, and tools. Tools come from the built-in groups (utils, filesystem, code, shell, web) and/or configured MCP servers, each with optional allowlists and auto-approve rules. The working directory can be pre-set, picked once per chat, or a remote SSH location (`host:/path`), and filesystem/code tools can be isolated to it. An optional `preferred_model` preselects a model for the role's new chats. A chat's role and working directory are fixed at creation. An optional `[features]` table gates per-role UI capabilities.
-
-### Chat
-
-A `YYYY-MM-DD HH-mm-ss.json` file in `Chats/`, with a numeric suffix like ` (2)` if needed, and attachments in a same-named directory next to it. Attached documents are extracted to text at send time and embedded in the chat JSON; the originals are kept on disk as a user-facing backup. Chats created via the CLI are regular chats — visible and continuable in the GUI, and vice versa.
+Everything lives directly in your home folder, most of it is in plain text, so you can inspect it with any editor.
 
 
 ## Building

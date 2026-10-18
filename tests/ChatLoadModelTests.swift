@@ -183,6 +183,75 @@ extension AllAppTests {
             #expect(h.catalogStore.allModels().filter(\.isUsed).map(\.model.id.description) == ["openrouter:foo/bar"])
         }
 
+        private static let reasoningListing: String = {
+            func entry(_ id: String, _ reasoning: String) -> String {
+                #"{"id":"\#(id)","name":"\#(id)","context_length":1000,"architecture":{"input_modalities":["text"]}"#
+                    + (reasoning.isEmpty ? "}" : #","reasoning":\#(reasoning)}"#)
+            }
+            let rows = [
+                entry("a/one", #"{"mandatory":true,"supported_efforts":["high","medium","low"]}"#),
+                entry("a/two", #"{"mandatory":false,"supported_efforts":["max","high","low","none"]}"#),
+                entry("a/three", #"{"mandatory":true,"supported_efforts":["medium","low"]}"#),
+                entry("a/four", ""),
+            ]
+            return #"{"total_count":4,"data":[\#(rows.joined(separator: ","))]}"#
+        }()
+
+        private func reasoningHarness(chatReasoning: String?, model: String) async throws -> EngineHarness {
+            let h = try await makeEngine(providers: [.openrouter]) { _ in .json(Self.reasoningListing) }
+            var chat = Fixtures.chat(messages: [Fixtures.message()], model: model, role: "Assistant")
+            chat.reasoning = chatReasoning
+            try h.temp.writeChatDirect(chat, filename: "c.json")
+            await h.engine.loadFromCache()
+            return h
+        }
+
+        @Test("setModel keeps the reasoning setting when the new model offers exactly that value")
+        func setModelKeepsReasoning() async throws {
+            let h = try await reasoningHarness(chatReasoning: "high", model: "openrouter:a/one")
+            await h.engine.setModel(filename: "c.json", modelID: "openrouter:a/two")
+            #expect(try h.temp.readChatDirect("c.json").reasoning == "high")
+        }
+
+        @Test("setModel resets the reasoning setting when the new model doesn't offer it")
+        func setModelResetsReasoning() async throws {
+            let h = try await reasoningHarness(chatReasoning: "high", model: "openrouter:a/one")
+            await h.engine.setModel(filename: "c.json", modelID: "openrouter:a/three")
+            #expect(try h.temp.readChatDirect("c.json").reasoning == nil)
+
+            let off = try await reasoningHarness(chatReasoning: ReasoningSetting.off, model: "openrouter:a/two")
+            await off.engine.setModel(filename: "c.json", modelID: "openrouter:a/one")
+            #expect(try off.temp.readChatDirect("c.json").reasoning == nil)
+
+            let none = try await reasoningHarness(chatReasoning: "high", model: "openrouter:a/one")
+            await none.engine.setModel(filename: "c.json", modelID: "openrouter:a/four")
+            #expect(try none.temp.readChatDirect("c.json").reasoning == nil)
+        }
+
+        @Test("setReasoning stores the setting and nil returns to the default")
+        func setReasoning() async throws {
+            let h = try await reasoningHarness(chatReasoning: nil, model: "openrouter:a/two")
+            await h.engine.setReasoning(filename: "c.json", setting: "low")
+            #expect(try h.temp.readChatDirect("c.json").reasoning == "low")
+            await h.engine.setReasoning(filename: "c.json", setting: nil)
+            #expect(try h.temp.readChatDirect("c.json").reasoning == nil)
+        }
+
+        @Test("the resolved request model carries the chat's effective setting")
+        func effectiveSettingOnRequest() async throws {
+            let h = try await reasoningHarness(chatReasoning: "low", model: "openrouter:a/one")
+            await h.engine.ensureChatLoaded(filename: "c.json")
+            let chat = try #require(await h.engine.record(for: "c.json")?.chat)
+            #expect(try await h.engine.requestModel(for: chat)?.reasoning == "low")
+            var unset = chat
+            unset.reasoning = nil
+            // low/medium/high -> medium
+            #expect(try await h.engine.requestModel(for: unset)?.reasoning == "medium")
+            var stale = chat
+            stale.reasoning = "max"
+            #expect(try await h.engine.requestModel(for: stale)?.reasoning == "medium")
+        }
+
         @Test("resolveModel for a chat follows the engine's endpoint overrides")
         func endpointOverrides() async throws {
             let h = try await makeEngine(providers: [.openrouter]) { _ in

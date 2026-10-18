@@ -40,6 +40,13 @@ struct AnthropicAdapter: ProviderAdapter {
         }
         let reasoningSupported =
             JSONField.bool(effort["supported"]) == true || JSONField.bool(thinking["supported"]) == true
+        // Older listings carry no `types`: thinking was opt-in and budget based.
+        let types = thinking["types"] as? [String: Any]
+        func typeSupported(_ name: String) -> Bool {
+            (types?[name] as? [String: Any]).flatMap { JSONField.bool($0["supported"]) } == true
+        }
+        let canDisable = types == nil ? true : typeSupported("disabled")
+        let budgetOnly = types == nil ? true : !typeSupported("adaptive") && typeSupported("enabled")
         let imageInput =
             (capabilities["image_input"] as? [String: Any]).flatMap { JSONField.bool($0["supported"]) } == true
         return CatalogModel(
@@ -49,6 +56,8 @@ struct AnthropicAdapter: ProviderAdapter {
                 imageInput: imageInput,
                 contextWindow: JSONField.int(model["max_input_tokens"]) ?? ModelCapabilities.safeDefaults.contextWindow,
                 maxOutputTokens: JSONField.int(model["max_tokens"]),
-                reasoning: ReasoningCapability(supported: reasoningSupported, levels: levels, defaultLevel: nil)))
+                reasoning: ReasoningCapability(
+                    supported: reasoningSupported, levels: levels, defaultLevel: nil,
+                    canDisable: reasoningSupported && canDisable, budgetOnly: reasoningSupported && budgetOnly)))
     }
 }

@@ -34,6 +34,8 @@ struct DeepSeekAdapter: ProviderAdapter {
                 contextWindow: JSONField.int(model["context_window"]) ?? ModelCapabilities.safeDefaults.contextWindow,
                 maxOutputTokens: JSONField.int(model["max_output_tokens"]),
                 reasoning: ReasoningCapability(
-                    supported: !levels.isEmpty, levels: levels, defaultLevel: effort?["default_level"] as? String)))
+                    supported: !levels.isEmpty, levels: levels, defaultLevel: effort?["default_level"] as? String,
+                    // `thinking.type = disabled` is always accepted.
+                    canDisable: !levels.isEmpty)))
     }
 }

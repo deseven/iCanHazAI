@@ -4,9 +4,10 @@
 import SwiftUI
 
 /// A modal sheet for picking the model of the current chat. Single-select:
-/// ↵ or a click picks the highlighted model. Typing `<provider>:` narrows the
-/// list to one provider; `openrouter:<text>` additionally searches OpenRouter
-/// beyond the cached popular models. Built on
+/// ↵ or a click picks the highlighted model. Typing `<provider>.` (or `:`)
+/// narrows the list to one provider, by name or alias (`or.`, `oa.`, `an.`,
+/// `ds.`); an OpenRouter prefix additionally searches OpenRouter beyond the
+/// cached popular models. Built on
 /// [`PickerDialog`](src/Views/PickerDialog.swift); the model in effect is
 /// checkmarked and initially highlighted.
 struct ModelPickerView: View {
@@ -40,7 +41,7 @@ struct ModelPickerView: View {
             subtitle: searchFailed
                 ? "OpenRouter search unavailable — showing cached models." : subtitle,
             searchText: $queryText,
-            searchPlaceholder: "Search models, or type openrouter: to search all",
+            searchPlaceholder: "Search models, or type or. to search all of OpenRouter",
             items: items,
             pinnedHeader: nil,
             pinnedItems: [],
@@ -83,15 +84,18 @@ struct ModelPickerView: View {
     }
 }
 
-/// The model status block shared by the chat toolbar and Preferences: a chip
-/// with the model name, or a red "No model" when none is selected.
+/// The model status block shared by the chat toolbar and Preferences: the
+/// provider tag and a chip with the model name, or a red "No model" when none
+/// is selected.
 struct ModelStatusLabel: View {
+    let provider: Provider?
     let label: String
     let hasModel: Bool
 
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: "cpu")
+            if let provider { ProviderTag(provider: provider) }
             Text(label)
                 .padding(.horizontal, 5)
                 .padding(.vertical, 1)
@@ -115,10 +119,13 @@ private struct ModelRowContent: View {
                 .foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
-                Text(model.id.description)
-                    .font(.callout)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                HStack(spacing: 6) {
+                    ProviderTag(provider: model.id.provider)
+                    Text(model.id.name)
+                        .font(.callout)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
                 if let name = model.displayName, name != model.id.name {
                     Text(name)
                         .font(.caption)

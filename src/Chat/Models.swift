@@ -236,6 +236,10 @@ struct Chat: Codable, Identifiable, Equatable {
     /// Selected model identity in the form `provider:model-id`, e.g.
     /// `anthropic:claude-sonnet-5-5`. Nil until the user picks one.
     var model: String?
+    /// Reasoning setting picked for this chat: `off`, `on` or an effort level
+    /// (see `ReasoningSetting`). Nil means the model's default. Only kept
+    /// while the selected model offers it.
+    var reasoning: String?
     /// Selected role name.
     var role: String?
     /// Per-chat prompt override (name of a prompt file, without extension).
@@ -296,7 +300,7 @@ struct Chat: Codable, Identifiable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, messages, model, role, prompt, workingDirectory, mcps, title, archive
+        case id, messages, model, reasoning, role, prompt, workingDirectory, mcps, title, archive
         case autoAllow = "auto_allow"
         case autoDeny = "auto_deny"
         case outputRendering = "output_rendering"
@@ -312,6 +316,7 @@ struct Chat: Codable, Identifiable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
         model = try? c.decode(String.self, forKey: .model)
+        reasoning = try? c.decode(String.self, forKey: .reasoning)
         role = try? c.decode(String.self, forKey: .role)
         prompt = try? c.decode(String.self, forKey: .prompt)
         workingDirectory = try? c.decode(String.self, forKey: .workingDirectory)

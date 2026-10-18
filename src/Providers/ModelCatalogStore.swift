@@ -17,6 +17,8 @@ final class ModelCacheEntry {
     var reasoningSupported: Bool
     var reasoningLevels: [String]
     var reasoningDefault: String?
+    var reasoningCanDisable: Bool = false
+    var reasoningBudgetOnly: Bool = false
     /// The user picked the model, or a chat using it was loaded. Protects the
     /// entry from OpenRouter's sweep of models that dropped out of the top list.
     var isUsed: Bool
@@ -33,6 +35,8 @@ final class ModelCacheEntry {
         reasoningSupported = model.capabilities.reasoning.supported
         reasoningLevels = model.capabilities.reasoning.levels
         reasoningDefault = model.capabilities.reasoning.defaultLevel
+        reasoningCanDisable = model.capabilities.reasoning.canDisable
+        reasoningBudgetOnly = model.capabilities.reasoning.budgetOnly
         self.isUsed = isUsed
         self.fetchedAt = fetchedAt
     }
@@ -45,6 +49,8 @@ final class ModelCacheEntry {
         reasoningSupported = model.capabilities.reasoning.supported
         reasoningLevels = model.capabilities.reasoning.levels
         reasoningDefault = model.capabilities.reasoning.defaultLevel
+        reasoningCanDisable = model.capabilities.reasoning.canDisable
+        reasoningBudgetOnly = model.capabilities.reasoning.budgetOnly
         self.fetchedAt = fetchedAt
     }
 
@@ -58,7 +64,8 @@ final class ModelCacheEntry {
                 contextWindow: contextWindow,
                 maxOutputTokens: maxOutputTokens,
                 reasoning: ReasoningCapability(
-                    supported: reasoningSupported, levels: reasoningLevels, defaultLevel: reasoningDefault)))
+                    supported: reasoningSupported, levels: reasoningLevels, defaultLevel: reasoningDefault,
+                    canDisable: reasoningCanDisable, budgetOnly: reasoningBudgetOnly)))
     }
 }
 

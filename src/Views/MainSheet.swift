@@ -12,8 +12,11 @@ enum ModelSetting: String, Equatable {
 /// Every sheet the main window can show. `AppViewModel.activeSheet` holds at
 /// most one, so presenting a sheet replaces whichever one is showing.
 enum MainSheet: Identifiable, Equatable {
+    /// The first-run requirements sheet (provider, default and utility model).
+    /// Shown whenever one of them is unmet; see `AppViewModel.onboardingActive`.
+    case onboarding
     case preferences
-    case providerWizard(closeAppOnCancel: Bool)
+    case providerWizard
     case mcpWizard
     case configErrors
     case rolePicker
@@ -21,7 +24,8 @@ enum MainSheet: Identifiable, Equatable {
     case sidebarDirectoryPicker
     case workdirPicker
     case modelPicker
-    /// The model picker opened from Preferences; returns to Preferences when done.
+    /// The model picker for a general model setting, opened from Preferences
+    /// or from onboarding; returns to whichever opened it when done.
     case settingsModelPicker(ModelSetting)
     case mcpPicker
     case archivedChats
@@ -35,6 +39,7 @@ enum MainSheet: Identifiable, Equatable {
     /// parameter change updates the showing sheet instead of re-presenting it.
     var id: String {
         switch self {
+        case .onboarding: return "onboarding"
         case .preferences: return "preferences"
         case .providerWizard: return "providerWizard"
         case .mcpWizard: return "mcpWizard"
@@ -58,17 +63,18 @@ enum MainSheet: Identifiable, Equatable {
     /// Sheets that aren't tied to the selected chat's state.
     var isAppLevel: Bool {
         switch self {
-        case .preferences, .settingsModelPicker, .providerWizard, .mcpWizard, .configErrors: return true
+        case .onboarding, .preferences, .settingsModelPicker, .providerWizard, .mcpWizard, .configErrors: return true
         default: return false
         }
     }
 
-    /// A sheet that can't be replaced by another one: the wizard shown when
-    /// there is no provider (cancelling it quits the app), since nothing else
-    /// is usable without a provider.
-    var isBlocking: Bool {
-        if case .providerWizard(closeAppOnCancel: true) = self { return true }
-        return false
+    /// The only sheets that may be shown while onboarding is active: the
+    /// onboarding sheet itself and the dialogs its buttons open.
+    var isOnboardingFlow: Bool {
+        switch self {
+        case .onboarding, .providerWizard, .settingsModelPicker: return true
+        default: return false
+        }
     }
 }
 
@@ -79,12 +85,16 @@ struct MainSheetContent: View {
 
     var body: some View {
         switch sheet {
+        case .onboarding:
+            OnboardingView()
+
         case .preferences:
             PreferencesView()
 
-        case .providerWizard(let closeAppOnCancel):
+        case .providerWizard:
             ProviderWizardView(
-                addedProviders: Set(store.providers.map(\.provider)), closeAppOnCancel: closeAppOnCancel)
+                addedProviders: Set(store.providers.map(\.provider)),
+                onClose: { store.closeProviderWizard() })
 
         case .mcpWizard:
             MCPWizardView(onFinish: { store.refreshPreferences() })
@@ -145,10 +155,10 @@ struct MainSheetContent: View {
                 hasProviders: !store.providers.isEmpty,
                 currentID: store.preferencesModelID(for: setting),
                 subtitle: setting == .defaultModel
-                    ? "Pick the model preselected for new chats. Esc clears it."
-                    : "Pick the model for background tasks. Esc clears it.",
+                    ? "Pick the model preselected for new chats."
+                    : "Pick the model for background tasks. A fast and cheap one is best.",
                 search: { try await store.searchModels($0, provider: .openrouter) },
-                onCancel: { store.settingsModelPicked(setting, nil) },
+                onCancel: { store.settingsModelPickerCancelled() },
                 onPick: { store.settingsModelPicked(setting, $0) }
             )
 

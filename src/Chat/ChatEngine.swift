@@ -1262,6 +1262,20 @@ actor ChatEngine {
         await resolveModel(chat.model)
     }
 
+    /// The model to send a chat's request to: the resolved model with the
+    /// chat's reasoning setting applied (its stored choice when the model
+    /// offers it, else the model's default). Nil when it doesn't resolve.
+    func requestModel(for chat: Chat) async -> ResolvedModel? {
+        guard case .ok(let resolved, let entry) = await resolveModel(for: chat) else { return nil }
+        return Self.applyingReasoning(of: chat, to: resolved, entry: entry)
+    }
+
+    private static func applyingReasoning(of chat: Chat, to resolved: ResolvedModel, entry: CatalogModel)
+        -> ResolvedModel
+    {
+        resolved.withReasoning(entry.capabilities.reasoning.effectiveOption(for: chat.reasoning))
+    }
+
     func resolveModel(_ modelString: String?) async -> ModelResolution {
         await ModelResolver(
             registry: registry, catalog: catalog, endpointOverrides: endpointOverrides
@@ -1272,7 +1286,7 @@ actor ChatEngine {
     /// the chat can't be sent. Nil means the request must not proceed.
     private func resolvedModelOrReport(for chat: Chat) async -> ResolvedModel? {
         switch await resolveModel(for: chat) {
-        case .ok(let resolved, _): return resolved
+        case .ok(let resolved, let entry): return Self.applyingReasoning(of: chat, to: resolved, entry: entry)
         case .invalid: emit(.error("Please select a model."))
         case .unavailable: emit(.error("The selected model is temporarily unavailable. Please try again in a moment."))
         }
@@ -3033,10 +3047,12 @@ actor ChatEngine {
 
     /// The model used for utility tasks such as chat naming: the configured
     /// `[general].utility_model` when it resolves, else nil (task skipped).
+    /// Reasoning is turned off (or to the lowest level) because these requests
+    /// need to be fast.
     private func utilityModel() async -> ResolvedModel? {
         guard let model = await ConfigManager.shared.getUtilityModel() else { return nil }
-        guard case .ok(let resolved, _) = await resolveModel(model) else { return nil }
-        return resolved
+        guard case .ok(let resolved, let entry) = await resolveModel(model) else { return nil }
+        return resolved.withReasoning(entry.capabilities.reasoning.fastOption)
     }
 
     /// Kicks off a background request to generate a chat name via the utility
@@ -3249,13 +3265,38 @@ actor ChatEngine {
     /// Updates the selected model for a chat and marks it as used so the
     /// catalog keeps it across OpenRouter refreshes.
     func setModel(filename: String, modelID: String) async {
-        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        guard records.contains(where: { $0.filename == filename }) else { return }
         await ensureChatLoaded(filename: filename)
-        guard var chat = records[idx].chat else { return }
+        let newOptions: [String]
+        if case .ok(_, let entry) = await resolveModel(modelID) {
+            newOptions = entry.capabilities.reasoning.options
+        } else {
+            newOptions = []
+        }
+        // No suspension points below: the chat is read and written back atomically.
+        guard let idx = records.firstIndex(where: { $0.filename == filename }),
+            var chat = records[idx].chat
+        else { return }
         chat.model = modelID
+        // The reasoning setting survives only when the new model offers the
+        // exact same value; otherwise it falls back to that model's default.
+        if let current = chat.reasoning, !newOptions.contains(current) { chat.reasoning = nil }
         saveChat(chat, filename: filename)
         emit(.chatsChanged(records))
         if let id = ModelID(parsing: modelID) { await catalog.markUsed(id) }
+    }
+
+    /// Stores the chat's reasoning setting (`off`, `on` or an effort level).
+    /// Nil goes back to the model's default.
+    func setReasoning(filename: String, setting: String?) async {
+        await ensureChatLoaded(filename: filename)
+        guard let idx = records.firstIndex(where: { $0.filename == filename }),
+            var chat = records[idx].chat
+        else { return }
+        guard chat.reasoning != setting else { return }
+        chat.reasoning = setting
+        saveChat(chat, filename: filename)
+        emit(.chatsChanged(records))
     }
 
     /// Updates the selected role for a chat. The chat's active custom MCP

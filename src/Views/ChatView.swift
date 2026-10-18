@@ -79,14 +79,49 @@ struct ChatView: View {
                 // directory. `allowsHitTesting` is used instead of `disabled`
                 // so the colors aren't dimmed.
                 if store.selectedChatItem?.chat != nil {
+                    let parts = store.modelParts(for: store.selectedChatItem?.chat?.model)
                     Button {
                         store.showModelPicker = true
                     } label: {
-                        ModelStatusLabel(label: modelLabel, hasModel: store.selectedChatHasModel)
+                        ModelStatusLabel(
+                            provider: parts.provider, label: parts.name, hasModel: store.selectedChatHasModel)
                     }
                     .buttonStyle(.borderless)
                     .fixedSize()
                     .help("Model used for this chat")
+                    .allowsHitTesting(!store.isStreaming)
+                }
+
+                // Reasoning level: only for models that expose a control. The
+                // menu lists every option the model offers; the current one is
+                // checkmarked.
+                if let reasoning = store.selectedChatReasoning, let current = store.selectedChatReasoningSetting {
+                    Menu {
+                        Picker(
+                            "Reasoning",
+                            selection: Binding(
+                                get: { current },
+                                set: { store.setReasoning($0) }
+                            )
+                        ) {
+                            ForEach(reasoning.options, id: \.self) { option in
+                                Text(ReasoningSetting.title(option)).tag(option)
+                            }
+                        }
+                        .pickerStyle(.inline)
+                        .labelsHidden()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "brain")
+                            toolbarTag(ReasoningSetting.title(current))
+                        }
+                        .font(.callout)
+                        .lineLimit(1)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("Reasoning for this chat")
                     .allowsHitTesting(!store.isStreaming)
                 }
 
@@ -192,11 +227,6 @@ struct ChatView: View {
         /// by the role.
         private var mcpColor: Color {
             store.selectedChatMCPPickerEnabled ? .primary : .secondary
-        }
-
-        private var modelLabel: String {
-            guard let raw = store.selectedChatItem?.chat?.model else { return "No model" }
-            return store.selectedChatModel?.displayName ?? raw
         }
 
         private var mcpHelp: String {

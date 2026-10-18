@@ -8,15 +8,14 @@ import SwiftUI
 /// it, and store it encrypted. All state lives in `ProviderWizardModel`.
 struct ProviderWizardView: View {
     @StateObject private var model: ProviderWizardModel
-    @Environment(\.dismiss) private var dismiss
 
-    /// When true, cancelling terminates the app. Used when there is no
-    /// provider to work with, so dismissing the wizard is pointless.
-    var closeAppOnCancel: Bool = false
+    /// Called on Finish and Cancel. The owner decides what shows next (the
+    /// onboarding sheet when it opened the wizard).
+    let onClose: () -> Void
 
     @FocusState private var keyFocused: Bool
 
-    init(addedProviders: Set<Provider>, closeAppOnCancel: Bool = false) {
+    init(addedProviders: Set<Provider>, onClose: @escaping () -> Void) {
         _model = StateObject(
             wrappedValue: ProviderWizardModel(
                 addedProviders: addedProviders,
@@ -26,7 +25,7 @@ struct ProviderWizardView: View {
                 commit: { provider, key, validation in
                     try await ChatEngine.shared.addProvider(provider, apiKey: key, validation: validation)
                 }))
-        self.closeAppOnCancel = closeAppOnCancel
+        self.onClose = onClose
     }
 
     var body: some View {
@@ -87,14 +86,17 @@ struct ProviderWizardView: View {
     private var navigationBar: some View {
         HStack {
             if model.step != .summary {
-                Button("Cancel") { handleCancel() }
-                    .keyboardShortcut(.cancelAction)
+                Button("Cancel") {
+                    model.cancel()
+                    onClose()
+                }
+                .keyboardShortcut(.cancelAction)
             }
 
             Spacer()
 
             if model.step == .summary {
-                Button("Finish") { dismiss() }
+                Button("Finish") { onClose() }
                     .keyboardShortcut(.defaultAction)
             } else {
                 if model.canGoBack {
@@ -107,15 +109,6 @@ struct ProviderWizardView: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(!model.canGoNext)
             }
-        }
-    }
-
-    private func handleCancel() {
-        model.cancel()
-        if closeAppOnCancel {
-            NSApp.terminate(nil)
-        } else {
-            dismiss()
         }
     }
 

@@ -15,6 +15,26 @@ enum Provider: String, CaseIterable, Codable, Sendable {
         }
     }
 
+    /// The short name accepted by the model picker search (`or.llama`).
+    var alias: String {
+        switch self {
+        case .openai: return "oa"
+        case .anthropic: return "an"
+        case .deepseek: return "ds"
+        case .openrouter: return "or"
+        }
+    }
+
+    /// A provider written the way the picker accepts it: the full name or the
+    /// alias, in any case.
+    init?(searchPrefix: String) {
+        let lowered = searchPrefix.lowercased()
+        guard let match = Provider.allCases.first(where: { $0.rawValue == lowered || $0.alias == lowered }) else {
+            return nil
+        }
+        self = match
+    }
+
     /// One line shown in the provider wizard.
     var summary: String {
         switch self {
