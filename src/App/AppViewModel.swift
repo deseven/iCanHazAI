@@ -54,7 +54,9 @@ final class AppViewModel: ObservableObject {
     @Published var chatSummaries: [ChatSummary] = []
     @Published var roles: [Role] = []
     @Published var prompts: [Prompt] = []
-    @Published var connections: [Connection] = []
+
+    @Published var providers: [ConfiguredProvider] = []
+    @Published var models: [CatalogModel] = []
     @Published var mcps: [MCPServer] = []
     @Published var selectedChatID: String? {
         didSet {
@@ -72,7 +74,8 @@ final class AppViewModel: ObservableObject {
                 showRolePicker = false
                 showWorkdirPicker = false
                 showMCPPicker = false
-                showConnectionPicker = false
+                showModelPicker = false
+                workdirPickPending = false
                 pendingEditMessageID = nil
                 pendingDeleteMessageID = nil
                 pendingDenyToolCallID = nil
@@ -98,21 +101,68 @@ final class AppViewModel: ObservableObject {
     /// Width of the chat info sidebar. Drag-resizable, never collapsible
     /// (it's shown/hidden wholesale instead).
     @Published var chatInfoSidebarWidth: CGFloat = SidebarSizing.defaultChatInfoWidth
-    /// Message id pending an edit action (set by the chat list; consumed
-    /// by ChatView's edit sheet).
-    @Published var pendingEditMessageID: UUID?
-    /// Message id pending a delete action (set by the chat list;
-    /// consumed by ChatView's delete confirmation sheet).
-    @Published var pendingDeleteMessageID: UUID?
-    /// Tool-call id pending a deny-reason sheet (set by the chat list
-    /// when the user presses Deny; consumed by ChatView's deny sheet).
-    @Published var pendingDenyToolCallID: String?
+    /// The sheet currently shown over the main window — never more than one.
+    /// Presenting another replaces it; see `presentSheet(_:)`. The `show…`
+    /// and `pending…` properties below are views onto this value.
+    @Published var activeSheet: MainSheet? {
+        didSet {
+            // Pickers that were held back while an app-level sheet was
+            // showing (e.g. the model picker once the wizard added the first
+            // provider) get their turn when it closes. Deferred so a sheet
+            // closed as part of a larger state change sees the final state.
+            guard activeSheet == nil, oldValue?.isAppLevel == true else { return }
+            Task { @MainActor [weak self] in
+                guard let self, self.activeSheet == nil else { return }
+                self.maybePresentRolePickerForSelectedChat()
+                self.maybePresentModelPickerForSelectedChat()
+            }
+        }
+    }
+    /// Message id pending an edit action (set by the chat list; shown as the
+    /// edit sheet).
+    var pendingEditMessageID: UUID? {
+        get { if case .editMessage(let id) = activeSheet { return id } else { return nil } }
+        set {
+            if let newValue {
+                presentSheet(.editMessage(newValue))
+            } else if case .editMessage = activeSheet {
+                activeSheet = nil
+            }
+        }
+    }
+    /// Message id pending a delete action (set by the chat list; shown as the
+    /// delete confirmation sheet).
+    var pendingDeleteMessageID: UUID? {
+        get { if case .deleteMessage(let id) = activeSheet { return id } else { return nil } }
+        set {
+            if let newValue {
+                presentSheet(.deleteMessage(newValue))
+            } else if case .deleteMessage = activeSheet {
+                activeSheet = nil
+            }
+        }
+    }
+    /// Tool-call id pending a deny-reason sheet (set by the chat list when the
+    /// user presses Deny).
+    var pendingDenyToolCallID: String? {
+        get { if case .denyToolCall(let id) = activeSheet { return id } else { return nil } }
+        set {
+            if let newValue {
+                presentSheet(.denyToolCall(callID: newValue))
+            } else if case .denyToolCall = activeSheet {
+                activeSheet = nil
+            }
+        }
+    }
     /// Filenames of chats awaiting tool-call approval that aren't currently
     /// selected. Each blinks in the sidebar to draw the user's attention.
     @Published var blinkingChatIDs: Set<String> = []
     /// Whether the role picker sheet is currently shown (for a new chat or to
     /// assign a role to an existing chat whose role is missing).
-    @Published var showRolePicker: Bool = false
+    var showRolePicker: Bool {
+        get { activeSheet == .rolePicker }
+        set { setSheet(.rolePicker, shown: newValue) }
+    }
     /// The mode the role picker sheet is operating in: creating a brand-new
     /// chat, or assigning a role to an existing chat whose role is missing.
     @Published var rolePickerMode: RolePickerMode = .newChat
@@ -125,7 +175,10 @@ final class AppViewModel: ObservableObject {
     /// title-bar warning button and the errors sheet.
     @Published var configErrors: [ConfigError] = []
     /// Whether the configuration-errors sheet is currently shown.
-    @Published var showConfigErrors: Bool = false
+    var showConfigErrors: Bool {
+        get { activeSheet == .configErrors }
+        set { setSheet(.configErrors, shown: newValue) }
+    }
     /// Active dock-bounce request id (if any), cancelled when the window
     /// becomes active or all approvals are resolved.
     private var attentionRequestID: Int? = nil
@@ -138,9 +191,10 @@ final class AppViewModel: ObservableObject {
     // MARK: - Preferences state (cached from ConfigManager)
 
     /// Cached preferences values, kept in sync with ConfigManager.
-    @Published var preferencesDefaultConnection: String? = nil
     @Published var preferencesDefaultRole: String? = "Assistant"
-    @Published var preferencesUtilityConnection: String? = nil
+    /// `provider:model-id` strings; nil means "No model".
+    @Published var preferencesDefaultModel: String?
+    @Published var preferencesUtilityModel: String?
 
     @Published var preferencesInterfaceScale: Double = ChatFeaturesConfig.defaultInterfaceScale
     @Published var preferencesAppDebugEnabled: Bool = false
@@ -154,11 +208,27 @@ final class AppViewModel: ObservableObject {
     /// directory picker. Mirrored from `config.toml` `[general].working_directories`.
     @Published var workingDirectories: [String] = []
     /// Whether the working-directory picker sheet is currently shown.
-    @Published var showWorkdirPicker: Bool = false
+    var showWorkdirPicker: Bool {
+        get { activeSheet == .workdirPicker }
+        set { setSheet(.workdirPicker, shown: newValue) }
+    }
     /// Whether the MCP picker sheet is currently shown.
-    @Published var showMCPPicker: Bool = false
-    /// Whether the connection (model) picker sheet is currently shown.
-    @Published var showConnectionPicker: Bool = false
+    var showMCPPicker: Bool {
+        get { activeSheet == .mcpPicker }
+        set { setSheet(.mcpPicker, shown: newValue) }
+    }
+    /// Whether the model picker sheet is currently shown.
+    var showModelPicker: Bool {
+        get { activeSheet == .modelPicker }
+        set { setSheet(.modelPicker, shown: newValue) }
+    }
+    /// A new chat's role needs a working directory: the workdir picker opens
+    /// once the model picker was picked or dismissed, never stacked on it.
+    private var workdirPickPending = false
+    /// Filenames for which the user dismissed the model picker, so it isn't
+    /// immediately re-shown on the next state emit. Cleared when the chat is
+    /// re-selected or a model is picked.
+    @Published var dismissedModelPickerFor: Set<String> = []
     /// Monotonic counter bumped on every MCP configuration state change, so
     /// views displaying live MCP tool lists know when to refetch.
     @Published var mcpConfigurationVersion: Int = 0
@@ -180,10 +250,49 @@ final class AppViewModel: ObservableObject {
         didSet { saveChatListState() }
     }
     /// Whether the sidebar's role picker (for "By Role" mode) is shown.
-    @Published var showSidebarRolePicker: Bool = false
+    var showSidebarRolePicker: Bool {
+        get { activeSheet == .sidebarRolePicker }
+        set { setSheet(.sidebarRolePicker, shown: newValue) }
+    }
     /// Whether the sidebar's directory picker (for "By Directory" mode) is
     /// shown.
-    @Published var showSidebarDirectoryPicker: Bool = false
+    var showSidebarDirectoryPicker: Bool {
+        get { activeSheet == .sidebarDirectoryPicker }
+        set { setSheet(.sidebarDirectoryPicker, shown: newValue) }
+    }
+
+    // MARK: - Sheets
+
+    /// Shows `sheet` over the main window, replacing the sheet that is showing
+    /// (only one at a time). The one exception is a blocking sheet — the
+    /// no-provider wizard — which nothing else may displace.
+    func presentSheet(_ sheet: MainSheet) {
+        guard activeSheet != sheet else { return }
+        if let current = activeSheet, current.isBlocking, !sheet.isBlocking { return }
+        activeSheet = sheet
+    }
+
+    /// Closes `sheet` if it is the one showing; a no-op when another sheet has
+    /// since replaced it.
+    func dismissSheet(_ sheet: MainSheet) {
+        if activeSheet == sheet { activeSheet = nil }
+    }
+
+    /// Closes the showing sheet, unless it's blocking.
+    func dismissActiveSheet() {
+        if activeSheet?.isBlocking == false { activeSheet = nil }
+    }
+
+    private func setSheet(_ sheet: MainSheet, shown: Bool) {
+        if shown { presentSheet(sheet) } else { dismissSheet(sheet) }
+    }
+
+    /// Brings the main window forward (creating it if needed) and shows `sheet`
+    /// in it. This is how the menu items open Preferences and the wizards.
+    func presentSheetInMainWindow(_ sheet: MainSheet) {
+        MainWindowController.shared.reveal()
+        presentSheet(sheet)
+    }
 
     /// Suppresses `saveChatListState` during initial load so restoring values
     /// from config doesn't trigger redundant writes.
@@ -249,9 +358,9 @@ final class AppViewModel: ObservableObject {
     private func loadPreferences() {
         Task {
             await config.load()
-            let dc = await config.getDefaultConnection()
             let dr = await config.getDefaultRole()
-            let uc = await config.getUtilityConnection()
+            let dm = await config.getDefaultModel()
+            let um = await config.getUtilityModel()
             let wd = await config.getWorkingDirectories()
             let rs = await config.getChatInfoSidebarVisible()
             let lw = await config.getChatListSidebarWidth()
@@ -263,9 +372,9 @@ final class AppViewModel: ObservableObject {
             let eu = await config.getExpandToolUse()
             let ws = await config.getWebSearchConfig()
             let clm = await config.getChatListConfig()
-            preferencesDefaultConnection = dc
             preferencesDefaultRole = dr
-            preferencesUtilityConnection = uc
+            preferencesDefaultModel = dm
+            preferencesUtilityModel = um
             workingDirectories = wd
 
             preferencesInterfaceScale = scale
@@ -320,7 +429,7 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Reloads preferences (call after changes to connections/roles/config).
+    /// Reloads preferences (call after changes to roles/config).
     func refreshPreferences() {
         loadPreferences()
     }
@@ -606,7 +715,8 @@ final class AppViewModel: ObservableObject {
             selectedChatID = filename
             await engine.selectChat(filename: filename)
             await engine.markViewed(filename: filename)
-            if needsWorkdir { showWorkdirPicker = true }
+            let hasModel = await engine.chatModel(filename: filename) != nil
+            presentModelPickerForNewChat(needsWorkdir: needsWorkdir, hasModel: hasModel)
         }
     }
 
@@ -631,7 +741,8 @@ final class AppViewModel: ObservableObject {
             selectedChatID = filename
             await engine.selectChat(filename: filename)
             await engine.markViewed(filename: filename)
-            if needsWorkdir { showWorkdirPicker = true }
+            let hasModel = await engine.chatModel(filename: filename) != nil
+            presentModelPickerForNewChat(needsWorkdir: needsWorkdir, hasModel: hasModel)
         }
     }
 
@@ -649,17 +760,48 @@ final class AppViewModel: ObservableObject {
         return role.workingDirectory?.isEmpty ?? true
     }
 
-    // MARK: - Preference bindings (two-way, write-through to ConfigManager)
+    // MARK: - Preference models
 
-    var bindingDefaultConnection: Binding<String?> {
-        Binding(
-            get: { self.preferencesDefaultConnection },
-            set: { newValue in
-                self.preferencesDefaultConnection = newValue
-                Task { await self.config.setDefaultConnection(newValue) }
-            }
-        )
+    func preferencesModel(for setting: ModelSetting) -> String? {
+        switch setting {
+        case .defaultModel: return preferencesDefaultModel
+        case .utilityModel: return preferencesUtilityModel
+        }
     }
+
+    func preferencesModelID(for setting: ModelSetting) -> ModelID? {
+        preferencesModel(for: setting).flatMap { ModelID(parsing: $0) }
+    }
+
+    /// What a model status block shows: the display name when the model is in
+    /// the catalog, else the raw id; "No model" when unset.
+    func modelLabel(for raw: String?) -> String {
+        guard let raw else { return "No model" }
+        guard let id = ModelID(parsing: raw) else { return raw }
+        return models.first { $0.id == id }?.displayName ?? raw
+    }
+
+    /// Hides Preferences and shows the model picker for a general model setting.
+    func pickSettingsModel(_ setting: ModelSetting) {
+        presentSheet(.settingsModelPicker(setting))
+    }
+
+    /// Stores the picked model (nil clears it) and returns to Preferences.
+    func settingsModelPicked(_ setting: ModelSetting, _ id: ModelID?) {
+        let value = id?.description
+        switch setting {
+        case .defaultModel:
+            preferencesDefaultModel = value
+            Task { await config.setDefaultModel(value) }
+        case .utilityModel:
+            preferencesUtilityModel = value
+            Task { await config.setUtilityModel(value) }
+        }
+        if let id { Task { await engine.markModelUsed(id) } }
+        presentSheet(.preferences)
+    }
+
+    // MARK: - Preference bindings (two-way, write-through to ConfigManager)
 
     var bindingDefaultRole: Binding<String?> {
         Binding(
@@ -667,16 +809,6 @@ final class AppViewModel: ObservableObject {
             set: { newValue in
                 self.preferencesDefaultRole = newValue
                 Task { await self.config.setDefaultRole(newValue) }
-            }
-        )
-    }
-
-    var bindingUtilityConnection: Binding<String?> {
-        Binding(
-            get: { self.preferencesUtilityConnection },
-            set: { newValue in
-                self.preferencesUtilityConnection = newValue
-                Task { await self.config.setUtilityConnection(newValue) }
             }
         )
     }
@@ -794,6 +926,7 @@ final class AppViewModel: ObservableObject {
             }
             if Self.recordsUIRelevantChanged(from: chatItems, to: records) {
                 chatItems = records
+                maybePresentModelPickerForSelectedChat()
             }
             // Drafts of destroyed temporary chats are dead weight (their
             // filenames are never reused) — drop them.
@@ -834,8 +967,9 @@ final class AppViewModel: ObservableObject {
                     Task {
                         await engine.selectChat(filename: first)
                         // On startup auto-selection, present the role picker if
-                        // the first chat's role is missing.
+                        // the first chat's role is missing, else the model picker.
                         maybePresentRolePickerForSelectedChat()
+                        maybePresentModelPickerForSelectedChat()
                     }
                 }
             }
@@ -864,22 +998,24 @@ final class AppViewModel: ObservableObject {
             // role missing. Present the picker so the user can assign a new one
             // (unless they already dismissed it for this chat).
             maybePresentRolePickerForSelectedChat()
+            maybePresentModelPickerForSelectedChat()
         case .promptsChanged(let prompts):
             self.prompts = prompts
             LoaderController.shared.markApplicationCompleted(.prompts, loaded: prompts.count)
-        case .connectionsChanged(let connections):
-            self.connections = connections
-            refreshPreferences()
-            // Clean-state flow: with no connections there's nothing to work
-            // with, so always surface the creation wizard. Cancelling it (via
-            // `closeAppOnCancel`) terminates the app.
-            if connections.isEmpty {
-                ConnectionWizardView.show(
-                    closeAppOnCancel: true,
-                    onFinish: { self.refreshAfterWizard() }
-                )
+        case .providersChanged(let providers):
+            self.providers = providers
+            LoaderController.shared.markProvidersCompleted(providers)
+            // Clean-state flow: with no providers there's nothing to chat
+            // with, so always surface the wizard (over whatever sheet is
+            // showing). Cancelling it (via `closeAppOnCancel`) terminates the
+            // app. Repeated events are no-ops. The sheet is shown once the
+            // main window exists, so it never competes with the loader.
+            if providers.isEmpty {
+                presentSheet(.providerWizard(closeAppOnCancel: true))
             }
-            LoaderController.shared.markApplicationCompleted(.connections, loaded: connections.count)
+            maybePresentModelPickerForSelectedChat()
+        case .modelsChanged(let models):
+            self.models = models
         case .mcpsChanged(let mcps):
             self.mcps = mcps
         case .mcpConfiguration(let state):
@@ -981,36 +1117,6 @@ final class AppViewModel: ObservableObject {
         if let id = pendingApprovalCallID { pendingDenyToolCallID = id }
     }
 
-    // MARK: - Wizard completion
-
-    /// Called after the connection wizard finishes. Refreshes preferences and
-    /// automatically assigns the just-created connection as the default and
-    /// utility connection when neither is set yet (first-connection flow):
-    /// instead of prompting the user, we just use the connection they created.
-    func refreshAfterWizard() {
-        refreshPreferences()
-        Task {
-            try? await Task.sleep(for: .milliseconds(300))
-            await autoAssignConnectionRolesIfNeeded()
-        }
-    }
-
-    /// When no default and/or utility connection is configured, assigns the
-    /// most recently created connection to those roles automatically. This is
-    /// the first-connection flow.
-    private func autoAssignConnectionRolesIfNeeded() async {
-        guard let conn = connections.last else { return }
-        let dc = await config.getDefaultConnection()
-        let uc = await config.getUtilityConnection()
-        if dc == nil {
-            await config.setDefaultConnection(conn.id)
-        }
-        if uc == nil {
-            await config.setUtilityConnection(conn.id)
-        }
-        await MainActor.run { self.refreshPreferences() }
-    }
-
     // MARK: - Derived helpers
 
     /// Returns the currently selected chat record, if any.
@@ -1091,7 +1197,7 @@ final class AppViewModel: ObservableObject {
     /// the picker is already showing, or there are no roles to pick from.
     /// Called after chat selection changes and after roles are (re)loaded.
     func maybePresentRolePickerForSelectedChat() {
-        guard !showRolePicker else { return }
+        guard activeSheet == nil else { return }
         guard let id = selectedChatID else { return }
         guard !dismissedRoleAssignmentFor.contains(id) else { return }
         guard !roles.isEmpty else { return }
@@ -1100,50 +1206,81 @@ final class AppViewModel: ObservableObject {
         showRolePicker = true
     }
 
-    /// Whether the selected chat has a resolvable connection: either the
-    /// per-chat override or the role's connection references a valid connection.
-    var selectedChatHasConnection: Bool {
-        guard let chat = selectedChatItem?.chat, let role = selectedRole else { return false }
-        for candidate in [chat.connection, role.connection] {
-            if let id = candidate, !id.isEmpty, connections.contains(where: { $0.id == id }) {
-                return true
-            }
+    /// The model identity string of the selected chat, if any.
+    var selectedChatModelID: ModelID? {
+        selectedChatItem?.chat?.model.flatMap { ModelID(parsing: $0) }
+    }
+
+    /// The catalog entry of the selected chat's model, when it's in the cache.
+    var selectedChatModel: CatalogModel? {
+        guard let id = selectedChatModelID else { return nil }
+        return models.first { $0.id == id }
+    }
+
+    /// Whether the selected chat has a model. Validity was enforced when the
+    /// chat was loaded (an unusable model is reset to nil).
+    var selectedChatHasModel: Bool {
+        selectedChatItem?.chat?.model != nil
+    }
+
+    /// Pure decision: whether the model picker should be presented for a chat
+    /// that has no model. Extracted so the picker state machine is testable
+    /// without driving the UI.
+    nonisolated static func shouldPresentModelPicker(
+        chat: Chat?, hasProviders: Bool, roleValid: Bool, anotherPickerShowing: Bool, dismissed: Bool
+    ) -> Bool {
+        guard let chat, chat.model == nil else { return false }
+        return hasProviders && roleValid && !anotherPickerShowing && !dismissed
+    }
+
+    /// Presents the model picker for the selected chat when it has no model —
+    /// unless the user already dismissed it for this chat, another picker is
+    /// showing, no provider is configured, or the role is missing (the role
+    /// picker comes first). Called after chat selection changes and after
+    /// roles, providers or chats change.
+    func maybePresentModelPickerForSelectedChat() {
+        guard let id = selectedChatID else { return }
+        let show = Self.shouldPresentModelPicker(
+            chat: selectedChatItem?.chat,
+            hasProviders: !providers.isEmpty,
+            roleValid: selectedChatHasValidRole,
+            anotherPickerShowing: activeSheet != nil,
+            dismissed: dismissedModelPickerFor.contains(id))
+        if show { showModelPicker = true }
+    }
+
+    /// Opens the model picker for a just-created chat, unless a default or
+    /// role-preferred model was already preselected. A role that needs a
+    /// working directory gets its picker once the model picker is done.
+    private func presentModelPickerForNewChat(needsWorkdir: Bool, hasModel: Bool) {
+        guard !providers.isEmpty, !hasModel else {
+            if needsWorkdir { showWorkdirPicker = true }
+            return
         }
-        return false
+        workdirPickPending = needsWorkdir
+        showModelPicker = true
     }
 
-    /// The effective connection id for the selected chat (override when
-    /// allowed, otherwise the role's connection). Nil when none resolves.
-    var selectedChatConnectionID: String? {
-        guard let chat = selectedChatItem?.chat, let role = selectedRole else { return nil }
-        if role.connectionOverrideAllowed, let id = chat.connection,
-            connections.contains(where: { $0.id == id })
-        {
-            return id
-        }
-        if let id = role.connection, connections.contains(where: { $0.id == id }) {
-            return id
-        }
-        return chat.connection
+    private func continuePendingWorkdirPick() {
+        guard workdirPickPending else { return }
+        workdirPickPending = false
+        showWorkdirPicker = true
     }
 
-    /// Whether the user may change the connection for the selected chat.
-    var selectedChatConnectionPickerEnabled: Bool {
-        selectedRole?.connectionOverrideAllowed ?? false
+    /// A model was chosen in the picker.
+    func modelPickerPicked(_ id: ModelID) {
+        showModelPicker = false
+        if let filename = selectedChatID { dismissedModelPickerFor.insert(filename) }
+        setModel(id.description)
+        continuePendingWorkdirPick()
     }
 
-    /// The connection currently in effect for the selected chat, if it resolves.
-    var selectedChatConnection: Connection? {
-        guard let id = selectedChatConnectionID else { return nil }
-        return connections.first { $0.id == id }
-    }
-
-    /// Whether the connection control should be shown in the chat toolbar:
-    /// always when overrides are allowed, otherwise (display only) when the
-    /// role's connection resolves.
-    var selectedChatConnectionControlVisible: Bool {
-        guard selectedRole != nil else { return false }
-        return selectedChatConnectionPickerEnabled || selectedChatConnection != nil
+    /// The picker was dismissed. The chat stays without a model (sending is
+    /// disabled) until the user picks one from the toolbar.
+    func modelPickerCancelled() {
+        showModelPicker = false
+        if let filename = selectedChatID { dismissedModelPickerFor.insert(filename) }
+        continuePendingWorkdirPick()
     }
 
     /// The effective prompt name for the selected chat (override when allowed,
@@ -1383,7 +1520,7 @@ final class AppViewModel: ObservableObject {
         case (let x?, let y?):
             if x.role != y.role
                 || x.title != y.title
-                || x.connection != y.connection
+                || x.model != y.model
                 || x.prompt != y.prompt
                 || x.workingDirectory != y.workingDirectory
                 || x.mcps != y.mcps
@@ -1406,7 +1543,7 @@ final class AppViewModel: ObservableObject {
                 || m.role != n.role
                 || m.error != n.error
                 || m.timestamp != n.timestamp
-                || m.connectionName != n.connectionName
+                || m.model != n.model
                 || m.attachments != n.attachments
                 || m.toolCalls != n.toolCalls
                 || m.toolResults != n.toolResults
@@ -1722,9 +1859,14 @@ final class AppViewModel: ObservableObject {
         Task { await engine.setChatArchived(filename: filename, archived: archived) }
     }
 
-    func setConnection(_ connectionID: String) {
+    /// OpenRouter server-side search for the model picker.
+    func searchModels(_ text: String, provider: Provider) async throws -> [CatalogModel] {
+        try await engine.searchModels(text, provider: provider)
+    }
+
+    func setModel(_ modelID: String) {
         guard let filename = selectedChatID else { return }
-        Task { await engine.setConnection(filename: filename, connectionID: connectionID) }
+        Task { await engine.setModel(filename: filename, modelID: modelID) }
     }
 
     func setRole(_ roleName: String) {
@@ -1815,6 +1957,11 @@ final class AppViewModel: ObservableObject {
         Task { await engine.applyConfigChange(change) }
     }
 
+    /// Re-fetches the model lists of every configured provider ("Provider > Refresh Models…").
+    func refreshModels() {
+        Task { await engine.refreshModels() }
+    }
+
     /// Triggers a full MCP configuration pass ("MCP > Reinitialize MCP Servers…"). Resets
     /// all configured MCPs and their tools cache, then re-connects and
     /// re-queries every server. The overlay is shown while in progress.
@@ -1835,6 +1982,7 @@ final class AppViewModel: ObservableObject {
         // Clear the dismissal so re-opening a chat whose role is missing
         // re-prompts the role picker.
         dismissedRoleAssignmentFor.remove(filename)
+        dismissedModelPickerFor.remove(filename)
         selectedChatID = filename
         Task {
             await engine.selectChat(filename: filename)
@@ -1843,6 +1991,7 @@ final class AppViewModel: ObservableObject {
             // missing. Done after selectChat so the chat record is loaded and
             // `selectedChatNeedsRoleAssignment` reflects the real role state.
             maybePresentRolePickerForSelectedChat()
+            maybePresentModelPickerForSelectedChat()
         }
     }
 

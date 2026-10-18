@@ -28,7 +28,7 @@ extension AllAppTests {
                     CLIRequest(
                         id: "r1", method: CLIRequest.methodChatSend,
                         params: CLIRequestParams(
-                            message: "hi", role: "Assistant", connection: "openai/main", chat: "c.json", temporary: true
+                            message: "hi", role: "Assistant", model: "openai:gpt-5", chat: "c.json", temporary: true
                         ))),
                 .request(
                     CLIRequest(
@@ -130,19 +130,19 @@ extension AllAppTests {
         @Test("flags parse in any position")
         func flags() throws {
             let opts = try CLIClient.CLIOptions.parse([
-                "--role", "Developer", "hi", "--connection", "openai/main", "--chat", "c.json",
+                "--role", "Developer", "hi", "--model", "openai:gpt-5", "--chat", "c.json",
             ])
             #expect(opts.role == "Developer")
-            #expect(opts.connection == "openai/main")
+            #expect(opts.model == "openai:gpt-5")
             #expect(opts.chat == "c.json")
             #expect(opts.words == ["hi"])
         }
 
         @Test("short flags parse like their long forms")
         func shortFlags() throws {
-            let opts = try CLIClient.CLIOptions.parse(["-r", "Developer", "-c", "openai/main", "-f", "c.json", "hi"])
+            let opts = try CLIClient.CLIOptions.parse(["-r", "Developer", "-m", "openai:gpt-5", "-f", "c.json", "hi"])
             #expect(opts.role == "Developer")
-            #expect(opts.connection == "openai/main")
+            #expect(opts.model == "openai:gpt-5")
             #expect(opts.chat == "c.json")
             #expect(!opts.temporary)
             #expect(opts.words == ["hi"])
@@ -158,12 +158,12 @@ extension AllAppTests {
             // Quoting is the shell's job — a quoted value arrives as a single arg.
             let opts = try CLIClient.CLIOptions.parse([
                 "--role=role name with spaces",
-                "--connection=connection name with spaces",
+                "--model=openrouter:some/model:free",
                 "--chat=my chat",
                 "hi",
             ])
             #expect(opts.role == "role name with spaces")
-            #expect(opts.connection == "connection name with spaces")
+            #expect(opts.model == "openrouter:some/model:free")
             #expect(opts.chat == "my chat")
             #expect(!opts.temporary)
             #expect(opts.words == ["hi"])

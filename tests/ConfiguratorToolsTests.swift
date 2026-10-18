@@ -32,43 +32,24 @@ extension AllAppTests {
                 #expect(ConfiguratorTools.toolNames.contains(def.name))
             }
             for expected in [
-                "list_connections", "list_mcps", "list_roles", "list_prompts",
+                "list_mcps", "list_roles", "list_prompts",
                 "read_config", "write_config", "read_log",
-                "delete_connection", "delete_mcp", "delete_role", "delete_prompt",
-                "check_mcp_stdio", "check_mcp_http", "check_connection",
+                "delete_mcp", "delete_role", "delete_prompt",
+                "check_mcp_stdio", "check_mcp_http",
             ] {
                 #expect(ConfiguratorTools.toolNames.contains(expected), "missing \(expected)")
             }
         }
 
-        // MARK: - Connections
-
-        @Test("write_connection validates and persists; list/read round-trip")
-        func connectionRoundTrip() async throws {
+        @Test("connection tools are gone")
+        func connectionToolsRemoved() async throws {
+            for removed in [
+                "list_connections", "read_connection", "write_connection", "delete_connection", "check_connection",
+            ] {
+                #expect(!ConfiguratorTools.toolNames.contains(removed), "\(removed) should not exist")
+            }
             let env = try TempEnv().env
-            let invalid = await call("write_connection", env, ["id": "openai/bad", "content": "{ not jsonc"])
-            #expect(invalid.isError)
-            #expect(
-                !FileManager.default.fileExists(
-                    atPath: env.openaiConnectionsURL.appendingPathComponent("bad.jsonc").path))
-
-            let valid = await call("write_connection", env, ["id": "openai/gpt", "content": "{\"model\":\"gpt-4o\"}"])
-            #expect(!valid.isError)
-
-            let listed = await call("list_connections", env, [:])
-            #expect(!listed.isError)
-            #expect(listed.content.contains("openai/gpt"))
-
-            let read = await call("read_connection", env, ["id": "openai/gpt"])
-            #expect(!read.isError)
-            #expect(read.content.contains("\"model\":"))
-        }
-
-        @Test("write_connection rejects an unknown provider")
-        func connectionBadProvider() async throws {
-            let env = try TempEnv().env
-            let res = await call("write_connection", env, ["id": "mistral/x", "content": "{\"model\":\"m\"}"])
-            #expect(res.isError)
+            #expect(await call("list_connections", env, [:]).isError)
         }
 
         // MARK: - MCPs
@@ -101,9 +82,6 @@ extension AllAppTests {
             let badPrompt = await call("write_role", env, ["name": "x", "content": "prompt = \"Ghost\"\n"])
             #expect(badPrompt.isError)
             #expect(badPrompt.content.contains("Ghost"))
-            let badConn = await call("write_role", env, ["name": "x", "content": "connection = \"openai/Ghost\"\n"])
-            #expect(badConn.isError)
-            #expect(badConn.content.contains("Ghost"))
 
             // Once the referenced MCP exists, the same write succeeds.
             _ = await call(
@@ -261,6 +239,24 @@ extension AllAppTests {
             #expect(decoded.general.workingDirectories == ["/a", "/b"])
         }
 
+        @Test("AppConfig default_model and utility_model round-trip through TOML")
+        func roundTripsGeneralModels() throws {
+            var cfg = AppConfig()
+            cfg.general.defaultModel = "openai:gpt-5"
+            cfg.general.utilityModel = "deepseek:flash"
+            let encoder = TOMLEncoder()
+            encoder.outputFormatting = .sortedKeys
+            encoder.keyEncodingStrategy = .convertToSnakeCase
+            let encoded = try encoder.encode(cfg)
+            let text = try #require(String(data: encoded, encoding: .utf8))
+            #expect(text.contains("default_model"))
+            #expect(text.contains("utility_model"))
+            let decoded = try TOMLDecoder().decode(AppConfig.self, from: encoded)
+            #expect(decoded.general.defaultModel == "openai:gpt-5")
+            #expect(decoded.general.utilityModel == "deepseek:flash")
+            #expect(AppConfig().general.defaultModel == nil)
+        }
+
         @Test("AppConfig interface_scale round-trips through TOML")
         func roundTripsInterfaceScale() throws {
             var cfg = AppConfig()
@@ -296,7 +292,6 @@ extension AllAppTests {
             // A completely empty file is valid TOML — every group is missing,
             // so all fields fall back to their defaults.
             let config = try TOMLDecoder().decode(AppConfig.self, from: Data("".utf8))
-            #expect(config.general.defaultConnection == nil)
             #expect(config.general.defaultRole == nil)
             #expect(config.chatBehaviour.expandToolUse == nil)
             #expect(config.chatFeatures.interfaceScale == nil)
@@ -349,7 +344,6 @@ extension AllAppTests {
             #expect(await call("read_mcp", env, ["name": "nope"]).isError)
             #expect(await call("read_role", env, ["name": "nope"]).isError)
             #expect(await call("read_prompt", env, ["name": "nope"]).isError)
-            #expect(await call("read_connection", env, ["id": "openai/nope"]).isError)
         }
 
         // MARK: - Name validation
@@ -409,12 +403,10 @@ extension AllAppTests {
             _ = await call("write_prompt", env, ["name": "Assistant", "content": "hi"])
             _ = await call("write_role", env, ["name": "Temp", "content": "prompt = \"Assistant\"\n"])
             _ = await call("write_prompt", env, ["name": "Temp", "content": "hi"])
-            _ = await call("write_connection", env, ["id": "openai/Temp", "content": "{\"model\":\"m\"}"])
 
             #expect(!(await call("delete_mcp", env, ["name": "Temp"])).isError)
             #expect(!(await call("delete_role", env, ["name": "Temp"])).isError)
             #expect(!(await call("delete_prompt", env, ["name": "Temp"])).isError)
-            #expect(!(await call("delete_connection", env, ["id": "openai/Temp"])).isError)
 
             // Already deleted → error.
             #expect(await call("delete_mcp", env, ["name": "Temp"]).isError)
@@ -454,12 +446,6 @@ extension AllAppTests {
         @Test("validation errors name the offending field")
         func validationMessagesAreSpecific() async throws {
             let env = try TempEnv().env
-            // Missing required "model" → message must mention "model".
-            let conn = await call(
-                "write_connection", env, ["id": "openai/x", "content": "{\"baseUrl\":\"https://x\"}"])
-            #expect(conn.isError)
-            #expect(conn.content.lowercased().contains("model"))
-
             // Missing required "transport" → message must mention "transport".
             let mcp = await call("write_mcp", env, ["name": "x", "content": "command = \"echo\"\n"])
             #expect(mcp.isError)
@@ -515,36 +501,6 @@ extension AllAppTests {
             #expect(res.isError)
         }
 
-        // MARK: - check_connection
-
-        // MARK: - check_connection
-
-        @Test("check_connection errors on a missing connection")
-        func connectionCheckMissing() async throws {
-            let env = try TempEnv().env
-            let res = await call("check_connection", env, ["id": "openai/nope"])
-            #expect(res.isError)
-            #expect(res.content.lowercased().contains("not found"))
-        }
-
-        @Test("check_connection errors on a malformed id")
-        func connectionCheckBadId() async throws {
-            let env = try TempEnv().env
-            let res = await call("check_connection", env, ["id": "no-slash"])
-            #expect(res.isError)
-        }
-
-        @Test("check_connection errors on an undecodable connection file")
-        func connectionCheckUndecodable() async throws {
-            let env = try TempEnv().env
-            _ = await call("write_connection", env, ["id": "openai/broken", "content": "{\"model\":\"m\"}"])
-            // Corrupt the file on disk so loading/decoding fails.
-            let url = env.openaiConnectionsURL.appendingPathComponent("broken.jsonc")
-            try Data("{ not valid jsonc".utf8).write(to: url)
-            let res = await call("check_connection", env, ["id": "openai/broken"])
-            #expect(res.isError)
-        }
-
         // MARK: - Applying changes
 
         /// Collects the `ConfigChange`s the tools report to the engine.
@@ -576,7 +532,6 @@ extension AllAppTests {
         func reportsChanges() async throws {
             let env = try TempEnv().env
             let cases: [(String, [String: String], ConfigChange)] = [
-                ("write_connection", ["id": "openai/gpt", "content": "{\"model\":\"gpt-4o\"}"], .connections),
                 (
                     "write_mcp", ["name": "Tavily", "content": "transport = \"stdio\"\ncommand = \"npx\"\n"],
                     .mcp("Tavily")
@@ -587,7 +542,6 @@ extension AllAppTests {
                 ("delete_role", ["name": "Coder"], .role("Coder")),
                 ("delete_prompt", ["name": "Greeter"], .prompt("Greeter")),
                 ("delete_mcp", ["name": "Tavily"], .mcp("Tavily")),
-                ("delete_connection", ["id": "openai/gpt"], .connections),
             ]
             for (name, arguments, expected) in cases {
                 let (result, changes) = await callRecording(name, env, arguments)
@@ -599,7 +553,7 @@ extension AllAppTests {
         @Test("rejected and read-only calls report no change")
         func reportsNoChangeOnFailure() async throws {
             let env = try TempEnv().env
-            let invalid = await callRecording("write_connection", env, ["id": "openai/bad", "content": "{ not jsonc"])
+            let invalid = await callRecording("write_mcp", env, ["name": "bad", "content": "not = = toml"])
             #expect(invalid.0.isError)
             #expect(invalid.1.isEmpty)
 
@@ -607,7 +561,7 @@ extension AllAppTests {
             #expect(missing.0.isError)
             #expect(missing.1.isEmpty)
 
-            let listed = await callRecording("list_connections", env, [:])
+            let listed = await callRecording("list_mcps", env, [:])
             #expect(!listed.0.isError)
             #expect(listed.1.isEmpty)
         }

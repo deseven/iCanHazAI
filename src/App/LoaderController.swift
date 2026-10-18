@@ -9,7 +9,7 @@ import SwiftUI
 enum AppResource: String, Sendable, CaseIterable {
     case configuration
     case chats
-    case connections
+    case providers
     case prompts
     case roles
 
@@ -18,7 +18,7 @@ enum AppResource: String, Sendable, CaseIterable {
         switch self {
         case .configuration: return "Configuration"
         case .chats: return "Chats"
-        case .connections: return "Connections"
+        case .providers: return "Providers"
         case .prompts: return "Prompts"
         case .roles: return "Roles"
         }
@@ -45,7 +45,7 @@ enum LoaderStatus: Sendable, Equatable {
     }
 }
 
-/// One row in the loader: a label (e.g. "Connections") plus a `detail`
+/// One row in the loader: a label (e.g. "Providers") plus a `detail`
 /// subtitle (e.g. "3 entries") and its status.
 ///
 /// - `total`: the number of items of this kind on disk (drives the
@@ -149,7 +149,7 @@ final class LoaderController: ObservableObject {
     /// Called once from `AppDelegate` right after the main config is read, so
     /// the list of "what we'll need to load" is known up front. Configuration
     /// is already loaded at this point, so it's marked complete immediately.
-    func beginStartup() {
+    func beginStartup(providerCount: Int = 0) {
         hideTask?.cancel()
         hideTask = nil
         startupReadyFired = false
@@ -158,7 +158,7 @@ final class LoaderController: ObservableObject {
         let counts: [AppResource: Int] = [
             .configuration: 1,
             .chats: env.chatCount(),
-            .connections: env.connectionCount(),
+            .providers: providerCount,
             .prompts: env.promptCount(),
             .roles: env.roleCount(),
         ]
@@ -228,8 +228,8 @@ final class LoaderController: ObservableObject {
     /// at start) determines the final mark: none failed → success, all failed
     /// → failed, some failed → warning. No-op when no entry exists for the
     /// resource (e.g. the event arrived without a preceding start, or the
-    /// loader is idle).
-    func markApplicationCompleted(_ resource: AppResource, loaded: Int) {
+    /// loader is idle). `detail` replaces the success subtitle.
+    func markApplicationCompleted(_ resource: AppResource, loaded: Int, detail: String? = nil) {
         guard mode != .idle else { return }
         guard var section = sections.first(where: { $0.id == "application" }),
             let idx = section.entries.firstIndex(where: { $0.id == resource.id })
@@ -250,9 +250,21 @@ final class LoaderController: ObservableObject {
         section.entries[idx].status = status
         // On success keep the batch-relative subtitle (e.g. "1 entry"); on
         // failure show how many didn't decode.
-        section.entries[idx].detail = failed > 0 ? "\(failed) failed" : resourceSubtitle(resource, count: refresh)
+        section.entries[idx].detail =
+            failed > 0 ? "\(failed) failed" : (detail ?? resourceSubtitle(resource, count: refresh))
         replaceSection(section)
         reevaluate()
+    }
+
+    /// Completes the Providers row from the latest provider state. During a
+    /// manual refresh the row waits until no provider is refreshing; at startup
+    /// the cached state is enough, since the refresh continues in the background.
+    func markProvidersCompleted(_ providers: [ConfiguredProvider]) {
+        guard mode == .startup || !providers.contains(where: \.isRefreshing) else { return }
+        let loaded = providers.filter { $0.lastError == nil }.count
+        let models = providers.compactMap(\.modelCount).reduce(0, +)
+        let detail = providers.isEmpty ? nil : loaderPluralized(models, singular: "model", plural: "models")
+        markApplicationCompleted(.providers, loaded: loaded, detail: detail)
     }
 
     /// Marks the chats row complete from a [`ChatSyncStats`](src/Chat/ChatStore.swift)
@@ -343,6 +355,7 @@ final class LoaderController: ObservableObject {
         switch resource {
         case .configuration: return "main application config"
         case .chats: return loaderPluralized(count, singular: "entry", plural: "entries")
+        case .providers: return loaderPluralized(count, singular: "provider", plural: "providers")
         default: return loaderPluralized(count, singular: "entry", plural: "entries")
         }
     }

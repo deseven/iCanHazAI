@@ -12,67 +12,12 @@ import TOML
 /// The underlying decoders (`JSONDecoder`, `TOMLDecoder`) produce generic
 /// "The data couldn't be read because it is missing." messages that don't say
 /// *which* key is missing. These wrappers surface field-specific reasons
-/// (e.g. a connection missing `model`, or `Key 'transport' not found. Available
-/// keys: …` for TOML) so a broken external edit logs something actionable.
+/// (e.g. `Key 'transport' not found. Available keys: …` for TOML) so a broken
+/// external edit logs something actionable.
 ///
 /// Loaders use these to decode-and-log; the configurator write tools use them
 /// as a dry-run validation gate before writing to disk.
 enum ConfigValidation {
-
-    /// Validates and decodes a connection (JSONC). `model` is the only required
-    /// field; the rest are checked for type correctness before the final decode.
-    static func decodeConnection(_ data: Data) throws -> ConnectionConfig {
-        guard let source = String(data: data, encoding: .utf8) else {
-            throw ConfigValidationError("connection config is not valid UTF-8")
-        }
-        guard let obj = JSONC.parse(source) as? [String: Any] else {
-            throw ConfigValidationError("connection config is not valid JSONC (expected a JSON object)")
-        }
-        guard let model = obj["model"] as? String,
-            !model.trimmingCharacters(in: .whitespaces).isEmpty
-        else {
-            throw ConfigValidationError(
-                "connection config is missing the required \"model\" field (a non-empty model string)")
-        }
-        if let v = obj["baseUrl"], !(v is String) {
-            throw ConfigValidationError("connection field \"baseUrl\" must be a string")
-        }
-        if let v = obj["apiKey"], !(v is String) {
-            throw ConfigValidationError("connection field \"apiKey\" must be a string")
-        }
-        if let v = obj["imageInput"], !(v is Bool) {
-            throw ConfigValidationError("connection field \"imageInput\" must be a boolean")
-        }
-        if let v = obj["requestParameters"], !(v is [String: Any]) {
-            throw ConfigValidationError("connection field \"requestParameters\" must be an object")
-        }
-        if let v = obj["headers"] {
-            guard let dict = v as? [String: Any] else {
-                throw ConfigValidationError("connection field \"headers\" must be an object of strings")
-            }
-            for (k, val) in dict where !(val is String) {
-                throw ConfigValidationError(
-                    "connection field \"headers\" must be an object of strings (value for \"\(k)\" is not a string)")
-            }
-        }
-        if let v = obj["readTimeout"], !(v is Double || v is Int) {
-            throw ConfigValidationError("connection field \"readTimeout\" must be a number")
-        }
-        if let v = obj["progressTimeout"], !(v is Double || v is Int) {
-            throw ConfigValidationError("connection field \"progressTimeout\" must be a number")
-        }
-        if let v = obj["transportTimeout"], !(v is Double || v is Int) {
-            throw ConfigValidationError("connection field \"transportTimeout\" must be a number")
-        }
-        if let v = obj["numRetries"], !(v is Int) {
-            throw ConfigValidationError("connection field \"numRetries\" must be an integer")
-        }
-        do {
-            return try JSONC.decode(data, as: ConnectionConfig.self)
-        } catch {
-            throw ConfigValidationError("connection config failed validation: \(error)")
-        }
-    }
 
     /// Validates and decodes a custom MCP server (TOML).
     static func decodeMCP(_ data: Data) throws -> MCPConfig {
@@ -101,7 +46,7 @@ enum ConfigValidation {
 
     /// Cross-field validation for a decoded [`RoleConfig`](src/Chat/Models.swift).
     ///
-    /// - `connection`, `prompt`, and every `[[mcps]]` entry must reference an
+    /// - `prompt` and every `[[mcps]]` entry must reference an
     ///   existing entity. Checked only when `references` is provided; a name
     ///   counts as existing when its config file is on disk, even if that
     ///   config failed to decode (the broken config reports its own error).
@@ -123,12 +68,7 @@ enum ConfigValidation {
     ///   so enabling trees without regen is a contradiction.
     static func validateRole(_ config: RoleConfig, references: RoleReferences? = nil) throws {
         if let references {
-            if let connection = config.connection, !connection.isEmpty, !references.connectionIDs.contains(connection) {
-                throw ConfigValidationError(
-                    "role config references unknown connection \"\(connection)\" "
-                        + "(no matching config in the Connections directory)"
-                )
-            }
+
             if let prompt = config.prompt, !prompt.isEmpty, !references.promptNames.contains(prompt) {
                 throw ConfigValidationError(
                     "role config references unknown prompt \"\(prompt)\" "
@@ -212,13 +152,12 @@ enum ConfigValidation {
 }
 
 /// The entities a role may reference, used by
-/// [`validateRole`](src/Config/ConfigValidation.swift) to check `connection`,
-/// `prompt`, and `[[mcps]]` entries. Built by the loaders from the configs
+/// [`validateRole`](src/Config/ConfigValidation.swift) to check `prompt`
+/// and `[[mcps]]` entries. Built by the loaders from the configs
 /// present on disk; a config that exists but failed to decode still counts as
 /// existing (it reports its own error separately).
 struct RoleReferences: Sendable {
-    /// Connection IDs in `provider/name` form (matches `Connection.id`).
-    var connectionIDs: Set<String>
+
     var promptNames: Set<String>
     var mcpNames: Set<String>
 }

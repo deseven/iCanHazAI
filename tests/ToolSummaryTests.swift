@@ -78,14 +78,14 @@ extension AllAppTests {
             #expect(ToolSummary.callEntries(name: "list_roles", arguments: "{}") == [])
         }
 
-        @Test("configurator tools: id/name is primary")
+        @Test("configurator tools: name is primary")
         func configurator() {
             #expect(
                 ToolSummary.callEntries(name: "delete_role", arguments: json(["name": "Old"]))
                     == [ToolSummary.Entry(key: nil, value: "Old")])
             #expect(
-                ToolSummary.callEntries(name: "check_connection", arguments: json(["id": "openai/gpt-4o"]))
-                    == [ToolSummary.Entry(key: nil, value: "openai/gpt-4o")])
+                ToolSummary.callEntries(name: "delete_prompt", arguments: json(["name": "Old"]))
+                    == [ToolSummary.Entry(key: nil, value: "Old")])
         }
 
         // MARK: - Call summaries: unknown tools
@@ -233,7 +233,7 @@ extension AllAppTests {
                     == "Listed 2 items.")
             #expect(
                 ToolSummary.resultStatus(
-                    name: "list_connections", result: ToolResult(callID: "c", content: "(none)", isError: false))?
+                    name: "list_mcps", result: ToolResult(callID: "c", content: "(none)", isError: false))?
                     .description == "Listed 0 items.")
             #expect(
                 ToolSummary.resultStatus(

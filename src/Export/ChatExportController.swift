@@ -66,6 +66,7 @@ final class ChatExportController {
             return
         }
         if window.isMiniaturized { window.deminiaturize(nil) }
+        store.dismissActiveSheet()
 
         let title = item.displayTitle
         let snapshotInput = (

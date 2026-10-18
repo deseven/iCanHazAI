@@ -25,7 +25,7 @@ extension AllAppTests {
                 thinking: "reasoning here",
                 error: nil,
                 timestamp: Date(timeIntervalSince1970: 1_700_000_050),
-                connectionName: "anthropic/claude",
+                model: "anthropic:claude-sonnet-5-5",
                 attachments: [
                     iCanHazAI.Attachment(
                         id: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
@@ -60,7 +60,7 @@ extension AllAppTests {
             #expect(msg.thinking == nil)
             #expect(msg.thinkingDuration == nil)
             #expect(msg.error == nil)
-            #expect(msg.connectionName == nil)
+            #expect(msg.model == nil)
             #expect(msg.attachments == nil)
             #expect(msg.toolCalls == nil)
             #expect(msg.toolResults == nil)
@@ -73,7 +73,7 @@ extension AllAppTests {
         func chatRoundTrip() throws {
             let original = Fixtures.chat(
                 messages: [Fixtures.message(role: .user, content: "ping")],
-                connection: "openai/myconn",
+                model: "openai:gpt-5",
                 role: "Developer",
                 prompt: "Developer",
                 workingDirectory: "~/projects/MyProject",
@@ -94,13 +94,33 @@ extension AllAppTests {
             #expect(decoded.messages.isEmpty)
         }
 
+        @Test("the model is stored under the `model` key; the old `connection` keys are ignored")
+        func modelKeys() throws {
+            let chat = Fixtures.chat(
+                messages: [Fixtures.message(role: .assistant, model: "openrouter:foo/bar:free")],
+                model: "anthropic:claude-sonnet-5-5")
+            let json = try #require(
+                String(data: try JSONEncoder().encode(chat), encoding: .utf8))
+            #expect(json.contains(#""model":"anthropic:claude-sonnet-5-5""#))
+            #expect(json.contains(#""model":"openrouter:foo\/bar:free""#))
+
+            let legacy = """
+                {"id":"00000000-0000-0000-0000-000000000001","connection":"openai/old",
+                 "messages":[{"id":"00000000-0000-0000-0000-000000000002","role":"assistant","content":"x",
+                              "connectionName":"openai/old","timestamp":1700000000}]}
+                """.data(using: .utf8)!
+            let decoded = try JSONDecoder().decode(Chat.self, from: legacy)
+            #expect(decoded.model == nil)
+            #expect(decoded.messages.first?.model == nil)
+        }
+
         @Test("Chat decodes with optional fields omitted")
         func chatDecodesSparseJSON() throws {
             let json = """
                 {"id":"00000000-0000-0000-0000-000000000001","messages":[]}
                 """.data(using: .utf8)!
             let chat = try JSONDecoder().decode(Chat.self, from: json)
-            #expect(chat.connection == nil)
+            #expect(chat.model == nil)
             #expect(chat.role == nil)
             #expect(chat.title == nil)
             #expect(chat.prompt == nil)

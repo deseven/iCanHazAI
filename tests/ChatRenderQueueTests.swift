@@ -390,13 +390,13 @@ extension AllAppTests {
                 attachments: [attachment])
             let assistant = ChatMessage(
                 id: UUID(), role: .assistant, content: "", timestamp: Date(timeIntervalSince1970: 43),
-                connectionName: "Local",
+                model: "openai:gpt-5",
                 toolCalls: [ToolCall(id: "c1", name: "write_file", arguments: "{}", pendingApproval: true, diff: "+x")])
             let out = ChatRenderQueue.projectActiveMessages(Chat(messages: [user, assistant]))
             #expect(out[0].attachments.map(\.filename) == ["notes.txt"])
             #expect(out[0].attachments.first?.status == .truncated)
             #expect(out[0].timestamp == Date(timeIntervalSince1970: 42))
-            #expect(out[1].connectionName == "Local")
+            #expect(out[1].model == "openai:gpt-5")
             #expect(out[1].toolCalls.first?.pendingApproval == true)
             #expect(out[1].toolCalls.first?.diff == "+x")
         }

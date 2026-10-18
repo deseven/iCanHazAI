@@ -94,7 +94,7 @@ extension AllAppTests {
             #expect(committed.kind == .image)
             #expect(committed.status == .ok)
             // The fallback is synthesized from classification + OCR and stored on
-            // the record so a vision-incapable connection can send it as text.
+            // the record so a vision-incapable model can send it as text.
             #expect(committed.text != nil)
             #expect(committed.text?.contains("lacking the capabilities to digest images") == true)
         }

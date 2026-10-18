@@ -27,7 +27,7 @@ enum AppTestError: Error, CustomStringConvertible {
 ///
 /// This mirrors how the production singletons are wired, but with a temp dir so
 /// tests never touch `~/iCanHazAI`. `ensureDirectories()` creates the Chats/
-/// Roles/Connections/MCPs/ tree just like app launch does.
+/// Roles/Prompts/MCPs/ tree just like app launch does.
 final class TempEnv: @unchecked Sendable {
 
     let rootURL: URL
@@ -118,7 +118,7 @@ enum Fixtures {
         thinking: String? = nil,
         error: String? = nil,
         timestamp: Date = Date(timeIntervalSince1970: 1_700_000_000),
-        connectionName: String? = nil,
+        model: String? = nil,
         attachments: [iCanHazAI.Attachment]? = nil,
         toolCalls: [ToolCall]? = nil,
         toolResults: [ToolResult]? = nil,
@@ -126,7 +126,7 @@ enum Fixtures {
     ) -> ChatMessage {
         ChatMessage(
             role: role, content: content, thinking: thinking, error: error,
-            timestamp: timestamp, connectionName: connectionName, attachments: attachments,
+            timestamp: timestamp, model: model, attachments: attachments,
             toolCalls: toolCalls, toolResults: toolResults, tokenUsage: tokenUsage
         )
     }
@@ -134,7 +134,7 @@ enum Fixtures {
     static func chat(
         id: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
         messages: [ChatMessage] = [],
-        connection: String? = nil,
+        model: String? = nil,
         role: String? = nil,
         prompt: String? = nil,
         workingDirectory: String? = nil,
@@ -144,7 +144,7 @@ enum Fixtures {
         autoAllow: [String]? = nil
     ) -> Chat {
         Chat(
-            id: id, messages: messages, connection: connection, role: role, prompt: prompt,
+            id: id, messages: messages, model: model, role: role, prompt: prompt,
             workingDirectory: workingDirectory, mcps: mcps, title: title, archive: archive, autoAllow: autoAllow)
     }
 
@@ -164,7 +164,7 @@ enum Fixtures {
                 message(role: .user, content: "What is 2+2?", timestamp: Date(timeIntervalSince1970: 1_700_000_000)),
                 message(
                     role: .assistant, content: "4", timestamp: Date(timeIntervalSince1970: 1_700_000_010),
-                    connectionName: "openai/test", tokenUsage: TokenUsage(tokensUsed: 42)),
+                    model: "openai:test", tokenUsage: TokenUsage(tokensUsed: 42)),
             ],
             title: title
         )

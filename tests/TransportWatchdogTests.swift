@@ -145,19 +145,18 @@ extension AllAppTests {
             }
         }
 
-        private func makeConnection(
+        private func makeModel(
             port: UInt16, read: Double?, progress: Double?, transport: Double?, retries: Int = 0
-        ) -> Connection {
-            Connection(
-                provider: .openai, name: "stub", baseUrl: "http://127.0.0.1:\(port)",
-                apiKey: nil, model: "stub-model", imageInput: false, requestParameters: nil,
+        ) -> ResolvedModel {
+            ResolvedModel(
+                provider: .openai, modelID: "stub-model", apiKey: "", baseUrl: "http://127.0.0.1:\(port)",
                 readTimeout: read, progressTimeout: progress, transportTimeout: transport, numRetries: retries
             )
         }
 
-        private func runStream(_ connection: Connection) async throws -> ChatService.StreamResult {
+        private func runStream(_ model: ResolvedModel) async throws -> ChatService.StreamResult {
             try await LLMTransport.stream(
-                connection: connection,
+                model: model,
                 messages: [ChatMessage(role: .user, content: "hi")],
                 chatFilename: "watchdog-test.json",
                 tools: nil,
@@ -192,7 +191,7 @@ extension AllAppTests {
             defer { server.stop() }
             server.onRequest = { _ in }
 
-            let conn = makeConnection(port: server.port, read: 1, progress: 0, transport: 0)
+            let conn = makeModel(port: server.port, read: 1, progress: 0, transport: 0)
             try await expectTimeout(
                 {
                     if case .readTimeout = $0 { return true }
@@ -212,7 +211,7 @@ extension AllAppTests {
                 server.sendResponseHeaders(to: conn)
             }
 
-            let conn = makeConnection(port: server.port, read: 1, progress: 0, transport: 0)
+            let conn = makeModel(port: server.port, read: 1, progress: 0, transport: 0)
             try await expectTimeout(
                 {
                     if case .readTimeout = $0 { return true }
@@ -240,7 +239,7 @@ extension AllAppTests {
                 }
             }
 
-            let conn = makeConnection(port: server.port, read: 0, progress: 1, transport: 0)
+            let conn = makeModel(port: server.port, read: 0, progress: 1, transport: 0)
             try await expectTimeout(
                 {
                     if case .progressTimeout = $0 { return true }
@@ -272,7 +271,7 @@ extension AllAppTests {
 
             // Total stream (~2 s) exceeds readTimeout (1 s): the watchdog
             // must re-arm on every received chunk instead of firing.
-            let conn = makeConnection(port: server.port, read: 1, progress: 0, transport: 0)
+            let conn = makeModel(port: server.port, read: 1, progress: 0, transport: 0)
             let result = try await bounded(15) { try await runStream(conn) }
             #expect(result.content == String(repeating: "x", count: 12))
         }
@@ -296,7 +295,7 @@ extension AllAppTests {
 
             // Chunks every 250 ms keep read/progress fresh; only the total
             // budget can stop this stream.
-            let conn = makeConnection(port: server.port, read: 0, progress: 0, transport: 2)
+            let conn = makeModel(port: server.port, read: 0, progress: 0, transport: 2)
             try await expectTimeout(
                 {
                     if case .transportTimeout = $0 { return true }
@@ -324,7 +323,7 @@ extension AllAppTests {
                 }
             }
 
-            let conn = makeConnection(port: server.port, read: 1, progress: 0, transport: 0, retries: 1)
+            let conn = makeModel(port: server.port, read: 1, progress: 0, transport: 0, retries: 1)
             let result = try await bounded(15) { try await runStream(conn) }
             #expect(result.content == "ok")
             #expect(server.requestCount == 2)
@@ -341,7 +340,7 @@ extension AllAppTests {
                 // Stall after output — a retry would duplicate the text.
             }
 
-            let conn = makeConnection(port: server.port, read: 1, progress: 0, transport: 0, retries: 1)
+            let conn = makeModel(port: server.port, read: 1, progress: 0, transport: 0, retries: 1)
             try await expectTimeout(
                 {
                     if case .readTimeout = $0 { return true }
@@ -370,7 +369,7 @@ extension AllAppTests {
 
             // The total budget is final: a retry would burn another full
             // budget on the same pathological request.
-            let conn = makeConnection(port: server.port, read: 0, progress: 0, transport: 2, retries: 1)
+            let conn = makeModel(port: server.port, read: 0, progress: 0, transport: 2, retries: 1)
             try await expectTimeout(
                 {
                     if case .transportTimeout = $0 { return true }
@@ -389,7 +388,7 @@ extension AllAppTests {
             defer { server.stop() }
             server.onRequest = { _ in }
 
-            let conn = makeConnection(port: server.port, read: 1, progress: 0, transport: 0, retries: 2)
+            let conn = makeModel(port: server.port, read: 1, progress: 0, transport: 0, retries: 2)
             try await expectTimeout(
                 {
                     if case .readTimeout = $0 { return true }
@@ -420,7 +419,7 @@ extension AllAppTests {
                 }
             }
 
-            let conn = makeConnection(port: server.port, read: 0, progress: 1, transport: 0)
+            let conn = makeModel(port: server.port, read: 0, progress: 1, transport: 0)
             try await expectTimeout(
                 {
                     if case .progressTimeout = $0 { return true }
@@ -449,7 +448,7 @@ extension AllAppTests {
 
             // Keep-alives keep the read layer fresh; only the progress layer
             // can catch this stall.
-            let conn = makeConnection(port: server.port, read: 0, progress: 1, transport: 0)
+            let conn = makeModel(port: server.port, read: 0, progress: 1, transport: 0)
             try await expectTimeout(
                 {
                     if case .progressTimeout = $0 { return true }
@@ -478,7 +477,7 @@ extension AllAppTests {
             }
 
             // ~1.8 s total — would trip any enabled default layer.
-            let conn = makeConnection(port: server.port, read: 0, progress: 0, transport: 0)
+            let conn = makeModel(port: server.port, read: 0, progress: 0, transport: 0)
             let result = try await bounded(15) { try await runStream(conn) }
             #expect(result.content == String(repeating: "x", count: 8))
         }
@@ -496,7 +495,7 @@ extension AllAppTests {
                 // user's Stop can end this request.
             }
 
-            let conn = makeConnection(port: server.port, read: 0, progress: 0, transport: 0)
+            let conn = makeModel(port: server.port, read: 0, progress: 0, transport: 0)
             let task = Task {
                 try await runStream(conn)
             }
@@ -509,27 +508,6 @@ extension AllAppTests {
                 // Expected.
             } catch {
                 Issue.record("Expected CancellationError, got \(error)")
-            }
-        }
-
-        // MARK: - Non-streaming path
-
-        @Test("non-streaming complete enforces transportTimeout")
-        func completeEnforcesTransportTimeout() async throws {
-            let server = try StubHTTPServer()
-            try await server.start()
-            defer { server.stop() }
-            server.onRequest = { _ in }
-
-            let conn = makeConnection(port: server.port, read: 0, progress: 0, transport: 1)
-            try await expectTimeout(
-                {
-                    if case .transportTimeout = $0 { return true }
-                    return false
-                }, "transportTimeout"
-            ) {
-                try await LLMTransport.complete(
-                    connection: conn, messages: [ChatMessage(role: .user, content: "hi")])
             }
         }
     }

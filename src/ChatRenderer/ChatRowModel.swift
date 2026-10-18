@@ -54,7 +54,7 @@ struct ChatRowModel: Sendable, Equatable, Identifiable {
     var thinkingDuration: TimeInterval?
     var error: String?
     var timestamp: Date
-    var connectionName: String?
+    var model: String?
     var attachments: [AttachmentInfo] = []
     var toolCalls: [ToolCall] = []
     /// Results folded onto the assistant message that issued the calls. On a

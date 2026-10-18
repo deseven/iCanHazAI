@@ -100,7 +100,7 @@ final class ChatInputController: ObservableObject {
         facts = ChatInputFacts(
             supportsAttachments: store.selectedChatSupportsAttachments,
             hasValidRole: store.selectedChatHasValidRole,
-            hasConnection: store.selectedChatHasConnection,
+            hasModel: store.selectedChatHasModel,
             workdirRequired: store.selectedChatWorkdirRequired,
             lastMessageIsFromUser: store.selectedChatLastMessageIsFromUser,
             isStreaming: store.isStreaming,
@@ -203,7 +203,7 @@ final class ChatInputController: ObservableObject {
     }
 
     private func send() {
-        guard let store, store.selectedChatHasConnection, !store.isStreaming else { return }
+        guard let store, store.selectedChatHasModel, !store.isStreaming else { return }
         // Empty input with no attachments: send what is still queued (after a
         // stop or an error), or else, if the last message is from the user,
         // trigger a regenerate of the assistant reply on that message.

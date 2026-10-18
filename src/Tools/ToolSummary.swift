@@ -314,10 +314,6 @@ extension ToolSummary {
         "web_extract": KnownToolSpec(primary: ["url"]),
         "web_fetch": KnownToolSpec(primary: ["url"], secondary: ["request_type", "headers", "data", "return_headers"]),
         // Configurator
-        "read_connection": KnownToolSpec(primary: ["id"]),
-        "write_connection": KnownToolSpec(primary: ["id"]),
-        "delete_connection": KnownToolSpec(primary: ["id"]),
-        "check_connection": KnownToolSpec(primary: ["id"]),
         "read_mcp": KnownToolSpec(primary: ["name"]),
         "write_mcp": KnownToolSpec(primary: ["name"]),
         "delete_mcp": KnownToolSpec(primary: ["name"]),
@@ -330,7 +326,6 @@ extension ToolSummary {
         "write_config": KnownToolSpec(primary: ["content"]),
         "check_mcp_stdio": KnownToolSpec(primary: ["command"]),
         "check_mcp_http": KnownToolSpec(primary: ["endpoint"]),
-        "list_connections": KnownToolSpec(primary: []),
         "list_mcps": KnownToolSpec(primary: []),
         "list_roles": KnownToolSpec(primary: []),
         "list_prompts": KnownToolSpec(primary: []),
@@ -523,14 +518,14 @@ extension ToolSummary {
             }
             return "Extracted \(body.count) \(body.count == 1 ? "character" : "characters")."
         // Configurator: bullet lists ("- name" per entry, or "(none)").
-        case "list_connections", "list_mcps", "list_roles", "list_prompts":
+        case "list_mcps", "list_roles", "list_prompts":
             let n = countBulletLines(content)
             return "Listed \(n) \(n == 1 ? "item" : "items")."
         case "check_mcp_stdio", "check_mcp_http":
             let n = countBulletLines(content)
             return "Found \(n) \(n == 1 ? "tool" : "tools")."
         // Configurator: raw file/log contents.
-        case "read_connection", "read_mcp", "read_role", "read_prompt", "read_config", "read_log":
+        case "read_mcp", "read_role", "read_prompt", "read_config", "read_log":
             // Parenthesized notices ("(none)", "(application log is empty)")
             // are already a good one-liner.
             if content.drop(while: { $0 == " " || $0 == "\t" || $0 == "\n" }).first == "(" {

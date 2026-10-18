@@ -12,7 +12,7 @@ import TOML
 /// All keys are sorted alphabetically on write via
 /// `TOMLEncoder.outputFormatting = .sortedKeys`.
 struct AppConfig: Codable, Equatable {
-    /// General preferences: default connection, role, and utility connection.
+    /// General preferences: default role and working directories.
     var general: GeneralConfig = GeneralConfig()
     /// Chat behaviour toggles: default expansion of thinking / tool use blocks.
     var chatBehaviour: ChatBehaviourConfig = ChatBehaviourConfig()
@@ -56,14 +56,19 @@ struct AppConfig: Codable, Equatable {
     init() {}
 }
 
-/// `[general]` group — default connection, role, and utility connection.
+/// `[general]` group — default role, default/utility models and working directories.
 struct GeneralConfig: Codable, Equatable {
-    /// Connection identifier (`"provider/name"`) used by default for new chats.
-    var defaultConnection: String?
     /// Role name used by default for new chats. Falls back to "Assistant" when nil.
     var defaultRole: String?
-    /// Connection identifier (`"provider/name"`) used for utility tasks (e.g. chat naming).
-    var utilityConnection: String?
+
+    /// `provider:model-id` preselected for every new chat (unless the chat's
+    /// role sets `preferred_model`). Nil → "No model".
+    var defaultModel: String?
+
+    /// `provider:model-id` used for background utility tasks such as chat
+    /// naming. Nil → "No model" (utility tasks are skipped).
+    var utilityModel: String?
+
     /// User-managed list of working directories offered in the per-chat
     /// directory picker. Nil/missing in older configs → treated as empty.
     /// The selected directory is saved to the chat data (alongside role and
@@ -71,9 +76,9 @@ struct GeneralConfig: Codable, Equatable {
     var workingDirectories: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case defaultConnection = "default_connection"
         case defaultRole = "default_role"
-        case utilityConnection = "utility_connection"
+        case defaultModel = "default_model"
+        case utilityModel = "utility_model"
         case workingDirectories = "working_directories"
     }
 }
@@ -220,7 +225,7 @@ struct WindowConfig: Codable, Equatable {
 
 /// UI-free singleton actor that owns the app config file at `~/iCanHazAI/config.toml`.
 /// Every modification triggers an immediate TOML write so the file is always in a
-/// correct state. Validation of connection/role references happens on load and
+/// correct state. Validation of the default role reference happens on load and
 /// can be re-triggered by callers (e.g. after entities are reloaded).
 ///
 /// Startup ordering: [`bootstrapSynchronously()`](src/Config/ConfigManager.swift) must be
@@ -241,9 +246,9 @@ actor ConfigManager {
 
     /// Whether `load()` has completed at least once. Validation/persistence is
     /// suppressed until the config has been read from disk, otherwise a
-    /// `validateReferences()` that fires *before* the initial load would wipe
-    /// `default_connection` / `utility_connection` (which are still nil in the
-    /// default `AppConfig()` and would be persisted as such).
+    /// `validateReferences()` that fires *before* the initial load would reset
+    /// `default_role` (which is still nil in the default `AppConfig()` and
+    /// would be persisted as such).
     private var didLoad = false
 
     private let fileURL: URL
@@ -329,8 +334,8 @@ actor ConfigManager {
     /// If no bootstrap stash is present (e.g. a CLI entry point that didn't call
     /// the bootstrap), this falls back to reading the file directly.
     ///
-    /// After loading, validates that referenced connections and roles still
-    /// exist; clears any that don't and writes the cleaned config back.
+    /// After loading, validates that the default role still exists; resets it
+    /// if not and writes the cleaned config back.
     ///
     /// Idempotent: subsequent calls after the first successful load are no-ops.
     /// This prevents duplicate "loading from …" log lines when multiple startup
@@ -441,9 +446,8 @@ actor ConfigManager {
 
     // MARK: - Validation
 
-    /// Checks that `default_connection`, `utility_connection`, and `default_role`
-    /// still refer to existing items. Clears invalid references and persists.
-    /// Returns whether anything was cleared and persisted.
+    /// Checks that `default_role` still refers to an existing role. Resets an
+    /// invalid reference and persists. Returns whether anything was changed.
     @discardableResult
     private func validateAndSave() -> Bool {
         // Suppress validation until the config has been loaded from disk at
@@ -453,26 +457,6 @@ actor ConfigManager {
         guard didLoad else { return false }
 
         var dirty = false
-
-        let connections = EnvironmentManager.shared.loadConnections()
-        let connectionIDs = Set(connections.map { $0.id })
-
-        // Only clear a connection reference when we actually loaded connections
-        // and the referenced one is missing. An empty `loadConnections()` result
-        // is almost always a transient/race state (e.g. directory just created,
-        // or a connection file being replaced) — not a signal that the user
-        // deleted all connections. Treating it as "all deleted" was the root
-        // cause of `default_connection` / `utility_connection` being wiped.
-        if !connections.isEmpty {
-            if let dc = config.general.defaultConnection, !connectionIDs.contains(dc) {
-                config.general.defaultConnection = nil
-                dirty = true
-            }
-            if let uc = config.general.utilityConnection, !connectionIDs.contains(uc) {
-                config.general.utilityConnection = nil
-                dirty = true
-            }
-        }
 
         let roles = EnvironmentManager.shared.loadAllRoles()
         let roleNames = Set(roles.map { $0.name })
@@ -492,8 +476,7 @@ actor ConfigManager {
         return dirty
     }
 
-    /// Re-validates connection/role references (call after connections or
-    /// roles were reloaded). If something was cleared, the config is persisted
+    /// Re-validates the default role reference (call after roles were reloaded). If something was cleared, the config is persisted
     /// automatically and `true` is returned so callers can refresh their view
     /// of it.
     @discardableResult
@@ -503,16 +486,16 @@ actor ConfigManager {
 
     // MARK: - Getters / Setters
 
-    func getDefaultConnection() -> String? {
-        config.general.defaultConnection
-    }
-
     func getDefaultRole() -> String? {
         config.general.defaultRole
     }
 
-    func getUtilityConnection() -> String? {
-        config.general.utilityConnection
+    func getDefaultModel() -> String? {
+        config.general.defaultModel
+    }
+
+    func getUtilityModel() -> String? {
+        config.general.utilityModel
     }
 
     func getWorkingDirectories() -> [String] {
@@ -565,18 +548,18 @@ actor ConfigManager {
         persist()
     }
 
-    func setDefaultConnection(_ id: String?) {
-        config.general.defaultConnection = id
-        persist()
-    }
-
     func setDefaultRole(_ name: String?) {
         config.general.defaultRole = name
         persist()
     }
 
-    func setUtilityConnection(_ id: String?) {
-        config.general.utilityConnection = id
+    func setDefaultModel(_ model: String?) {
+        config.general.defaultModel = model
+        persist()
+    }
+
+    func setUtilityModel(_ model: String?) {
+        config.general.utilityModel = model
         persist()
     }
 

@@ -26,10 +26,9 @@ import Foundation
 /// 3. `transportTimeout` (default 3600 s) — hard cap on the whole attempt
 ///    regardless of activity. Each retry attempt gets a fresh budget.
 ///
-/// A connection value of `0` disables its layer; disabling all three removes
+/// A model value of `0` disables its layer; disabling all three removes
 /// every application-level guard (the OS-level 24 h resource cap remains).
-/// Non-streaming requests (connection wizard test, models listing) enforce
-/// only the transport layer — a single-burst response has no meaningful
+/// Non-streaming requests enforce only the transport layer — a single-burst response has no meaningful
 /// intermediate progress to measure; the OS idle timer covers their
 /// silent-stall case as before.
 ///
@@ -74,21 +73,21 @@ enum LLMTransport {
 
     // MARK: - Provider resolution
 
-    /// Returns the strategy for a given connection's provider.
-    static func provider(for connection: Connection) -> any LLMProvider {
-        switch connection.provider {
+    /// Returns the strategy for a model's wire.
+    static func provider(for model: ResolvedModel) -> any LLMProvider {
+        switch model.wire {
         case .openai: return OpenAIProvider()
         case .anthropic: return AnthropicProvider()
         }
     }
 
-    /// Resolves the effective base URL for a connection, falling back to the
-    /// provider's default when the connection doesn't specify one.
-    static func resolveBaseUrl(connection: Connection, provider: any LLMProvider) -> String {
-        if let baseUrl = connection.baseUrl, !baseUrl.isEmpty {
+    /// Resolves the effective base URL for a model, falling back to its
+    /// provider's default when the model doesn't specify one.
+    static func resolveBaseUrl(model: ResolvedModel) -> String {
+        if let baseUrl = model.baseUrl, !baseUrl.isEmpty {
             return baseUrl
         }
-        return provider.defaultBaseUrl
+        return model.provider.defaultBaseUrl
     }
 
     // MARK: - Request building
@@ -98,25 +97,25 @@ enum LLMTransport {
     /// behind the application read watchdog: `readTimeout + 30 s` grace, or
     /// effectively off when the read layer is disabled.
     static func buildRequest(
-        connection: Connection,
+        model: ResolvedModel,
         messages: [ChatMessage],
         chatFilename: String,
         tools: [ToolDefinition]?,
         stream: Bool
     ) throws -> URLRequest {
-        let provider = provider(for: connection)
-        let baseUrl = resolveBaseUrl(connection: connection, provider: provider)
+        let provider = provider(for: model)
+        let baseUrl = resolveBaseUrl(model: model)
         guard let url = URL(string: baseUrl + provider.chatPath) else {
             throw LLMTransportError.invalidUrl(baseUrl + provider.chatPath)
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = (TimeoutPolicy.resolve(connection).read ?? 86400) + 30
-        for (key, value) in provider.buildHeaders(connection: connection) {
+        request.timeoutInterval = (TimeoutPolicy.resolve(model).read ?? 86400) + 30
+        for (key, value) in provider.buildHeaders(model: model) {
             request.setValue(value, forHTTPHeaderField: key)
         }
         let body = provider.buildRequestBody(
-            connection: connection,
+            model: model,
             messages: messages,
             chatFilename: chatFilename,
             tools: tools,
@@ -139,7 +138,7 @@ enum LLMTransport {
     /// as `.toolCall` chunks, followed by the `.finishReason` chunk (if any).
     ///
     /// - Parameters:
-    ///   - connection: The connection to use.
+    ///   - model: The resolved model to use.
     ///   - messages: The full conversation history (including system prompt if any).
     ///   - chatFilename: The chat's filename, used to resolve image attachments on disk.
     ///   - tools: Optional MCP tool definitions to expose to the model.
@@ -147,26 +146,26 @@ enum LLMTransport {
     /// - Returns: The stream result (final text, accumulated tool calls, finish reason).
     @discardableResult
     static func stream(
-        connection: Connection,
+        model: ResolvedModel,
         messages: [ChatMessage],
         chatFilename: String,
         tools: [ToolDefinition]?,
         onChunk: @escaping @Sendable (StreamChunk) async -> Void
     ) async throws -> ChatService.StreamResult {
-        let maxRetries = max(0, connection.numRetries ?? 1)
+        let maxRetries = max(0, model.numRetries ?? 1)
         var lastError: Error?
         let output = OutputTracker()
 
         for attempt in 0...maxRetries {
             if attempt > 0 {
                 let delay = pow(2.0, Double(attempt - 1))
-                debugLog("LLM", "retry \(attempt)/\(maxRetries) after \(delay)s — \(connection.id)")
+                debugLog("LLM", "retry \(attempt)/\(maxRetries) after \(delay)s — \(model.id)")
                 try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
 
             do {
                 return try await streamOnce(
-                    connection: connection,
+                    model: model,
                     messages: messages,
                     chatFilename: chatFilename,
                     tools: tools,
@@ -204,21 +203,21 @@ enum LLMTransport {
     /// `stream()`; exposed separately so retries can be attempted without the
     /// caller knowing.
     private static func streamOnce(
-        connection: Connection,
+        model: ResolvedModel,
         messages: [ChatMessage],
         chatFilename: String,
         tools: [ToolDefinition]?,
         onChunk: @escaping @Sendable (StreamChunk) async -> Void
     ) async throws -> ChatService.StreamResult {
-        let provider = provider(for: connection)
+        let provider = provider(for: model)
         let request = try buildRequest(
-            connection: connection,
+            model: model,
             messages: messages,
             chatFilename: chatFilename,
             tools: tools,
             stream: true
         )
-        let state = WatchdogState(policy: TimeoutPolicy.resolve(connection))
+        let state = WatchdogState(policy: TimeoutPolicy.resolve(model))
         let accumulator = ToolCallAccumulator()
         let resultBox = ResultBox<ChatService.StreamResult>()
 
@@ -242,7 +241,7 @@ enum LLMTransport {
                 debugLog(
                     "LLM", "HTTP \(http.statusCode) error body:\n\(String(data: body, encoding: .utf8) ?? "<non-utf8>")"
                 )
-                throw provider.parseError(body, statusCode: http.statusCode)
+                throw labeled(provider.parseError(body, statusCode: http.statusCode), for: model)
             }
 
             var fullContent = ""
@@ -339,131 +338,6 @@ enum LLMTransport {
             throw LLMTransportError.watchdogRace
         }
         return result
-    }
-
-    // MARK: - Non-streaming
-
-    /// Performs a non-streaming chat completion and returns the assistant's
-    /// text. Used by the connection wizard's "say hi" test. Only the
-    /// transport-timeout layer applies: the response arrives as a single
-    /// burst, so there is no intermediate progress to measure. The OS idle
-    /// timer (sized from the connection's read timeout by `buildRequest`)
-    /// covers the silent-stall case.
-    static func complete(connection: Connection, messages: [ChatMessage]) async throws -> String {
-        let provider = provider(for: connection)
-        let request = try buildRequest(
-            connection: connection,
-            messages: messages,
-            chatFilename: "",
-            tools: nil,
-            stream: false
-        )
-        let state = WatchdogState(
-            policy: TimeoutPolicy(read: nil, progress: nil, transport: TimeoutPolicy.resolve(connection).transport))
-        let box = ResultBox<(Data, URLResponse)>()
-        let finalRequest = request
-
-        try await raceWatchdog(state) {
-            do {
-                box.set(try await session.data(for: finalRequest))
-            } catch {
-                DebugLogger.recordLastRequest(
-                    requestDump(request: finalRequest, response: nil, receivedBody: Data(), transportError: "\(error)"))
-                throw error
-            }
-        }
-        guard let (data, response) = box.get() else {
-            throw LLMTransportError.watchdogRace
-        }
-
-        if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
-            DebugLogger.recordLastRequest(requestDump(request: finalRequest, response: http, receivedBody: data))
-            debugLog(
-                "LLM", "HTTP \(http.statusCode) error body:\n\(String(data: data, encoding: .utf8) ?? "<non-utf8>")")
-            throw provider.parseError(data, statusCode: http.statusCode)
-        }
-
-        // Some OpenAI-compatible gateways return HTTP 200 with an
-        // `{"error": {...}}` body instead of a non-2xx status. Surface it.
-        if let http = response as? HTTPURLResponse,
-            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            json["error"] != nil
-        {
-            DebugLogger.recordLastRequest(requestDump(request: finalRequest, response: http, receivedBody: data))
-            debugLog("LLM", "HTTP 200 error body:\n\(String(data: data, encoding: .utf8) ?? "<non-utf8>")")
-            throw provider.parseError(data, statusCode: http.statusCode)
-        }
-
-        DebugLogger.recordLastRequest(requestDump(request: finalRequest, response: response, receivedBody: data))
-        return provider.parseCompleteResponse(data)
-    }
-
-    // MARK: - Models listing
-
-    /// Fetches the list of available models from a provider's `/models`
-    /// endpoint. `headers` is threaded through so a credentials check / model
-    /// fetch in the wizard matches what the saved connection will send —
-    /// otherwise the wizard could fail while the saved config works, for
-    /// exactly the header-gated gateway that motivated custom headers.
-    /// Enforces the transport-timeout layer only (see `complete`).
-    static func listModels(
-        provider: ConnectionProvider,
-        baseUrl: String?,
-        apiKey: String?,
-        headers: [String: String]? = nil
-    ) async throws -> [ModelInfo] {
-        let strategy: any LLMProvider
-        switch provider {
-        case .openai: strategy = OpenAIProvider()
-        case .anthropic: strategy = AnthropicProvider()
-        }
-        guard let path = strategy.modelsPath else {
-            throw LLMTransportError.modelsEndpointUnavailable(provider)
-        }
-        let base = (baseUrl?.isEmpty == false ? baseUrl! : strategy.defaultBaseUrl)
-        guard let url = URL(string: base + path) else {
-            throw LLMTransportError.invalidUrl(base + path)
-        }
-        let synthetic = Connection(
-            provider: provider,
-            name: "_models",
-            baseUrl: baseUrl,
-            apiKey: apiKey,
-            model: "",
-            imageInput: false,
-            requestParameters: nil,
-            headers: headers
-        )
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        for (key, value) in strategy.buildHeaders(connection: synthetic) {
-            request.setValue(value, forHTTPHeaderField: key)
-        }
-        let state = WatchdogState(
-            policy: TimeoutPolicy(read: nil, progress: nil, transport: TimeoutPolicy.resolve(synthetic).transport))
-        let box = ResultBox<(Data, URLResponse)>()
-        let finalRequest = request
-
-        try await raceWatchdog(state) {
-            do {
-                box.set(try await session.data(for: finalRequest))
-            } catch {
-                DebugLogger.recordLastRequest(
-                    requestDump(request: finalRequest, response: nil, receivedBody: Data(), transportError: "\(error)"))
-                throw error
-            }
-        }
-        guard let (data, response) = box.get() else {
-            throw LLMTransportError.watchdogRace
-        }
-
-        if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
-            DebugLogger.recordLastRequest(requestDump(request: finalRequest, response: http, receivedBody: data))
-            throw strategy.parseError(data, statusCode: http.statusCode)
-        }
-
-        DebugLogger.recordLastRequest(requestDump(request: finalRequest, response: response, receivedBody: data))
-        return strategy.parseModelsResponse(data)
     }
 
     // MARK: - Watchdog race
@@ -571,6 +445,20 @@ enum LLMTransport {
     /// request body, response status and headers, and the raw received body.
     /// When the transport itself failed (`transportError`), no response was
     /// received and the error is dumped instead.
+    /// Auth-bearing request headers (API keys, bearer tokens, custom secrets)
+    /// must never reach `last_request.log`.
+    static func isSensitiveHeader(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        return ["authorization", "key", "token", "secret"].contains { lower.contains($0) }
+    }
+
+    /// OpenRouter and DeepSeek share the OpenAI wire; name the real provider.
+    private static func labeled(_ error: LLMError, for model: ResolvedModel) -> LLMError {
+        var error = error
+        error.providerName = model.provider.displayName
+        return error
+    }
+
     static func requestDump(
         request: URLRequest,
         response: URLResponse?,
@@ -582,7 +470,7 @@ enum LLMTransport {
         lines.append("\(request.httpMethod ?? "GET") \(request.url?.absoluteString ?? "<no url>")")
         if let headers = request.allHTTPHeaderFields, !headers.isEmpty {
             for key in headers.keys.sorted() {
-                lines.append("\(key): \(headers[key] ?? "")")
+                lines.append("\(key): \(isSensitiveHeader(key) ? "<redacted>" : (headers[key] ?? ""))")
             }
         }
         if let body = request.httpBody, !body.isEmpty {
@@ -640,18 +528,18 @@ enum LLMTransport {
 // MARK: - Timeout policy
 
 /// The three timeout layers resolved for a single request. `nil` means the
-/// layer is disabled; resolution maps a connection's `nil` to the layer
+/// layer is disabled; resolution maps a model's `nil` to the layer
 /// default and `≤ 0` to disabled.
 struct TimeoutPolicy: Sendable {
     let read: TimeInterval?
     let progress: TimeInterval?
     let transport: TimeInterval?
 
-    static func resolve(_ connection: Connection) -> TimeoutPolicy {
+    static func resolve(_ model: ResolvedModel) -> TimeoutPolicy {
         TimeoutPolicy(
-            read: layer(connection.readTimeout, LLMTransport.defaultReadTimeout),
-            progress: layer(connection.progressTimeout, LLMTransport.defaultProgressTimeout),
-            transport: layer(connection.transportTimeout, LLMTransport.defaultTransportTimeout))
+            read: layer(model.readTimeout, LLMTransport.defaultReadTimeout),
+            progress: layer(model.progressTimeout, LLMTransport.defaultProgressTimeout),
+            transport: layer(model.transportTimeout, LLMTransport.defaultTransportTimeout))
     }
 
     private static func layer(_ value: Double?, _ fallback: TimeInterval) -> TimeInterval? {
@@ -833,7 +721,6 @@ private final class OutputTracker: @unchecked Sendable {
 
 enum LLMTransportError: Error, LocalizedError {
     case invalidUrl(String)
-    case modelsEndpointUnavailable(ConnectionProvider)
     /// No data at all arrived within the read-timeout window.
     case readTimeout(TimeInterval)
     /// Data (keep-alives) kept arriving but no useful output did.
@@ -847,8 +734,6 @@ enum LLMTransportError: Error, LocalizedError {
         switch self {
         case .invalidUrl(let url):
             return "Invalid URL: \(url)"
-        case .modelsEndpointUnavailable(let provider):
-            return "\(provider.rawValue) does not expose a models listing endpoint."
         case .readTimeout(let seconds):
             return "No data received for \(Int(seconds))s — the connection stalled or the provider is unreachable."
         case .progressTimeout(let seconds):

@@ -19,8 +19,11 @@ struct LLMError: Error, LocalizedError, Sendable {
     let errorType: String?
     /// The raw response body, retained for debugging.
     let rawBody: String?
-    /// The provider that produced this error.
-    let provider: ConnectionProvider
+    /// The wire format of the response that produced this error.
+    let wire: LLMWire
+    /// The provider that answered (e.g. "DeepSeek"); several providers share a
+    /// wire. Falls back to the wire's name when unknown.
+    var providerName: String?
 
     var errorDescription: String? {
         if let message = providerMessage, !message.isEmpty {
@@ -32,9 +35,9 @@ struct LLMError: Error, LocalizedError, Sendable {
         return "\(providerLabel) API error (\(statusCode))"
     }
 
-    /// A friendly label for the provider, used in error messages.
     private var providerLabel: String {
-        switch provider {
+        if let providerName { return providerName }
+        switch wire {
         case .openai: return "OpenAI"
         case .anthropic: return "Anthropic"
         }
@@ -60,7 +63,7 @@ struct LLMError: Error, LocalizedError, Sendable {
             providerMessage: message,
             errorType: type,
             rawBody: rawBody,
-            provider: .openai
+            wire: .openai
         )
     }
 
@@ -82,7 +85,7 @@ struct LLMError: Error, LocalizedError, Sendable {
             providerMessage: message,
             errorType: type,
             rawBody: rawBody,
-            provider: .anthropic
+            wire: .anthropic
         )
     }
 }

@@ -13,35 +13,39 @@ import Foundation
 /// - `tool_use` `input` is a **raw JSON object** — the tool call's
 ///   `arguments` string is parsed to a JSON object and embedded directly.
 /// - `max_tokens` is **required** — `buildRequestBody` ensures it's present,
-///   defaulting to 4096 if not supplied in `requestParameters`.
+///   defaulting to the model's output limit (capped, see `maxTokensCap`)
+///   if not supplied in `requestParameters`.
+/// - Automatic prompt caching (`cache_control`) is on for every request.
 ///
 /// Emits incremental `.toolCallDelta` chunks as argument fragments arrive.
 struct AnthropicProvider: LLMProvider {
-    let provider: ConnectionProvider = .anthropic
-    let defaultBaseUrl = "https://api.anthropic.com/v1"
+    let wire: LLMWire = .anthropic
     let chatPath = "/messages"
-    /// Anthropic exposes a models endpoint at `/v1/models`. The response
-    /// includes per-model capability info (e.g. `image_input`), which the
-    /// connection wizard uses to auto-set the `imageInput` flag.
-    let modelsPath: String? = "/models"
 
     /// The Anthropic API version header value.
     private static let apiVersion = "2023-06-01"
 
-    func buildHeaders(connection: Connection) -> [String: String] {
+    /// Upper bound for the default `max_tokens`. A high default keeps long
+    /// answers and thinking from being truncated; the cap keeps requests sane
+    /// and below the size where the API insists on streaming.
+    static let maxTokensCap = 32_000
+    /// Used when the model's output limit is unknown.
+    static let fallbackMaxTokens = 4096
+
+    func buildHeaders(model: ResolvedModel) -> [String: String] {
         var headers = [
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
             "anthropic-version": Self.apiVersion,
             "User-Agent": AppInfo.userAgent,
         ]
-        if let apiKey = connection.apiKey, !apiKey.isEmpty {
-            headers["x-api-key"] = apiKey
+        if !model.apiKey.isEmpty {
+            headers["x-api-key"] = model.apiKey
         }
         // Custom headers are applied last so they can override anything,
         // including auth and User-Agent. An empty-string value removes the
         // header entirely (cheap way to suppress a default).
-        if let custom = connection.headers {
+        if let custom = model.headers {
             for (key, value) in custom {
                 if value.isEmpty {
                     headers.removeValue(forKey: key)
@@ -54,7 +58,7 @@ struct AnthropicProvider: LLMProvider {
     }
 
     func buildRequestBody(
-        connection: Connection,
+        model: ResolvedModel,
         messages: [ChatMessage],
         chatFilename: String,
         tools: [ToolDefinition]?,
@@ -74,10 +78,14 @@ struct AnthropicProvider: LLMProvider {
         }
 
         var body: [String: Any] = [
-            "model": connection.model,
+            "model": model.modelID,
             "messages": conversationMessages.map {
-                anthropicMessage($0, chatFilename: chatFilename, imageInput: connection.imageInput)
+                anthropicMessage($0, chatFilename: chatFilename, imageInput: model.imageInput)
             },
+            // Automatic caching: the API picks the last cacheable block and
+            // moves the breakpoint forward as the conversation grows.
+            "cache_control": ["type": "ephemeral"] as [String: Any],
+            "max_tokens": min(model.capabilities.maxOutputTokens ?? Self.fallbackMaxTokens, Self.maxTokensCap),
         ]
         if let systemText { body["system"] = systemText }
 
@@ -96,16 +104,10 @@ struct AnthropicProvider: LLMProvider {
             }
         }
 
-        if let params = connection.requestParameters {
+        if let params = model.requestParameters {
             for (key, value) in params {
                 body[key] = value.anyValue
             }
-        }
-
-        // Anthropic requires max_tokens on every request. Default to 4096
-        // if not supplied in requestParameters.
-        if body["max_tokens"] == nil {
-            body["max_tokens"] = 4096
         }
 
         if stream { body["stream"] = true }
@@ -149,7 +151,7 @@ struct AnthropicProvider: LLMProvider {
             for r in results {
                 // A tool result carrying a processed image (from read_file on
                 // an image) is sent as an image block on vision-capable
-                // connections, or as the classification+OCR fallback text on
+                // models, or as the classification+OCR fallback text on
                 // vision-incapable ones — exactly like user-attached images.
                 if let image = r.image {
                     if imageInput {
@@ -192,8 +194,8 @@ struct AnthropicProvider: LLMProvider {
 
     /// Builds an Anthropic message dict with multipart content: text blocks,
     /// image blocks (base64 sources) for image attachments on vision-capable
-    /// connections, the synthesized text fallback for images on
-    /// vision-incapable connections, and text blocks wrapping extracted content
+    /// models, the synthesized text fallback for images on
+    /// vision-incapable models, and text blocks wrapping extracted content
     /// for text/document attachments.
     private func anthropicAttachmentMessage(
         _ msg: ChatMessage,
@@ -335,44 +337,6 @@ struct AnthropicProvider: LLMProvider {
             break
         }
         return chunks
-    }
-
-    // MARK: - Non-streaming response
-
-    func parseCompleteResponse(_ data: Data) -> String {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let content = json["content"] as? [[String: Any]]
-        else {
-            return ""
-        }
-        for block in content {
-            if (block["type"] as? String) == "text", let text = block["text"] as? String {
-                return text
-            }
-        }
-        return ""
-    }
-
-    // MARK: - Models listing
-
-    func parseModelsResponse(_ data: Data) -> [ModelInfo] {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let models = json["data"] as? [[String: Any]]
-        else {
-            return []
-        }
-        // Anthropic returns `{"data":[{"id":"...","capabilities":{"image_input":{"supported":true}}}, ...]}`.
-        return models.compactMap { entry -> ModelInfo? in
-            guard let id = entry["id"] as? String else { return nil }
-            var imageInput: Bool?
-            if let caps = entry["capabilities"] as? [String: Any],
-                let imageCap = caps["image_input"] as? [String: Any],
-                let supported = imageCap["supported"] as? Bool
-            {
-                imageInput = supported
-            }
-            return ModelInfo(id: id, imageInput: imageInput)
-        }
     }
 
     // MARK: - Error parsing

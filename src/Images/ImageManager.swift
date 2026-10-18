@@ -134,7 +134,7 @@ enum AttachmentManager {
 
     /// Resizes/re-encodes an image, saves it, and generates the text fallback
     /// (classification labels + OCR) stored on the record. The fallback lives
-    /// in `Attachment.text` so a vision-incapable connection can send it as a
+    /// in `Attachment.text` so a vision-incapable model can send it as a
     /// text block instead of the image block.
     private static func commitImage(_ pending: PendingAttachment, chatFilename: String) -> Attachment? {
         guard let processed = ImageProcessor.process(pending.data) else { return nil }

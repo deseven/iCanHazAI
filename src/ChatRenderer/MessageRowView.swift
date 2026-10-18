@@ -269,8 +269,8 @@ final class MessageRowView: FlippedView {
 
     static func detailText(_ m: ChatRowModel) -> String {
         var parts = [timeFormatter.string(from: m.timestamp)]
-        if m.role == .assistant, let connection = m.connectionName, !connection.isEmpty {
-            parts.append("via \(connection)")
+        if m.role == .assistant, let model = m.model, !model.isEmpty {
+            parts.append("via \(model)")
         }
         return parts.joined(separator: " · ")
     }

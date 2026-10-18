@@ -9,7 +9,7 @@ import Foundation
 struct ChatInputFacts: Equatable {
     var supportsAttachments = false
     var hasValidRole = false
-    var hasConnection = false
+    var hasModel = false
     var workdirRequired = false
     var lastMessageIsFromUser = false
     var isStreaming = false
@@ -22,7 +22,7 @@ struct ChatInputFacts: Equatable {
     /// Whether the send/stop button is enabled.
     func actionEnabled(hasText: Bool, hasAttachments: Bool) -> Bool {
         if isStreaming { return true }
-        if !hasValidRole || !hasConnection { return false }
+        if !hasValidRole || !hasModel { return false }
         // Directory-relevant tools (Filesystem/Code) require a working
         // directory before requests can be sent.
         if workdirRequired { return false }

@@ -4,7 +4,7 @@
 import Foundation
 
 /// A minimal JSON value type used by the LLM transport layer and by
-/// `Connection.requestParameters` to carry arbitrary, provider-specific JSON
+/// `ResolvedModel.requestParameters` to carry arbitrary, provider-specific JSON
 /// without leaking library types into the model layer.
 ///
 /// Conforms to `Codable`, `Sendable`, and `Equatable`.

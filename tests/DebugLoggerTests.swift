@@ -146,6 +146,7 @@ extension AllAppTests {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("Bearer sk-test", forHTTPHeaderField: "Authorization")
+            request.setValue("sk-ant-test", forHTTPHeaderField: "x-api-key")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = Data(#"{"model":"gpt-test","messages":[{"role":"user","content":"hi"}]}"#.utf8)
 
@@ -158,7 +159,10 @@ extension AllAppTests {
             let dump = LLMTransport.requestDump(request: request, response: response, receivedBody: body)
 
             #expect(dump.contains("POST https://api.example.com/v1/chat/completions"))
-            #expect(dump.contains("Authorization: Bearer sk-test"))
+            #expect(dump.contains("Authorization: <redacted>"))
+            #expect(dump.contains("x-api-key: <redacted>"))
+            #expect(!dump.contains("sk-test"))
+            #expect(!dump.contains("sk-ant-test"))
             #expect(dump.contains("Content-Type: application/json"))
             #expect(dump.contains(#""model":"gpt-test""#))
             #expect(dump.contains("HTTP 200"))

@@ -7,7 +7,7 @@ import SwiftUI
 /// Owns the borderless floating window that shows the loader during app
 /// startup. Created and presented synchronously from `AppDelegate` right after
 /// the main config is read, so the loader appears instantly while the engine
-/// loads connections / prompts / roles / MCPs. Fades out (0.3s) one second
+/// loads providers / prompts / roles / MCPs. Fades out (0.3s) one second
 /// after everything settles, via the `LoaderController.visibilityHandler` hook.
 /// The main window is already visible underneath (it opens normally at
 /// launch); the loader panel floats above it at `.statusBar` level and simply
@@ -45,7 +45,7 @@ final class LoaderWindowController {
     /// so there's no wrong-sized/mispositioned frame to flash before centering.
     func present() {
         debugLog("Loader", "present — seeding")
-        LoaderController.shared.beginStartup()
+        LoaderController.shared.beginStartup(providerCount: ProviderRegistry.shared.storedProviderCount())
 
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 480, height: 360),

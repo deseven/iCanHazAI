@@ -87,14 +87,14 @@ struct CLIRequest: Sendable, Equatable {
     var params: CLIRequestParams
 }
 
-/// Parameters for `chat.send`. `role`/`connection`/`chat` are optional
+/// Parameters for `chat.send`. `role`/`model`/`chat` are optional
 /// selectors; when nil the app's defaults are used / a new chat is created.
 struct CLIRequestParams: Sendable, Equatable {
     var message: String
     /// Role for the new chat. Nil → the app's default role.
     var role: String?
-    /// Connection override ("provider/name"). Nil → role/app default.
-    var connection: String?
+    /// Model for the new chat ("provider:model-id"). Required for new chats.
+    var model: String?
     /// Filename of an existing chat to continue, with or without the ".json"
     /// extension. Nil → create a new chat.
     var chat: String?
@@ -175,7 +175,7 @@ enum CLIProtocol {
             obj[Key.method.rawValue] = req.method
             var params: [String: Any] = ["message": req.params.message]
             if let role = req.params.role { params["role"] = role }
-            if let connection = req.params.connection { params["connection"] = connection }
+            if let model = req.params.model { params["model"] = model }
             if let chat = req.params.chat { params["chat"] = chat }
             if req.params.temporary { params["temporary"] = true }
             if let workdir = req.params.workdir { params["workdir"] = workdir }
@@ -277,7 +277,7 @@ enum CLIProtocol {
             let params = CLIRequestParams(
                 message: message,
                 role: paramsObj["role"] as? String,
-                connection: paramsObj["connection"] as? String,
+                model: paramsObj["model"] as? String,
                 chat: paramsObj["chat"] as? String,
                 temporary: paramsObj["temporary"] as? Bool ?? false,
                 workdir: paramsObj["workdir"] as? String,

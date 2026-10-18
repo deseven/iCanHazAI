@@ -15,14 +15,14 @@ To address the elephant in the room: there are many AI chat apps and agentic har
 ## Features
 
 - native macOS app: Swift backend, fully native chat rendering (Markdown, tables, code blocks with syntax highlighting) built on AppKit and TextKit, fast on huge chats, low resource usage
-- extensive BYOK support: Anthropic, OpenAI, or any OpenAI-compatible API (OpenRouter, Together, DeepSeek, local servers like Ollama/LM Studio, and countless others)
-- roles: clearly defined templates bundling a prompt, a connection, tools, and a working directory — several bundled, easy to create your own
+- BYOK support: OpenAI, Anthropic, DeepSeek and OpenRouter — add a key once, the model list and each model's capabilities are loaded for you and picked per chat from a searchable list
+- roles: clearly defined templates bundling a prompt, tools, and a working directory — several bundled, easy to create your own
 - agentic toolset: built-in filesystem/code/shell/utils/web tool groups with per-tool approval and optional directory isolation; file editing uses the [oh-my-pi](https://github.com/can1357/oh-my-pi) hashline patch format for optimistic-concurrency edits
 - integrated web access: web search and page extraction via Exa, Linkup, or Tavily (unified interface, your choice of provider), plus raw URL fetching
 - MCP: stdio and streamable HTTP servers with tool filtering, name prefixing, and run policies
 - remote work: seamless SSH working directories for agentic sessions on remote machines
 - CLI: one-shot and interactive modes, piping, unlimited concurrency — run ten chats in the CLI, ten more in the GUI, continue any of them anywhere
-- attachments: attach images, plain text, and documents (docx/doc/odt/rtf/pdf) to any chat on any connection — images on non-vision connections get a local text fallback
+- attachments: attach images, plain text, and documents (docx/doc/odt/rtf/pdf) to any chat on any model — images on non-vision models get a local text fallback
 - clean configuration/data structure in a single directory (`~/iCanHazAI`)
 - bundled Configurator role that edits the configuration for you
 - in-chat search (⌘F): browser-style find over user and assistant message text with match count, next/previous (⌘G / ⇧⌘G) and highlighting
@@ -46,12 +46,12 @@ To address the elephant in the room: there are many AI chat apps and agentic har
 1. Grab the latest release from [GitHub Releases](https://github.com/deseven/icanhazai/releases/latest). If you want bleeding-edge features and the most recent changes, a [development build](https://d7.wtf/s/ichai-dev.zip) is also available — obviously, it could be unstable.
 2. Move the app to `/Applications`.
 3. If you plan to use the CLI, add `alias ichai='/Applications/iCanHazAI.app/Contents/MacOS/iCanHazAI'` to your favourite shell.
-4. Run the app and create your first connection — the wizard will guide you. Then check Preferences to tune things how you like, or just ask the Configurator role.
+4. Run the app and add your first provider (API key) — the wizard will guide you. Then check Preferences to tune things how you like, or just ask the Configurator role.
 
 
 ## Usage Notes
 
-- **CLI**: `ichai "your message"` sends a one-shot message, `command | ichai "..."` pipes input in, `ichai -i` starts an interactive session. Run `ichai -h` for the full list of features. The app starts itself (without a window) when needed.
+- **CLI**: `ichai "your message"` sends a one-shot message, `command | ichai "..."` pipes input in, `ichai -i` starts an interactive session. `-m provider:model-id` picks the model of a new chat (default: the role's preferred model, else the default model from Preferences). Run `ichai -h` for the full list of features. The app starts itself (without a window) when needed.
 - **Tool approvals**: when a model calls a tool, approve it once (⌘Y) or pick "Allow for this chat" (⌥⌘Y), or deny it (⌘N) with an optional reason; roles can also pre-approve tools via `auto_allow`. The state of tool approval can also be controlled in the Chat Info sidebar to the right.
 - **Messages while streaming**: you can keep writing while the model works. Return queues the message (shown above the input); queued messages go out together as a single user message once the model finishes its current step — along with its tool results, if it made tool calls. Hold ⌥ to send immediately instead: this stops the current response and sends your message plus anything queued (⌥Return works too). The queue strip has buttons to send everything now or discard it. With nothing typed, the stop button stays a stop button (hold ⌥ for "stop after current step", ⌘B / ⌥⌘B). A hard stop or an error leaves the queue in place instead of sending it.
 - **SSH**: any working directory can be remote — use the scp form `host:/absolute/path` (or `user@host:/path`; a bare `host:` means the remote home) as a role's `working_directory` or type it into the per-chat directory picker, which will browse the remote for you. Auth must be pre-configured so `ssh host` works without prompts (keys, `~/.ssh/config`) — interactive auth is not supported.
@@ -63,13 +63,11 @@ On first launch, iCanHazAI creates its data directory at `~/iCanHazAI`:
 
 ```
 ~/iCanHazAI/
-├── Connections/     # provider connections (*.jsonc)
-│   ├── openai/
-│   └── anthropic/
 ├── MCPs/            # MCP servers (*.toml)
 ├── Prompts/         # system prompts (*.md)
 ├── Roles/           # roles (*.toml)
 ├── Chats/           # chats (*.json) and their attachments
+├── .cache/          # chat metadata and model list caches (safe to delete)
 ├── config.toml      # app settings
 ├── app.log          # debug log
 ├── last_request.log # full dump of the most recent LLM request (app debug only)
@@ -78,9 +76,11 @@ On first launch, iCanHazAI creates its data directory at `~/iCanHazAI`:
 
 Everything lives directly in your home folder as plain text, so you can inspect it with any editor.
 
-### Connection
+### Provider
 
-A `{name}.jsonc` file in `Connections/openai/` or `Connections/anthropic/`. The folder determines the API flavor (OpenAI-compatible or Anthropic); together with the name it forms the connection id (`openai/gpt-4o`, `anthropic/claude`, ...) that roles and the app config refer to. The file defines the base URL, API key, model, and any extra request parameters — JSONC means comments and trailing commas are welcome. The first-run wizard creates one for you; afterwards use "Connection → New Connection…" or the Configurator role.
+Providers aren't files: you add one with **Provider → New Provider…** and enter its API key. Supported are OpenAI, Anthropic, DeepSeek and OpenRouter, one key per provider. Keys are stored in the macOS login keychain, tagged with the data directory, so the development and release apps keep separate keys, and nothing secret lands in `~/iCanHazAI` or reaches the Configurator role. There is no way to edit or delete a key in the app yet.
+
+The model list and each model's capabilities (image input, context size, reasoning) are loaded automatically — on start, after adding a provider, every 24 hours, or on demand via **Provider → Refresh Models…** — and cached, so everything works offline. Every new chat starts with a model picker, unless a model is preselected — a **Default Model** in Preferences → General, or a role's `preferred_model` (which takes precedence; if that model no longer exists the chat starts with no model). The **Utility Model** (also in Preferences → General) handles background tasks like naming chats — pick a fast, cheap one; without it chats are named after their first message. Models are identified as `provider:model-id` (e.g. `anthropic:claude-sonnet-5-5`). Typing `openrouter:` in the picker searches all of OpenRouter, beyond its most popular models.
 
 ### MCP
 
@@ -92,7 +92,7 @@ A `{name}.md` file in `Prompts/` — the entire file content is the system promp
 
 ### Role
 
-A `{name}.toml` file in `Roles/` — a template for new chats combining a prompt, a connection, a working directory, and tools. Tools come from the built-in groups (utils, filesystem, code, shell, web) and/or configured MCP servers, each with optional allowlists and auto-approve rules. The working directory can be pre-set, picked once per chat, or a remote SSH location (`host:/path`), and filesystem/code tools can be isolated to it. A chat's role and working directory are fixed at creation. An optional `[features]` table gates per-role UI capabilities.
+A `{name}.toml` file in `Roles/` — a template for new chats combining a prompt, a working directory, and tools. Tools come from the built-in groups (utils, filesystem, code, shell, web) and/or configured MCP servers, each with optional allowlists and auto-approve rules. The working directory can be pre-set, picked once per chat, or a remote SSH location (`host:/path`), and filesystem/code tools can be isolated to it. An optional `preferred_model` preselects a model for the role's new chats. A chat's role and working directory are fixed at creation. An optional `[features]` table gates per-role UI capabilities.
 
 ### Chat
 

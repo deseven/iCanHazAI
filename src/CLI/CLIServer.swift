@@ -41,7 +41,7 @@ final class CLIServer: @unchecked Sendable {
             await ChatEngine.shared.performOneShot(
                 message: request.params.message,
                 role: request.params.role,
-                connection: request.params.connection,
+                model: request.params.model,
                 chatName: request.params.chat,
                 temporary: request.params.temporary,
                 workdir: request.params.workdir,

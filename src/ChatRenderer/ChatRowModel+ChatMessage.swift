@@ -17,7 +17,7 @@ extension ChatRowModel {
             thinkingDuration: message.thinkingDuration,
             error: message.error,
             timestamp: message.timestamp,
-            connectionName: message.connectionName,
+            model: message.model,
             attachments: (message.attachments ?? []).map(AttachmentInfo.init),
             toolCalls: (message.toolCalls ?? []).map(ToolCall.init),
             toolResults: (message.toolResults ?? []).map(ToolResult.init)

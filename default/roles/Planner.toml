@@ -2,7 +2,6 @@ description = "General-purpose planner for any task. Gathers context through que
 prompt = "Planner"
 icon = "map"
 accent = "teal"
-connection_override_allowed = true
 mcps_override_allowed = true
 
 [features]

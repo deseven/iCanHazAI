@@ -16,8 +16,6 @@ extension AllAppTests {
                 prompt = "Developer"
                 prompt_override_allowed = false
                 working_directory = "~/projects/MyProject"
-                connection = "openai/DeepSeek"
-                connection_override_allowed = true
                 mcps_override_allowed = true
                 directory_isolation = true
 
@@ -38,8 +36,6 @@ extension AllAppTests {
             #expect(config.prompt == "Developer")
             #expect(config.promptOverrideAllowed == false)
             #expect(config.workingDirectory == "~/projects/MyProject")
-            #expect(config.connection == "openai/DeepSeek")
-            #expect(config.connectionOverrideAllowed == true)
             #expect(config.mcpsOverrideAllowed == true)
             #expect(Role(name: "Developer", config: config).mcpsOverrideAllowed == true)
             // Built-in groups
@@ -53,6 +49,26 @@ extension AllAppTests {
             #expect(mcps[0].tools == ["tavily_search", "tavily_extract"])
         }
 
+        @Test("RoleConfig decodes the optional top-level preferred_model")
+        func decodesPreferredModel() throws {
+            let withModel = try ConfigValidation.decodeRole(
+                Data("preferred_model = \"openai:gpt-5\"\n\n[utils]\n".utf8))
+            #expect(withModel.preferredModel == "openai:gpt-5")
+            let without = try ConfigValidation.decodeRole(Data("prompt = \"Developer\"\n".utf8))
+            #expect(without.preferredModel == nil)
+        }
+
+        @Test("role files still carrying the removed connection keys keep loading")
+        func toleratesRemovedConnectionKeys() throws {
+            let toml = """
+                prompt = "Developer"
+                connection = "openai/DeepSeek"
+                connection_override_allowed = true
+                """
+            let config = try ConfigValidation.decodeRole(Data(toml.utf8))
+            #expect(config.prompt == "Developer")
+        }
+
         @Test("RoleConfig applies defaults for omitted optional fields")
         func decodesMinimalConfig() throws {
             let toml = """
@@ -62,7 +78,6 @@ extension AllAppTests {
             let role = Role(name: "Assistant", config: config)
             #expect(role.description == "No description.")
             #expect(role.promptOverrideAllowed == false)
-            #expect(role.connectionOverrideAllowed == false)
             #expect(role.mcpsOverrideAllowed == false)
             #expect(role.mcpCount == 0)
             // No icon set → falls back to the generic default.

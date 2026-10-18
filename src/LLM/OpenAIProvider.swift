@@ -7,35 +7,30 @@ import Foundation
 ///
 /// Builds Chat Completions API request bodies and parses the corresponding
 /// streaming chunk and error shapes. Works with any OpenAI-compatible
-/// endpoint (OpenAI, DeepSeek, Grok, OpenRouter, local servers, etc.) —
+/// endpoint (OpenAI, DeepSeek, OpenRouter, local servers, etc.) —
 /// provider-specific parameters are supplied via
-/// [`Connection.requestParameters`](src/Chat/Models.swift) and merged into the
-/// request body root.
+/// [`ResolvedModel.requestParameters`](src/LLM/ResolvedModel.swift) and merged
+/// into the request body root.
 ///
 /// Emits incremental `.toolCallDelta` chunks as argument fragments arrive
 /// (see [`StreamChunk`](src/Chat/ChatService.swift)).
 struct OpenAIProvider: LLMProvider {
-    let provider: ConnectionProvider = .openai
-    /// The base URL includes the API version path segment. Custom endpoints
-    /// (OpenRouter, DeepSeek, local servers) supply their own baseUrl
-    /// including whatever path prefix they use (e.g. `/api/v1`).
-    let defaultBaseUrl = "https://api.openai.com/v1"
+    let wire: LLMWire = .openai
     let chatPath = "/chat/completions"
-    let modelsPath: String? = "/models"
 
-    func buildHeaders(connection: Connection) -> [String: String] {
+    func buildHeaders(model: ResolvedModel) -> [String: String] {
         var headers = [
             "Content-Type": "application/json",
             "Accept": "text/event-stream",
             "User-Agent": AppInfo.userAgent,
         ]
-        if let apiKey = connection.apiKey, !apiKey.isEmpty {
-            headers["Authorization"] = "Bearer \(apiKey)"
+        if !model.apiKey.isEmpty {
+            headers["Authorization"] = "Bearer \(model.apiKey)"
         }
         // Custom headers are applied last so they can override anything,
         // including auth and User-Agent. An empty-string value removes the
         // header entirely (cheap way to suppress a default).
-        if let custom = connection.headers {
+        if let custom = model.headers {
             for (key, value) in custom {
                 if value.isEmpty {
                     headers.removeValue(forKey: key)
@@ -48,16 +43,16 @@ struct OpenAIProvider: LLMProvider {
     }
 
     func buildRequestBody(
-        connection: Connection,
+        model: ResolvedModel,
         messages: [ChatMessage],
         chatFilename: String,
         tools: [ToolDefinition]?,
         stream: Bool
     ) -> [String: Any] {
         var body: [String: Any] = [
-            "model": connection.model,
+            "model": model.modelID,
             "messages": messages.map {
-                openAIMessage($0, chatFilename: chatFilename, imageInput: connection.imageInput)
+                openAIMessage($0, chatFilename: chatFilename, imageInput: model.imageInput)
             },
         ]
 
@@ -77,7 +72,7 @@ struct OpenAIProvider: LLMProvider {
             }
         }
 
-        if let params = connection.requestParameters {
+        if let params = model.requestParameters {
             for (key, value) in params {
                 body[key] = value.anyValue
             }
@@ -123,7 +118,7 @@ struct OpenAIProvider: LLMProvider {
             let r = results[0]
             // A tool result carrying a processed image (from read_file on an
             // image) is sent as an image_url part on vision-capable
-            // connections, or as the classification+OCR fallback text on
+            // models, or as the classification+OCR fallback text on
             // vision-incapable ones — exactly like user-attached images.
             if let image = r.image {
                 if imageInput {
@@ -160,8 +155,8 @@ struct OpenAIProvider: LLMProvider {
 
     /// Builds an OpenAI user message dict with multipart content: text parts,
     /// image_url parts (base64 data URLs) for image attachments on
-    /// vision-capable connections, the synthesized text fallback for images on
-    /// vision-incapable connections, and text parts wrapping extracted content
+    /// vision-capable models, the synthesized text fallback for images on
+    /// vision-incapable models, and text parts wrapping extracted content
     /// for text/document attachments.
     private func openAIAttachmentMessage(
         _ msg: ChatMessage,
@@ -271,33 +266,6 @@ struct OpenAIProvider: LLMProvider {
             }
         }
         return chunks
-    }
-
-    // MARK: - Non-streaming response
-
-    func parseCompleteResponse(_ data: Data) -> String {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let choices = json["choices"] as? [[String: Any]],
-            let first = choices.first,
-            let message = first["message"] as? [String: Any]
-        else {
-            return ""
-        }
-        return (message["content"] as? String) ?? ""
-    }
-
-    // MARK: - Models listing
-
-    func parseModelsResponse(_ data: Data) -> [ModelInfo] {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let models = json["data"] as? [[String: Any]]
-        else {
-            return []
-        }
-        // OpenAI-compatible endpoints return `{"data":[{"id":"..."}, ...]}`.
-        // They don't report image-input capability, so it stays nil.
-        return models.compactMap { $0["id"] as? String }
-            .map { ModelInfo(id: $0, imageInput: nil) }
     }
 
     // MARK: - Error parsing

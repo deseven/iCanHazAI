@@ -4,15 +4,15 @@
 import AppKit
 import SwiftUI
 
-/// A multi-step wizard for creating a new MCP server config. Runs in its own
-/// window and walks the user through transport selection, parameters, a
+/// A multi-step wizard sheet for creating a new MCP server config. Walks the user through transport selection, parameters, a
 /// connection test (listTools), naming, and a final summary.
 ///
-/// MCP management mirrors the connections pattern: this wizard creates the
+/// MCP management is create-only in-app: this wizard creates the
 /// config file and reports it to `ChatEngine`; further editing/deletion goes
 /// through the Configurator role or manual file edits followed by
 /// "MCP → Reinitialize MCP Servers…". There is no in-app edit or delete.
 struct MCPWizardView: View {
+    @Environment(\.dismiss) private var dismiss
 
     /// Called after the wizard finishes (server saved). The view model uses
     /// this to refresh its state.
@@ -158,6 +158,8 @@ struct MCPWizardView: View {
                 focusedField = nil
             }
         }
+        .onDisappear { cancelPendingTest() }
+        .interactiveDismissDisabled()
         .frame(width: 560, height: 480)
     }
 
@@ -360,13 +362,17 @@ struct MCPWizardView: View {
     }
 
     private func closeWindow() {
-        // Cancel any in-flight test so the spawned subprocess is torn down
-        // (testConnection's race will throw CancellationError, and the cleanup
-        // in connectAndListTools kills the process). Then disconnect any
-        // transient connection that may have been left behind.
-        testTask?.cancel()
+        cancelPendingTest()
         Task { await MCPManager.shared.disconnect(name: tempServerName) }
-        NSApp.windows.first(where: { $0.identifier?.rawValue == "mcp-wizard" })?.close()
+        dismiss()
+    }
+
+    /// Cancels any in-flight test so the spawned subprocess is torn down
+    /// (testConnection's race will throw CancellationError, and the cleanup
+    /// in connectAndListTools kills the process). Also runs when the sheet is
+    /// replaced by another one.
+    private func cancelPendingTest() {
+        testTask?.cancel()
     }
 
     // MARK: - Step 1: Type
@@ -887,31 +893,5 @@ struct MCPWizardView: View {
         EnvironmentManager.shared.saveMCP(server)
         Task { await ChatEngine.shared.applyConfigChange(.mcp(name)) }
         savedFileURL = EnvironmentManager.shared.mcpsURL.appendingPathComponent("\(name).toml")
-    }
-}
-
-// MARK: - Window helper
-
-extension MCPWizardView {
-    /// Creates or brings to front the MCP wizard window.
-    @MainActor
-    static func show(onFinish: (() -> Void)? = nil) {
-        if let existing = NSApp.windows.first(where: { $0.identifier?.rawValue == "mcp-wizard" }) {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-
-        let wizard = MCPWizardView(onFinish: onFinish)
-        let hosting = NSHostingController(rootView: wizard)
-        let window = NSWindow(contentViewController: hosting)
-        window.identifier = NSUserInterfaceItemIdentifier("mcp-wizard")
-        window.title = "New MCP Server"
-        window.styleMask = [.titled, .closable, .miniaturizable]
-        window.isReleasedWhenClosed = false
-        window.setContentSize(NSSize(width: 560, height: 480))
-        window.center()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
     }
 }

@@ -12,6 +12,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The app is single-window; disable automatic window tabbing so the
         // "Show Tab Bar" / "Show All Tabs" items disappear from the View menu.
         NSWindow.allowsAutomaticWindowTabbing = false
+        // AppKit silently ignores `NSApp.terminate` (Cmd-Q, Dock > Quit, the
+        // wizard's Cancel) while a sheet is attached — the delegate isn't even
+        // asked. All our dialogs are sheets now, so opt every sheet window out
+        // as it appears (SwiftUI sheets, open/save panels, export sheets).
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
+        ) { note in
+            if let window = note.object as? NSWindow, window.isSheet {
+                window.preventsApplicationTerminationWhenModal = false
+            }
+        }
         // Open ~/iCanHazAI/app.log (truncated) before anything else.
         DebugLogger.startFileLogging()
         // Load and decode config.toml synchronously, on this thread, BEFORE
@@ -54,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else {
                     MainWindowController.shared.reveal()
                 }
+                // Never displaces a blocking sheet (the no-provider wizard).
                 if let vm = AppViewModel.shared, !vm.configErrors.isEmpty {
                     vm.showConfigErrors = true
                 }
@@ -105,7 +117,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// revealed it via fragile coordination), this creates the `NSWindow` manually
 /// — exactly when loading is done — using the same `NSHostingController` pattern
 /// the wizard windows already use. No hiding, no fallback, no coordination: the
-/// window simply doesn't exist until `reveal()` is called.
+/// the window simply doesn't exist until `reveal()` is called.
+///
+/// It is also the only window besides the startup loader: every dialog
+/// (Preferences, wizards, pickers) is a sheet of this window, see `MainSheet`.
 @MainActor
 final class MainWindowController {
     static let shared = MainWindowController()
@@ -338,23 +353,21 @@ struct iCanHazAIApp: App {
             }
             CommandGroup(replacing: .appSettings) {
                 Button("Preferences...") {
-                    PreferencesView.show()
+                    AppViewModel.shared?.presentSheetInMainWindow(.preferences)
                 }
                 .keyboardShortcut(",", modifiers: .command)
             }
 
-            CommandMenu("Connection") {
-                Button("Connections: \(viewModel.connections.count)") {}
+            CommandMenu("Provider") {
+                Button("Providers: \(viewModel.providers.count)") {}
                     .disabled(true)
-                Button("Reveal Connections in Finder…") {
-                    NSWorkspace.shared.activateFileViewerSelecting([EnvironmentManager.shared.connectionsURL])
+                Button("Refresh Models…") {
+                    AppViewModel.shared?.refreshModels()
                 }
-                Button("Reload Connections…") {
-                    AppViewModel.shared?.reloadFromDisk(.connections)
-                }
+                .disabled(viewModel.providers.isEmpty)
                 Divider()
-                Button("New Connection…") {
-                    ConnectionWizardView.show(onFinish: { AppViewModel.shared?.refreshAfterWizard() })
+                Button("New Provider…") {
+                    AppViewModel.shared?.presentSheetInMainWindow(.providerWizard(closeAppOnCancel: false))
                 }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             }
@@ -371,7 +384,7 @@ struct iCanHazAIApp: App {
                 .keyboardShortcut("r", modifiers: [.command, .shift])
                 Divider()
                 Button("New MCP Server…") {
-                    MCPWizardView.show(onFinish: { AppViewModel.shared?.refreshPreferences() })
+                    AppViewModel.shared?.presentSheetInMainWindow(.mcpWizard)
                 }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
             }

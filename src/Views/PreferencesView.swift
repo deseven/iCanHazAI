@@ -3,9 +3,10 @@
 
 import SwiftUI
 
-/// Preferences window with vertical tabs. Accessible from the app menu (⌘,).
+/// Preferences sheet with vertical tabs. Opened from the app menu (⌘,).
 struct PreferencesView: View {
     @EnvironmentObject var store: AppViewModel
+    @Environment(\.dismiss) private var dismiss
 
     /// Currently selected tab identifier.
     @State private var selectedTab: Tab = .general
@@ -45,6 +46,22 @@ struct PreferencesView: View {
     // MARK: - Body
 
     var body: some View {
+        VStack(spacing: 0) {
+            tabs
+                .frame(width: 610, height: 380)
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(12)
+        }
+    }
+
+    private var tabs: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(Tab.allCases) { tab in
@@ -91,7 +108,6 @@ struct PreferencesView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(20)
         }
-        .frame(width: 610, height: 380)
     }
 }
 
@@ -131,21 +147,6 @@ private struct GeneralTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             PrefRow(
-                title: "Default Connection",
-                description: "A connection used by default for new chats"
-            ) {
-                Picker("", selection: store.bindingDefaultConnection) {
-                    Text("None").tag(String?.none)
-                    ForEach(store.connections) { conn in
-                        Text(conn.displayName).tag(String?.some(conn.id))
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .fixedSize()
-            }
-
-            PrefRow(
                 title: "Default Role",
                 description: "A role used by default for new chats"
             ) {
@@ -160,24 +161,42 @@ private struct GeneralTab: View {
             }
 
             PrefRow(
-                title: "Utility Connection",
-                description: "A connection used for utility tasks such as chat name generation"
+                title: "Default Model",
+                description: "A model preselected for new chats. A role's preferred_model takes precedence."
             ) {
-                Picker("", selection: store.bindingUtilityConnection) {
-                    Text("None").tag(String?.none)
-                    ForEach(store.connections) { conn in
-                        Text(conn.displayName).tag(String?.some(conn.id))
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .fixedSize()
+                ModelSettingButton(setting: .defaultModel)
+            }
+
+            PrefRow(
+                title: "Utility Model",
+                description:
+                    "A model used for background tasks, such as generating chat names. A fast and cheap model is preferred."
+            ) {
+                ModelSettingButton(setting: .utilityModel)
             }
 
             Spacer()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 8)
+    }
+}
+
+/// The model status block for a general model setting. Clicking it closes
+/// Preferences and opens the model picker; Preferences returns afterwards.
+private struct ModelSettingButton: View {
+    @EnvironmentObject var store: AppViewModel
+    let setting: ModelSetting
+
+    var body: some View {
+        let model = store.preferencesModel(for: setting)
+        Button {
+            store.pickSettingsModel(setting)
+        } label: {
+            ModelStatusLabel(label: store.modelLabel(for: model), hasModel: model != nil)
+        }
+        .buttonStyle(.borderless)
+        .fixedSize()
     }
 }
 
@@ -328,40 +347,5 @@ private struct DebugTab: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 8)
-    }
-}
-
-// MARK: - Window helper
-
-extension PreferencesView {
-    /// Creates or brings to front the preferences window.
-    @MainActor
-    static func show() {
-        if let existing = NSApp.windows.first(where: { $0.identifier?.rawValue == "preferences" }) {
-            existing.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-
-        guard let store = AppViewModel.shared else { return }
-
-        let prefsView = PreferencesView()
-            .environmentObject(store)
-
-        let hosting = NSHostingController(rootView: prefsView)
-        let window = NSWindow(contentViewController: hosting)
-        window.identifier = NSUserInterfaceItemIdentifier("preferences")
-        window.title = "Preferences"
-        window.styleMask = [.titled, .closable, .miniaturizable]
-        window.titlebarAppearsTransparent = false
-        window.isReleasedWhenClosed = false
-        // Explicitly set the content size so the window is fully sized
-        // before center() is called — NSWindow.center() places the window
-        // at Apple's "golden ratio" position (slightly above true center),
-        // but only works correctly once the frame is known.
-        window.setContentSize(NSSize(width: 610, height: 380))
-        window.center()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
     }
 }

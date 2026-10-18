@@ -9,7 +9,6 @@ extension AllAppTests {
         @Test("changes map to the loader's Application resources")
         func appResources() {
             #expect(ConfigChange.config.appResource == .configuration)
-            #expect(ConfigChange.connections.appResource == .connections)
             #expect(ConfigChange.roles.appResource == .roles)
             #expect(ConfigChange.role("x").appResource == .roles)
             #expect(ConfigChange.prompts.appResource == .prompts)
@@ -24,7 +23,6 @@ extension AllAppTests {
             #expect(ConfigChange.mcp("x").refreshCount(total: 7) == 1)
             #expect(ConfigChange.config.refreshCount(total: 1) == 1)
             #expect(ConfigChange.roles.refreshCount(total: 7) == 7)
-            #expect(ConfigChange.connections.refreshCount(total: 3) == 3)
         }
     }
 }

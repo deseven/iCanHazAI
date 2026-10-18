@@ -2,7 +2,6 @@ description = "Directory-isolated coding agent equipped with all essential tools
 prompt = "Developer (isolated)"
 icon = "hammer.circle"
 accent = "indigo"
-connection_override_allowed = true
 mcps_override_allowed = true
 directory_isolation = true
 

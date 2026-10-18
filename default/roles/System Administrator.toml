@@ -2,7 +2,6 @@ description = "System administration agent for editing configs and troubleshooti
 prompt = "System Administrator"
 icon = "terminal"
 accent = "green"
-connection_override_allowed = true
 mcps_override_allowed = true
 
 [features]

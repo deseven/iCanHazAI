@@ -30,10 +30,10 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     /// first added to a chat; never updated thereafter). Encoded as a JSON date
     /// so it persists to disk.
     var timestamp: Date
-    /// For assistant messages: the display name of the connection that produced
-    /// this response. Persisted so it survives reloads. Nil for non-assistant
-    /// messages or messages produced before this field existed.
-    var connectionName: String?
+    /// For assistant messages: the identity (`provider:model-id`) of the model
+    /// that produced this response. Persisted so it survives reloads. Nil for
+    /// non-assistant messages.
+    var model: String?
     /// Attachments on this message (user messages only). Each entry is a
     /// reference to a file stored in the chat's attachment directory: images
     /// (processed to base64), text, or documents (extracted to text). Nil/empty
@@ -61,7 +61,7 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     init(
         id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil,
         thinkingDuration: TimeInterval? = nil, error: String? = nil,
-        timestamp: Date = Date(), connectionName: String? = nil, attachments: [Attachment]? = nil,
+        timestamp: Date = Date(), model: String? = nil, attachments: [Attachment]? = nil,
         toolCalls: [ToolCall]? = nil, toolResults: [ToolResult]? = nil, tokenUsage: TokenUsage? = nil,
         branches: [[ChatMessage]]? = nil, activeBranch: Int? = nil
     ) {
@@ -72,7 +72,7 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         self.thinkingDuration = thinkingDuration
         self.error = error
         self.timestamp = timestamp
-        self.connectionName = connectionName
+        self.model = model
         self.attachments = attachments
         self.toolCalls = toolCalls
         self.toolResults = toolResults
@@ -82,7 +82,7 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, role, content, thinking, thinkingDuration, error, timestamp, connectionName
+        case id, role, content, thinking, thinkingDuration, error, timestamp, model
         case attachments, toolCalls, toolResults, tokenUsage
         case branches, activeBranch
     }
@@ -101,7 +101,7 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         thinkingDuration = try? c.decode(TimeInterval.self, forKey: .thinkingDuration)
         error = try? c.decode(String.self, forKey: .error)
         timestamp = (try? c.decode(Date.self, forKey: .timestamp)) ?? Date()
-        connectionName = try? c.decode(String.self, forKey: .connectionName)
+        model = try? c.decode(String.self, forKey: .model)
         attachments = try? c.decode([Attachment].self, forKey: .attachments)
         toolCalls = try? c.decode([ToolCall].self, forKey: .toolCalls)
         toolResults = try? c.decode([ToolResult].self, forKey: .toolResults)
@@ -129,7 +129,7 @@ extension ChatMessage {
         thinkingDuration = other.thinkingDuration
         error = other.error
         timestamp = other.timestamp
-        connectionName = other.connectionName
+        model = other.model
         attachments = other.attachments
         toolCalls = other.toolCalls
         toolResults = other.toolResults
@@ -233,11 +233,9 @@ struct Chat: Codable, Identifiable, Equatable {
     /// separate cross-referencing maps. The visible conversation is derived
     /// via `activeMessages`.
     var messages: [ChatMessage]
-    /// Selected connection identifier in the form "provider/name", e.g. "openai/myconn".
-    /// When the chat's role allows connection overrides this is the per-chat
-    /// override; otherwise the role's connection is used and this is ignored.
-    /// If role connection is not defined, a default model will be used.
-    var connection: String?
+    /// Selected model identity in the form `provider:model-id`, e.g.
+    /// `anthropic:claude-sonnet-5-5`. Nil until the user picks one.
+    var model: String?
     /// Selected role name.
     var role: String?
     /// Per-chat prompt override (name of a prompt file, without extension).
@@ -278,14 +276,14 @@ struct Chat: Codable, Identifiable, Equatable {
     /// without this key decodes as rich.
     var outputRendering: ChatOutputRendering?
     init(
-        id: UUID = UUID(), messages: [ChatMessage] = [], connection: String? = nil, role: String? = nil,
+        id: UUID = UUID(), messages: [ChatMessage] = [], model: String? = nil, role: String? = nil,
         prompt: String? = nil, workingDirectory: String? = nil, mcps: [String]? = nil, title: String? = nil,
         archive: Bool? = nil, autoAllow: [String]? = nil, autoDeny: [String]? = nil,
         outputRendering: ChatOutputRendering? = nil
     ) {
         self.id = id
         self.messages = messages
-        self.connection = connection
+        self.model = model
         self.role = role
         self.prompt = prompt
         self.workingDirectory = workingDirectory
@@ -298,7 +296,7 @@ struct Chat: Codable, Identifiable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, messages, connection, role, prompt, workingDirectory, mcps, title, archive
+        case id, messages, model, role, prompt, workingDirectory, mcps, title, archive
         case autoAllow = "auto_allow"
         case autoDeny = "auto_deny"
         case outputRendering = "output_rendering"
@@ -313,7 +311,7 @@ struct Chat: Codable, Identifiable, Equatable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
-        connection = try? c.decode(String.self, forKey: .connection)
+        model = try? c.decode(String.self, forKey: .model)
         role = try? c.decode(String.self, forKey: .role)
         prompt = try? c.decode(String.self, forKey: .prompt)
         workingDirectory = try? c.decode(String.self, forKey: .workingDirectory)
@@ -1227,8 +1225,8 @@ enum OneShotStart: Sendable {
     /// The chat was created (or reused) and streaming has begun. `filename`
     /// identifies the chat so the CLI user can find it in the GUI.
     case started(filename: String, events: AsyncStream<OneShotEvent>)
-    /// The request was rejected before anything was sent (bad role/connection/
-    /// chat selector, or no usable connection configured).
+    /// The request was rejected before anything was sent (bad role/model/
+    /// chat selector, or no usable model).
     case failed(String)
 }
 
@@ -1240,7 +1238,11 @@ enum EngineEvent: Sendable {
     case chatsChanged([ChatRecord])
     case rolesChanged([Role])
     case promptsChanged([Prompt])
-    case connectionsChanged([Connection])
+
+    /// Configured providers or their refresh state changed.
+    case providersChanged([ConfiguredProvider])
+    /// The cached model catalog changed.
+    case modelsChanged([CatalogModel])
     /// The set of configured MCP servers changed (load, add, edit, delete).
     case mcpsChanged([MCPServer])
     /// The live MCP configuration status changed (a server's connect/listTools
@@ -1248,11 +1250,11 @@ enum EngineEvent: Sendable {
     /// configuration overlay. Carries the full snapshot so the overlay always
     /// reflects the current state.
     case mcpConfiguration(MCPConfigurationState)
-    /// A batch of external Application-resource reloads (config / connections /
-    /// prompts / roles) just started. Carries the per-resource totals the
+    /// A batch of external Application-resource reloads (config / prompts /
+    /// roles) just started. Carries the per-resource totals the
     /// loader shows in its labels. The corresponding "completed" signal is the
     /// existing `.configChanged` / `.rolesChanged` / `.promptsChanged` /
-    /// `.connectionsChanged` event for each resource.
+    /// event for each resource.
     case loaderActivity(LoaderActivity)
     /// `config.toml` was reloaded from disk or cleaned by reference validation.
     /// The UI should refresh its cached preferences from `ConfigManager`.
@@ -1267,7 +1269,7 @@ enum EngineEvent: Sendable {
     /// cancelled by a stop). The UI clears any attention it drew for it.
     case toolApprovalResolved(filename: String, callID: String)
     case error(String)
-    /// The set of gathered configuration errors changed (a connection/role/MCP
+    /// The set of gathered configuration errors changed (a role/MCP/prompt
     /// config failed to load, or an MCP server failed at runtime, or a
     /// previously-broken entity was fixed/removed on disk). The UI shows a
     /// warning button in the title bar while the array is non-empty. Carries
@@ -1293,8 +1295,7 @@ struct ConfigError: Identifiable, Equatable, Sendable, Hashable {
     let message: String
 
     enum Kind: String, Sendable {
-        /// A connection `.jsonc` file failed to parse/validate.
-        case connection
+
         /// A role `.toml` file failed to parse/validate.
         case role
         /// A custom MCP `.toml` config failed to parse/validate.
@@ -1308,7 +1309,7 @@ struct ConfigError: Identifiable, Equatable, Sendable, Hashable {
     /// Human-readable label for the entity kind, shown in the errors window.
     var kindLabel: String {
         switch kind {
-        case .connection: return "Connection"
+
         case .role: return "Role"
         case .mcpConfig: return "MCP config"
         case .mcpFailure: return "MCP server"
@@ -1317,11 +1318,10 @@ struct ConfigError: Identifiable, Equatable, Sendable, Hashable {
     }
 
     /// One-line description used when pasting errors into a Configurator chat,
-    /// e.g. `Connection `openai/gpt-5` is invalid (error: "Missing model").`.
+    /// e.g. `Role `Planner` is invalid (error: "Missing prompt").`.
     var configuratorLine: String {
         switch kind {
-        case .connection:
-            return "Connection `\(entityName)` is invalid (error: \"\(message)\")."
+
         case .role:
             return "Role `\(entityName)` is invalid (error: \"\(message)\")."
         case .mcpConfig:
@@ -1459,8 +1459,10 @@ struct RoleConfig: Codable, Equatable, Hashable {
     var prompt: String?
     var promptOverrideAllowed: Bool?
     var workingDirectory: String?
-    var connection: String?
-    var connectionOverrideAllowed: Bool?
+    /// `provider:model-id` preselected for new chats with this role. Takes
+    /// precedence over `[general].default_model`; when it doesn't resolve to
+    /// an existing model the new chat starts with "No model".
+    var preferredModel: String?
     /// When true, Filesystem and Code tools run isolated to the working
     /// directory (chroot-like). A role-level switch: either the whole role is
     /// isolated or it isn't — partial isolation would be escapable.
@@ -1495,8 +1497,7 @@ struct RoleConfig: Codable, Equatable, Hashable {
         case prompt
         case promptOverrideAllowed = "prompt_override_allowed"
         case workingDirectory = "working_directory"
-        case connection
-        case connectionOverrideAllowed = "connection_override_allowed"
+        case preferredModel = "preferred_model"
         case directoryIsolation = "directory_isolation"
         case utils
         case filesystem
@@ -1513,7 +1514,7 @@ struct RoleConfig: Codable, Equatable, Hashable {
 
 // MARK: - Role
 
-/// A role: a TOML config combining a prompt, connection, working directory, and
+/// A role: a TOML config combining a prompt, working directory, and
 /// a set of MCPs (with per-MCP tool selection and auto-allow rules). Roles live
 /// in `~/iCanHazAI/roles/<name>.toml`; bundled defaults are seeded from
 /// `default/roles` on startup and are fully user-editable.
@@ -1531,10 +1532,9 @@ struct Role: Identifiable, Equatable, Hashable {
     var description: String { config.description ?? "No description." }
     var promptName: String? { config.prompt }
     var promptOverrideAllowed: Bool { config.promptOverrideAllowed ?? false }
-    var connectionOverrideAllowed: Bool { config.connectionOverrideAllowed ?? false }
+
     var mcpsOverrideAllowed: Bool { config.mcpsOverrideAllowed ?? false }
     var workingDirectory: String? { config.workingDirectory }
-    var connection: String? { config.connection }
     /// SF Symbol for this role, falling back to `defaultIcon`.
     var icon: String { config.icon ?? Role.defaultIcon }
 
@@ -1621,117 +1621,4 @@ struct Role: Identifiable, Equatable, Hashable {
     /// continuation. Off when the role has no `[features]` table or omits the
     /// key. Validation requires this to come with `withResponseRegen`.
     var hasChatTrees: Bool { config.features?.withChatTrees ?? false }
-}
-
-// MARK: - Connection
-
-enum ConnectionProvider: String, Codable {
-    case openai
-    case anthropic
-}
-
-struct Connection: Identifiable, Hashable, @unchecked Sendable {
-    var id: String { "\(provider.rawValue)/\(name)" }
-    let provider: ConnectionProvider
-    let name: String
-    /// Base URL of the endpoint. nil → provider default.
-    let baseUrl: String?
-    /// API key. nil when the endpoint doesn't require one.
-    let apiKey: String?
-    /// Model identifier.
-    let model: String
-    /// Meta flag: whether the model accepts image input. Decides how image
-    /// attachments are sent — as a native image block when true, or as a
-    /// synthesized text fallback when false. NOT sent to the API. Defaults
-    /// to false.
-    let imageInput: Bool
-    /// Extra parameters inserted into every request body's root. Fully optional.
-    let requestParameters: [String: LLMJSONValue]?
-    /// Custom HTTP headers applied **last** over the provider's defaults, so
-    /// any header can be overridden (including auth and `User-Agent`). An
-    /// empty-string value removes the header entirely. May carry secrets, so
-    /// it is redacted wherever the API key is. Fully optional.
-    let headers: [String: String]?
-    /// Abort the request if **no data at all** arrives from the provider for
-    /// this many seconds — response headers, SSE lines, and keep-alive
-    /// comments all count. Catches dead connections: offline network,
-    /// blackholed connects, dropped sockets, unresponsive servers. `nil`
-    /// applies the 30 s default; `≤ 0` disables this layer.
-    let readTimeout: Double?
-    /// Abort the request if no **useful output** arrives for this many
-    /// seconds. Only content, thinking, tool-call deltas, finish reasons, and
-    /// usage refresh it — bare keep-alives do not. Catches providers that
-    /// keep the connection alive while producing nothing (endless pings,
-    /// wedged generation). `nil` applies the 60 s default; `≤ 0` disables
-    /// this layer.
-    let progressTimeout: Double?
-    /// Hard cap on a single request attempt (connect + headers + entire
-    /// stream), regardless of activity. Each retry attempt gets a fresh
-    /// budget. `nil` applies the 3600 s default; `≤ 0` disables this layer.
-    let transportTimeout: Double?
-    /// How many times to retry a failed request before surfacing the error
-    /// to the user. `nil` defaults to 1. Retries are only attempted when no
-    /// output has been emitted yet, to avoid concatenating partial responses,
-    /// and offline-class failures (no network, DNS failure, HTTP 4xx) are
-    /// surfaced without retrying.
-    let numRetries: Int?
-
-    /// Explicit init so optional fields default to nil — keeps call sites that
-    /// don't care about them (tests, wizard) concise.
-    init(
-        provider: ConnectionProvider,
-        name: String,
-        baseUrl: String?,
-        apiKey: String?,
-        model: String,
-        imageInput: Bool,
-        requestParameters: [String: LLMJSONValue]?,
-        headers: [String: String]? = nil,
-        readTimeout: Double? = nil,
-        progressTimeout: Double? = nil,
-        transportTimeout: Double? = nil,
-        numRetries: Int? = nil
-    ) {
-        self.provider = provider
-        self.name = name
-        self.baseUrl = baseUrl
-        self.apiKey = apiKey
-        self.model = model
-        self.imageInput = imageInput
-        self.requestParameters = requestParameters
-        self.headers = headers
-        self.readTimeout = readTimeout
-        self.progressTimeout = progressTimeout
-        self.transportTimeout = transportTimeout
-        self.numRetries = numRetries
-    }
-
-    /// Display name shown in the UI.
-    var displayName: String { name }
-
-    func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-    }
-}
-
-/// Raw structure decoded from a connection `.jsonc` file.
-struct ConnectionConfig: Codable {
-    var baseUrl: String?
-    var apiKey: String?
-    var model: String
-    var imageInput: Bool?
-    var requestParameters: [String: LLMJSONValue]?
-    var headers: [String: String]?
-    /// Abort if no data at all arrives for this many seconds — headers and
-    /// keep-alives count. `nil` → 30 s default; `≤ 0` disables the layer.
-    var readTimeout: Double?
-    /// Abort if no useful output arrives for this many seconds — keep-alives
-    /// do not count. `nil` → 60 s default; `≤ 0` disables the layer.
-    var progressTimeout: Double?
-    /// Hard cap on a single request attempt regardless of activity.
-    /// `nil` → 3600 s default; `≤ 0` disables the layer.
-    var transportTimeout: Double?
-    /// How many times to retry a failed request before surfacing the error.
-    /// `nil` defaults to 1.
-    var numRetries: Int?
 }

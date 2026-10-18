@@ -77,6 +77,14 @@ extension AllAppTests {
             #expect(message.contains("app.log"))
         }
 
+        @Test("the error text names the real provider on a shared wire")
+        func errorNamesProvider() {
+            var error = LLMError.parseOpenAI(Data(#"{"error":{"message":"bad key"}}"#.utf8), statusCode: 401)
+            #expect(error.errorDescription == "OpenAI API error (401): bad key")
+            error.providerName = Provider.deepseek.displayName
+            #expect(error.errorDescription == "DeepSeek API error (401): bad key")
+        }
+
         @Test("LLMError parseOpenAI extracts provider message")
         func parseOpenAIError() throws {
             let data = try JSONSerialization.data(withJSONObject: [

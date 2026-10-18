@@ -9,8 +9,8 @@ import TOML
 /// Unlike the in-house MCP servers (Utils/Filesystem/Code/Shell), these tools
 /// are not a subprocess — they run directly inside the app so they can validate
 /// config text via the same loading methods the app uses
-/// ([`JSONC`](src/Utilities/JSONC.swift) for connections, [`TOMLDecoder`](src/Config/ConfigManager.swift)
-/// for MCP/role/app configs) before anything is written to disk. A write that
+/// ([`TOMLDecoder`](src/Config/ConfigManager.swift) for MCP/role/app configs)
+/// before anything is written to disk. A write that
 /// fails validation is rejected outright; a write that passes is saved to the
 /// data directory and immediately applied by reporting the change to
 /// [`ChatEngine`](src/Chat/ChatEngine.swift) (the disk is not watched).
@@ -49,11 +49,6 @@ enum ConfiguratorTools {
 
     private static let tools: [(name: String, description: String, schema: String)] = [
         (
-            "list_connections",
-            "List configured Connections as ids (\"type/name\").",
-            #"{"type":"object","properties":{}}"#
-        ),
-        (
             "list_mcps",
             "List configured MCP servers. Built-in servers are not listed.",
             #"{"type":"object","properties":{}}"#
@@ -67,11 +62,6 @@ enum ConfiguratorTools {
             "list_prompts",
             "List available Prompts.",
             #"{"type":"object","properties":{}}"#
-        ),
-        (
-            "read_connection",
-            "Read the Connection config. `id` is the connection id \"type/name\" (e.g. \"openai/gpt-4o\").",
-            #"{"type":"object","properties":{"id":{"type":"string","description":"Connection id \"type/name\"."}},"required":["id"]}"#
         ),
         (
             "read_mcp",
@@ -99,11 +89,6 @@ enum ConfiguratorTools {
             #"{"type":"object","properties":{}}"#
         ),
         (
-            "write_connection",
-            "Validate then write a Connection configuration. `id` is the Connection id \"type/name\"; `content` is JSONC text.",
-            #"{"type":"object","properties":{"id":{"type":"string","description":"Connection id \"type/name\"."},"content":{"type":"string","description":"JSONC Connection config text."}},"required":["id","content"]}"#
-        ),
-        (
             "write_mcp",
             "Validate then write an MCP server configuration. `content` is TOML text.",
             #"{"type":"object","properties":{"name":{"type":"string"},"content":{"type":"string","description":"TOML MCP config text."}},"required":["name","content"]}"#
@@ -122,11 +107,6 @@ enum ConfiguratorTools {
             "write_config",
             "Validate then write main application config. `content` is TOML text.",
             #"{"type":"object","properties":{"content":{"type":"string","description":"TOML app config text."}},"required":["content"]}"#
-        ),
-        (
-            "delete_connection",
-            "Delete a Connection by id (\"type/name\").",
-            #"{"type":"object","properties":{"id":{"type":"string","description":"Connection id \"type/name\"."}},"required":["id"]}"#
         ),
         (
             "delete_mcp",
@@ -152,11 +132,6 @@ enum ConfiguratorTools {
             "check_mcp_http",
             "Check a streamable HTTP MCP server: connect to `endpoint`, list the tools it reports, then disconnect. Returns the tools as a Markdown list, or a relevant error.",
             #"{"type":"object","properties":{"endpoint":{"type":"string","description":"The streamable HTTP endpoint URL."},"token":{"type":"string","description":"Optional bearer token."}},"required":["endpoint"]}"#
-        ),
-        (
-            "check_connection",
-            "Check a configured Connection by sending the prompt 'say hi'. Returns the model's answer, or a relevant error. `id` is the connection id \"type/name\".",
-            #"{"type":"object","properties":{"id":{"type":"string","description":"Connection id \"type/name\"."}},"required":["id"]}"#
         ),
     ]
 
@@ -206,17 +181,12 @@ enum ConfiguratorTools {
             return (message, false)
         }
         switch name {
-        case "list_connections":
-            return (listConnections(env: env), false)
         case "list_mcps":
             return (listNames(in: env.mcpsURL, ext: "toml"), false)
         case "list_roles":
             return (listNames(in: env.rolesURL, ext: "toml"), false)
         case "list_prompts":
             return (listNames(in: env.promptsURL, ext: "md"), false)
-        case "read_connection":
-            let id = try stringArg(args, "id")
-            return (try readConnection(id: id, env: env), false)
         case "read_mcp":
             let n = try validated(try stringArg(args, "name"))
             return (
@@ -239,11 +209,6 @@ enum ConfiguratorTools {
             )
         case "read_log":
             return (readLog(env: env), false)
-        case "write_connection":
-            let id = try stringArg(args, "id")
-            let content = try stringArg(args, "content")
-            let message = try writeConnection(id: id, content: content, env: env)
-            return await applied(.connections, message)
         case "write_mcp":
             let n = try validated(try stringArg(args, "name"))
             let content = try stringArg(args, "content")
@@ -263,10 +228,6 @@ enum ConfiguratorTools {
             let content = try stringArg(args, "content")
             let message = try writeConfig(content: content, env: env)
             return await applied(.config, message)
-        case "delete_connection":
-            let id = try stringArg(args, "id")
-            let message = try deleteConnection(id: id, env: env)
-            return await applied(.connections, message)
         case "delete_mcp":
             let n = try validated(try stringArg(args, "name"))
             let message = try delete(
@@ -289,9 +250,6 @@ enum ConfiguratorTools {
             let endpoint = try stringArg(args, "endpoint")
             let token = args["token"] as? String
             return (try await mcpHttpCheck(endpoint: endpoint, token: token), false)
-        case "check_connection":
-            let id = try stringArg(args, "id")
-            return (try await connectionCheck(id: id, env: env), false)
         default:
             throw ConfiguratorToolError("Unknown configurator tool \"\(name)\".")
         }
@@ -312,25 +270,6 @@ enum ConfiguratorTools {
         return markdownList(names)
     }
 
-    /// Lists every connection across both providers, as "type/name" ids.
-    private static func listConnections(env: EnvironmentManager) -> String {
-        let fm = FileManager.default
-        var ids: [String] = []
-        for provider in [ConnectionProvider.openai, .anthropic] {
-            let dir: URL
-            switch provider {
-            case .openai: dir = env.openaiConnectionsURL
-            case .anthropic: dir = env.anthropicConnectionsURL
-            }
-            guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { continue }
-            for f in files where f.pathExtension == "jsonc" {
-                ids.append("\(provider.rawValue)/\(f.deletingPathExtension().lastPathComponent)")
-            }
-        }
-        ids.sort()
-        return markdownList(ids)
-    }
-
     // MARK: - Read helpers
 
     private static func read(url: URL, env: EnvironmentManager, label: String) throws -> String {
@@ -341,14 +280,6 @@ enum ConfiguratorTools {
             throw ConfiguratorToolError("\(label) not found.")
         }
         return text
-    }
-
-    private static func readConnection(id: String, env: EnvironmentManager) throws -> String {
-        let (provider, name) = try parseConnectionId(id)
-        let url = env.connectionsURL
-            .appendingPathComponent(provider.rawValue)
-            .appendingPathComponent("\(name).jsonc")
-        return try read(url: url, env: env, label: "Connection \"\(id)\"")
     }
 
     private static func readLog(env: EnvironmentManager) -> String {
@@ -369,15 +300,6 @@ enum ConfiguratorTools {
     /// Each `write_` tool validates content via [`ConfigValidation`](src/Config/ConfigValidation.swift)
     /// (the same layer the standard loaders use) before saving, so a dry-run
     /// failure produces the same helpful message a real load would log.
-
-    private static func writeConnection(id: String, content: String, env: EnvironmentManager) throws -> String {
-        let (provider, name) = try parseConnectionId(id)
-        _ = try ConfigValidation.decodeConnection(Data(content.utf8))
-        let dir = env.connectionsURL.appendingPathComponent(provider.rawValue)
-        let url = dir.appendingPathComponent("\(name).jsonc")
-        try write(url: url, content: content, env: env)
-        return "Connection \"\(provider.rawValue)/\(name)\" saved and applied."
-    }
 
     private static func writeMCP(name: String, content: String, env: EnvironmentManager) throws -> String {
         _ = try ConfigValidation.decodeMCP(Data(content.utf8))
@@ -435,14 +357,6 @@ enum ConfiguratorTools {
         debugLog("FileWrite", "configurator delete \(env.relativePath(url))")
         try fm.removeItem(at: url)
         return "\(label) removed and the change applied."
-    }
-
-    private static func deleteConnection(id: String, env: EnvironmentManager) throws -> String {
-        let (provider, name) = try parseConnectionId(id)
-        let url = env.connectionsURL
-            .appendingPathComponent(provider.rawValue)
-            .appendingPathComponent("\(name).jsonc")
-        return try delete(url: url, label: "Connection \"\(id)\"", env: env)
     }
 
     // MARK: - Live checks
@@ -521,42 +435,6 @@ enum ConfiguratorTools {
         }
     }
 
-    /// Loads the connection `type/name` from disk and sends a one-shot "say hi"
-    /// prompt via [`ChatService.complete`](src/Chat/ChatService.swift) — the same
-    /// non-streaming path the connection wizard's "say hi" test uses —
-    /// returning the model's text answer. Provider/request errors are parsed by
-    /// [`LLMError`](src/LLM/LLMError.swift) and surfaced verbatim, so the user
-    /// sees the actual failure reason (auth, quota, bad model, etc.).
-    private static func connectionCheck(id: String, env: EnvironmentManager) async throws -> String {
-        let (provider, connName) = try parseConnectionId(id)
-        let url = env.connectionsURL
-            .appendingPathComponent(provider.rawValue)
-            .appendingPathComponent("\(connName).jsonc")
-        guard let data = try? Data(contentsOf: url) else {
-            throw ConfiguratorToolError("Connection \"\(id)\" not found.")
-        }
-        let config = try ConfigValidation.decodeConnection(data)
-        let connection = Connection(
-            provider: provider,
-            name: connName,
-            baseUrl: config.baseUrl,
-            apiKey: config.apiKey,
-            model: config.model,
-            imageInput: config.imageInput ?? false,
-            requestParameters: config.requestParameters,
-            headers: config.headers,
-            readTimeout: config.readTimeout,
-            progressTimeout: config.progressTimeout,
-            transportTimeout: config.transportTimeout,
-            numRetries: config.numRetries
-        )
-        let messages = [ChatMessage(role: .user, content: "say hi")]
-        let answer = try await ChatService.shared.complete(connection: connection, messages: messages)
-        return answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "(empty response)"
-            : answer
-    }
-
     // MARK: - Name / id validation
 
     /// Validates a bare entity name, returning it unchanged on success.
@@ -577,20 +455,6 @@ enum ConfiguratorTools {
             throw ConfiguratorToolError("\"\(name)\" is a protected built-in and cannot be overwritten.")
         }
         return name
-    }
-
-    /// Parses a connection id of the form "provider/name".
-    private static func parseConnectionId(_ id: String) throws -> (ConnectionProvider, String) {
-        let parts = id.split(separator: "/")
-        guard parts.count == 2 else {
-            throw ConfiguratorToolError("Connection name must be \"provider/name\" (e.g. \"openai/gpt-4o\").")
-        }
-        let providerStr = String(parts[0])
-        guard let provider = ConnectionProvider(rawValue: providerStr) else {
-            throw ConfiguratorToolError("Unknown provider \"\(providerStr)\". Use \"openai\" or \"anthropic\".")
-        }
-        let name = try validated(String(parts[1]))
-        return (provider, name)
     }
 
     // MARK: - Argument parsing

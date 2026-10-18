@@ -3,28 +3,39 @@
 
 import Foundation
 
-/// The UI-free core of the app. Owns all chat/connection/role state and
+/// The UI-free core of the app. Owns all chat/provider/role state and
 /// orchestrates streaming requests. It is a singleton `actor` so it outlives
 /// any window and can later be driven by a CLI.
 ///
 /// Subscribers receive state updates via an `AsyncStream<EngineEvent>`.
-/// Config entities (connections, roles, prompts, MCPs, `config.toml`) are read
+/// Config entities (roles, prompts, MCPs, `config.toml`) are read
 /// from disk at startup and whenever an internal writer reports a change via
 /// [`applyConfigChanges(_:)`](#); the disk is not watched. Reloads never
 /// clobber chats currently being streamed.
 actor ChatEngine {
 
-    static let shared = ChatEngine()
+    static let shared = ChatEngine(
+        store: .shared, env: .shared, registry: .shared, catalog: .shared)
 
     // MARK: - State
 
     private(set) var records: [ChatRecord] = []
     private(set) var roles: [Role] = []
     private(set) var prompts: [Prompt] = []
-    private(set) var connections: [Connection] = []
+
+    private(set) var providers: [ConfiguredProvider] = []
+    private(set) var models: [CatalogModel] = []
+    private var refreshingProviders: Set<Provider> = []
+    private var providerErrors: [Provider: String] = [:]
+    private var catalogEventsTask: Task<Void, Never>?
+    /// A startup failure no subscriber could have seen yet; delivered with the
+    /// first subscription snapshot.
+    private var pendingStartupError: String?
     /// The chat data abstraction layer. Owns the SwiftData metadata cache and
     /// all chat file I/O. The engine never reads/writes chat files directly.
-    private let store = ChatStore.shared
+    private let store: ChatStore
+    private let registry: ProviderRegistry
+    private let catalog: ModelCatalog
     /// Custom MCP servers loaded from disk (`~/iCanHazAI/MCPs/*.toml`). Built-in tool groups (Utils/Filesystem/Code/Shell)
     /// are no longer MCP servers — they run in-process via
     /// [`BuiltinTools`](src/Tools/BuiltinTools.swift).
@@ -52,7 +63,7 @@ actor ChatEngine {
 
     /// Current configuration errors, keyed by `ConfigError.id`
     /// (`"<kind>:<entityName>"`). Rebuilt from the on-disk loaders
-    /// (connection/role/mcp config errors) and the live MCP configuration
+    /// (role/mcp/prompt config errors) and the live MCP configuration
     /// state (mcp runtime failures). Runtime-only: never persisted — it is
     /// repopulated from disk on every launch. Emitted to subscribers via
     /// `.configErrorsChanged` whenever it changes.
@@ -135,13 +146,30 @@ actor ChatEngine {
     /// Prevents duplicate concurrent naming attempts for the same chat.
     private var namingInProgress: Set<String> = []
 
-    private let env = EnvironmentManager.shared
+    /// In-flight chat loads keyed by filename, so a chat is loaded and its
+    /// model resolved once even when several callers ask at the same time.
+    private var loadingChats: [String: Task<Void, Never>] = [:]
+
+    /// Per-provider base URL replacements applied when resolving models. Empty
+    /// in production; tests and mock servers set it.
+    private(set) var endpointOverrides: [Provider: String] = [:]
+
+    func setEndpointOverrides(_ overrides: [Provider: String]) {
+        endpointOverrides = overrides
+    }
+
+    private let env: EnvironmentManager
 
     // MARK: - Event bus
 
     private var continuations: [UUID: AsyncStream<EngineEvent>.Continuation] = [:]
 
-    private init() {}
+    init(store: ChatStore, env: EnvironmentManager, registry: ProviderRegistry, catalog: ModelCatalog) {
+        self.store = store
+        self.env = env
+        self.registry = registry
+        self.catalog = catalog
+    }
 
     /// Loads the environment. Must be called once at launch.
     /// Whether `start()` has already run. Idempotency guard.
@@ -164,8 +192,9 @@ actor ChatEngine {
         // only missing files, so user edits are preserved). Done before the
         // initial load so the seeded files are picked up by it.
         env.seedDefaults()
+        await startProviders()
         // Wire MCPManager errors into the engine's error event bus so the UI
-        // can surface connection failures without crashing the stream.
+        // can surface MCP failures without crashing the stream.
         Task {
             await MCPManager.shared.setErrorHandler { [weak self] message in
                 Task { await self?.emit(.error(message)) }
@@ -192,27 +221,30 @@ actor ChatEngine {
                 Task { await self?.handleMCPConfigurationState(state) }
             }
         }
-        // Load in dependency order: connections / MCPs / prompts first, then
-        // roles (validated against them), then chats from the cache.
+        // Load in dependency order: MCPs / prompts first, then roles
+        // (validated against them), then chats from the cache. The catalog is
+        // already populated, so chat loading can resolve models.
         let snapshot = env.loadEnvironment()
-        connections = snapshot.connections
         customMcps = snapshot.mcps
         rebuildMcpList()
         prompts = snapshot.prompts
         roles = snapshot.roles
-        for kind in [ConfigError.Kind.connection, .mcpConfig, .prompt, .role] {
+        for kind in [ConfigError.Kind.mcpConfig, .prompt, .role] {
             replaceConfigErrors(kind: kind, with: snapshot.errors.filter { $0.kind == kind })
         }
         loadFromCache()
         debugLog(
             "Engine",
-            "start complete — \(records.count) chats, \(connections.count) connections, \(mcps.count) MCP servers, \(roles.count) roles, \(prompts.count) prompts"
+            "start complete — \(records.count) chats, \(mcps.count) MCP servers, \(roles.count) roles, \(prompts.count) prompts"
         )
         emit(.chatsChanged(records))
         emit(.rolesChanged(roles))
         emit(.promptsChanged(prompts))
-        emit(.connectionsChanged(connections))
+        emit(.providersChanged(providers))
+        emit(.modelsChanged(models))
         emit(.mcpsChanged(mcps))
+        // May involve an OpenRouter lookup, so it must not delay startup.
+        Task { await self.validateGeneralModels() }
         // Kick off the initial MCP configuration pass now that configs are
         // loaded. This connects stdio servers, queries tools, and reports
         // status for the overlay. Skipped if no MCPs are configured.
@@ -237,11 +269,110 @@ actor ChatEngine {
             continuation.yield(.chatsChanged(self.records))
             continuation.yield(.rolesChanged(self.roles))
             continuation.yield(.promptsChanged(self.prompts))
-            continuation.yield(.connectionsChanged(self.connections))
+
+            continuation.yield(.providersChanged(self.providers))
+            continuation.yield(.modelsChanged(self.models))
             continuation.yield(.mcpsChanged(self.mcps))
             continuation.yield(.configErrorsChanged(self.currentConfigErrors()))
+            if let message = self.pendingStartupError {
+                self.pendingStartupError = nil
+                continuation.yield(.error(message))
+            }
         }
         return stream
+    }
+
+    // MARK: - Providers
+
+    /// Loads the provider keys, then the model cache (fast). The catalog's
+    /// background refresh starts here and never blocks startup.
+    private func startProviders() async {
+        do {
+            try await registry.load()
+        } catch {
+            debugLog("Engine", "provider keys failed to load: \(error.localizedDescription)")
+            pendingStartupError = "Failed to read provider API keys: \(error.localizedDescription)"
+        }
+        let events = await catalog.events
+        catalogEventsTask = Task { [weak self] in
+            for await event in events { await self?.handleCatalogEvent(event) }
+        }
+        await catalog.start()
+        models = await catalog.snapshot()
+        await rebuildProviders()
+    }
+
+    private func handleCatalogEvent(_ event: CatalogEvent) async {
+        switch event {
+        case .refreshStarted(let provider):
+            refreshingProviders.insert(provider)
+            await emitProviders()
+        case .refreshFinished(let provider, let result):
+            recordRefreshOutcome(provider, result)
+            await emitProviders()
+            await validateGeneralModels()
+        case .modelsChanged:
+            models = await catalog.snapshot()
+            emit(.modelsChanged(models))
+        }
+    }
+
+    private func recordRefreshOutcome(_ provider: Provider, _ result: Result<Int, ProviderError>) {
+        refreshingProviders.remove(provider)
+        switch result {
+        case .success: providerErrors[provider] = nil
+        case .failure(.notConfigured): break
+        case .failure(let error): providerErrors[provider] = error.localizedDescription
+        }
+    }
+
+    private func rebuildProviders() async {
+        var list: [ConfiguredProvider] = []
+        for provider in await registry.configuredProviders {
+            let info = await catalog.refreshInfo(for: provider)
+            list.append(
+                ConfiguredProvider(
+                    provider: provider, modelCount: info?.modelCount,
+                    isRefreshing: refreshingProviders.contains(provider),
+                    lastRefresh: info?.lastSuccess, lastError: providerErrors[provider]))
+        }
+        providers = list
+    }
+
+    private func emitProviders() async {
+        await rebuildProviders()
+        emit(.providersChanged(providers))
+    }
+
+    func validateProvider(_ provider: Provider, apiKey: String) async throws -> ValidationResult {
+        try await catalog.validate(provider: provider, apiKey: apiKey)
+    }
+
+    func searchModels(_ text: String, provider: Provider) async throws -> [CatalogModel] {
+        try await catalog.search(text, provider: provider)
+    }
+
+    /// Stores the key and seeds the catalog with what validation already fetched.
+    func addProvider(_ provider: Provider, apiKey: String, validation: ValidationResult) async throws {
+        try await registry.addKey(provider: provider, name: "Default", secret: apiKey)
+        providerErrors[provider] = nil
+        await catalog.providerAdded(provider, validation: validation)
+        models = await catalog.snapshot()
+        emit(.modelsChanged(models))
+        await emitProviders()
+    }
+
+    /// Manual "Refresh Models…": shows the loader and completes with the final
+    /// provider state.
+    func refreshModels() async {
+        let configured = await registry.configuredProviders
+        guard !configured.isEmpty else { return }
+        emit(.loaderActivity(LoaderActivity(counts: [.providers: configured.count])))
+        let summary = await catalog.refreshAll()
+        for (provider, result) in summary.outcomes { recordRefreshOutcome(provider, result) }
+        models = await catalog.snapshot()
+        emit(.modelsChanged(models))
+        await emitProviders()
     }
 
     private func removeContinuation(_ id: UUID) {
@@ -322,7 +453,7 @@ actor ChatEngine {
             case .config:
                 await ConfigManager.shared.reload()
                 emit(.configChanged)
-            case .connections: reloadConnections()
+
             case .roles: revalidateRoles()
             case .role(let name): reloadRole(name: name)
             case .prompts: reloadPrompts()
@@ -331,7 +462,7 @@ actor ChatEngine {
             }
         }
 
-        // Reference validation may clear a default connection/role that no
+        // Reference validation may reset a default role that no
         // longer exists; let the UI pick up the cleaned config.
         if await ConfigManager.shared.validateReferences() {
             emit(.configChanged)
@@ -345,21 +476,11 @@ actor ChatEngine {
         switch resource {
         case .configuration: return 1
         case .chats: return env.chatCount()
-        case .connections: return env.connectionCount()
+
+        case .providers: return providers.count
         case .prompts: return env.promptCount()
         case .roles: return env.roleCount()
         }
-    }
-
-    /// Reloads the full connection set — connection files are few and the
-    /// merge logic for per-file updates is fiddly (id depends on
-    /// provider+name).
-    private func reloadConnections() {
-        let result = env.loadConnectionsReportingErrors()
-        connections = result.loaded
-        replaceConfigErrors(kind: .connection, with: result.errors)
-        emit(.connectionsChanged(connections))
-        revalidateRoles()
     }
 
     /// Reloads a single role and merges it into the in-memory list. A missing
@@ -462,14 +583,14 @@ actor ChatEngine {
             Set(configErrorMap.values.filter { $0.kind == kind }.map(\.entityName))
         }
         return RoleReferences(
-            connectionIDs: Set(connections.map(\.id)).union(errorNames(.connection)),
+
             promptNames: Set(prompts.map(\.name)).union(errorNames(.prompt)),
             mcpNames: Set(customMcps.map(\.name)).union(errorNames(.mcpConfig))
         )
     }
 
     /// Reloads all roles against the current reference sets. Called when a
-    /// connection, prompt, or MCP config appears/disappears so roles
+    /// prompt or MCP config appears/disappears so roles
     /// referencing it flip between valid and invalid without waiting for a
     /// role reload.
     private func revalidateRoles() {
@@ -659,7 +780,7 @@ actor ChatEngine {
     /// disk first. No chat files are loaded — each record's `chat` is nil
     /// (lazy loading). Only metadata (name, modification time) is read from
     /// the cache, which already reflects the on-disk state after the sync.
-    private func loadFromCache() {
+    func loadFromCache() {
         let entries = store.startupSync()
         var newRecords: [ChatRecord] = []
         for info in entries {
@@ -709,8 +830,10 @@ actor ChatEngine {
     /// Creates a new empty chat for the given role and returns its filename.
     /// The chat is held in memory only — it is NOT written to disk until the
     /// user sends the first message. Any other empty chats (no messages) are
-    /// pruned first. The connection is seeded from the role (or the app's
-    /// default connection when the role has none).
+    /// pruned first. The model is preselected from the role's `preferred_model`
+    /// or else `[general].default_model` (see `initialModel(for:)`), or an
+    /// `explicitModel` when the caller already validated one; otherwise it
+    /// starts unset and the user picks it.
     ///
     /// When `temporary` is true, the chat is NEVER persisted: it gets a
     /// UUID-based `temp-` filename, stays in memory only, is hidden from the
@@ -720,8 +843,17 @@ actor ChatEngine {
     @discardableResult
     func createNewChat(
         role roleName: String, temporary: Bool = false, outputRendering: ChatOutputRendering? = nil,
-        workingDirectory overrideWorkdir: String? = nil
+        workingDirectory overrideWorkdir: String? = nil, model explicitModel: String? = nil
     ) async -> String {
+        // Resolved before touching any state: the lookup suspends, and the
+        // filename reservation below must not straddle a suspension point.
+        let role = self.roles.first(where: { $0.name == roleName })
+        let initialModel: String?
+        if let explicitModel {
+            initialModel = explicitModel
+        } else {
+            initialModel = await self.initialModel(for: role)
+        }
         pruneEmptyChats(except: nil)
         destroyAllTemporaryChats()
         let reservedFilenames = Set(records.map(\.filename))
@@ -734,17 +866,8 @@ actor ChatEngine {
         var chat = Chat()
         chat.role = roleName
         chat.outputRendering = outputRendering
+        chat.model = initialModel
 
-        let role = self.roles.first(where: { $0.name == roleName })
-        // Seed the connection from the role, falling back to the app default.
-        if let roleConn = role?.connection, self.connections.contains(where: { $0.id == roleConn }) {
-            chat.connection = roleConn
-        } else {
-            let dc = await ConfigManager.shared.getDefaultConnection()
-            if let conn = dc, self.connections.contains(where: { $0.id == conn }) {
-                chat.connection = conn
-            }
-        }
         // Pre-set the working directory: an explicit override (e.g. from the
         // sidebar's "By Directory" mode) is applied only when the role
         // doesn't pre-set its own — a role with a fixed directory always wins.
@@ -764,7 +887,58 @@ actor ChatEngine {
         let record = ChatRecord(filename: filename, chat: chat, isTemporary: temporary)
         records.insert(record, at: 0)
         emit(.chatsChanged(records))
+        if let initialModel, let id = ModelID(parsing: initialModel) { await catalog.markUsed(id) }
         return filename
+    }
+
+    /// The model a new chat starts with: the role's `preferred_model` when set
+    /// (a role preference is never overridden by the general default, even
+    /// when it's gone), else `[general].default_model`. A model that is
+    /// definitely gone (provider removed, key removed, model delisted) yields
+    /// nil ("No model"). One that can't be verified right now (catalog still
+    /// loading) is kept, like for a chat loaded from disk.
+    private func initialModel(for role: Role?) async -> String? {
+        let candidate: String?
+        if let preferred = role?.config.preferredModel, !preferred.isEmpty {
+            candidate = preferred
+        } else {
+            candidate = await ConfigManager.shared.getDefaultModel()
+        }
+        guard let candidate else { return nil }
+        switch await resolveModel(candidate) {
+        case .invalid: return nil
+        case .ok, .unavailable: return candidate
+        }
+    }
+
+    /// Marks a model as used so the catalog keeps it across OpenRouter refreshes.
+    func markModelUsed(_ id: ModelID) async {
+        await catalog.markUsed(id)
+    }
+
+    /// The model string of a chat, if any (nil for unknown chats too).
+    func chatModel(filename: String) -> String? {
+        records.first(where: { $0.filename == filename })?.chat?.model
+    }
+
+    /// Resets `[general].default_model` / `utility_model` to nil when they
+    /// definitely no longer resolve (provider key removed, model delisted).
+    /// Undecidable models (`.unavailable`) are left alone. Emits
+    /// `.configChanged` when something was reset so the UI refreshes.
+    func validateGeneralModels() async {
+        let config = ConfigManager.shared
+        var changed = false
+        if let model = await config.getDefaultModel(), case .invalid = await resolveModel(model) {
+            debugLog("Engine", "default model \"\(model)\" is unusable — resetting")
+            await config.setDefaultModel(nil)
+            changed = true
+        }
+        if let model = await config.getUtilityModel(), case .invalid = await resolveModel(model) {
+            debugLog("Engine", "utility model \"\(model)\" is unusable — resetting")
+            await config.setUtilityModel(nil)
+            changed = true
+        }
+        if changed { emit(.configChanged) }
     }
 
     /// Destroys the given temporary chats, if they exist. Used by the CLI
@@ -904,13 +1078,50 @@ actor ChatEngine {
     /// chat is persisted when something was dropped).
     /// Temporary chats are always kept loaded (they can't be reloaded from
     /// disk), so this is a no-op for them.
+    ///
+    /// The chat's model is resolved before the chat is published, so a slow
+    /// OpenRouter capability lookup stays hidden behind the loading cover. A
+    /// model that is definitely unusable is reset (and the reset persisted) so
+    /// the UI offers the picker again; an undecidable one is left alone.
+    /// Concurrent callers for the same chat share one load.
     func ensureChatLoaded(filename: String) async {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         guard !records[idx].isTemporary else { return }
         guard records[idx].chat == nil else { return }
-        records[idx].chat = store.loadChat(filename: filename)
-        if var chat = records[idx].chat, sanitizeMCPSelection(&chat) {
+        if let running = loadingChats[filename] {
+            await running.value
+            return
+        }
+        let task = Task { await self.loadChatFromDisk(filename: filename) }
+        loadingChats[filename] = task
+        await task.value
+    }
+
+    private func loadChatFromDisk(filename: String) async {
+        defer { loadingChats[filename] = nil }
+        guard var chat = store.loadChat(filename: filename) else {
+            emit(.chatsChanged(records))
+            return
+        }
+        var changed = sanitizeMCPSelection(&chat)
+        if let modelString = chat.model {
+            switch await resolveModel(for: chat) {
+            case .invalid:
+                debugLog("Engine", "chat \(filename) model \"\(modelString)\" is unusable — resetting")
+                chat.model = nil
+                changed = true
+            case .unavailable:
+                break
+            case .ok:
+                if let id = ModelID(parsing: modelString) { await catalog.markUsed(id) }
+            }
+        }
+        // Records may have changed while the model was being resolved.
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        if changed {
             saveChat(chat, filename: filename)
+        } else {
+            records[idx].chat = chat
         }
         emit(.chatsChanged(records))
     }
@@ -1045,23 +1256,25 @@ actor ChatEngine {
         return roles.first(where: { $0.name == roleName })
     }
 
-    /// The effective connection for a chat: the per-chat override when the role
-    /// allows it, otherwise the role's connection, otherwise nil. The caller is
-    /// responsible for falling back to the app default when nil.
-    private func effectiveConnection(for chat: Chat) -> Connection? {
-        let role = self.role(for: chat)
-        if role?.connectionOverrideAllowed == true, let id = chat.connection,
-            let conn = connections.first(where: { $0.id == id })
-        {
-            return conn
-        }
-        if let roleConn = role?.connection, !roleConn.isEmpty,
-            let conn = connections.first(where: { $0.id == roleConn })
-        {
-            return conn
-        }
-        if let id = chat.connection, let conn = connections.first(where: { $0.id == id }) {
-            return conn
+    /// Resolves the chat's model against the registry and catalog. Recomputed
+    /// per request because keys and the catalog change over time.
+    func resolveModel(for chat: Chat) async -> ModelResolution {
+        await resolveModel(chat.model)
+    }
+
+    func resolveModel(_ modelString: String?) async -> ModelResolution {
+        await ModelResolver(
+            registry: registry, catalog: catalog, endpointOverrides: endpointOverrides
+        ).resolve(modelString)
+    }
+
+    /// Resolves the model for a request and reports a user-facing error when
+    /// the chat can't be sent. Nil means the request must not proceed.
+    private func resolvedModelOrReport(for chat: Chat) async -> ResolvedModel? {
+        switch await resolveModel(for: chat) {
+        case .ok(let resolved, _): return resolved
+        case .invalid: emit(.error("Please select a model."))
+        case .unavailable: emit(.error("The selected model is temporarily unavailable. Please try again in a moment."))
         }
         return nil
     }
@@ -1210,7 +1423,7 @@ actor ChatEngine {
     }
 
     /// Sends a user message and streams the assistant response for the given chat.
-    /// Returns false (and emits an error) if no valid connection is selected.
+    /// Returns false (and emits an error) if no usable model is selected.
     ///
     /// `pendingAttachments` are in-memory attachments that are committed to
     /// disk only at this point — i.e. when the user actually sends the
@@ -1232,12 +1445,9 @@ actor ChatEngine {
             return true
         }
         await ensureChatLoaded(filename: filename)
+        guard let chat = records.first(where: { $0.filename == filename })?.chat else { return false }
+        guard let model = await resolvedModelOrReport(for: chat) else { return false }
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return false }
-        guard let chat = records[idx].chat else { return false }
-        guard let connection = effectiveConnection(for: chat) else {
-            emit(.error("Please select a connection in the status bar."))
-            return false
-        }
 
         // Messages still queued (the stream was stopped or failed before they
         // could go out) travel together with this one as a single user message.
@@ -1318,7 +1528,7 @@ actor ChatEngine {
         // at the active leaf — structurally, they cannot end up grafted onto
         // a non-active branch.
         var updatedChat = baseChat
-        let assistantPlaceholder = ChatMessage(role: .assistant, content: "", connectionName: connection.displayName)
+        let assistantPlaceholder = ChatMessage(role: .assistant, content: "", model: model.id)
         updatedChat.appendToActiveLeaf(userMessage)
         updatedChat.appendToActiveLeaf(assistantPlaceholder)
         if let idx = records.firstIndex(where: { $0.filename == filename }) {
@@ -1326,9 +1536,9 @@ actor ChatEngine {
         }
         sortAndEmit()
 
-        runToolLoop(for: filename, connection: connection, messages: messages)
+        runToolLoop(for: filename, model: model, messages: messages)
 
-        // Fire-and-forget: try to generate a chat name via the utility connection
+        // Fire-and-forget: try to generate a chat name via the utility model
         // if this chat doesn't have a title yet.
         maybeGenerateChatName(filename: filename)
 
@@ -1421,7 +1631,7 @@ actor ChatEngine {
     /// reason to keep going. Does nothing once the task is cancelled, which
     /// leaves the queue for whoever cancelled it.
     private func continueWithQueuedMessages(
-        filename: String, connection: Connection, history: inout [ChatMessage]
+        filename: String, model: ResolvedModel, history: inout [ChatMessage]
     ) -> Bool {
         guard !Task.isCancelled,
             let idx = records.firstIndex(where: { $0.filename == filename }),
@@ -1440,7 +1650,7 @@ actor ChatEngine {
         chat.appendToActiveLeaf(userMessage)
         records[idx].chat = chat
         history.append(userMessage)
-        appendAssistantMessage(filename: filename, connection: connection)
+        appendAssistantMessage(filename: filename, model: model)
         return true
     }
 
@@ -1467,7 +1677,7 @@ actor ChatEngine {
     /// continuable in the GUI, but a client disconnecting mid-stream stops
     /// the stream — nobody is consuming it anymore.
     func performOneShot(
-        message: String, role requestedRole: String?, connection requestedConnection: String?, chatName: String?,
+        message: String, role requestedRole: String?, model requestedModel: String?, chatName: String?,
         temporary: Bool = false, workdir: String? = nil, workdirExplicit: Bool = false, allowAll: Bool = false,
         interactive: Bool = false
     ) async -> OneShotStart {
@@ -1484,15 +1694,25 @@ actor ChatEngine {
             if let requestedRole, !roles.contains(where: { $0.name == requestedRole }) {
                 return .failed("role \"\(requestedRole)\" not found")
             }
-            if let requestedConnection, !connections.contains(where: { $0.id == requestedConnection }) {
-                return .failed("connection \"\(requestedConnection)\" not found")
-            }
             let defaultRole = await ConfigManager.shared.getDefaultRole()
             let roleName = requestedRole ?? defaultRole ?? "Assistant"
-            filename = await createNewChat(role: roleName, temporary: temporary, outputRendering: .plain)
-            if let requestedConnection, let idx = records.firstIndex(where: { $0.filename == filename }) {
-                records[idx].chat?.connection = requestedConnection
+            // There's no picker, so a usable model must be known before
+            // anything is created: `--model`, else the role's preferred or
+            // the default model.
+            let model: String?
+            if let requestedModel, !requestedModel.isEmpty {
+                model = requestedModel
+            } else {
+                model = await initialModel(for: roles.first(where: { $0.name == roleName }))
             }
+            guard let model else {
+                return .failed(Self.noOneShotModelMessage)
+            }
+            if let failure = Self.oneShotModelFailure(model, await resolveModel(model)) {
+                return .failed(failure)
+            }
+            filename = await createNewChat(
+                role: roleName, temporary: temporary, outputRendering: .plain, model: model)
         }
 
         cliDriven.insert(filename)
@@ -1551,13 +1771,30 @@ actor ChatEngine {
         guard await sendMessage(filename: filename, text: message) else {
             oneShotSinks[filename]?[sinkID] = nil
             if records.contains(where: { $0.filename == filename }) {
-                return .failed("no usable connection — set a default connection in Preferences")
+                return .failed(
+                    "no usable model — pick a model for this chat in the app, or pass --model for a new chat")
             }
             // A concurrent one-shot's createNewChat pruned this empty chat
             // while we were suspended fetching config — a microscopic race.
             return .failed("the chat disappeared before the message could be sent")
         }
         return .started(filename: filename, events: stream)
+    }
+
+    static let noOneShotModelMessage =
+        "no model specified — pass --model provider:model-id (e.g. --model anthropic:claude-sonnet-5-5), or set a default model in Preferences"
+
+    /// The CLI failure text for a model that can't be used, or nil when it can.
+    nonisolated static func oneShotModelFailure(_ model: String, _ resolution: ModelResolution) -> String? {
+        switch resolution {
+        case .ok:
+            return nil
+        case .invalid:
+            return
+                "model \"\(model)\" is not available — check the provider is added and run Provider → Refresh Models…"
+        case .unavailable:
+            return "could not verify model \"\(model)\" right now — try again in a moment"
+        }
     }
 
     /// Yields an event to every CLI one-shot sink of the chat. No-op for
@@ -1614,12 +1851,9 @@ actor ChatEngine {
     func regenerate(filename: String, assistantMessageID: UUID) async {
         guard await awaitStreamUnwind(filename: filename) else { return }
         await ensureChatLoaded(filename: filename)
+        guard let chat = records.first(where: { $0.filename == filename })?.chat else { return }
+        guard let model = await resolvedModelOrReport(for: chat) else { return }
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
-        guard let chat = records[idx].chat else { return }
-        guard let connection = effectiveConnection(for: chat) else {
-            emit(.error("Please select a connection in the status bar."))
-            return
-        }
         guard let target = chat.message(id: assistantMessageID) else { return }
         // Only assistant messages can be regenerated, and never the first
         // message (empty prefix — nothing to rebuild a request from).
@@ -1647,14 +1881,14 @@ actor ChatEngine {
         if treesEnabled && !isNeverStreamedError {
             // Branching regen: the target stays stored as an inactive sibling
             // branch; the new placeholder becomes the active branch head.
-            let placeholder = ChatMessage(role: .assistant, content: "", connectionName: connection.displayName)
+            let placeholder = ChatMessage(role: .assistant, content: "", model: model.id)
             updatedChat.forkRegenerating(assistantMessageID, adding: placeholder)
         } else {
             // Destructive regen: remove the target and its whole continuation,
             // then append the placeholder right after the target's parent
             // (as the new active continuation when sibling branches survive).
             removeMessageAndSubtree(messageID: assistantMessageID, from: &updatedChat, filename: filename)
-            let placeholder = ChatMessage(role: .assistant, content: "", connectionName: connection.displayName)
+            let placeholder = ChatMessage(role: .assistant, content: "", model: model.id)
             updatedChat.forkContinuing(after: parent.id, adding: placeholder)
         }
         records[idx].chat = updatedChat
@@ -1669,7 +1903,7 @@ actor ChatEngine {
         }
         messages.append(contentsOf: updatedChat.activeMessages.dropLast())
 
-        runToolLoop(for: filename, connection: connection, messages: messages)
+        runToolLoop(for: filename, model: model, messages: messages)
     }
 
     /// Retries (regenerates) the last assistant turn for the given chat.
@@ -1693,10 +1927,8 @@ actor ChatEngine {
             await regenerate(filename: filename, assistantMessageID: leaf.id)
             return
         }
-        guard let connection = effectiveConnection(for: chat) else {
-            emit(.error("Please select a connection in the status bar."))
-            return
-        }
+        guard let model = await resolvedModelOrReport(for: chat) else { return }
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         // Find the last user message on the active path. Everything after it
         // is the assistant's previous turn (response, tool calls, tool
         // results) and is discarded so we regenerate from the last user
@@ -1714,7 +1946,7 @@ actor ChatEngine {
         }
         // Append a fresh placeholder assistant message for the new response,
         // right after the last user message.
-        let placeholder = ChatMessage(role: .assistant, content: "", connectionName: connection.displayName)
+        let placeholder = ChatMessage(role: .assistant, content: "", model: model.id)
         updatedChat.forkContinuing(after: lastUser.id, adding: placeholder)
         records[idx].chat = updatedChat
         emit(.chatsChanged(records))
@@ -1728,7 +1960,7 @@ actor ChatEngine {
         }
         messages.append(contentsOf: updatedChat.activeMessages.dropLast())
 
-        runToolLoop(for: filename, connection: connection, messages: messages)
+        runToolLoop(for: filename, model: model, messages: messages)
     }
 
     /// Whether a stream is currently in flight for the given chat.
@@ -1741,8 +1973,8 @@ actor ChatEngine {
     /// tool calls, execute them via `MCPManager`, append the results, and stream
     /// again. Repeats until the model responds with no tool calls, an error
     /// occurs, or the user cancels the stream.
-    private func runToolLoop(for filename: String, connection: Connection, messages: [ChatMessage]) {
-        debugLog("Stream", "start — chat=\(filename), connection=\(connection.id)")
+    private func runToolLoop(for filename: String, model: ResolvedModel, messages: [ChatMessage]) {
+        debugLog("Stream", "start — chat=\(filename), model=\(model.id)")
         if let idx = records.firstIndex(where: { $0.filename == filename }) {
             records[idx].isStreaming = true
             records[idx].stopAfterIteration = false
@@ -1752,14 +1984,14 @@ actor ChatEngine {
 
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.performToolLoop(filename: filename, connection: connection, messages: messages)
+            await self.performToolLoop(filename: filename, model: model, messages: messages)
         }
         streamTasks[filename] = task
     }
 
     /// The body of the tool-calling loop. Runs as a detached task so it can
     /// await MCP calls and re-stream without holding the actor.
-    private func performToolLoop(filename: String, connection: Connection, messages: [ChatMessage]) async {
+    private func performToolLoop(filename: String, model: ResolvedModel, messages: [ChatMessage]) async {
         // The working message history grows as tool calls + results are appended.
         var history = messages
 
@@ -1774,7 +2006,7 @@ actor ChatEngine {
 
             do {
                 let result = try await ChatService.shared.stream(
-                    connection: connection,
+                    model: model,
                     messages: history,
                     chatFilename: filename,
                     tools: toolDefs.isEmpty ? nil : toolDefs
@@ -1824,7 +2056,7 @@ actor ChatEngine {
                         {
                             history.append(answer)
                         }
-                        if continueWithQueuedMessages(filename: filename, connection: connection, history: &history) {
+                        if continueWithQueuedMessages(filename: filename, model: model, history: &history) {
                             continue
                         }
                     }
@@ -1912,7 +2144,7 @@ actor ChatEngine {
                 // Queued messages ride along with the tool results: one
                 // request with the results followed by a single user block.
                 // This takes precedence over "stop after streaming".
-                if continueWithQueuedMessages(filename: filename, connection: connection, history: &history) {
+                if continueWithQueuedMessages(filename: filename, model: model, history: &history) {
                     continue
                 }
 
@@ -1929,7 +2161,7 @@ actor ChatEngine {
                 // response so it doesn't get appended to the tool-result
                 // message.
                 try Task.checkCancellation()
-                appendAssistantMessage(filename: filename, connection: connection)
+                appendAssistantMessage(filename: filename, model: model)
 
                 // Loop again: the model will see the tool results and either
                 // call more tools or produce a final answer.
@@ -2582,10 +2814,10 @@ actor ChatEngine {
     /// message carrying the tool call + result, and this new assistant message
     /// with the final answer. Appends to the active leaf. Persists and emits
     /// immediately so the new row appears right away.
-    private func appendAssistantMessage(filename: String, connection: Connection) {
+    private func appendAssistantMessage(filename: String, model: ResolvedModel) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         guard var chat = records[idx].chat else { return }
-        chat.appendToActiveLeaf(ChatMessage(role: .assistant, content: "", connectionName: connection.displayName))
+        chat.appendToActiveLeaf(ChatMessage(role: .assistant, content: "", model: model.id))
         records[idx].chat = chat
         // In-memory only during streaming; persisted once by `finishStream`.
         flushCoalescedEmit()
@@ -2799,8 +3031,16 @@ actor ChatEngine {
 
     // MARK: - Chat naming
 
+    /// The model used for utility tasks such as chat naming: the configured
+    /// `[general].utility_model` when it resolves, else nil (task skipped).
+    private func utilityModel() async -> ResolvedModel? {
+        guard let model = await ConfigManager.shared.getUtilityModel() else { return nil }
+        guard case .ok(let resolved, _) = await resolveModel(model) else { return nil }
+        return resolved
+    }
+
     /// Kicks off a background request to generate a chat name via the utility
-    /// connection, if one is configured and the chat still has no title.
+    /// model, if one is available and the chat still has no title.
     /// This is fire-and-forget and runs in parallel to the main stream.
     private func maybeGenerateChatName(filename: String) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }),
@@ -2820,10 +3060,8 @@ actor ChatEngine {
                 }
             }
 
-            let config = ConfigManager.shared
-            guard let utilityConnID = await config.getUtilityConnection() else { return }
             guard let self else { return }
-            guard let utilityConn = await self.connections.first(where: { $0.id == utilityConnID }) else { return }
+            guard let utilityModel = await self.utilityModel() else { return }
 
             let systemPrompt = """
                 The user just started a new chat and we need to generate a name for this chat. \
@@ -2842,7 +3080,7 @@ actor ChatEngine {
 
             do {
                 let result = try await ChatService.shared.stream(
-                    connection: utilityConn,
+                    model: utilityModel,
                     messages: messages,
                     chatFilename: filename,
                     onChunk: { _ in }
@@ -2901,15 +3139,13 @@ actor ChatEngine {
         if target.role == .user {
             // Edit & resend: apply the new content to the same message id,
             // then handle the continuation per the tree setting.
-            guard let connection = effectiveConnection(for: chat) else {
-                emit(.error("Please select a connection in the status bar."))
-                return
-            }
+            guard let model = await resolvedModelOrReport(for: chat) else { return }
+            guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
             chat.updateMessage(id: messageID) {
                 $0.content = trimmed
                 $0.error = nil
             }
-            let placeholder = ChatMessage(role: .assistant, content: "", connectionName: connection.displayName)
+            let placeholder = ChatMessage(role: .assistant, content: "", model: model.id)
             if hasChatTrees(for: chat) {
                 // Branching edit: the edited message is the fork point. Its
                 // existing continuation is preserved as an inactive sibling
@@ -2937,7 +3173,7 @@ actor ChatEngine {
                 messages.append(systemMsg)
             }
             messages.append(contentsOf: chat.activeMessages.dropLast())
-            runToolLoop(for: filename, connection: connection, messages: messages)
+            runToolLoop(for: filename, model: model, messages: messages)
         } else {
             // Assistant-message edit: in-place text fix only.
             chat.updateMessage(id: messageID) {
@@ -3010,14 +3246,16 @@ actor ChatEngine {
 
     // MARK: - Selection updates
 
-    /// Updates the selected connection for a chat.
-    func setConnection(filename: String, connectionID: String) async {
+    /// Updates the selected model for a chat and marks it as used so the
+    /// catalog keeps it across OpenRouter refreshes.
+    func setModel(filename: String, modelID: String) async {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         await ensureChatLoaded(filename: filename)
         guard var chat = records[idx].chat else { return }
-        chat.connection = connectionID
+        chat.model = modelID
         saveChat(chat, filename: filename)
         emit(.chatsChanged(records))
+        if let id = ModelID(parsing: modelID) { await catalog.markUsed(id) }
     }
 
     /// Updates the selected role for a chat. The chat's active custom MCP

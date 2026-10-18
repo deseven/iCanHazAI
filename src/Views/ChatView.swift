@@ -4,8 +4,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The chat screen: header, message list and input. Only the header, the
-/// drop overlay and the sheets are SwiftUI; the list and the input live in
+/// The chat screen: header, message list and input. Only the header and the
+/// drop overlay are SwiftUI; the list and the input live in
 /// one AppKit pane (`NativeChatView`) so the input can grow in step with the
 /// list, and typing never invalidates this view.
 struct ChatView: View {
@@ -34,99 +34,6 @@ struct ChatView: View {
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             input.handleDrop(providers: providers)
         }
-        .sheet(
-            item: Binding(
-                get: { store.pendingEditMessageID.map { PendingID(id: $0) } },
-                set: { if $0 == nil { store.pendingEditMessageID = nil } }
-            )
-        ) { pending in
-            if let item = store.selectedChatItem,
-                let msg = item.chat?.message(id: pending.id)
-            {
-                let followOn = Self.followOnMessageCount(for: pending.id, in: item.chat)
-                EditMessageSheet(
-                    initialText: msg.content,
-                    followOnWarning: msg.role == .user && followOn > 0
-                        ? "Saving will regenerate the response; \(followOn) following message(s) will be deleted."
-                        : nil,
-                    onCancel: { store.pendingEditMessageID = nil },
-                    onConfirm: { newText in
-                        store.editMessage(messageID: pending.id, to: newText)
-                        store.pendingEditMessageID = nil
-                    }
-                )
-            }
-        }
-        .sheet(
-            item: Binding(
-                get: { store.pendingDeleteMessageID.map { PendingID(id: $0) } },
-                set: { if $0 == nil { store.pendingDeleteMessageID = nil } }
-            )
-        ) { pending in
-            if let item = store.selectedChatItem {
-                let followOn = Self.followOnMessageCount(for: pending.id, in: item.chat)
-                ConfirmActionSheet(
-                    title: "Delete this message?",
-                    message: followOn > 0
-                        ? "This action cannot be undone. This will also delete \(followOn) following message(s)."
-                        : "This action cannot be undone.",
-                    confirmLabel: "Delete",
-                    onCancel: { store.pendingDeleteMessageID = nil },
-                    onConfirm: {
-                        store.deleteMessage(messageID: pending.id)
-                        store.pendingDeleteMessageID = nil
-                    }
-                )
-            }
-        }
-        .sheet(
-            item: Binding(
-                get: { store.pendingDenyToolCallID.map { ToolCallIDTarget(callID: $0) } },
-                set: { if $0 == nil { store.pendingDenyToolCallID = nil } }
-            )
-        ) { target in
-            DenyToolCallSheet(
-                onCancel: { store.pendingDenyToolCallID = nil },
-                onConfirm: { reason in
-                    store.denyToolCall(callID: target.callID, reason: reason)
-                    store.pendingDenyToolCallID = nil
-                }
-            )
-        }
-        .sheet(isPresented: $store.showWorkdirPicker) {
-            WorkdirPickerView(
-                onCancel: { store.showWorkdirPicker = false },
-                onPick: { path in
-                    // Every pick is recorded as most-recently-used so the
-                    // picker's recent list stays relevant.
-                    store.recordWorkingDirectory(path)
-                    store.setWorkingDirectory(path)
-                    store.showWorkdirPicker = false
-                }
-            )
-        }
-        .sheet(isPresented: $store.showConnectionPicker) {
-            ConnectionPickerView(
-                connections: store.connections,
-                currentID: store.selectedChatConnectionID,
-                onCancel: { store.showConnectionPicker = false },
-                onPick: { connection in
-                    store.setConnection(connection.id)
-                    store.showConnectionPicker = false
-                }
-            )
-        }
-        .sheet(isPresented: $store.showMCPPicker) {
-            MCPPickerView(
-                servers: store.mcps,
-                initiallySelected: Set(store.selectedChatMCPNames),
-                onCancel: { store.showMCPPicker = false },
-                onApply: { names in
-                    store.setChatMCPs(names)
-                    store.showMCPPicker = false
-                }
-            )
-        }
     }
 
     /// A header bar that sits at the top of the chat content area (below the
@@ -134,8 +41,8 @@ struct ChatView: View {
     /// when the inspector panel opens — unlike toolbar items which span the full
     /// titlebar width regardless of the inspector.
     ///
-    /// The model (connection) control is always shown; it's clickable only
-    /// when the role allows a connection override. The prompt picker,
+    /// The model control is always shown and clickable while the chat isn't
+    /// streaming. The prompt picker,
     /// working-directory picker, and MCP picker are shown only when the
     /// chat's role allows the corresponding
     /// override. The MCP control is hidden entirely when no custom MCP servers
@@ -171,22 +78,16 @@ struct ChatView: View {
                 // picker, grey when it's fixed. Red marks a missing required
                 // directory. `allowsHitTesting` is used instead of `disabled`
                 // so the colors aren't dimmed.
-                if store.selectedChatConnectionControlVisible {
+                if store.selectedChatItem?.chat != nil {
                     Button {
-                        store.showConnectionPicker = true
+                        store.showModelPicker = true
                     } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "cpu")
-                            toolbarTag(store.selectedChatConnection?.displayName ?? "No connection")
-                        }
-                        .font(.callout)
-                        .lineLimit(1)
-                        .foregroundStyle(store.selectedChatConnectionPickerEnabled ? Color.primary : Color.secondary)
+                        ModelStatusLabel(label: modelLabel, hasModel: store.selectedChatHasModel)
                     }
                     .buttonStyle(.borderless)
                     .fixedSize()
-                    .help(connectionHelp)
-                    .allowsHitTesting(store.selectedChatConnectionPickerEnabled && !store.isStreaming)
+                    .help("Model used for this chat")
+                    .allowsHitTesting(!store.isStreaming)
                 }
 
                 if store.selectedChatWorkdirPickerVisible {
@@ -293,12 +194,9 @@ struct ChatView: View {
             store.selectedChatMCPPickerEnabled ? .primary : .secondary
         }
 
-        private var connectionHelp: String {
-            let model = store.selectedChatConnection.map { " (\($0.model))" } ?? ""
-            if store.selectedChatConnectionPickerEnabled {
-                return "Model used for this chat" + model
-            }
-            return "Model (set by role)" + model
+        private var modelLabel: String {
+            guard let raw = store.selectedChatItem?.chat?.model else { return "No model" }
+            return store.selectedChatModel?.displayName ?? raw
         }
 
         private var mcpHelp: String {
@@ -396,11 +294,6 @@ enum AttachmentPickerTypes {
     }()
 }
 
-/// A wrapper that makes a `UUID` `Identifiable` so it can drive `.sheet(item:)`.
-private struct PendingID: Identifiable {
-    let id: UUID
-}
-
 extension ChatView {
     /// The number of messages that follow `messageID` in the chat — i.e. the
     /// continuation that a delete or user-message edit would remove. Pure so it
@@ -411,13 +304,6 @@ extension ChatView {
         guard let idx = active.firstIndex(where: { $0.id == messageID }) else { return 0 }
         return max(0, active.count - idx - 1)
     }
-}
-
-/// A wrapper that makes a tool-call id `Identifiable` so it can drive
-/// `.sheet(item:)` for the deny-reason sheet.
-private struct ToolCallIDTarget: Identifiable {
-    let callID: String
-    var id: String { callID }
 }
 
 /// A modal asking for an optional reason when the user denies a tool call.

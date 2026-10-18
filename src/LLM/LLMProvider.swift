@@ -15,25 +15,20 @@ import Foundation
 /// state lives in a [`ToolCallAccumulator`](src/LLM/LLMProvider.swift) owned
 /// by the transport and passed into [`parseStreamChunk(_:accumulator:)`](src/LLM/LLMProvider.swift).
 protocol LLMProvider: Sendable {
-    /// The provider this strategy implements.
-    var provider: ConnectionProvider { get }
-    /// The default base URL used when a connection doesn't specify one.
-    var defaultBaseUrl: String { get }
+    /// The wire format this strategy implements.
+    var wire: LLMWire { get }
     /// The path appended to the base URL for chat completions
-    /// (e.g. `/v1/chat/completions` or `/v1/messages`).
+    /// (e.g. `/chat/completions` or `/messages`).
     var chatPath: String { get }
-    /// The path appended to the base URL for the models listing endpoint,
-    /// or nil if the provider doesn't expose one.
-    var modelsPath: String? { get }
 
     /// Builds the HTTP headers for a request to this provider.
     /// Includes `Content-Type` and the provider-specific auth headers.
-    func buildHeaders(connection: Connection) -> [String: String]
+    func buildHeaders(model: ResolvedModel) -> [String: String]
 
     /// Builds the JSON request body for a chat completion (streaming or not).
     /// Returns a dictionary suitable for `JSONSerialization`.
     func buildRequestBody(
-        connection: Connection,
+        model: ResolvedModel,
         messages: [ChatMessage],
         chatFilename: String,
         tools: [ToolDefinition]?,
@@ -50,30 +45,8 @@ protocol LLMProvider: Sendable {
     /// returned as `.toolCallDelta` chunks (for live UI updates).
     func parseStreamChunk(_ data: Data, accumulator: ToolCallAccumulator) -> [StreamChunk]
 
-    /// Parses a non-streaming completion response body into the assistant's
-    /// text content.
-    func parseCompleteResponse(_ data: Data) -> String
-
     /// Parses an error response body into a structured [`LLMError`](src/LLM/LLMError.swift).
     func parseError(_ data: Data, statusCode: Int) -> LLMError
-
-    /// Parses a `/models` listing response body into [`ModelInfo`](src/LLM/LLMProvider.swift)
-    /// entries. Each entry carries the model id and, where the provider reports
-    /// it, whether the model accepts image input. Both OpenAI-compatible and
-    /// Anthropic endpoints expose `/v1/models`; Anthropic additionally reports
-    /// per-model capabilities (e.g. `image_input`), which the connection wizard
-    /// uses to auto-set the `imageInput` flag.
-    func parseModelsResponse(_ data: Data) -> [ModelInfo]
-}
-
-/// A model entry returned by a provider's `/models` endpoint.
-struct ModelInfo: Sendable, Equatable {
-    /// The model identifier (e.g. "gpt-5", "claude-opus-4-6").
-    let id: String
-    /// Whether the provider reports this model as accepting image input.
-    /// Nil when the provider doesn't report image-input capability (e.g.
-    /// OpenAI-compatible endpoints that only return ids).
-    let imageInput: Bool?
 }
 
 // MARK: - Streaming accumulator

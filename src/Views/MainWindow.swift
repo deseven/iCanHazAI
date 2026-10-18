@@ -9,6 +9,8 @@ import SwiftUI
 /// [`MainSplitView`](src/Views/MainSplitView.swift) (AppKit `NSSplitView`) —
 /// see its doc comment for why this isn't a `NavigationSplitView` (collapsible
 /// sidebar) or a pure-SwiftUI HStack (jittery drag, 1pt grab zone).
+///
+/// All dialogs are sheets of this window — see [`MainSheet`](src/Views/MainSheet.swift).
 struct MainWindow: View {
     @EnvironmentObject var store: AppViewModel
 
@@ -34,33 +36,11 @@ struct MainWindow: View {
             .overlay {
                 LoaderOverlay()
             }
-            .sheet(isPresented: $store.showConfigErrors) {
-                ConfigErrorsSheet(
-                    errors: store.configErrors,
-                    onAcknowledge: { store.showConfigErrors = false },
-                    onFix: { store.fixWithConfigurator() }
-                )
-            }
-            .sheet(isPresented: $store.showRolePicker) {
-                RolePickerView(
-                    mode: store.rolePickerMode,
-                    onCancel: { store.rolePickerCancelled() },
-                    onPick: { store.rolePickerPicked(role: $0) },
-                    diskAccessOnly: store.chatListMode == .directory
-                )
-            }
-            .sheet(isPresented: $store.showSidebarRolePicker) {
-                RolePickerView(
-                    mode: .newChat,
-                    onCancel: { store.sidebarRolePickerCancelled() },
-                    onPick: { store.sidebarRolePickerPicked(role: $0) }
-                )
-            }
-            .sheet(isPresented: $store.showSidebarDirectoryPicker) {
-                WorkdirPickerView(
-                    onCancel: { store.sidebarDirectoryPickerCancelled() },
-                    onPick: { store.sidebarDirectoryPickerPicked($0) }
-                )
+            // The only sheet host: every dialog (pickers, wizards,
+            // Preferences) is a case of `MainSheet`, so at most one is up and
+            // presenting another replaces it.
+            .sheet(item: $store.activeSheet) { sheet in
+                MainSheetContent(sheet: sheet)
             }
             .onChange(of: store.chatInfoSidebarVisible) { _, _ in
                 store.saveSidebarState()

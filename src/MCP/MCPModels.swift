@@ -75,7 +75,7 @@ struct MCPServer: Identifiable, Equatable, Hashable, Sendable {
 }
 
 /// Raw structure decoded from an MCP server TOML file.
-/// Mirrors `ConnectionConfig` with snake_case keys.
+/// Uses snake_case keys.
 struct MCPConfig: Codable {
     var transport: String
     /// Optional tool namespace. Omitted entirely (rather than written as an
@@ -247,7 +247,7 @@ extension Array where Element == ToolCall {
 /// A processed image carried on a `ToolResult` when `read_file` reads an
 /// image. The processed bytes (resized/re-encoded) live here — no attachment
 /// file is written to disk. The request builders send the image as an image
-/// block on vision-capable connections and `fallback` (classification + OCR)
+/// block on vision-capable models and `fallback` (classification + OCR)
 /// as text on vision-incapable ones, exactly like user-attached images. The
 /// renderer decodes the image from the chat data.
 struct ToolResultImage: Codable, Equatable, Sendable {
@@ -257,7 +257,7 @@ struct ToolResultImage: Codable, Equatable, Sendable {
     /// The media type for the API, e.g. "image/png".
     let mimeType: String
     /// The classification+OCR fallback text, used on vision-incapable
-    /// connections in place of the image block.
+    /// models in place of the image block.
     let fallback: String
 
     /// The decoded image bytes.

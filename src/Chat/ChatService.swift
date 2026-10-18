@@ -293,7 +293,7 @@ struct ChunkCoalescer {
 }
 
 /// Provides streaming chat completion for both OpenAI-compatible and Anthropic
-/// connections. This is a thin facade over [`LLMTransport`](src/LLM/LLMTransport.swift):
+/// models. This is a thin facade over [`LLMTransport`](src/LLM/LLMTransport.swift):
 /// it wraps the transport's raw chunk stream in a [`ChunkCoalescer`](src/Chat/ChatService.swift)
 /// and adds request lifecycle logging. All request building, SSE parsing,
 /// cancellation, and error handling live in the transport + provider
@@ -322,7 +322,7 @@ final class ChatService: @unchecked Sendable {
     /// content/thinking/tool-call-delta. Chunks are coalesced before reaching
     /// `onChunk` to keep the UI cadence sane.
     /// - Parameters:
-    ///   - connection: The connection to use.
+    ///   - model: The resolved model to use.
     ///   - messages: The full conversation history (including system prompt if any).
     ///   - chatFilename: The chat's filename, used to resolve image attachments on disk.
     ///   - tools: Optional MCP tool definitions to expose to the model. When
@@ -332,7 +332,7 @@ final class ChatService: @unchecked Sendable {
     /// - Returns: The stream result (final text, accumulated tool calls, finish reason).
     @discardableResult
     func stream(
-        connection: Connection,
+        model: ResolvedModel,
         messages: [ChatMessage],
         chatFilename: String,
         tools: [ToolDefinition]? = nil,
@@ -341,7 +341,7 @@ final class ChatService: @unchecked Sendable {
         let toolCount = tools?.count ?? 0
         debugLog(
             "LLM",
-            "request start — provider=\(connection.provider.rawValue), model=\(connection.model), messages=\(messages.count), tools=\(toolCount), chat=\(chatFilename)"
+            "request start — model=\(model.id), messages=\(messages.count), tools=\(toolCount), chat=\(chatFilename)"
         )
         let started = Date()
 
@@ -349,7 +349,7 @@ final class ChatService: @unchecked Sendable {
         let result: StreamResult
         do {
             result = try await LLMTransport.stream(
-                connection: connection,
+                model: model,
                 messages: messages,
                 chatFilename: chatFilename,
                 tools: tools,
@@ -380,23 +380,6 @@ final class ChatService: @unchecked Sendable {
             "request finish — finishReason=\(result.finishReason ?? "nil"), contentSize=\(result.content.count), toolCalls=\(result.toolCalls.count), error=\(result.error ?? "nil"), elapsed=\(elapsed)s, chat=\(chatFilename)"
         )
         return result
-    }
-
-    /// Fetches the list of available models from a provider's `/models`
-    /// endpoint. Anthropic reports per-model capabilities (e.g.
-    /// `image_input`); OpenAI-compatible endpoints return ids only. `headers`
-    /// is threaded through so callers that need to match a saved connection's
-    /// header set (e.g. header-gated gateways) can do so.
-    func listModels(provider: ConnectionProvider, baseUrl: String?, apiKey: String?, headers: [String: String]? = nil)
-        async throws -> [ModelInfo]
-    {
-        try await LLMTransport.listModels(provider: provider, baseUrl: baseUrl, apiKey: apiKey, headers: headers)
-    }
-
-    /// Performs a non-streaming chat completion and returns the assistant's
-    /// text. Used by the connection wizard's "say hi" test.
-    func complete(connection: Connection, messages: [ChatMessage]) async throws -> String {
-        try await LLMTransport.complete(connection: connection, messages: messages)
     }
 }
 

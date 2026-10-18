@@ -87,7 +87,7 @@ extension AllAppTests {
     struct ChatInputFactsTests {
 
         private func ready() -> ChatInputFacts {
-            ChatInputFacts(hasValidRole: true, hasConnection: true)
+            ChatInputFacts(hasValidRole: true, hasModel: true)
         }
 
         @Test("text or attachments enable sending")
@@ -104,14 +104,14 @@ extension AllAppTests {
             #expect(facts.actionEnabled(hasText: false, hasAttachments: false))
         }
 
-        @Test("a missing role or connection blocks sending")
-        func missingRoleOrConnection() {
+        @Test("a missing role or model blocks sending")
+        func missingRoleOrModel() {
             var noRole = ready()
             noRole.hasValidRole = false
             #expect(!noRole.actionEnabled(hasText: true, hasAttachments: false))
-            var noConnection = ready()
-            noConnection.hasConnection = false
-            #expect(!noConnection.actionEnabled(hasText: true, hasAttachments: false))
+            var noModel = ready()
+            noModel.hasModel = false
+            #expect(!noModel.actionEnabled(hasText: true, hasAttachments: false))
         }
 
         @Test("a required working directory blocks sending")
@@ -126,7 +126,7 @@ extension AllAppTests {
             var facts = ready()
             facts.queuedCount = 2
             #expect(facts.actionEnabled(hasText: false, hasAttachments: false))
-            facts.hasConnection = false
+            facts.hasModel = false
             #expect(!facts.actionEnabled(hasText: false, hasAttachments: false))
         }
 

@@ -13,8 +13,7 @@ import Foundation
 enum ConfigChange: Sendable, Hashable {
     /// `config.toml`.
     case config
-    /// All connection files (both providers).
-    case connections
+
     case roles
     case role(String)
     case prompts
@@ -27,7 +26,7 @@ enum ConfigChange: Sendable, Hashable {
     var appResource: AppResource? {
         switch self {
         case .config: return .configuration
-        case .connections: return .connections
+
         case .roles, .role: return .roles
         case .prompts, .prompt: return .prompts
         case .mcp: return nil
@@ -39,7 +38,7 @@ enum ConfigChange: Sendable, Hashable {
     func refreshCount(total: Int) -> Int {
         switch self {
         case .role, .prompt, .mcp, .config: return 1
-        case .connections, .roles, .prompts: return total
+        case .roles, .prompts: return total
         }
     }
 }

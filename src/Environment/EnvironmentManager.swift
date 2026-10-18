@@ -5,7 +5,7 @@ import Foundation
 import TOML
 
 /// Manages the app's data directory
-/// and provides loading/saving of chats, roles, and connections.
+/// and provides loading/saving of chats, roles, prompts and MCPs.
 /// Pure file I/O with no UI dependency, so it is not main-actor isolated.
 final class EnvironmentManager: @unchecked Sendable {
 
@@ -15,9 +15,6 @@ final class EnvironmentManager: @unchecked Sendable {
     let chatsURL: URL
     let rolesURL: URL
     let promptsURL: URL
-    let connectionsURL: URL
-    let openaiConnectionsURL: URL
-    let anthropicConnectionsURL: URL
     let mcpsURL: URL
     /// The APP↔CLI control socket (`~/iCanHazAI/app.sock`).
     let socketURL: URL
@@ -36,9 +33,6 @@ final class EnvironmentManager: @unchecked Sendable {
         chatsURL = rootURL.appendingPathComponent("Chats", isDirectory: true)
         rolesURL = rootURL.appendingPathComponent("Roles", isDirectory: true)
         promptsURL = rootURL.appendingPathComponent("Prompts", isDirectory: true)
-        connectionsURL = rootURL.appendingPathComponent("Connections", isDirectory: true)
-        openaiConnectionsURL = connectionsURL.appendingPathComponent("openai", isDirectory: true)
-        anthropicConnectionsURL = connectionsURL.appendingPathComponent("anthropic", isDirectory: true)
         mcpsURL = rootURL.appendingPathComponent("MCPs", isDirectory: true)
         socketURL = rootURL.appendingPathComponent("app.sock")
     }
@@ -57,10 +51,7 @@ final class EnvironmentManager: @unchecked Sendable {
     /// Ensures the data directory structure exists, creating it if needed.
     func ensureDirectories() {
         let fm = FileManager.default
-        for url in [
-            rootURL, chatsURL, rolesURL, promptsURL, connectionsURL, openaiConnectionsURL, anthropicConnectionsURL,
-            mcpsURL,
-        ] {
+        for url in [rootURL, chatsURL, rolesURL, promptsURL, mcpsURL] {
             try? fm.createDirectory(at: url, withIntermediateDirectories: true)
         }
     }
@@ -403,16 +394,15 @@ final class EnvironmentManager: @unchecked Sendable {
     /// A point-in-time load of every environment entity, produced by
     /// [`loadEnvironment()`](src/Environment/EnvironmentManager.swift).
     struct EnvironmentSnapshot {
-        var connections: [Connection]
         var mcps: [MCPServer]
         var prompts: [Prompt]
         var roles: [Role]
-        /// All per-entity errors (connection, MCP config, prompt, role).
+        /// All per-entity errors (MCP config, prompt, role).
         var errors: [ConfigError]
     }
 
-    /// Loads all environment entities in dependency order: connections, MCP
-    /// configs, and prompts first (in parallel — none of them reference each
+    /// Loads all environment entities in dependency order: MCP
+    /// configs and prompts first (in parallel — none of them reference each
     /// other), then roles, which are validated against the entities found on
     /// disk. Chats are intentionally not part of the snapshot (they're cached
     /// by `ChatStore`). Per-entity errors are returned alongside loaded values.
@@ -420,17 +410,11 @@ final class EnvironmentManager: @unchecked Sendable {
         // Boxed results so the @Sendable worker closures don't capture and
         // mutate local vars; the dispatch group join makes the writes safe.
         final class Box: @unchecked Sendable {
-            var connections: (loaded: [Connection], errors: [ConfigError])?
             var mcps: (loaded: [MCPServer], errors: [ConfigError])?
             var prompts: (loaded: [Prompt], errors: [ConfigError])?
         }
         let box = Box()
         let group = DispatchGroup()
-        group.enter()
-        DispatchQueue.global().async {
-            box.connections = self.loadConnectionsReportingErrors()
-            group.leave()
-        }
         group.enter()
         DispatchQueue.global().async {
             box.mcps = self.loadMCPsReportingErrors()
@@ -442,18 +426,17 @@ final class EnvironmentManager: @unchecked Sendable {
             group.leave()
         }
         group.wait()
-        let conns = box.connections ?? ([], [])
+
         let mcps = box.mcps ?? ([], [])
         let prompts = box.prompts ?? ([], [])
         let rolesResult = loadAllRolesReportingErrors(
-            references: Self.roleReferences(connections: conns, mcps: mcps, prompts: prompts)
+            references: Self.roleReferences(mcps: mcps, prompts: prompts)
         )
         return EnvironmentSnapshot(
-            connections: conns.loaded,
             mcps: mcps.loaded,
             prompts: prompts.loaded,
             roles: rolesResult.loaded,
-            errors: conns.errors + mcps.errors + prompts.errors + rolesResult.errors
+            errors: mcps.errors + prompts.errors + rolesResult.errors
         )
     }
 
@@ -463,21 +446,17 @@ final class EnvironmentManager: @unchecked Sendable {
     /// flagged for a missing entity).
     func knownRoleReferences() -> RoleReferences {
         Self.roleReferences(
-            connections: loadConnectionsReportingErrors(),
             mcps: loadMCPsReportingErrors(),
             prompts: loadAllPromptsReportingErrors()
         )
     }
 
     static func roleReferences(
-        connections: (loaded: [Connection], errors: [ConfigError]),
         mcps: (loaded: [MCPServer], errors: [ConfigError]),
         prompts: (loaded: [Prompt], errors: [ConfigError])
     ) -> RoleReferences {
         RoleReferences(
-            // Connection error entity names are already in `provider/name`
-            // form, matching `Connection.id`.
-            connectionIDs: Set(connections.loaded.map(\.id)).union(connections.errors.map(\.entityName)),
+
             promptNames: Set(prompts.loaded.map(\.name)).union(prompts.errors.map(\.entityName)),
             mcpNames: Set(mcps.loaded.map(\.name)).union(mcps.errors.map(\.entityName))
         )
@@ -497,7 +476,7 @@ final class EnvironmentManager: @unchecked Sendable {
     /// a [`ConfigError`](src/Chat/Models.swift) per role file that failed to read or
     /// decode. Used by `ChatEngine` to populate the configuration-error registry.
     /// `references` carries the entities on disk (loaded or broken) that role
-    /// `connection` / `prompt` / `[[mcps]]` entries are validated against.
+    /// `prompt` / `[[mcps]]` entries are validated against.
     func loadAllRolesReportingErrors(references: RoleReferences) -> (loaded: [Role], errors: [ConfigError]) {
         let fm = FileManager.default
         var loaded: [Role] = []
@@ -541,7 +520,7 @@ final class EnvironmentManager: @unchecked Sendable {
     /// fails to decode. A missing file returns `(nil, nil)` — the caller treats
     /// that as a removal (no error). Protected built-ins never error.
     /// `references` carries the entities on disk (loaded or broken) that role
-    /// `connection` / `prompt` / `[[mcps]]` entries are validated against.
+    /// `prompt` / `[[mcps]]` entries are validated against.
     func loadSingleRoleReportingError(name: String, references: RoleReferences) -> (role: Role?, error: ConfigError?) {
         if Self.protectedBundleNames.contains(name) {
             return (Self.bundledRole(name: name), nil)
@@ -566,11 +545,6 @@ final class EnvironmentManager: @unchecked Sendable {
     /// Number of chat files on disk (the total the loader shows against the
     /// cached/decoded count produced by `ChatStore.startupSync`).
     func chatCount() -> Int { countFiles(in: chatsURL, ext: "json") }
-
-    /// Number of connection files across both provider directories.
-    func connectionCount() -> Int {
-        countFiles(in: openaiConnectionsURL, ext: "jsonc") + countFiles(in: anthropicConnectionsURL, ext: "jsonc")
-    }
 
     /// Number of prompt files in the user directory (excluding protected
     /// built-ins) plus the protected built-in prompts served from the bundle.
@@ -602,106 +576,6 @@ final class EnvironmentManager: @unchecked Sendable {
             }
             return true
         }.count
-    }
-
-    // MARK: - Connections
-
-    /// Loads all connections from both provider directories.
-    func loadConnections() -> [Connection] {
-        loadConnectionsReportingErrors().loaded
-    }
-
-    /// Same as [`loadConnections()`](src/Environment/EnvironmentManager.swift) but also
-    /// returns a [`ConfigError`](src/Chat/Models.swift) per connection file that
-    /// failed to read or decode. Used by `ChatEngine` to populate the
-    /// configuration-error registry.
-    func loadConnectionsReportingErrors() -> (loaded: [Connection], errors: [ConfigError]) {
-        var loaded: [Connection] = []
-        var errors: [ConfigError] = []
-        let r1 = loadConnectionsReportingErrors(in: openaiConnectionsURL, provider: .openai)
-        loaded.append(contentsOf: r1.loaded)
-        errors.append(contentsOf: r1.errors)
-        let r2 = loadConnectionsReportingErrors(in: anthropicConnectionsURL, provider: .anthropic)
-        loaded.append(contentsOf: r2.loaded)
-        errors.append(contentsOf: r2.errors)
-        return (loaded.sorted { $0.displayName < $1.displayName }, errors)
-    }
-
-    private func loadConnectionsReportingErrors(in directory: URL, provider: ConnectionProvider) -> (
-        loaded: [Connection], errors: [ConfigError]
-    ) {
-        let fm = FileManager.default
-        guard let files = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
-            return ([], [])
-        }
-        var loaded: [Connection] = []
-        var errors: [ConfigError] = []
-        for url in files where url.pathExtension == "jsonc" {
-            debugLog("FileRead", "reading \(relativePath(url))")
-            let name = url.deletingPathExtension().lastPathComponent
-            let entityName = "\(provider.rawValue)/\(name)"
-            guard let data = try? Data(contentsOf: url) else {
-                debugLog("Env", "⚠️ failed to read \(provider.rawValue) connection \"\(name)\"")
-                errors.append(
-                    ConfigError(kind: .connection, entityName: entityName, message: "connection file could not be read")
-                )
-                continue
-            }
-            do {
-                let config = try ConfigValidation.decodeConnection(data)
-                loaded.append(connection(from: config, url: url, provider: provider))
-            } catch {
-                debugLog("Env", "⚠️ failed to decode \(provider.rawValue) connection \"\(name)\" — \(error)")
-                errors.append(
-                    ConfigError(kind: .connection, entityName: entityName, message: error.localizedDescription))
-            }
-        }
-        return (loaded, errors)
-    }
-
-    /// Loads one connection from a specific file URL, inferring the provider
-    /// from the parent directory name (`openai` or `anthropic`). Returns nil
-    /// if the file is missing or undecodable, or the provider is unknown.
-    func loadSingleConnection(url: URL) -> Connection? {
-        debugLog("FileRead", "reading \(relativePath(url))")
-        let name = url.deletingPathExtension().lastPathComponent
-        guard let data = try? Data(contentsOf: url) else {
-            debugLog("Env", "⚠️ failed to read connection \"\(name)\"")
-            return nil
-        }
-        let config: ConnectionConfig
-        do {
-            config = try ConfigValidation.decodeConnection(data)
-        } catch {
-            debugLog("Env", "⚠️ failed to decode connection \"\(name)\" — \(error)")
-            return nil
-        }
-        let provider: ConnectionProvider
-        switch url.deletingLastPathComponent().lastPathComponent {
-        case "openai": provider = .openai
-        case "anthropic": provider = .anthropic
-        default: return nil
-        }
-        return connection(from: config, url: url, provider: provider)
-    }
-
-    /// Builds a `Connection` value from a decoded config + file URL + provider.
-    private func connection(from config: ConnectionConfig, url: URL, provider: ConnectionProvider) -> Connection {
-        let name = url.deletingPathExtension().lastPathComponent
-        return Connection(
-            provider: provider,
-            name: name,
-            baseUrl: config.baseUrl,
-            apiKey: config.apiKey,
-            model: config.model,
-            imageInput: config.imageInput ?? false,
-            requestParameters: config.requestParameters,
-            headers: config.headers,
-            readTimeout: config.readTimeout,
-            progressTimeout: config.progressTimeout,
-            transportTimeout: config.transportTimeout,
-            numRetries: config.numRetries
-        )
     }
 
     // MARK: - MCP servers

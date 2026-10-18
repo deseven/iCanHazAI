@@ -6,16 +6,6 @@ import SwiftUI
 struct ChatSidebar: View {
     @EnvironmentObject var store: AppViewModel
 
-    /// Filename pending a rename action (drives the rename sheet).
-    @State private var renamingFilename: String?
-    @State private var renameText: String = ""
-
-    /// Filename pending a delete confirmation (drives the confirmation dialog).
-    @State private var deletingFilename: String?
-
-    /// Whether the archived-chats picker sheet is currently shown.
-    @State private var showArchivedPicker = false
-
     /// Whether the option key is currently held — swaps the new-chat button
     /// to its "temporary chat" variant (dashed circle).
     @State private var optionHeld = false
@@ -43,7 +33,7 @@ struct ChatSidebar: View {
                 // Zero-spacing group so the two buttons read as a unit stuck
                 // to the sidebar's trailing edge.
                 HStack(spacing: 0) {
-                    Button(action: { showArchivedPicker = true }) {
+                    Button(action: { store.presentSheet(.archivedChats) }) {
                         Image(systemName: "archivebox.circle")
                             .font(.system(size: 20))
                             .frame(width: 24, height: 24)
@@ -184,41 +174,6 @@ struct ChatSidebar: View {
             }
         }
         .background(.regularMaterial)
-        .sheet(
-            item: Binding(
-                get: { renamingFilename.map(ChatRenameTarget.init) },
-                set: { newValue in renamingFilename = newValue?.filename }
-            )
-        ) { target in
-            RenameChatSheet(
-                initialText: renameText,
-                onCancel: { renamingFilename = nil },
-                onConfirm: { newTitle in
-                    store.renameChat(target.filename, to: newTitle)
-                    renamingFilename = nil
-                }
-            )
-        }
-        .sheet(isPresented: $showArchivedPicker) {
-            ArchivedChatsPickerView(onCancel: { showArchivedPicker = false })
-        }
-        .sheet(
-            item: Binding(
-                get: { deletingFilename.map(ChatDeleteTarget.init) },
-                set: { newValue in deletingFilename = newValue?.filename }
-            )
-        ) { target in
-            ConfirmActionSheet(
-                title: "Delete this chat?",
-                message: "This action cannot be undone.",
-                confirmLabel: "Delete",
-                onCancel: { deletingFilename = nil },
-                onConfirm: {
-                    store.deleteChat(target.filename)
-                    deletingFilename = nil
-                }
-            )
-        }
     }
 
     // MARK: - Filtering
@@ -322,17 +277,15 @@ struct ChatSidebar: View {
         }
         .contextMenu {
             Button("Rename") {
-                renamingFilename = item.id
-                renameText =
-                    store.chatItems.first(where: { $0.id == item.id })?.chat?.title ?? store.chatItems.first(where: {
-                        $0.id == item.id
-                    })?.cachedName ?? ""
+                let chatItem = store.chatItems.first(where: { $0.id == item.id })
+                store.presentSheet(
+                    .renameChat(filename: item.id, initialText: chatItem?.chat?.title ?? chatItem?.cachedName ?? ""))
             }
             Button("Archive") {
                 store.setChatArchived(item.id, archived: true)
             }
             Button("Delete", role: .destructive) {
-                deletingFilename = item.id
+                store.presentSheet(.deleteChat(filename: item.id))
             }
             Divider()
             Button("Reveal in Finder") {
@@ -449,20 +402,6 @@ struct ChatSidebar: View {
                 }
         }
     }
-}
-
-/// Wrapper to make a filename identifiable for use with `.sheet(item:)`.
-private struct ChatRenameTarget: Identifiable {
-    let filename: String
-    var id: String { filename }
-    init(_ filename: String) { self.filename = filename }
-}
-
-/// Wrapper to make a filename identifiable for use with `.sheet(item:)`.
-private struct ChatDeleteTarget: Identifiable {
-    let filename: String
-    var id: String { filename }
-    init(_ filename: String) { self.filename = filename }
 }
 
 private struct ChatRow: View {

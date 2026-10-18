@@ -6,7 +6,7 @@ import Foundation
 import ImageIO
 
 /// Synthesizes a text fallback for an image attachment, used when the active
-/// connection can't process images visually. macOS 15 has no on-device "describe
+/// model can't process images visually. macOS 15 has no on-device "describe
 /// this image" API, so the fallback is built from two on-device Vision signals:
 /// image classification labels and OCR text. Both signals are always present
 /// in the synthesized string (each addressed explicitly), so a text-only model
@@ -15,7 +15,7 @@ import ImageIO
 ///
 /// The fallback is generated at commit-on-send time (behind the request
 /// spinner) and stored on the attachment record, so switching a chat between a
-/// vision-capable and a vision-incapable connection just picks the right
+/// vision-capable and a vision-incapable model just picks the right
 /// representation at request-build time — no reprocessing.
 enum ImageFallbackSynthesizer {
 

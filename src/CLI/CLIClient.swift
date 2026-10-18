@@ -52,7 +52,7 @@ enum CLIClient {
     struct CLIOptions: Equatable {
         var words: [String] = []
         var role: String?
-        var connection: String?
+        var model: String?
         var chat: String?
         var workdir: String?
         var temporary = false
@@ -96,7 +96,7 @@ enum CLIClient {
                     opts.allowAll = true
                 case "-i", "--interactive":
                     opts.interactive = true
-                case "-f", "--chat", "-r", "--role", "-c", "--connection", "-w", "--workdir":
+                case "-f", "--chat", "-r", "--role", "-m", "--model", "-w", "--workdir":
                     let value: String
                     if let inlineValue {
                         guard !inlineValue.isEmpty else { throw ParseError.missingFlagValue(name) }
@@ -110,7 +110,7 @@ enum CLIClient {
                     case "-f", "--chat": opts.chat = value
                     case "-r", "--role": opts.role = value
                     case "-w", "--workdir": opts.workdir = value
-                    default: opts.connection = value
+                    default: opts.model = value
                     }
                 case "--":
                     opts.words.append(contentsOf: args[(i + 1)...])
@@ -258,7 +258,7 @@ enum CLIClient {
                                     id: reqID,
                                     method: CLIRequest.methodChatSend,
                                     params: CLIRequestParams(
-                                        message: message, role: opts.role, connection: opts.connection, chat: opts.chat,
+                                        message: message, role: opts.role, model: opts.model, chat: opts.chat,
                                         temporary: opts.temporary, workdir: wd.workdir, workdirExplicit: wd.explicit,
                                         allowAll: opts.allowAll)
                                 )))
@@ -503,7 +503,7 @@ enum CLIClient {
                             params: CLIRequestParams(
                                 message: text,
                                 role: continuing ? nil : opts.role,
-                                connection: continuing ? nil : opts.connection,
+                                model: continuing ? nil : opts.model,
                                 chat: continuing ? chatFilename : opts.chat,
                                 temporary: continuing ? false : opts.temporary,
                                 workdir: continuing ? nil : wd.workdir,
@@ -1047,7 +1047,7 @@ enum CLIClient {
                    iCanHazAI --interactive [options] [message…]
 
             Sends a message and streams the reply to stdout. Creates a new chat
-            (default role and connection) unless --chat is given. Chats created
+            (default role, explicit model) unless --chat is given. Chats created
             here are regular chats, visible and continuable in the GUI — unless
             --temporary is used, in which case the chat only exists while the
             CLI is running.
@@ -1056,8 +1056,9 @@ enum CLIClient {
               -f, --chat <name>       Continue an existing chat
               -r, --role <name>       Role for the new chat
                                       (default: your default role)
-              -c, --connection <id>   Connection for the new chat, "provider/name"
-                                      (default: your default connection)
+              -m, --model <id>        Model for the new chat, "provider:model-id"
+                                      (default: the role's preferred model,
+                                      else your default model)
               -w, --workdir <path>    Working directory for workdir-capable roles
                                       (default: the current directory)
               -y, --allow-all         Auto-approve all tool calls (without it, calls

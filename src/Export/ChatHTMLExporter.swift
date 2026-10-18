@@ -139,8 +139,8 @@ struct ChatHTMLExporter {
             case .system: ("system", "System")
             }
         var detail = m.timestamp.formatted(date: .abbreviated, time: .shortened)
-        if m.role == .assistant, let connection = m.connectionName, !connection.isEmpty {
-            detail += " · via \(connection)"
+        if m.role == .assistant, let model = m.model, !model.isEmpty {
+            detail += " · via \(model)"
         }
         return """
             <article class="msg \(m.role.rawValue)">

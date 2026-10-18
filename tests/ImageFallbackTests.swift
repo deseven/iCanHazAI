@@ -9,9 +9,9 @@ import Testing
 
 /// Tests for the image text-fallback: the synthesizer shape (labels + OCR,
 /// always both, with the 0.01 label floor and the no-text / fully-empty
-/// variants) and the per-connection representation in the request builders
-/// (image block on vision-capable connections, fallback text block on
-/// vision-incapable connections).
+/// variants) and the per-model representation in the request builders
+/// (image block on vision-capable models, fallback text block on
+/// vision-incapable models).
 extension AllAppTests {
 
     @Suite("Image Text-Fallback")
@@ -79,7 +79,13 @@ extension AllAppTests {
             #expect(!s.contains("none recognized"))
         }
 
-        // MARK: - Per-connection representation
+        // MARK: - Per-model representation
+
+        private func resolved(_ provider: Provider, imageInput: Bool) -> ResolvedModel {
+            var capabilities = ModelCapabilities.safeDefaults
+            capabilities.imageInput = imageInput
+            return ResolvedModel(provider: provider, modelID: "m", apiKey: "k", capabilities: capabilities)
+        }
 
         /// A throwaway temp chat filename so attachment data lands in the system
         /// temp dir (via `EnvironmentManager.shared`) and never touches the user's
@@ -123,61 +129,53 @@ extension AllAppTests {
             blocks.contains { ($0["type"] as? String) == "text" && (($0["text"] as? String) ?? "").contains(needle) }
         }
 
-        @Test("Anthropic sends an image block on a vision-capable connection")
+        @Test("Anthropic sends an image block on a vision-capable model")
         @MainActor
-        func anthropicImageBlockOnVisionConnection() throws {
+        func anthropicImageBlockOnVisionModel() throws {
             let att = saveImageBytes()
             let msg = ChatMessage(role: .user, content: "see this", attachments: [att])
-            let connection = Connection(
-                provider: .anthropic, name: "vision", baseUrl: nil, apiKey: "k", model: "m", imageInput: true,
-                requestParameters: nil)
+            let model = resolved(.anthropic, imageInput: true)
             let body = AnthropicProvider().buildRequestBody(
-                connection: connection, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+                model: model, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
             let blocks = contentBlocks(of: body)
             #expect(hasBlockType(blocks, "image"))
             #expect(!hasTextBlock(containing: "lacking the capabilities to digest images", in: blocks))
         }
 
-        @Test("Anthropic sends the fallback text block on a vision-incapable connection")
+        @Test("Anthropic sends the fallback text block on a vision-incapable model")
         @MainActor
-        func anthropicFallbackOnTextOnlyConnection() throws {
+        func anthropicFallbackOnTextOnlyModel() throws {
             let att = saveImageBytes()
             let msg = ChatMessage(role: .user, content: "see this", attachments: [att])
-            let connection = Connection(
-                provider: .anthropic, name: "textonly", baseUrl: nil, apiKey: "k", model: "m", imageInput: false,
-                requestParameters: nil)
+            let model = resolved(.anthropic, imageInput: false)
             let body = AnthropicProvider().buildRequestBody(
-                connection: connection, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+                model: model, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
             let blocks = contentBlocks(of: body)
             #expect(!hasBlockType(blocks, "image"))
             #expect(hasTextBlock(containing: "lacking the capabilities to digest images", in: blocks))
         }
 
-        @Test("OpenAI sends an image_url part on a vision-capable connection")
+        @Test("OpenAI sends an image_url part on a vision-capable model")
         @MainActor
-        func openaiImagePartOnVisionConnection() throws {
+        func openaiImagePartOnVisionModel() throws {
             let att = saveImageBytes()
             let msg = ChatMessage(role: .user, content: "see this", attachments: [att])
-            let connection = Connection(
-                provider: .openai, name: "vision", baseUrl: nil, apiKey: "k", model: "m", imageInput: true,
-                requestParameters: nil)
+            let model = resolved(.openai, imageInput: true)
             let body = OpenAIProvider().buildRequestBody(
-                connection: connection, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+                model: model, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
             let blocks = contentBlocks(of: body)
             #expect(hasBlockType(blocks, "image_url"))
             #expect(!hasTextBlock(containing: "lacking the capabilities to digest images", in: blocks))
         }
 
-        @Test("OpenAI sends the fallback text part on a vision-incapable connection")
+        @Test("OpenAI sends the fallback text part on a vision-incapable model")
         @MainActor
-        func openaiFallbackOnTextOnlyConnection() throws {
+        func openaiFallbackOnTextOnlyModel() throws {
             let att = saveImageBytes()
             let msg = ChatMessage(role: .user, content: "see this", attachments: [att])
-            let connection = Connection(
-                provider: .openai, name: "textonly", baseUrl: nil, apiKey: "k", model: "m", imageInput: false,
-                requestParameters: nil)
+            let model = resolved(.openai, imageInput: false)
             let body = OpenAIProvider().buildRequestBody(
-                connection: connection, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+                model: model, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
             let blocks = contentBlocks(of: body)
             #expect(!hasBlockType(blocks, "image_url"))
             #expect(hasTextBlock(containing: "lacking the capabilities to digest images", in: blocks))
@@ -191,22 +189,18 @@ extension AllAppTests {
                 kind: .document, ext: "docx", originalName: "r.docx", text: "doc body", status: .ok)
             let msg = ChatMessage(role: .user, content: "both", attachments: [imgAtt, docAtt])
 
-            // Vision connection: image block + document text block.
-            let visionConn = Connection(
-                provider: .anthropic, name: "v", baseUrl: nil, apiKey: "k", model: "m", imageInput: true,
-                requestParameters: nil)
+            // Vision model: image block + document text block.
+            let visionModel = resolved(.anthropic, imageInput: true)
             let visionBody = AnthropicProvider().buildRequestBody(
-                connection: visionConn, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+                model: visionModel, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
             let visionBlocks = contentBlocks(of: visionBody)
             #expect(hasBlockType(visionBlocks, "image"))
             #expect(hasTextBlock(containing: "doc body", in: visionBlocks))
 
-            // Text-only connection: fallback text block + document text block.
-            let textConn = Connection(
-                provider: .anthropic, name: "t", baseUrl: nil, apiKey: "k", model: "m", imageInput: false,
-                requestParameters: nil)
+            // Text-only model: fallback text block + document text block.
+            let textModel = resolved(.anthropic, imageInput: false)
             let textBody = AnthropicProvider().buildRequestBody(
-                connection: textConn, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+                model: textModel, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
             let textBlocks = contentBlocks(of: textBody)
             #expect(!hasBlockType(textBlocks, "image"))
             #expect(hasTextBlock(containing: "lacking the capabilities to digest images", in: textBlocks))
@@ -225,21 +219,17 @@ extension AllAppTests {
             let msg = ChatMessage(role: .user, content: "see doc", attachments: [docAtt])
 
             // Anthropic: the text block carries the truncation header + marker.
-            let anthropicConn = Connection(
-                provider: .anthropic, name: "t", baseUrl: nil, apiKey: "k", model: "m", imageInput: false,
-                requestParameters: nil)
+            let anthropicModel = resolved(.anthropic, imageInput: false)
             let anthropicBody = AnthropicProvider().buildRequestBody(
-                connection: anthropicConn, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+                model: anthropicModel, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
             let anthropicBlocks = contentBlocks(of: anthropicBody)
             #expect(hasTextBlock(containing: "truncated to", in: anthropicBlocks))
             #expect(hasTextBlock(containing: "[… truncated — full file attached as big.docx]", in: anthropicBlocks))
 
             // OpenAI: same truncation header + marker.
-            let openaiConn = Connection(
-                provider: .openai, name: "t", baseUrl: nil, apiKey: "k", model: "m", imageInput: false,
-                requestParameters: nil)
+            let openaiModel = resolved(.openai, imageInput: false)
             let openaiBody = OpenAIProvider().buildRequestBody(
-                connection: openaiConn, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+                model: openaiModel, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
             let openaiBlocks = contentBlocks(of: openaiBody)
             #expect(hasTextBlock(containing: "truncated to", in: openaiBlocks))
             #expect(hasTextBlock(containing: "[… truncated — full file attached as big.docx]", in: openaiBlocks))
@@ -252,21 +242,17 @@ extension AllAppTests {
                 kind: .document, ext: "docx", originalName: "small.docx", text: "tiny doc body", status: .ok)
             let msg = ChatMessage(role: .user, content: "see doc", attachments: [docAtt])
 
-            let anthropicConn = Connection(
-                provider: .anthropic, name: "t", baseUrl: nil, apiKey: "k", model: "m", imageInput: false,
-                requestParameters: nil)
+            let anthropicModel = resolved(.anthropic, imageInput: false)
             let anthropicBody = AnthropicProvider().buildRequestBody(
-                connection: anthropicConn, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+                model: anthropicModel, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
             let anthropicBlocks = contentBlocks(of: anthropicBody)
             #expect(hasTextBlock(containing: "tiny doc body", in: anthropicBlocks))
             #expect(!hasTextBlock(containing: "truncated", in: anthropicBlocks))
             #expect(!hasTextBlock(containing: "[… truncated", in: anthropicBlocks))
 
-            let openaiConn = Connection(
-                provider: .openai, name: "t", baseUrl: nil, apiKey: "k", model: "m", imageInput: false,
-                requestParameters: nil)
+            let openaiModel = resolved(.openai, imageInput: false)
             let openaiBody = OpenAIProvider().buildRequestBody(
-                connection: openaiConn, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+                model: openaiModel, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
             let openaiBlocks = contentBlocks(of: openaiBody)
             #expect(hasTextBlock(containing: "tiny doc body", in: openaiBlocks))
             #expect(!hasTextBlock(containing: "truncated", in: openaiBlocks))
@@ -274,19 +260,17 @@ extension AllAppTests {
 
         // MARK: - Tool result image substitution
 
-        @Test("Anthropic sends an image block for a tool result with an image on a vision-capable connection")
+        @Test("Anthropic sends an image block for a tool result with an image on a vision-capable model")
         @MainActor
-        func anthropicToolResultImageOnVisionConnection() throws {
+        func anthropicToolResultImageOnVisionModel() throws {
             let png = makePNG(text: "X")
             let image = ToolResultImage(
                 data: png.base64EncodedString(), mimeType: "image/png", fallback: "fallback text")
             let result = ToolResult(callID: "call1", content: "fallback text", isError: false, image: image)
             let msg = ChatMessage(role: .tool, content: "", toolResults: [result])
-            let connection = Connection(
-                provider: .anthropic, name: "vision", baseUrl: nil, apiKey: "k", model: "m", imageInput: true,
-                requestParameters: nil)
+            let model = resolved(.anthropic, imageInput: true)
             let body = AnthropicProvider().buildRequestBody(
-                connection: connection, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+                model: model, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
             let blocks = contentBlocks(of: body)
             #expect(hasBlockType(blocks, "tool_result"))
             // The tool_result content is an array with an image block.
@@ -296,19 +280,17 @@ extension AllAppTests {
             #expect(content?.contains(where: { ($0["type"] as? String) == "image" }) == true)
         }
 
-        @Test("Anthropic sends the fallback text for a tool result with an image on a vision-incapable connection")
+        @Test("Anthropic sends the fallback text for a tool result with an image on a vision-incapable model")
         @MainActor
-        func anthropicToolResultFallbackOnTextOnlyConnection() throws {
+        func anthropicToolResultFallbackOnTextOnlyModel() throws {
             let png = makePNG(text: "X")
             let image = ToolResultImage(
                 data: png.base64EncodedString(), mimeType: "image/png", fallback: "fallback text")
             let result = ToolResult(callID: "call1", content: "fallback text", isError: false, image: image)
             let msg = ChatMessage(role: .tool, content: "", toolResults: [result])
-            let connection = Connection(
-                provider: .anthropic, name: "textonly", baseUrl: nil, apiKey: "k", model: "m", imageInput: false,
-                requestParameters: nil)
+            let model = resolved(.anthropic, imageInput: false)
             let body = AnthropicProvider().buildRequestBody(
-                connection: connection, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+                model: model, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
             let blocks = contentBlocks(of: body)
             #expect(hasBlockType(blocks, "tool_result"))
             // The tool_result content is a plain string (the fallback), not an image block.
@@ -317,36 +299,32 @@ extension AllAppTests {
             #expect(content == "fallback text")
         }
 
-        @Test("OpenAI sends an image_url part for a tool result with an image on a vision-capable connection")
+        @Test("OpenAI sends an image_url part for a tool result with an image on a vision-capable model")
         @MainActor
-        func openaiToolResultImageOnVisionConnection() throws {
+        func openaiToolResultImageOnVisionModel() throws {
             let png = makePNG(text: "X")
             let image = ToolResultImage(
                 data: png.base64EncodedString(), mimeType: "image/png", fallback: "fallback text")
             let result = ToolResult(callID: "call1", content: "fallback text", isError: false, image: image)
             let msg = ChatMessage(role: .tool, content: "", toolResults: [result])
-            let connection = Connection(
-                provider: .openai, name: "vision", baseUrl: nil, apiKey: "k", model: "m", imageInput: true,
-                requestParameters: nil)
+            let model = resolved(.openai, imageInput: true)
             let body = OpenAIProvider().buildRequestBody(
-                connection: connection, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+                model: model, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
             let blocks = contentBlocks(of: body)
             #expect(hasBlockType(blocks, "image_url"))
         }
 
-        @Test("OpenAI sends the fallback text for a tool result with an image on a vision-incapable connection")
+        @Test("OpenAI sends the fallback text for a tool result with an image on a vision-incapable model")
         @MainActor
-        func openaiToolResultFallbackOnTextOnlyConnection() throws {
+        func openaiToolResultFallbackOnTextOnlyModel() throws {
             let png = makePNG(text: "X")
             let image = ToolResultImage(
                 data: png.base64EncodedString(), mimeType: "image/png", fallback: "fallback text")
             let result = ToolResult(callID: "call1", content: "fallback text", isError: false, image: image)
             let msg = ChatMessage(role: .tool, content: "", toolResults: [result])
-            let connection = Connection(
-                provider: .openai, name: "textonly", baseUrl: nil, apiKey: "k", model: "m", imageInput: false,
-                requestParameters: nil)
+            let model = resolved(.openai, imageInput: false)
             let body = OpenAIProvider().buildRequestBody(
-                connection: connection, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
+                model: model, messages: [msg], chatFilename: tempChatFilename, tools: nil, stream: false)
             // The tool message has a plain string content (the fallback), not an
             // image_url part.
             guard let messages = body["messages"] as? [[String: Any]],

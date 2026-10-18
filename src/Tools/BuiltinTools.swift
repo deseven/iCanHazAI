@@ -201,7 +201,7 @@ struct BuiltinToolDef: Sendable {
 /// The output of a builtin tool. Most tools produce only `content` + `isError`;
 /// `read_file` on an image additionally carries a processed image (resized/
 /// re-encoded) plus its classification/OCR fallback, so the request builders
-/// can send the image to vision-capable connections and the fallback text to
+/// can send the image to vision-capable models and the fallback text to
 /// vision-incapable ones — exactly like user-attached images.
 struct ToolOutput {
     var content: String
@@ -209,7 +209,7 @@ struct ToolOutput {
     /// Present when `read_file` read an image. The processed image bytes are
     /// stored on the `ToolResult` (no attachment file is written to disk); the
     /// renderer decodes them from the chat data. `fallback` carries the classification+OCR text used
-    /// in place of the image on vision-incapable connections.
+    /// in place of the image on vision-incapable models.
     var image: ProcessedToolImage?
 
     init(content: String, isError: Bool, image: ProcessedToolImage? = nil) {
@@ -222,7 +222,7 @@ struct ToolOutput {
 /// A processed image produced by `read_file`: the resized/re-encoded image
 /// bytes, the media type, and the classification+OCR fallback text. The request
 /// builders pick between the image block and the fallback text based on the
-/// connection's vision capability, just like user-attached images. Unlike
+/// model's vision capability, just like user-attached images. Unlike
 /// attachments, no file is written to disk — the bytes live on the `ToolResult`
 /// and the renderer decodes them from the chat data.
 struct ProcessedToolImage: Sendable {
@@ -231,7 +231,7 @@ struct ProcessedToolImage: Sendable {
     /// The media type for the API, e.g. "image/png".
     let mimeType: String
     /// The classification+OCR fallback text, used on vision-incapable
-    /// connections in place of the image block.
+    /// models in place of the image block.
     let fallback: String
 }
 
@@ -1072,7 +1072,7 @@ enum BuiltinTools {
     /// (docx/odt/rtf/pdf) are extracted to text first; images are processed
     /// (resized/re-encoded) and returned with a classification+OCR fallback so
     /// the request builders can send them as image blocks on vision-capable
-    /// connections and the fallback text on vision-incapable ones — exactly
+    /// models and the fallback text on vision-incapable ones — exactly
     /// like user-attached images.
     static func formatFileContent(
         _ data: Data, path: String, offset: Int, limit: Int, chatFilename: String, resolvedPath: String,
@@ -1122,9 +1122,9 @@ enum BuiltinTools {
     /// generates the classification+OCR fallback. The processed image bytes
     /// are returned on the `ToolOutput` (no attachment file is written to
     /// disk); the request builders send them as an image block on
-    /// vision-capable connections and the fallback text on vision-incapable
+    /// vision-capable models and the fallback text on vision-incapable
     /// ones. The `content` is the fallback text (classification + OCR), so a
-    /// vision-incapable connection gets a useful textual description directly
+    /// vision-incapable model gets a useful textual description directly
     /// in the tool result.
     private static func formatImageContent(_ data: Data, path: String) -> ToolOutput {
         guard let processed = ImageProcessor.process(data) else {

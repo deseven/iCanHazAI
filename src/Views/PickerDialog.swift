@@ -79,6 +79,9 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
     /// Optional extra button(s) placed in the footer before Apply/Cancel
     /// (e.g. a destructive "Delete All" in the archived-chats picker).
     var footerExtra: (() -> AnyView)? = nil
+    /// Shows a small spinner next to the search field (e.g. a server-side
+    /// search is running).
+    var isLoading: Bool = false
 
     /// Currently highlighted item (driven by both keyboard and hover).
     @State private var selection: Item?
@@ -126,6 +129,10 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
                         .onKeyPress(keys: [.upArrow, .downArrow, .return]) { handleKeyPress($0) }
                         // Fallback for ↵ if the field editor gets it first.
                         .onSubmit(confirmCurrent)
+                    if isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)

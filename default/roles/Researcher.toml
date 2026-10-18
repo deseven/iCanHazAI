@@ -3,7 +3,6 @@ prompt = "Researcher"
 icon = "magnifyingglass"
 accent = "pink"
 
-connection_override_allowed = true
 mcps_override_allowed = true
 
 [features]
