@@ -128,7 +128,8 @@ enum WebSearchProviderKind: String, CaseIterable, Sendable {
 struct WebSearchConfig: Codable, Equatable, Sendable {
     /// One of "none" (default), "exa", "linkup", "tavily".
     var provider: String?
-    /// API token for the selected provider.
+    /// API token for the selected provider. Never part of `config.toml`: it
+    /// lives in the encrypted secret store and is filled in by `ConfigManager`.
     var token: String?
     /// Linkup-only: pass `renderJs` to the fetch endpoint.
     var linkupRenderJS: Bool?
@@ -147,23 +148,17 @@ struct WebSearchConfig: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case provider
-        case token
         case linkupRenderJS = "linkup_render_js"
         case tavilyAdvancedExtraction = "tavily_advanced_extraction"
     }
 
     /// Provider-specific keys are only persisted while their provider is
     /// selected — `linkup_render_js` is never saved under another provider,
-    /// and likewise for `tavily_advanced_extraction`. The token is dropped
-    /// entirely when no provider is selected, so an unused credential never
-    /// lingers on disk.
+    /// and likewise for `tavily_advanced_extraction`.
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         let provider = resolvedProvider
         try c.encodeIfPresent(self.provider, forKey: .provider)
-        if provider != .none {
-            try c.encodeIfPresent(token, forKey: .token)
-        }
         if provider == .linkup {
             try c.encodeIfPresent(linkupRenderJS, forKey: .linkupRenderJS)
         }
@@ -252,6 +247,11 @@ actor ConfigManager {
     private var didLoad = false
 
     private let fileURL: URL
+
+    private static let webSearchTokenName = "web_search.token"
+    private let secrets: SecretStore = EncryptedSecretStore.shared
+    private var webSearchToken: String?
+    private var webSearchTokenLoaded = false
 
     private init() {
         fileURL = EnvironmentManager.shared.rootURL.appendingPathComponent("config.toml")
@@ -524,7 +524,21 @@ actor ConfigManager {
     }
 
     func getWebSearchConfig() -> WebSearchConfig {
-        config.webSearch
+        if !webSearchTokenLoaded {
+            webSearchTokenLoaded = true
+            do {
+                webSearchToken = try secrets.namedSecret(Self.webSearchTokenName)
+            } catch SecretStoreError.undecryptable {
+                // Same policy as provider keys: an unreadable secret is dropped.
+                debugLog("Config", "⚠️ discarding undecryptable web search token")
+                try? secrets.setNamedSecret(Self.webSearchTokenName, to: nil)
+            } catch {
+                debugLog("Config", "⚠️ failed to read web search token: \(error.localizedDescription)")
+            }
+        }
+        var webSearch = config.webSearch
+        webSearch.token = webSearchToken
+        return webSearch
     }
 
     func getChatInfoSidebarVisible() -> Bool? {
@@ -584,8 +598,14 @@ actor ConfigManager {
     }
 
     func setWebSearchToken(_ token: String) {
-        config.webSearch.token = token
-        persist()
+        let value = token.isEmpty ? nil : token
+        do {
+            try secrets.setNamedSecret(Self.webSearchTokenName, to: value)
+            webSearchToken = value
+            webSearchTokenLoaded = true
+        } catch {
+            debugLog("Config", "⚠️ failed to store web search token: \(error.localizedDescription)")
+        }
     }
 
     func setLinkupRenderJS(_ enabled: Bool) {

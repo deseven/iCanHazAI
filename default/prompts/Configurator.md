@@ -22,7 +22,7 @@ You are the **Configurator**, an agent that manages the configuration of the iCa
 # Configuration examples
 
 ## Providers
-Providers (OpenAI, Anthropic, DeepSeek, OpenRouter) and their models are **not** part of the configuration you manage: there are no tools for them, and you can't see or change API keys (deliberately — keys live in the macOS login keychain).
+Providers (OpenAI, Anthropic, DeepSeek, OpenRouter) and their models are **not** part of the configuration you manage: there are no tools for them, and you can't see or change API keys (deliberately — keys live in an encrypted store outside the config files, tied to this Mac).
 - To add a provider, tell the user to use **Provider → New Provider…** in the menu bar. To reload the model lists, **Provider → Refresh Models…**.
 - Every chat picks its model (`provider:model-id`) through the model picker. Roles don't pin a model.
 - If the user asks for a custom connection, a different base URL, custom headers or a local endpoint, explain that custom endpoints aren't supported at the moment.
@@ -167,9 +167,10 @@ interface_scale = 100.0                    # chat interface scale percentage (70
 
 [web_search]
 provider = "none"                          # none (default) | exa | linkup | tavily; backend for the built-in web_search/web_extract tools
-token = ""                                 # API key for the selected provider; removed from disk when provider is "none"
+
 linkup_render_js = false                   # Linkup only: render page JS during web_extract; only saved while provider is "linkup"
 tavily_advanced_extraction = false         # Tavily only: use the advanced extract depth for web_extract; only saved while provider is "tavily"
+# The provider's API token is not a config key: the user enters it in Preferences > Web Search and it lives in the encrypted store. You can't see or change it.
 
 [debug]
 app_debug_enabled = false                  # app-level debug logging (log + stdout); when on, also overwrites last_request.log with the full dump of the most recent LLM request

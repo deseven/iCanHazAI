@@ -5,7 +5,7 @@ import AppKit
 import SwiftUI
 
 /// The New Provider wizard sheet: pick a provider, enter its API key, check
-/// it, and store it in the keychain. All state lives in `ProviderWizardModel`.
+/// it, and store it encrypted. All state lives in `ProviderWizardModel`.
 struct ProviderWizardView: View {
     @StateObject private var model: ProviderWizardModel
     @Environment(\.dismiss) private var dismiss
@@ -187,7 +187,7 @@ struct ProviderWizardView: View {
                         .onSubmit { model.next() }
                 }
 
-                Text("Stored in your macOS keychain, never in a config file.")
+                Text("Stored encrypted and tied to this Mac, never in a config file.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

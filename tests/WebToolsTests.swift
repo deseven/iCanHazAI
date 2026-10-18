@@ -386,7 +386,7 @@ extension AllAppTests {
 
         // MARK: - [web_search] config section
 
-        @Test("AppConfig decodes the web_search section with all keys")
+        @Test("AppConfig decodes the web_search section; a token in the file is ignored")
         func decodesWebSearchSection() throws {
             let toml = """
                 [web_search]
@@ -394,11 +394,14 @@ extension AllAppTests {
                 token = "secret"
                 linkup_render_js = true
                 """
-            let config = try ConfigValidation.decodeAppConfig(Data(toml.utf8))
+            var config = try ConfigValidation.decodeAppConfig(Data(toml.utf8))
             #expect(config.webSearch.provider == "linkup")
-            #expect(config.webSearch.token == "secret")
+            #expect(config.webSearch.token == nil)
             #expect(config.webSearch.linkupRenderJS == true)
             #expect(config.webSearch.resolvedProvider == .linkup)
+            #expect(!config.webSearch.isConfigured)
+
+            config.webSearch.token = "from-secret-store"
             #expect(config.webSearch.isConfigured)
         }
 
@@ -432,7 +435,7 @@ extension AllAppTests {
             return String(data: try encoder.encode(config), encoding: .utf8) ?? ""
         }
 
-        @Test("Provider-specific keys are only saved for their provider; token is dropped for none")
+        @Test("Provider-specific keys are only saved for their provider; the token is never saved")
         func conditionalEncoding() throws {
             var config = AppConfig()
 
@@ -451,7 +454,7 @@ extension AllAppTests {
             config.webSearch = WebSearchConfig(
                 provider: "exa", token: "t", linkupRenderJS: true, tavilyAdvancedExtraction: true)
             toml = try encode(config)
-            #expect(toml.contains("token = \"t\""))
+            #expect(!toml.contains("token"))
             #expect(!toml.contains("linkup_render_js"))
             #expect(!toml.contains("tavily_advanced_extraction"))
 

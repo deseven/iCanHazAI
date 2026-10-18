@@ -4,10 +4,9 @@
 import Foundation
 
 /// Configured providers and their API keys. Secrets are read once in `load()`
-/// and kept in memory, because keychain access can prompt and must not happen
-/// per request.
+/// and kept in memory, so decryption doesn't happen per request.
 actor ProviderRegistry {
-    static let shared = ProviderRegistry(store: KeychainSecretStore(env: EnvironmentManager.shared))
+    static let shared = ProviderRegistry(store: EncryptedSecretStore.shared)
 
     private let store: SecretStore
     private var keys: [StoredKey] = []
@@ -18,16 +17,25 @@ actor ProviderRegistry {
     }
 
     /// Number of distinct providers with a stored key, from key metadata only
-    /// (no secrets are read, so it can't trigger a keychain prompt).
+    /// (no secrets are decrypted).
     nonisolated func storedProviderCount() -> Int {
         Set((try? store.listKeys())?.map(\.provider) ?? []).count
     }
 
+    /// A key that can't be decrypted (e.g. the data directory came from another
+    /// Mac) is deleted and skipped. With no keys left, the app shows the New
+    /// Provider wizard.
     func load() throws {
-        let listed = try store.listKeys()
+        var listed: [StoredKey] = []
         var loaded: [UUID: String] = [:]
-        for key in listed {
-            loaded[key.id] = try store.secret(for: key)
+        for key in try store.listKeys() {
+            do {
+                loaded[key.id] = try store.secret(for: key)
+                listed.append(key)
+            } catch SecretStoreError.undecryptable {
+                debugLog("Providers", "⚠️ discarding undecryptable \(key.provider.displayName) key '\(key.name)'")
+                try store.deleteKey(key)
+            }
         }
         keys = listed
         secrets = loaded

@@ -35,6 +35,20 @@ extension AllAppTests {
             #expect(try store.listKeys().map(\.provider) == [.deepseek])
         }
 
+        @Test("load discards keys that can't be decrypted")
+        func discardsUndecryptable() async throws {
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("registry-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let url = dir.appendingPathComponent(".storage/secrets.store")
+            let old = EncryptedSecretStore(storeURL: url, machineID: { "MACHINE-A" })
+            _ = try old.addKey(provider: .openai, name: "Default", secret: "fake")
+
+            let registry = ProviderRegistry(store: EncryptedSecretStore(storeURL: url, machineID: { "MACHINE-B" }))
+            try await registry.load()
+            #expect(await registry.configuredProviders.isEmpty)
+            #expect(try old.listKeys().isEmpty)
+        }
+
         @Test("configured providers follow Provider.allCases order and are unique")
         func ordering() async throws {
             let registry = ProviderRegistry(store: InMemorySecretStore())

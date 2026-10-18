@@ -68,6 +68,7 @@ On first launch, iCanHazAI creates its data directory at `~/iCanHazAI`:
 ├── Roles/           # roles (*.toml)
 ├── Chats/           # chats (*.json) and their attachments
 ├── .cache/          # chat metadata and model list caches (safe to delete)
+├── .storage/        # encrypted API keys (provider keys and the web search token)
 ├── config.toml      # app settings
 ├── app.log          # debug log
 ├── last_request.log # full dump of the most recent LLM request (app debug only)
@@ -78,7 +79,7 @@ Everything lives directly in your home folder as plain text, so you can inspect 
 
 ### Provider
 
-Providers aren't files: you add one with **Provider → New Provider…** and enter its API key. Supported are OpenAI, Anthropic, DeepSeek and OpenRouter, one key per provider. Keys are stored in the macOS login keychain, tagged with the data directory, so the development and release apps keep separate keys, and nothing secret lands in `~/iCanHazAI` or reaches the Configurator role. There is no way to edit or delete a key in the app yet.
+Providers aren't files: you add one with **Provider → New Provider…** and enter its API key. Supported are OpenAI, Anthropic, DeepSeek and OpenRouter, one key per provider. Keys are stored in `.storage/`, each encrypted with AES-GCM under a key derived from this Mac's hardware UUID (the web search token from Preferences is kept there too). The development and release apps use different data directories, so they keep separate keys, and nothing readable lands in `config.toml` or reaches the Configurator role. A copy of the data directory is useless on another Mac, but this doesn't protect against code running as you on this one. Keys that can't be decrypted (e.g. after moving the directory) are discarded, and the New Provider wizard opens when none are left. There is no way to edit or delete a key in the app yet.
 
 The model list and each model's capabilities (image input, context size, reasoning) are loaded automatically — on start, after adding a provider, every 24 hours, or on demand via **Provider → Refresh Models…** — and cached, so everything works offline. Every new chat starts with a model picker, unless a model is preselected — a **Default Model** in Preferences → General, or a role's `preferred_model` (which takes precedence; if that model no longer exists the chat starts with no model). The **Utility Model** (also in Preferences → General) handles background tasks like naming chats — pick a fast, cheap one; without it chats are named after their first message. Models are identified as `provider:model-id` (e.g. `anthropic:claude-sonnet-5-5`). Typing `openrouter:` in the picker searches all of OpenRouter, beyond its most popular models.
 
