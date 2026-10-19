@@ -200,9 +200,11 @@ final class ModelCatalogStore: @unchecked Sendable {
         }
     }
 
+    /// Drops the provider's models and its refresh state.
     func deleteAll(provider: Provider) {
         queue.sync {
             for entry in entries(provider: provider) { context.delete(entry) }
+            if let state = state(provider) { context.delete(state) }
             save()
         }
     }

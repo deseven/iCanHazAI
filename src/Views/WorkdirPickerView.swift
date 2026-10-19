@@ -44,7 +44,7 @@ struct WorkdirPickerView: View {
     /// Local browsing results for the current query. When the typed path is
     /// an existing directory: the directory itself plus its subdirectories.
     /// Otherwise: the parent's subdirectories filtered by the last path
-    /// component as a prefix.
+    /// component (substring, prefix matches first).
     private var localResults: (typed: String?, children: [String]) {
         guard case .local(let dir, let prefix, let full) = parsedQuery else { return (nil, []) }
         var isDir: ObjCBool = false

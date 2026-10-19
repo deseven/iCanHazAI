@@ -16,8 +16,7 @@ let package = Package(
         .package(url: "https://github.com/piersdd/swift-sdk.git", revision: "1ea8365655f2e7dc25d495b1d75b1de9dfe1975c"),
         // Line-level diffing for rendering write_file tool calls.
         .package(url: "https://github.com/tonyarnold/Differ.git", from: "1.4.4"),
-        // Fuzzy search for the role/MCP/directory pickers.
-        .package(url: "https://github.com/krisk/fuse-swift.git", from: "1.4.0"),
+
         // CommonMark/GFM parser for the native chat renderer (walked directly).
         .package(url: "https://github.com/swiftlang/swift-cmark.git", from: "0.9.0"),
         // Syntax highlighting: tree-sitter bindings plus one grammar package per language
@@ -55,7 +54,6 @@ let package = Package(
                 .product(name: "ProcessExit", package: "ProcessExit"),
                 .product(name: "LoginShell", package: "LoginShell"),
                 .product(name: "Differ", package: "Differ"),
-                .product(name: "Fuse", package: "fuse-swift"),
                 .product(name: "cmark-gfm", package: "swift-cmark"),
                 .product(name: "cmark-gfm-extensions", package: "swift-cmark"),
                 .product(name: "SwiftTreeSitter", package: "swift-tree-sitter"),
@@ -87,7 +85,6 @@ let package = Package(
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "ProcessExit", package: "ProcessExit"),
                 .product(name: "Differ", package: "Differ"),
-                .product(name: "Fuse", package: "fuse-swift"),
                 .product(name: "cmark-gfm", package: "swift-cmark"),
                 .product(name: "cmark-gfm-extensions", package: "swift-cmark"),
             ],

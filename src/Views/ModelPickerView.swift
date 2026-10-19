@@ -6,8 +6,7 @@ import SwiftUI
 /// A modal sheet for picking the model of the current chat. Single-select:
 /// ↵ or a click picks the highlighted model. Typing `<provider>.` (or `:`)
 /// narrows the list to one provider, by name or alias (`or.`, `oa.`, `an.`,
-/// `ds.`); an OpenRouter prefix additionally searches OpenRouter beyond the
-/// cached popular models. Built on
+/// `ds.`); the rest is a case-insensitive search over the cached catalog. Built on
 /// [`PickerDialog`](src/Views/PickerDialog.swift); the model in effect is
 /// checkmarked and initially highlighted.
 struct ModelPickerView: View {
@@ -15,33 +14,19 @@ struct ModelPickerView: View {
     let hasProviders: Bool
     let currentID: ModelID?
     var subtitle: String = "Pick the model used by this chat."
-    /// OpenRouter server-side search.
-    let search: (String) async throws -> [CatalogModel]
     let onCancel: () -> Void
     let onPick: (ModelID) -> Void
 
     @State private var queryText: String = ""
-    @State private var serverResults: [CatalogModel] = []
-    @State private var isSearching = false
-    @State private var searchFailed = false
-
-    private var query: ModelPickerQuery { ModelPickerQuery(queryText) }
-
-    private var items: [CatalogModel] {
-        query.merged(models, serverResults: query.openRouterSearchText == nil ? [] : serverResults)
-    }
-
-    private var initialSelection: CatalogModel? {
-        items.first { $0.id == currentID } ?? items.first
-    }
 
     var body: some View {
-        PickerDialog<CatalogModel>(
+        let items = ModelPickerQuery(queryText).filter(models)
+        let initialSelection = items.first { $0.id == currentID } ?? items.first
+        return PickerDialog<CatalogModel>(
             title: "Model",
-            subtitle: searchFailed
-                ? "OpenRouter search unavailable — showing cached models." : subtitle,
+            subtitle: subtitle,
             searchText: $queryText,
-            searchPlaceholder: "Search models, or type or. to search all of OpenRouter",
+            searchPlaceholder: "Search models, or narrow by provider with or. oa. an. ds.",
             items: items,
             pinnedHeader: nil,
             pinnedItems: [],
@@ -53,34 +38,8 @@ struct ModelPickerView: View {
             },
             onSelect: { onPick($0.id) },
             onCancel: onCancel,
-            initialSelection: initialSelection,
-            isLoading: isSearching
+            initialSelection: initialSelection
         )
-        .task(id: query.openRouterSearchText) { await runSearch(query.openRouterSearchText) }
-    }
-
-    /// Debounced; a changed query cancels the previous task, so stale results
-    /// never land.
-    private func runSearch(_ text: String?) async {
-        searchFailed = false
-        guard let text else {
-            serverResults = []
-            isSearching = false
-            return
-        }
-        isSearching = true
-        try? await Task.sleep(for: .milliseconds(300))
-        guard !Task.isCancelled else { return }
-        do {
-            let results = try await search(text)
-            guard !Task.isCancelled else { return }
-            serverResults = results
-        } catch {
-            guard !Task.isCancelled else { return }
-            serverResults = []
-            searchFailed = true
-        }
-        isSearching = false
     }
 }
 

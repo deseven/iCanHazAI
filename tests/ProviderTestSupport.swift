@@ -180,8 +180,6 @@ enum ProviderFixtures {
         ]}
         """
 
-    static let openRouterCount = #"{"total_count":471,"data":[]}"#
-
     static func openRouterModels(_ entries: [(id: String, context: Int)]) -> String {
         let rows = entries.map {
             #"{"id":"\#($0.id)","name":"\#($0.id)","context_length":\#($0.context),"architecture":{"input_modalities":["text"]}}"#

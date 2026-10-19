@@ -348,10 +348,6 @@ actor ChatEngine {
         try await catalog.validate(provider: provider, apiKey: apiKey)
     }
 
-    func searchModels(_ text: String, provider: Provider) async throws -> [CatalogModel] {
-        try await catalog.search(text, provider: provider)
-    }
-
     /// Stores the key and seeds the catalog with what validation already fetched.
     func addProvider(_ provider: Provider, apiKey: String, validation: ValidationResult) async throws {
         try await registry.addKey(provider: provider, name: "Default", secret: apiKey)

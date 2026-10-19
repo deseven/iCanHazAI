@@ -8,7 +8,7 @@ import SwiftUI
 /// ↵ (or the default "Apply" button) commits the selection, Esc (or "Cancel")
 /// discards it. Built on [`PickerDialog`](src/Views/PickerDialog.swift)'s
 /// multi-select mode; the working selection lives here and is only committed
-/// on apply. The list is fuzzy-filtered by the search field (space types
+/// on apply. The list is filtered by the search field (space types
 /// into the search, hence ⇧↵ instead of space for toggling).
 struct MCPPickerView: View {
     /// All configured custom MCP servers (already sorted by name).
@@ -24,7 +24,7 @@ struct MCPPickerView: View {
     @State private var query: String = ""
 
     private var filteredServers: [MCPServer] {
-        FuzzySearch.rank(servers, query: query) { [$0.name] }
+        SearchMatcher.rank(servers, query: query) { [$0.name] }
     }
 
     var body: some View {

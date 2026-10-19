@@ -6,7 +6,7 @@ import Testing
 /// Unit tests for the working-directory picker's search model: query
 /// classification ([`WorkdirQuery`](src/Views/WorkdirPickerModel.swift)),
 /// result assembly ([`WorkdirItemsBuilder`](src/Views/WorkdirPickerModel.swift)),
-/// local subdirectory listing, the fuzzy search wrapper, and the MRU
+/// local subdirectory listing, and the MRU
 /// recents logic in `AppViewModel`. No network — the SSH lister is not
 /// covered here.
 extension AllAppTests {
@@ -20,7 +20,7 @@ extension AllAppTests {
             #expect(WorkdirQuery.parse("   ") == .empty)
         }
 
-        @Test("free text is a plain (fuzzy-only) query")
+        @Test("free text is a plain (recents-only) query")
         func plain() {
             #expect(WorkdirQuery.parse("website") == .plain)
             #expect(WorkdirQuery.parse("foo/bar") == .plain)
@@ -97,7 +97,7 @@ extension AllAppTests {
             #expect(
                 WorkdirItemsBuilder.build(query: "~", recents: recents, typedDir: nil, children: [])
                     == [.recent(NSHomeDirectory() + "/my-project")])
-            // Substring (not fuzzy): "wbs" matches nothing.
+            // Substring, not subsequence: "wbs" matches nothing.
             #expect(WorkdirItemsBuilder.build(query: "wbs", recents: recents, typedDir: nil, children: []).isEmpty)
             // Case-insensitive.
             #expect(
@@ -191,16 +191,30 @@ extension AllAppTests {
             #expect(children == [root.appendingPathComponent("Beta").path, root.appendingPathComponent("alpha").path])
         }
 
-        @Test("prefix filtering is case-insensitive and anchored")
-        func prefixFiltering() throws {
+        @Test("name filtering is a case-insensitive substring match")
+        func substringFiltering() throws {
             let root = try makeTree()
             defer { try? FileManager.default.removeItem(at: root) }
+            // "a" is in both names; the one starting with it comes first.
             #expect(
-                WorkdirQuery.localChildren(dir: root.path, prefix: "A") == [root.appendingPathComponent("alpha").path])
+                WorkdirQuery.localChildren(dir: root.path, prefix: "A") == [
+                    root.appendingPathComponent("alpha").path, root.appendingPathComponent("Beta").path,
+                ])
             #expect(
-                WorkdirQuery.localChildren(dir: root.path, prefix: "b") == [root.appendingPathComponent("Beta").path])
-            // Anchored: "lph" must not match "alpha".
-            #expect(WorkdirQuery.localChildren(dir: root.path, prefix: "lph").isEmpty)
+                WorkdirQuery.localChildren(dir: root.path, prefix: "ET") == [root.appendingPathComponent("Beta").path])
+            #expect(
+                WorkdirQuery.localChildren(dir: root.path, prefix: "lph") == [
+                    root.appendingPathComponent("alpha").path
+                ])
+            #expect(WorkdirQuery.localChildren(dir: root.path, prefix: "zzz").isEmpty)
+        }
+
+        @Test("names starting with the filter come before other matches")
+        func prefixFirst() {
+            #expect(
+                WorkdirQuery.prefixFirst(["a-web", "web", "my-web", "website"], prefix: "web")
+                    == ["web", "website", "a-web", "my-web"])
+            #expect(WorkdirQuery.prefixFirst(["b", "a"], prefix: "") == ["b", "a"])
         }
 
         @Test("hidden entries appear only when the prefix starts with a dot")
@@ -215,38 +229,6 @@ extension AllAppTests {
         @Test("unreadable or missing directories yield no results")
         func missingDir() {
             #expect(WorkdirQuery.localChildren(dir: "/nonexistent-ichai-test", prefix: "").isEmpty)
-        }
-    }
-
-    @Suite("FuzzySearch")
-    struct FuzzySearchTests {
-
-        @Test("empty query returns candidates unchanged")
-        func emptyQuery() {
-            #expect(FuzzySearch.rank(["b", "a"], query: "") == ["b", "a"])
-            #expect(FuzzySearch.rank(["b", "a"], query: "  ") == ["b", "a"])
-        }
-
-        @Test("non-matching candidates are dropped, best match first")
-        func ranking() {
-            let ranked = FuzzySearch.rank(["Developer", "Architect", "Assistant"], query: "dev")
-            #expect(ranked.first == "Developer")
-            #expect(!ranked.contains("Assistant"))
-        }
-
-        @Test("multi-key ranking uses the best key score")
-        func multiKey() {
-            struct Item: Equatable {
-                let name: String
-                let desc: String
-            }
-            let items = [
-                Item(name: "Configurator", desc: "Manages configuration files"),
-                Item(name: "Assistant", desc: "General help, no tools"),
-            ]
-            let ranked = FuzzySearch.rank(items, query: "configuration") { [$0.name, $0.desc] }
-            #expect(ranked.first?.name == "Configurator")
-            #expect(!ranked.contains(Item(name: "Assistant", desc: "General help, no tools")))
         }
     }
 

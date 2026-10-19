@@ -3,13 +3,15 @@
 
 import Foundation
 
-/// OpenRouter's public `/models` has hundreds of entries, so listings are the
-/// top 50 by popularity and everything else is found through server-side search.
+/// OpenRouter's public `/models` is a single ~800 KB response (a few hundred
+/// text models, aliases like `~vendor/model-latest` included), so every listing
+/// is the full catalog and the picker searches it locally.
 struct OpenRouterAdapter: ProviderAdapter {
     let provider = Provider.openrouter
     var baseUrl: String = Provider.openrouter.defaultBaseUrl
 
-    static let listingLimit = 50
+    /// Well above the catalog size (~470); the API rejects much larger values.
+    static let listingLimit = 1000
 
     func fetchListing(apiKey: String, fetcher: HTTPFetching, metadata: ModelMetadataSource) async throws
         -> ProviderListing
@@ -22,17 +24,10 @@ struct OpenRouterAdapter: ProviderAdapter {
     {
         // `/models` is public, so only `/key` can tell whether the key works.
         async let keyCheck: Void = checkKey(apiKey, fetcher: fetcher)
-        async let count = fetchModels(query: nil, limit: 1, fetcher: fetcher)
         async let seed = fetchModels(query: nil, fetcher: fetcher)
         try await keyCheck
-        let total = try await count.totalCount
         let listing = try await seed
-        return ValidationResult(modelCount: total ?? listing.models.count, seed: listing.models)
-    }
-
-    /// Text-output models matching `query` (`q`, not `search`: that one is silently ignored).
-    func search(_ query: String, fetcher: HTTPFetching) async throws -> [CatalogModel] {
-        try await fetchModels(query: query, fetcher: fetcher).models
+        return ValidationResult(modelCount: listing.modelCount, seed: listing.models)
     }
 
     /// Nil when the lookup succeeded but OpenRouter no longer has the model.
@@ -46,13 +41,12 @@ struct OpenRouterAdapter: ProviderAdapter {
         _ = try await ProviderHTTP.get(url, headers: ["Authorization": "Bearer \(apiKey)"], fetcher: fetcher)
     }
 
-    private func fetchModels(query: String?, limit: Int = Self.listingLimit, fetcher: HTTPFetching) async throws
-        -> ProviderListing
-    {
+    /// `q` (not `search`, which is silently ignored) narrows to matching ids.
+    private func fetchModels(query: String?, fetcher: HTTPFetching) async throws -> ProviderListing {
         var items = [
             URLQueryItem(name: "output_modalities", value: "text"),
             URLQueryItem(name: "sort", value: "most-popular"),
-            URLQueryItem(name: "limit", value: String(limit)),
+            URLQueryItem(name: "limit", value: String(Self.listingLimit)),
         ]
         if let query { items.append(URLQueryItem(name: "q", value: query)) }
         let url = try ProviderHTTP.endpoint(baseUrl, "/models", query: items)

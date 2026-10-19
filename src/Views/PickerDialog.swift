@@ -158,11 +158,15 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
                 ScrollViewReader { proxy in
                     VStack(spacing: 0) {
                         if !items.isEmpty {
+                            let lastID = items.last?.id
                             ScrollView {
-                                VStack(spacing: 0) {
-                                    ForEach(Array(items.enumerated()), id: \.element.id) { _, item in
+                                // Lazy: only visible rows are built, so opening and
+                                // selection/hover changes stay O(visible) rather
+                                // than O(items) for large lists (model catalog).
+                                LazyVStack(spacing: 0) {
+                                    ForEach(items) { item in
                                         rowContainer(item, isSelected: selection == item)
-                                        if item.id != items.last?.id {
+                                        if item.id != lastID {
                                             Divider()
                                         }
                                     }

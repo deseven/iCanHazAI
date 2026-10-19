@@ -7,7 +7,7 @@ import Foundation
 struct ProviderListing: Sendable {
     var models: [CatalogModel]
     /// The count to show to the user when it differs from `models.count`
-    /// (OpenRouter lists a top slice of a much larger catalog).
+    /// (e.g. a total reported by the provider).
     var totalCount: Int?
     /// The capability source was unreachable, so `models` carry safe defaults
     /// that must not overwrite capabilities we already know.

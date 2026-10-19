@@ -50,8 +50,8 @@ extension AllAppTests {
             #expect(ModelPickerQuery("  ").filter(sample) == sample)
         }
 
-        @Test("the remainder is fuzzy-matched within the provider only")
-        func fuzzyWithinProvider() {
+        @Test("the remainder is searched within the provider only")
+        func searchWithinProvider() {
             let result = ModelPickerQuery("openrouter:claude").filter(sample)
             #expect(result.map(\.id.description) == ["openrouter:anthropic/claude-sonnet-5.5"])
             let all = ModelPickerQuery("claude").filter(sample)
@@ -78,11 +78,24 @@ extension AllAppTests {
             #expect(ModelPickerQuery("deepseek.flash").provider == .deepseek)
         }
 
-        @Test("the prefix only pre-filters and never takes part in the fuzzy match")
-        func prefixIsNotFuzzy() {
+        @Test("the prefix only pre-filters and never takes part in the text search")
+        func prefixIsNotSearched() {
             let result = ModelPickerQuery("an.claude").filter(sample)
             #expect(result.map(\.id.description) == ["anthropic:claude-sonnet-5-5"])
             #expect(ModelPickerQuery("or.").filter(sample).count == 2)
+        }
+
+        @Test("search is a case-insensitive substring match; every word must match")
+        func substringWords() {
+            #expect(ModelPickerQuery("SONNET").filter(sample).count == 2)
+            #expect(ModelPickerQuery("sonnet 5.5").filter(sample).count == 2)
+            #expect(ModelPickerQuery("sonnet llama").filter(sample).isEmpty)
+        }
+
+        @Test("an in-order subsequence matches only when no substring does")
+        func subsequenceFallback() {
+            #expect(ModelPickerQuery("gpt5").filter(sample).map(\.id.name) == ["gpt-5"])
+            #expect(ModelPickerQuery("gpt5").filter(sample + [model(.openai, "gpt5")]).map(\.id.name) == ["gpt5"])
         }
 
         @Test("a dot inside a model name is not a provider prefix")
@@ -94,28 +107,15 @@ extension AllAppTests {
             }
         }
 
-        @Test("server search works through an alias too")
-        func aliasServerSearch() {
-            #expect(ModelPickerQuery("or.ll").openRouterSearchText == "ll")
-            #expect(ModelPickerQuery("or.l").openRouterSearchText == nil)
-            #expect(ModelPickerQuery("an.claude").openRouterSearchText == nil)
-        }
-
-        @Test("server search starts for openrouter: with at least two characters")
-        func serverSearchTrigger() {
-            #expect(ModelPickerQuery("openrouter:ll").openRouterSearchText == "ll")
-            #expect(ModelPickerQuery("openrouter:l").openRouterSearchText == nil)
-            #expect(ModelPickerQuery("openrouter:").openRouterSearchText == nil)
-            #expect(ModelPickerQuery("openai:gpt").openRouterSearchText == nil)
-            #expect(ModelPickerQuery("llama").openRouterSearchText == nil)
-        }
-
-        @Test("server results are appended without duplicating cached rows")
-        func mergeDedupes() {
-            let server = [model(.openrouter, "meta/llama-4:free"), model(.openrouter, "meta/llama-4-scout")]
-            let result = ModelPickerQuery("openrouter:llama").merged(sample, serverResults: server)
-            #expect(
-                result.map(\.id.name) == ["meta/llama-4:free", "meta/llama-4-scout"])
+        @Test("OpenRouter `~vendor/model-latest` aliases are found with and without the prefix")
+        func latestAliases() {
+            let models = sample + [model(.openrouter, "~deepseek/deepseek-v4-flash-latest")]
+            for text in [
+                "~deepseek/deepseek-v4-flash-latest", "or.~deepseek/deepseek-v4-flash-latest", "or.flash-latest",
+            ] {
+                let result = ModelPickerQuery(text).filter(models)
+                #expect(result.first?.id.name == "~deepseek/deepseek-v4-flash-latest", "\(text)")
+            }
         }
     }
 }

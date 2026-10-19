@@ -144,7 +144,6 @@ struct MainSheetContent: View {
                 models: store.models,
                 hasProviders: !store.providers.isEmpty,
                 currentID: store.selectedChatModelID,
-                search: { try await store.searchModels($0, provider: .openrouter) },
                 onCancel: { store.modelPickerCancelled() },
                 onPick: { store.modelPickerPicked($0) }
             )
@@ -157,7 +156,6 @@ struct MainSheetContent: View {
                 subtitle: setting == .defaultModel
                     ? "Pick the model preselected for new chats."
                     : "Pick the model for background tasks. A fast and cheap one is best.",
-                search: { try await store.searchModels($0, provider: .openrouter) },
                 onCancel: { store.settingsModelPickerCancelled() },
                 onPick: { store.settingsModelPicked(setting, $0) }
             )

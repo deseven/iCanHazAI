@@ -34,10 +34,10 @@ struct RolePickerView: View {
         diskAccessOnly ? store.roles.filter { $0.bindsToDirectory } : store.roles
     }
     private var userRoles: [Role] {
-        FuzzySearch.rank(availableRoles.filter { !$0.isBuiltin }, query: query) { [$0.name, $0.description] }
+        SearchMatcher.rank(availableRoles.filter { !$0.isBuiltin }, query: query) { [$0.name, $0.description] }
     }
     private var builtinRoles: [Role] {
-        FuzzySearch.rank(availableRoles.filter { $0.isBuiltin }, query: query) { [$0.name, $0.description] }
+        SearchMatcher.rank(availableRoles.filter { $0.isBuiltin }, query: query) { [$0.name, $0.description] }
     }
     private var defaultRoleName: String? { store.preferencesDefaultRole }
 

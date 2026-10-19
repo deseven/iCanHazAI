@@ -1961,11 +1961,6 @@ final class AppViewModel: ObservableObject {
         Task { await engine.setChatArchived(filename: filename, archived: archived) }
     }
 
-    /// OpenRouter server-side search for the model picker.
-    func searchModels(_ text: String, provider: Provider) async throws -> [CatalogModel] {
-        try await engine.searchModels(text, provider: provider)
-    }
-
     func setModel(_ modelID: String) {
         guard let filename = selectedChatID else { return }
         Task { await engine.setModel(filename: filename, modelID: modelID) }

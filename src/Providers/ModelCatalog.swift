@@ -77,8 +77,13 @@ actor ModelCatalog {
     // MARK: - Public API
 
     /// Loads the cache into memory, then refreshes in the background. Never
-    /// waits for the network.
-    func start() {
+    /// waits for the network. A provider without a usable key (removed, or
+    /// undecryptable) loses its cached models, so it can't look usable.
+    func start() async {
+        let configured = Set(await registry.configuredProviders)
+        for provider in Provider.allCases where !configured.contains(provider) {
+            store.deleteAll(provider: provider)
+        }
         reloadFromStore()
         Task { _ = await self.refreshAll() }
     }
@@ -103,8 +108,8 @@ actor ModelCatalog {
 
     func refreshInfo(for provider: Provider) -> ProviderRefreshInfo? { store.refreshInfo(for: provider) }
 
-    /// The cached model, or for OpenRouter (whose cache holds only a slice of
-    /// the catalog) an exact lookup that is cached on success.
+    /// The cached model, or for OpenRouter an exact lookup (for a model newer
+    /// than the last listing) that is cached on success.
     func ensureModel(_ id: ModelID) async -> EnsureModelResult {
         if let cached = models[id] { return .found(cached) }
         guard id.provider == .openrouter, await registry.isConfigured(.openrouter) else { return .missing }
@@ -120,20 +125,6 @@ actor ModelCatalog {
         } catch {
             return .unavailable
         }
-    }
-
-    /// Server-side search, OpenRouter only. Results are cached as unused entries.
-    func search(_ query: String, provider: Provider) async throws -> [CatalogModel] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard provider == .openrouter, !trimmed.isEmpty, await registry.isConfigured(.openrouter) else { return [] }
-        let results: [CatalogModel]
-        do {
-            results = try await openRouterAdapter.search(trimmed, fetcher: fetcher)
-        } catch {
-            throw Self.wrap(error)
-        }
-        cache(results)
-        return results
     }
 
     func validate(provider: Provider, apiKey: String) async throws -> ValidationResult {
@@ -211,9 +202,8 @@ actor ModelCatalog {
         do {
             let listing = try await adapter(for: provider).fetchListing(
                 apiKey: key, fetcher: fetcher, metadata: metadata)
-            // An empty list from a full-list provider is a glitch, not "no models":
-            // applying it would wipe the cache.
-            if listing.models.isEmpty && provider != .openrouter { throw ProviderError.badResponse }
+            // An empty list is a glitch, not "no models": applying it would wipe the cache.
+            if listing.models.isEmpty { throw ProviderError.badResponse }
             await apply(listing, to: provider)
             result = .success(listing.modelCount)
         } catch {
@@ -223,9 +213,9 @@ actor ModelCatalog {
         return result
     }
 
-    /// Full-list providers replace their entries. OpenRouter's top-50 is only a
-    /// slice of the catalog, so unused entries outside it are swept and used
-    /// ones are re-verified individually.
+    /// Full-list providers replace their entries. OpenRouter keeps entries the
+    /// user picked (or a chat uses) that dropped out of the listing, such as
+    /// ones found by `ensureModel`, and re-verifies them individually.
     private func apply(_ listing: ProviderListing, to provider: Provider) async {
         var fetched = listing.models
         if listing.capabilitiesUnknown {

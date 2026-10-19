@@ -184,13 +184,22 @@ extension AllAppTests {
             #expect(ChatSidebar.filterChats(items, query: "   ").map(\.filename) == ["a.json", "b.json"])
         }
 
-        @Test("fuzzy match on the display title")
-        func fuzzyTitleMatch() {
+        @Test("substring match on the display title, case-insensitive")
+        func substringTitleMatch() {
             let items = [
                 summary("a.json", title: "Deploy scripts"),
                 summary("b.json", title: "Grocery list"),
             ]
-            // "dpl" fuzzy-matches "Deploy scripts" but not "Grocery list".
+            #expect(ChatSidebar.filterChats(items, query: "SCRIPT").map(\.filename) == ["a.json"])
+        }
+
+        @Test("a subsequence of the title matches when nothing matches as a substring")
+        func subsequenceTitleMatch() {
+            let items = [
+                summary("a.json", title: "Deploy scripts"),
+                summary("b.json", title: "Grocery list"),
+            ]
+            // "dpl" is not a substring of either title; it is a subsequence of the first.
             #expect(ChatSidebar.filterChats(items, query: "dpl").map(\.filename) == ["a.json"])
         }
 
@@ -203,7 +212,7 @@ extension AllAppTests {
             #expect(ChatSidebar.filterChats(items, query: "CHAT-ONE").map(\.filename) == ["2026-08-07-chat-one.json"])
         }
 
-        @Test("filename match includes chats the fuzzy title pass missed")
+        @Test("filename match includes chats the title pass missed")
         func filenameMatchAppendedAfterTitleMatches() {
             let items = [
                 summary("match-in-filename.json", title: "Nothing alike"),

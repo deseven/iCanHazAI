@@ -12,7 +12,7 @@ struct ChatSidebar: View {
     /// Local monitor tracking option-key presses for the button icon swap.
     @State private var modifierMonitor: Any?
 
-    /// Filter text for the chat list (fuzzy on titles, exact substring on
+    /// Filter text for the chat list (title search, exact substring on
     /// filenames). Empty means the full sectioned list is shown.
     @State private var filterText = ""
     /// Highlighted chat while filtering — driven by ↑/↓ in the filter field,
@@ -76,7 +76,7 @@ struct ChatSidebar: View {
 
             Divider()
 
-            // Filter field: fuzzy-matches chat titles and exactly matches
+            // Filter field: searches chat titles and exactly matches
             // (case-insensitive substring) filenames; contents are never
             // touched, so filtering stays instant. ↑/↓ move the highlight,
             // ↵ opens the highlighted chat, Esc clears the filter. Sits below
@@ -186,16 +186,16 @@ struct ChatSidebar: View {
         ChatSidebar.filterChats(store.visibleChatSummaries, query: filterText)
     }
 
-    /// Filters the chat list: fuzzy matching on the display title plus exact
+    /// Filters the chat list: `SearchMatcher` on the display title plus exact
     /// (case-insensitive substring) matching on the filename. Chat contents
     /// are never inspected, so this is instant even for large histories.
-    /// Fuzzy title matches come first (best match first); filename matches
-    /// the fuzzy pass missed follow in list order. `nonisolated` so it can be
+    /// Title matches come first (best match first); filename matches the
+    /// title pass missed follow in list order. `nonisolated` so it can be
     /// unit-tested without the main actor.
     nonisolated static func filterChats(_ summaries: [ChatSummary], query: String) -> [ChatSummary] {
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return summaries }
-        let byTitle = FuzzySearch.rank(summaries, query: q) { [$0.displayTitle] }
+        let byTitle = SearchMatcher.rank(summaries, query: q) { [$0.displayTitle] }
         let matched = Set(byTitle.map(\.id))
         let byFilename = summaries.filter {
             !matched.contains($0.id) && $0.filename.range(of: q, options: .caseInsensitive) != nil

@@ -32,7 +32,8 @@ enum WorkdirItem: Identifiable, Hashable {
 /// are consulted. Browsing semantics are the same locally and over SSH: the
 /// full typed path is probed first — when it names an existing directory the
 /// results are that directory plus its subdirectories; otherwise the parent
-/// directory's entries are filtered by the last path component as a prefix.
+/// directory's entries are filtered by the last path component (a
+/// case-insensitive substring, prefix matches first).
 enum WorkdirQuery: Equatable {
     /// Empty query: recents only.
     case empty
@@ -84,24 +85,34 @@ enum WorkdirQuery: Equatable {
         return (dir.isEmpty ? "/" : dir, prefix)
     }
 
-    /// Case-insensitive anchored match; an empty prefix matches everything.
+    /// Case-insensitive substring match; an empty filter matches everything.
     static func nameMatches(_ name: String, prefix: String) -> Bool {
-        prefix.isEmpty || name.range(of: prefix, options: [.caseInsensitive, .anchored]) != nil
+        prefix.isEmpty || name.range(of: prefix, options: .caseInsensitive) != nil
+    }
+
+    /// Stable reorder putting names that start with `prefix` (case-insensitive)
+    /// before the other matches, so a capped list keeps the closest ones.
+    static func prefixFirst(_ names: [String], prefix: String) -> [String] {
+        guard !prefix.isEmpty else { return names }
+        let starts = names.filter { $0.range(of: prefix, options: [.caseInsensitive, .anchored]) != nil }
+        let startsSet = Set(starts)
+        return starts + names.filter { !startsSet.contains($0) }
     }
 
     /// Lists subdirectories of `dir` (an absolute local path) whose names
-    /// start with `prefix` (case-insensitive), sorted by name, as
-    /// standardized full paths. Hidden entries are skipped unless the prefix
-    /// itself starts with a dot. Returns an empty list for unreadable dirs.
-    /// Scanning stops after `scanLimit` matching entries — the picker only
-    /// shows a handful anyway.
+    /// contain `prefix` (case-insensitive; names starting with it come first,
+    /// otherwise sorted by name), as standardized full paths. Hidden entries
+    /// are skipped unless the filter itself starts with a dot. Returns an
+    /// empty list for unreadable dirs. Scanning stops after `scanLimit`
+    /// matching entries — the picker only shows a handful anyway.
     static func localChildren(dir: String, prefix: String, scanLimit: Int = 50) -> [String] {
         guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return [] }
         let includeHidden = prefix.hasPrefix(".")
+        let matching = entries.sorted().filter {
+            (includeHidden || !$0.hasPrefix(".")) && nameMatches($0, prefix: prefix)
+        }
         var result: [String] = []
-        for entry in entries.sorted() {
-            guard includeHidden || !entry.hasPrefix(".") else { continue }
-            guard nameMatches(entry, prefix: prefix) else { continue }
+        for entry in prefixFirst(matching, prefix: prefix) {
             let full = (dir as NSString).appendingPathComponent(entry)
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: full, isDirectory: &isDir), isDir.boolValue else { continue }
@@ -189,7 +200,7 @@ final class WorkdirSSHLister: ObservableObject {
     /// Browses `path` on `host`. The full path is probed first: when it names
     /// an existing directory the results are the directory itself plus its
     /// subdirectories; otherwise the parent directory's entries are filtered
-    /// by the last path component as a prefix. Superseded queries' results
+    /// by the last path component (substring, prefix matches first). Superseded queries' results
     /// are discarded; all failures are silent.
     func list(host: String, path: String?) {
         generation += 1
@@ -214,11 +225,11 @@ final class WorkdirSSHLister: ObservableObject {
             guard let entries = await self.ls(ctx, dir: dir) else { return }
             let includeHidden = prefix.hasPrefix(".")
             let base = dir == "/" ? "" : dir
-            let matched =
+            let matching =
                 entries
                 .filter { includeHidden || !$0.hasPrefix(".") }
                 .filter { WorkdirQuery.nameMatches($0, prefix: prefix) }
-                .map { "\(host):\(base)/\($0)" }
+            let matched = WorkdirQuery.prefixFirst(matching, prefix: prefix).map { "\(host):\(base)/\($0)" }
             guard gen == self.generation else { return }
             self.specs = matched
         }

@@ -4,7 +4,7 @@ import Testing
 @testable import iCanHazAI
 
 /// Tests for the archived-chats picker: which chats are listed, their order,
-/// name/filename fuzzy filtering, and the selection-survival rule that lets
+/// name/filename filtering, and the selection-survival rule that lets
 /// an archived chat stay open in the chat view without being unarchived.
 extension AllAppTests {
 
@@ -63,10 +63,8 @@ extension AllAppTests {
                 record("2026-01-02 10-20-30.json", name: "Something"),
                 record("2026-07-08 11-22-33.json", name: "Other"),
             ]
-            // Fuzzy matching may loosely include the other filename, but the
-            // exact-substring match must be ranked first.
             let items = ArchivedChatsPickerView.filter(records, query: "2026-07")
-            #expect(items.first?.filename == "2026-07-08 11-22-33.json")
+            #expect(items.map(\.filename) == ["2026-07-08 11-22-33.json"])
         }
 
         @Test("A query matching nothing yields an empty list")

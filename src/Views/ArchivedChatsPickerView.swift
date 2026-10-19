@@ -4,7 +4,7 @@
 import SwiftUI
 
 /// A modal sheet listing archived chats, shown from the sidebar's archive
-/// button. Chats can be fuzzy-searched by title and filename, opened for
+/// button. Chats can be searched by title and filename, opened for
 /// viewing without unarchiving (they stay hidden from the sidebar, like
 /// temporary chats), restored to the chat list, or deleted — individually
 /// or all at once via the footer's "Delete All" (both deletions ask for
@@ -25,15 +25,13 @@ struct ArchivedChatsPickerView: View {
     /// All archived chats, unfiltered — drives the Delete All button so it
     /// stays available (and correctly counted) while a search query hides
     /// part of the list.
-    private var allArchived: [ChatSummary] {
-        FuzzySearch.rank(store.visibleArchivedSummaries, query: "") { [$0.displayTitle, $0.filename] }
-    }
+    private var allArchived: [ChatSummary] { store.visibleArchivedSummaries }
     private var items: [ChatSummary] {
-        FuzzySearch.rank(store.visibleArchivedSummaries, query: query) { [$0.displayTitle, $0.filename] }
+        SearchMatcher.rank(allArchived, query: query) { [$0.displayTitle, $0.filename] }
     }
 
     /// Projects archived chats into summaries sorted by last activity
-    /// (newest first), fuzzy-filtered by display title and filename.
+    /// (newest first), filtered by display title and filename.
     /// `nonisolated` so it can be unit-tested without the main actor.
     nonisolated static func filter(_ records: [ChatRecord], query: String) -> [ChatSummary] {
         let archived =
@@ -41,7 +39,7 @@ struct ArchivedChatsPickerView: View {
             .filter { $0.isArchived && !$0.isTemporary }
             .map(ChatSummary.init)
             .sorted { $0.sortKey > $1.sortKey }
-        return FuzzySearch.rank(archived, query: query) { [$0.displayTitle, $0.filename] }
+        return SearchMatcher.rank(archived, query: query) { [$0.displayTitle, $0.filename] }
     }
 
     private var footerExtra: (() -> AnyView)? {

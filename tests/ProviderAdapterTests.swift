@@ -202,21 +202,24 @@ extension AllAppTests {
             #expect(always.isConfigurable == false)
         }
 
-        @Test("OpenRouter uses sort=most-popular and q, never search")
+        @Test("OpenRouter lists the whole text catalog in one request")
         func openRouterRequests() async throws {
             let fetcher = StubFetcher { _ in .json(ProviderFixtures.openRouterTop) }
             let adapter = OpenRouterAdapter(baseUrl: "https://openrouter.test/api/v1")
             _ = try await adapter.fetchListing(apiKey: "fake", fetcher: fetcher, metadata: noMetadata)
-            _ = try await adapter.search("claude", fetcher: fetcher)
 
+            #expect(fetcher.requests.count == 1)
             let listing = try #require(fetcher.requests.first).url
             #expect(listing.path == "/api/v1/models")
-            #expect(queryItems(listing) == ["output_modalities": "text", "sort": "most-popular", "limit": "50"])
+            #expect(queryItems(listing) == ["output_modalities": "text", "sort": "most-popular", "limit": "1000"])
+        }
 
-            let search = queryItems(try #require(fetcher.requests.last).url)
-            #expect(search["q"] == "claude")
-            #expect(search["search"] == nil)
-            #expect(search["sort"] == "most-popular")
+        @Test("OpenRouter keeps ~vendor/model-latest aliases")
+        func openRouterAliases() throws {
+            let json =
+                #"{"id":"~deepseek/deepseek-v4-flash-latest","name":"DeepSeek: DeepSeek V4 Flash Latest","architecture":{}}"#
+            let object = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+            #expect(OpenRouterAdapter.parse(object)?.id.name == "~deepseek/deepseek-v4-flash-latest")
         }
 
         @Test("OpenRouter lookup matches the exact id among variants")
@@ -232,9 +235,7 @@ extension AllAppTests {
         @Test("OpenRouter validate checks /key and reads total_count")
         func openRouterValidate() async throws {
             let fetcher = StubFetcher { url in
-                if url.path.hasSuffix("/key") { return .json(#"{"data":{}}"#) }
-                return queryItems(url)["limit"] == "1"
-                    ? .json(ProviderFixtures.openRouterCount) : .json(ProviderFixtures.openRouterTop)
+                url.path.hasSuffix("/key") ? .json(#"{"data":{}}"#) : .json(ProviderFixtures.openRouterTop)
             }
             let result = try await OpenRouterAdapter().validate(apiKey: "fake", fetcher: fetcher, metadata: noMetadata)
             #expect(result.modelCount == 471)

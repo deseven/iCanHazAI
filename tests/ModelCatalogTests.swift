@@ -260,6 +260,23 @@ extension AllAppTests {
             #expect(await waitUntil { await names(h.catalog.snapshot()) == ["deepseek:fresh"] })
         }
 
+        @Test("start drops the cache and refresh state of providers without a key")
+        func startPurgesUnconfigured() async throws {
+            let store = ModelCatalogStore()
+            let stale = CatalogModel(
+                id: ModelID(provider: .openrouter, name: "a/b"), displayName: nil, capabilities: .safeDefaults)
+            store.upsert([stale], now: Date())
+            store.recordSuccess(for: .openrouter, at: Date(), modelCount: 471)
+            let h = try await makeHarness(providers: [.deepseek], store: store) { _ in
+                .json(ProviderFixtures.deepseekModels(["fresh"]))
+            }
+            await h.catalog.start()
+
+            #expect(await h.catalog.snapshot().allSatisfy { $0.id.provider != .openrouter })
+            #expect(store.allModels().allSatisfy { $0.model.id.provider != .openrouter })
+            #expect(store.refreshInfo(for: .openrouter) == nil)
+        }
+
         // MARK: - ensureModel
 
         @Test("ensureModel returns cached models without a request")
@@ -328,31 +345,7 @@ extension AllAppTests {
             }
         }
 
-        // MARK: - Search, usage and events
-
-        @Test("search needs OpenRouter to be configured and caches results")
-        func search() async throws {
-            let unconfigured = try await makeHarness(providers: [.deepseek]) { _ in
-                .json(ProviderFixtures.openRouterLookup)
-            }
-            #expect(try await unconfigured.catalog.search("foo", provider: .openrouter).isEmpty)
-            #expect(unconfigured.fetcher.requests.isEmpty)
-
-            let h = try await makeHarness(providers: [.openrouter]) { _ in .json(ProviderFixtures.openRouterLookup) }
-            #expect(try await h.catalog.search("foo", provider: .deepseek).isEmpty)
-            let results = try await h.catalog.search("foo", provider: .openrouter)
-            #expect(results.count == 2)
-            #expect(await h.catalog.snapshot().count == 2)
-            #expect(h.store.allModels().allSatisfy { !$0.isUsed })
-        }
-
-        @Test("a failed search throws a provider error")
-        func searchFailure() async throws {
-            let h = try await makeHarness(providers: [.openrouter]) { _ in .status(500) }
-            await #expect(throws: ProviderError.self) {
-                try await h.catalog.search("foo", provider: .openrouter)
-            }
-        }
+        // MARK: - Usage and events
 
         @Test("markUsed is persisted in the store")
         func markUsed() async throws {
