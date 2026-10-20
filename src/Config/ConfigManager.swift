@@ -91,15 +91,19 @@ struct GeneralConfig: Codable, Equatable {
     }
 }
 
-/// `[chat_behaviour]` group — default expansion of tool use blocks.
+/// `[chat_behaviour]` group — default expansion of tool use blocks and how a streaming reply is shown.
 struct ChatBehaviourConfig: Codable, Equatable {
     /// Whether Tool Use blocks are expanded by default in the chat renderer.
     /// Nil/missing → false.
     var expandToolUse: Bool?
+    /// Whether a streaming reply fades its new text in and glides the list down.
+    /// Nil/missing → true.
+    var smoothStreaming: Bool?
 
     enum CodingKeys: String, CodingKey {
 
         case expandToolUse = "expand_tool_use"
+        case smoothStreaming = "smooth_streaming"
     }
 }
 
@@ -527,6 +531,10 @@ actor ConfigManager {
         config.chatBehaviour.expandToolUse ?? false
     }
 
+    func getSmoothStreaming() -> Bool {
+        config.chatBehaviour.smoothStreaming ?? true
+    }
+
     func getAppDebugEnabled() -> Bool {
         config.debug.appDebugEnabled ?? false
     }
@@ -608,6 +616,11 @@ actor ConfigManager {
 
     func setExpandToolUse(_ enabled: Bool) {
         config.chatBehaviour.expandToolUse = enabled
+        persist()
+    }
+
+    func setSmoothStreaming(_ enabled: Bool) {
+        config.chatBehaviour.smoothStreaming = enabled
         persist()
     }
 

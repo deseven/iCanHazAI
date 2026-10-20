@@ -218,6 +218,15 @@ private struct ChatBehaviourTab: View {
                     .toggleStyle(.switch)
             }
 
+            PrefRow(
+                title: "Smooth Streaming",
+                description: "Fades in new text and eases the chat down while a reply is being written"
+            ) {
+                Toggle("", isOn: store.bindingSmoothStreaming)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+
             Spacer()
         }
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -11,24 +11,28 @@ struct RenderedText: @unchecked Sendable {
     let bottomInset: CGFloat
     let tables: [TableSpec]
     let codeBlocks: [CodeBlockMarker]
+    /// Where the top-level blocks start, for reusing what an earlier, shorter render of the
+    /// same message already laid out. Empty when the text can't be told apart block by block.
+    let blocks: [TextBlock]
     private let variants = VariantCache()
     private let heights = HeightCache()
 
     init(
         string: NSAttributedString, topInset: CGFloat, bottomInset: CGFloat, tables: [TableSpec] = [],
-        codeBlocks: [CodeBlockMarker] = []
+        codeBlocks: [CodeBlockMarker] = [], blocks: [TextBlock] = []
     ) {
         self.string = string
         self.topInset = topInset
         self.bottomInset = bottomInset
         self.tables = tables
         self.codeBlocks = codeBlocks
+        self.blocks = blocks
     }
 
     func height(forWidth width: CGFloat) -> CGFloat {
         guard string.length > 0 else { return 0 }
         return heights.value(for: width) {
-            topInset + TextMeasurer.height(of: string(forWidth: width), width: width) + bottomInset
+            topInset + TextMeasurer.height(of: string(forWidth: width), width: width, blocks: blocks) + bottomInset
         }
     }
 
@@ -265,7 +269,28 @@ enum MarkdownRenderer {
             : FontCache.shared.font(size: theme.fontSize)
         let s = NSAttributedString(
             string: text, attributes: [.font: font, .foregroundColor: color, .paragraphStyle: p])
-        return RenderedText(string: s, topInset: 0, bottomInset: 0)
+        var h = Hasher()
+        TextFingerprint.combine(font, into: &h)
+        TextFingerprint.combine(color, into: &h)
+        TextFingerprint.combine(p, into: &h)
+        return RenderedText(
+            string: s, topInset: 0, bottomInset: 0, blocks: lineBlocks(text, signature: h.finalize()))
+    }
+
+    /// Plain text has a single style, so any line start is a valid cut. Cuts are spaced out to
+    /// keep their number small for long texts.
+    private static func lineBlocks(_ text: String, signature: Int) -> [TextBlock] {
+        var blocks = [TextBlock(start: 0, signature: signature)]
+        var offset = 0
+        var last = 0
+        for unit in text.utf16 {
+            offset += 1
+            if unit == 10, offset - last >= 256 {
+                blocks.append(TextBlock(start: offset, signature: signature))
+                last = offset
+            }
+        }
+        return blocks
     }
 }
 
@@ -366,6 +391,8 @@ private final class MarkdownBuilder {
     /// cell itself, so it's moved onto whatever comes next.
     var pendingBefore: CGFloat = 0
     var tables: [TableSpec] = []
+    /// Output offset at which each top-level block starts.
+    var blockStarts: [Int] = []
 
     init(color: NSColor, theme: Theme) {
         baseColor = color
@@ -389,7 +416,7 @@ private final class MarkdownBuilder {
         }
         guard let doc = cmark_parser_finish(parser) else { return }
         defer { cmark_node_free(doc) }
-        renderChildren(of: doc, BlockContext(color: baseColor))
+        renderChildren(of: doc, BlockContext(color: baseColor), topLevel: true)
     }
 
     func finish() -> RenderedText {
@@ -424,7 +451,65 @@ private final class MarkdownBuilder {
         for t in tables { t.measureContent(in: out) }
         return RenderedText(
             string: out, topInset: topInset, bottomInset: paragraphs.last?.extraAfter ?? 0, tables: tables,
-            codeBlocks: paragraphs.compactMap(\.code))
+            codeBlocks: paragraphs.compactMap(\.code), blocks: blockMarks())
+    }
+
+    /// A signature per top-level block, up to and including the first table's: a table is
+    /// restyled for every width, so neither it nor anything after it can be reused.
+    func blockMarks() -> [TextBlock] {
+        var starts = blockStarts.map { min($0, length) }
+        if let table = tables.compactMap({ $0.cells.first?.range.location }).min() {
+            starts = Array(starts.prefix { $0 <= table })
+        }
+        guard !starts.isEmpty else { return [] }
+        var hashers = [Hasher](repeating: Hasher(), count: starts.count)
+
+        var styleFingerprints: [Int: Int] = [:]
+        func fingerprint(ofStyle index: Int) -> Int {
+            if let known = styleFingerprints[index] { return known }
+            var h = Hasher()
+            let a = styles[index]
+            if let font = a[.font] as? NSFont { TextFingerprint.combine(font, into: &h) }
+            if let color = a[.foregroundColor] as? NSColor { TextFingerprint.combine(color, into: &h) }
+            h.combine(a[.link] as? URL)
+            h.combine(a[.strikethroughStyle] != nil)
+            h.combine(a[MDAttr.inlineCode] != nil)
+            if let rule = a[MDAttr.rule] as? RuleMarker { h.combine(rule.indent) }
+            let value = h.finalize()
+            styleFingerprints[index] = value
+            return value
+        }
+
+        var block = 0
+        for p in paragraphs {
+            while block + 1 < starts.count, starts[block + 1] <= p.start { block += 1 }
+            hashers[block].combine(p.start)
+            hashers[block].combine(p.end)
+            hashers[block].combine(p.extraAfter)
+            TextFingerprint.combine(p.style, into: &hashers[block])
+            for quote in p.quotes {
+                hashers[block].combine(quote.x)
+                hashers[block].combine(quote.range.location)
+                hashers[block].combine(quote.range.length)
+            }
+            if let code = p.code {
+                hashers[block].combine(code.indent)
+                hashers[block].combine(code.language)
+                hashers[block].combine(code.code)
+                hashers[block].combine(code.range.location)
+                hashers[block].combine(code.range.length)
+                hashers[block].combine(code.needsDetection)
+            }
+        }
+        block = 0
+        var runStart = 0
+        for run in runs {
+            while block + 1 < starts.count, starts[block + 1] <= runStart { block += 1 }
+            hashers[block].combine(run.end - runStart)
+            hashers[block].combine(fingerprint(ofStyle: run.style))
+            runStart = run.end
+        }
+        return zip(starts, hashers).map { TextBlock(start: $0, signature: $1.finalize()) }
     }
 
     /// Kerning (not real spaces, so copied text stays intact) around inline
@@ -510,11 +595,12 @@ private final class MarkdownBuilder {
 
     // MARK: Blocks
 
-    func renderChildren(of parent: CMNode, _ ctx: BlockContext) {
+    func renderChildren(of parent: CMNode, _ ctx: BlockContext, topLevel: Bool = false) {
         var child = cmark_node_first_child(parent)
         var first = true
         while let node = child {
             if !first { setSpacingAfterLast(ctx.tight ? theme.tightSpacing : theme.blockSpacing) }
+            if topLevel { blockStarts.append(length) }
             renderBlock(node, ctx)
             first = false
             child = cmark_node_next(node)

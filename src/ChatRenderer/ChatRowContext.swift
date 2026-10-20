@@ -16,10 +16,15 @@ struct ChatRowContext: Equatable {
     var features = ChatRowFeatures()
     var isStreaming = false
     var expandToolUse = false
+    /// The preference for fading in streamed text and gliding the list down.
+    var smoothStreaming = true
     /// Where the chat's attachment files live.
     var attachmentsDirectory: URL?
 
     var assistantLabel: String { roleName ?? "Assistant" }
+
+    /// A reply is streaming in and the user wants it eased in.
+    var easesStreaming: Bool { isStreaming && smoothStreaming }
 }
 
 /// What the user can ask the host to do from a row.

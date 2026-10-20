@@ -162,6 +162,7 @@ working_directories = []                   # MRU list of recently picked directo
 [chat_behaviour]
 
 expand_tool_use = false                    # expand "Tool Use" blocks by default in chats
+smooth_streaming = true                    # default true; while a reply streams in, fade in the new text and ease the chat down instead of jumping (always off when macOS "Reduce motion" is on)
 
 [chat_features]
 

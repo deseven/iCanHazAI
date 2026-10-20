@@ -70,6 +70,11 @@ final class ChatListView: NSView {
     private var reportedPinned = true
     private var pinnedReportScheduled = false
     private var adjusting = false
+    /// Eases a pinned list toward the bottom while a reply grows; see `followBottom`.
+    private lazy var followTicker = FrameTicker { [weak self] dt in self?.followStep(dt) ?? false }
+    /// The spring's own state: whole-pixel scroll offsets can't carry its slow tail.
+    private var followPosition: CGFloat = 0
+    private var followVelocity: CGFloat = 0
     private let pass = PassToken()
     private var pendingPass: Task<Void, Never>?
     private var previewURLs: [URL] = []
@@ -166,7 +171,8 @@ final class ChatListView: NSView {
         row.rendered = nil
         row.heights = []
         row.measuredWidth = -1
-        if let h = ensureExact(i) { applyHeights([(i, h)]) }
+        // Only growth at the very end can glide: anything above the viewport has to be compensated at once.
+        if let h = ensureExact(i) { applyHeights([(i, h)], glide: i == rows.count - 1) }
         layoutRows()
         scheduleSearch()
     }
@@ -199,7 +205,7 @@ final class ChatListView: NSView {
         body()
         guard var anchor, !rows.isEmpty else { return }
         if indexByID[anchor.id] == nil { anchor.id = rows[min(index, rows.count - 1)].model.id }
-        restore(anchor)
+        restore(anchor, glide: followTicker.isRunning)
         layoutRows()
         updateJumpButton()
     }
@@ -364,6 +370,11 @@ final class ChatListView: NSView {
         schedulePass()
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { followTicker.stop() }
+    }
+
     /// Returns whether the text width changed.
     private func updateColumn() -> Bool {
         let column = rowLayout.column(forListWidth: bounds.width)
@@ -502,6 +513,9 @@ final class ChatListView: NSView {
     private func contextChanged(from old: ChatRowContext) {
         guard context != old else { return }
         contextVersion += 1
+        if !context.smoothStreaming, followTicker.isRunning {
+            if pinnedToBottom { scrollToBottom() } else { followTicker.stop() }
+        }
 
         let toolsChanged = old.expandToolUse != context.expandToolUse
         let streamingChanged = old.isStreaming != context.isStreaming
@@ -541,10 +555,10 @@ final class ChatListView: NSView {
         return (rows[i].model.id, top - offsets[i])
     }
 
-    private func restore(_ anchor: (id: String, delta: CGFloat)?) {
+    private func restore(_ anchor: (id: String, delta: CGFloat)?, glide: Bool = false) {
         withAdjusting { document.setFrameSize(NSSize(width: bounds.width, height: documentHeight)) }
         if pinnedToBottom {
-            scrollToBottom()
+            if glide { followBottom() } else { scrollToBottom() }
         } else if let anchor, let i = indexByID[anchor.id] {
             setScrollY(offsets[i] + anchor.delta)
         }
@@ -552,12 +566,12 @@ final class ChatListView: NSView {
 
     /// Applies height changes while keeping the first visible row's top edge
     /// fixed on screen (or keeping the list pinned to the bottom).
-    private func applyHeights(_ changes: [(Int, CGFloat)]) {
+    private func applyHeights(_ changes: [(Int, CGFloat)], glide: Bool = false) {
         guard !changes.isEmpty, !rows.isEmpty else { return }
         let anchor = captureAnchor()
         for (i, h) in changes { rows[i].height = h }
         recomputeOffsets()
-        restore(anchor)
+        restore(anchor, glide: glide)
     }
 
     private func applyTheme(_ new: Theme) {
@@ -606,7 +620,41 @@ final class ChatListView: NSView {
     }
 
     private func scrollToBottom() {
-        setScrollY(max(0, documentHeight - scrollView.contentView.bounds.height))
+        followTicker.stop()
+        setScrollY(maxScrollY)
+    }
+
+    private var maxScrollY: CGFloat { max(0, documentHeight - scrollView.contentView.bounds.height) }
+
+    /// Keeps a pinned list at the bottom as the last row grows. While a reply streams in
+    /// the viewport glides there instead of jumping a line at a time; the new text is
+    /// already laid out below the edge, so it slides into view. Anything else snaps.
+    private func followBottom() {
+        guard context.easesStreaming, StreamingMotion.glides, window != nil else { return scrollToBottom() }
+        guard !followTicker.isRunning else { return }
+        let y = scrollView.contentView.bounds.origin.y
+        guard y != maxScrollY else { return }
+        followPosition = y
+        followVelocity = 0
+        followTicker.start(in: self)
+    }
+
+    /// One frame of the glide: a critically damped spring toward the bottom, which eases in
+    /// and out, and bends rather than restarts when the bottom moves again mid-glide.
+    /// Returns whether to continue.
+    private func followStep(_ dt: CFTimeInterval) -> Bool {
+        guard pinnedToBottom else { return false }
+        let target = maxScrollY
+        let scale = window?.backingScaleFactor ?? 2
+        let spring = StreamingMotion.smoothDamp(
+            from: min(followPosition, target), to: target, velocity: followVelocity,
+            smoothTime: StreamingMotion.scrollSmoothTime, dt: dt)
+        followPosition = spring.position
+        followVelocity = spring.velocity
+        let settled = abs(target - spring.position) <= 1 / scale && abs(spring.velocity) < 20
+        setScrollY(settled ? target : (spring.position * scale).rounded() / scale)
+        layoutRows()
+        return !settled
     }
 
     private func setScrollY(_ y: CGFloat) {
@@ -627,6 +675,7 @@ final class ChatListView: NSView {
 
     @objc private func boundsChanged() {
         guard !adjusting else { return }
+        followTicker.stop()
         let clip = scrollView.contentView
         pinnedToBottom = documentHeight - clip.bounds.maxY < 30
         updateJumpButton()
@@ -953,6 +1002,22 @@ final class PassToken: @unchecked Sendable {
         var testTextWidth: CGFloat { textWidth }
         var testExactCount: Int { rows.filter { $0.measuredWidth == textWidth }.count }
         var testDistanceFromBottom: CGFloat { documentHeight - scrollView.contentView.bounds.maxY }
+        var testIsGliding: Bool { followTicker.isRunning }
+
+        /// One frame of the glide, stopping it when it's done like the display link does.
+        func testStepGlide(_ dt: CFTimeInterval) -> Bool {
+            let more = followStep(dt)
+            if !more { followTicker.stop() }
+            return more
+        }
+        func testFadingRanges(of id: String) -> [NSRange] { visibleViews[id]?.bodyFadingRanges ?? [] }
+
+        /// Scrolls the way the user does: outside the list's own adjustments.
+        func testUserScroll(by dy: CGFloat) {
+            let clip = scrollView.contentView
+            clip.setBoundsOrigin(NSPoint(x: 0, y: clip.bounds.origin.y + dy))
+            scrollView.reflectScrolledClipView(clip)
+        }
 
         /// The row under the viewport's top edge and its top's position relative to that edge.
         func testAnchor() -> (id: String, y: CGFloat) {

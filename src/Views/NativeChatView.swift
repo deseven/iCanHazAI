@@ -54,6 +54,7 @@ struct NativeChatView: View {
         .onChange(of: store.selectedRole) { _, _ in controller.pushSnapshot() }
 
         .onChange(of: store.preferencesExpandToolUse) { _, _ in controller.updatePreferences() }
+        .onChange(of: store.preferencesSmoothStreaming) { _, _ in controller.updatePreferences() }
         .onChange(of: store.preferencesInterfaceScale) { _, _ in controller.updatePreferences() }
     }
 }
@@ -184,6 +185,7 @@ final class ChatListController: ObservableObject {
     private var shownState = ChatRenderState()
 
     private var expandToolUse = false
+    private var smoothStreaming = true
 
     init() {
         listView.onAction = { [weak self] action in self?.perform(action) }
@@ -207,12 +209,13 @@ final class ChatListController: ObservableObject {
         store = nil
     }
 
-    /// Applies the interface scale and the expand-thinking/tool-use defaults
-    /// in place.
+    /// Applies the interface scale, the tool-use default and the streaming
+    /// animation switch in place.
     func updatePreferences() {
         guard let store else { return }
 
         expandToolUse = store.preferencesExpandToolUse
+        smoothStreaming = store.preferencesSmoothStreaming
         listView.interfaceScale = ChatFeaturesConfig.normalizedInterfaceScale(store.preferencesInterfaceScale)
         listView.context = makeContext()
     }
@@ -312,6 +315,7 @@ final class ChatListController: ObservableObject {
         context.isStreaming = shownState.isStreaming
 
         context.expandToolUse = expandToolUse
+        context.smoothStreaming = smoothStreaming
         context.attachmentsDirectory = shownChatID.map { EnvironmentManager.shared.attachmentsDirectoryURL(for: $0) }
         return context
     }

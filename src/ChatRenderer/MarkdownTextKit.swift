@@ -25,8 +25,80 @@ enum TextMeasurer {
         return s
     }
 
-    static func height(of string: NSAttributedString, width: CGFloat) -> CGFloat {
-        autoreleasepool {
+    /// Strings at least this long are measured on a stack that keeps its text between calls.
+    static let growingThreshold = 2000
+
+    /// A stack for one growing text, only used on the main thread, where a streaming message
+    /// is measured again with every flush. It keeps the text it laid out last and, when the next
+    /// one starts with the same blocks, replaces only the tail: TextKit then lays out just that,
+    /// instead of the whole message, which is what made every flush slower the longer the reply got.
+    private final class Growing {
+        let stack = Stack()
+        var blocks: [TextBlock] = []
+        var width: CGFloat = -1
+        var lastKept = 0
+
+        /// How much of what this stack holds the string can build on.
+        func reusable(for string: NSAttributedString, width: CGFloat, blocks: [TextBlock]) -> Int {
+            guard width == self.width else { return 0 }
+            let shared = StableText.sharedPrefix(stack.storage.string as NSString, string.string as NSString)
+            return StableText.keptLength(old: self.blocks, new: blocks, shared: shared)
+        }
+
+        func height(of string: NSAttributedString, width: CGFloat, blocks: [TextBlock]) -> CGFloat {
+            let storage = stack.storage
+            let kept = reusable(for: string, width: width, blocks: blocks)
+            let target = max(width, 1)
+            if stack.container.size.width != target {
+                stack.container.size = NSSize(width: target, height: .greatestFiniteMagnitude)
+            }
+            if kept > 0 {
+                let tail = NSRange(location: kept, length: string.length - kept)
+                storage.replaceCharacters(
+                    in: NSRange(location: kept, length: storage.length - kept),
+                    with: string.attributedSubstring(from: tail))
+            } else {
+                storage.setAttributedString(string)
+            }
+            self.blocks = blocks
+            self.width = width
+            lastKept = kept
+            stack.lm.ensureLayout(for: stack.container)
+            return ceil(stack.lm.usedRect(for: stack.container).height)
+        }
+    }
+
+    /// A few, least recently used first: a row can measure more than one long text per flush
+    /// (say an open thinking block and the reply), and those must not evict each other.
+    nonisolated(unsafe) private static var growing: [Growing] = []
+    private static let growingSlots = 3
+
+    /// How many leading characters the last growing-text measurement kept from the one before.
+    static var lastKeptLength: Int { growing.last?.lastKept ?? 0 }
+
+    /// `blocks` (from the `RenderedText` the string belongs to) tells a long string's measurement
+    /// which part of the previous one it can build on.
+    static func height(of string: NSAttributedString, width: CGFloat, blocks: [TextBlock] = []) -> CGFloat {
+        if !blocks.isEmpty, string.length >= growingThreshold, Thread.isMainThread {
+            return autoreleasepool {
+                var best: (index: Int, kept: Int)?
+                for (i, g) in growing.enumerated() {
+                    let kept = g.reusable(for: string, width: width, blocks: blocks)
+                    if kept > (best?.kept ?? 0) { best = (i, kept) }
+                }
+                let g: Growing
+                if let best {
+                    g = growing.remove(at: best.index)
+                } else if growing.count >= growingSlots {
+                    g = growing.removeFirst()
+                } else {
+                    g = Growing()
+                }
+                growing.append(g)
+                return g.height(of: string, width: width, blocks: blocks)
+            }
+        }
+        return autoreleasepool {
             let s = stack
             s.container.size = NSSize(width: max(width, 1), height: .greatestFiniteMagnitude)
             s.storage.setAttributedString(string)
@@ -41,6 +113,37 @@ enum TextMeasurer {
 final class MarkdownLayoutManager: NSLayoutManager {
     var theme = Theme()
     var search: SearchHighlight?
+    /// Sorted and non-overlapping.
+    var fades: [TextFade] = []
+
+    override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
+        guard !fades.isEmpty, let storage = textStorage, let context = NSGraphicsContext.current?.cgContext else {
+            return super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
+        }
+        let now = CACurrentMediaTime()
+        let all = NSRange(location: 0, length: storage.length)
+        var cursor = glyphsToShow.location
+        for fade in fades {
+            let chars = NSIntersectionRange(fade.range, all)
+            guard chars.length > 0 else { continue }
+            let glyphs = NSIntersectionRange(
+                glyphRange(forCharacterRange: chars, actualCharacterRange: nil), glyphsToShow)
+            guard glyphs.length > 0 else { continue }
+            if glyphs.location > cursor {
+                super.drawGlyphs(
+                    forGlyphRange: NSRange(location: cursor, length: glyphs.location - cursor), at: origin)
+            }
+            context.saveGState()
+            context.setAlpha(fade.alpha(at: now))
+            super.drawGlyphs(forGlyphRange: glyphs, at: origin)
+            context.restoreGState()
+            cursor = NSMaxRange(glyphs)
+        }
+        if cursor < NSMaxRange(glyphsToShow) {
+            super.drawGlyphs(
+                forGlyphRange: NSRange(location: cursor, length: NSMaxRange(glyphsToShow) - cursor), at: origin)
+        }
+    }
 
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         if let storage = textStorage, let container = textContainers.first, storage.length > 0 {
@@ -254,17 +357,41 @@ final class MarkdownTextView: NSTextView {
     override var textContainerOrigin: NSPoint { NSPoint(x: 0, y: topInset) }
 
     private weak var renderedSource: NSAttributedString?
+    private var renderedBlocks: [TextBlock] = []
+    /// How many leading characters the last `setRenderedIfNeeded` left as they were.
+    private(set) var lastKeptLength = 0
 
     /// `width` must be the width the text was measured at (tables depend on it).
-    func setRenderedIfNeeded(_ text: RenderedText, width: CGFloat) {
+    /// With `fadeIn`, the text beyond what the view already showed fades in; pass it
+    /// only when the view is continuing the same message, not when it's reused for another.
+    ///
+    /// A text that continues the one shown (a streaming message) only replaces its tail, from the
+    /// start of the first block that differs: the rest keeps its layout, and so do the code
+    /// blocks in it, together with the language detection that has already colored them.
+    func setRenderedIfNeeded(_ text: RenderedText, width: CGFloat, fadeIn: Bool = false) {
         let string = text.string(forWidth: width)
-        guard renderedSource !== string else { return }
+        guard renderedSource !== string, let storage = textStorage else { return }
         renderedSource = string
         topInset = text.topInset
-        textStorage?.setAttributedString(string)
+        let shared = StableText.sharedPrefix(storage.string as NSString, string.string as NSString)
+        let kept = StableText.keptLength(old: renderedBlocks, new: text.blocks, shared: shared)
+        lastKeptLength = kept
+        trackFades(shared: fadeIn ? shared : nil, length: string.length)
+        if kept > 0 {
+            let tail = NSRange(location: kept, length: string.length - kept)
+            storage.replaceCharacters(
+                in: NSRange(location: kept, length: storage.length - kept),
+                with: string.attributedSubstring(from: tail))
+            codeBlocks =
+                codeBlocks.filter { NSMaxRange($0.range) <= kept }
+                + text.codeBlocks.filter { $0.range.location >= kept }
+        } else {
+            storage.setAttributedString(string)
+            codeBlocks = text.codeBlocks
+        }
+        renderedBlocks = text.blocks
         detectionTask?.cancel()
         detectionTask = nil
-        codeBlocks = text.codeBlocks
         updateCopyButtons()
         detectLanguages(for: string)
     }
@@ -272,6 +399,64 @@ final class MarkdownTextView: NSTextView {
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         if !codeBlocks.isEmpty { updateCopyButtons() }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { clearFades() }
+    }
+
+    // MARK: Fade-in
+
+    private lazy var fadeTicker = FrameTicker { [weak self] _ in self?.advanceFades() ?? false }
+
+    var fadingRanges: [NSRange] { (layoutManager as? MarkdownLayoutManager)?.fades.map(\.range) ?? [] }
+
+    /// Everything after the `shared` characters the old and new text start with is new (nil: nothing
+    /// fades). Fades already running keep their own clocks as long as their text is still there.
+    private func trackFades(shared: Int?, length: Int) {
+        guard let lm = layoutManager as? MarkdownLayoutManager else { return }
+        guard let shared else { return clearFades() }
+        let now = CACurrentMediaTime()
+        var fades = lm.fades.compactMap { fade -> TextFade? in
+            let kept = NSIntersectionRange(fade.range, NSRange(location: 0, length: shared))
+            guard kept.length > 0, fade.isRunning(at: now) else { return nil }
+            return TextFade(range: kept, start: fade.start, duration: fade.duration)
+        }
+        if length > shared {
+            fades.append(
+                TextFade(
+                    range: NSRange(location: shared, length: length - shared), start: now,
+                    duration: StreamingMotion.fadeDuration))
+        }
+        lm.fades = fades
+        if fades.isEmpty { fadeTicker.stop() } else { fadeTicker.start(in: self) }
+    }
+
+    private func clearFades() {
+        (layoutManager as? MarkdownLayoutManager)?.fades = []
+        fadeTicker.stop()
+    }
+
+    /// Redraws the faded text and drops the fades that have finished (the redraw
+    /// that follows paints them at full strength).
+    private func advanceFades() -> Bool {
+        guard let lm = layoutManager as? MarkdownLayoutManager, let container = textContainer,
+            let first = lm.fades.first, let last = lm.fades.last
+        else { return false }
+        let span = NSIntersectionRange(
+            NSRange(location: first.range.location, length: NSMaxRange(last.range) - first.range.location),
+            NSRange(location: 0, length: textStorage?.length ?? 0))
+        if span.length > 0 {
+            let glyphs = lm.glyphRange(forCharacterRange: span, actualCharacterRange: nil)
+            var rect = lm.boundingRect(forGlyphRange: glyphs, in: container)
+            rect.origin.x += textContainerOrigin.x
+            rect.origin.y += textContainerOrigin.y
+            setNeedsDisplay(rect.insetBy(dx: -2, dy: -4))
+        }
+        let now = CACurrentMediaTime()
+        lm.fades.removeAll { !$0.isRunning(at: now) }
+        return !lm.fades.isEmpty
     }
 
     // MARK: Code blocks

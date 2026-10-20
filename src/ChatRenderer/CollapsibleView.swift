@@ -103,7 +103,8 @@ final class CollapsibleView: PanelView {
     }
 
     func configure(
-        _ block: CollapsibleBlock, open: Bool, geometry: RowLayout.CollapsibleGeometry, layout: RowLayout
+        _ block: CollapsibleBlock, open: Bool, geometry: RowLayout.CollapsibleGeometry, layout: RowLayout,
+        fadeIn: Bool = false
     ) {
         let theme = layout.theme
         let s = theme.scale
@@ -177,12 +178,13 @@ final class CollapsibleView: PanelView {
             x: afterTitle, y: (firstLine - summaryHeight) / 2, width: max(0, w - afterTitle - 10 * s),
             height: summaryHeight)
 
-        layoutBody(block, open: open, geometry: geometry, layout: layout)
+        layoutBody(block, open: open, geometry: geometry, layout: layout, fadeIn: fadeIn)
         window?.invalidateCursorRects(for: self)
     }
 
     private func layoutBody(
-        _ block: CollapsibleBlock, open: Bool, geometry: RowLayout.CollapsibleGeometry, layout: RowLayout
+        _ block: CollapsibleBlock, open: Bool, geometry: RowLayout.CollapsibleGeometry, layout: RowLayout,
+        fadeIn: Bool
     ) {
         let theme = layout.theme
         let pad = layout.panelPad
@@ -198,7 +200,7 @@ final class CollapsibleView: PanelView {
                     let tv = take(&texts, &textIndex) { MarkdownTextView() }
                     tv.theme = theme
                     tv.frame = rect
-                    tv.setRenderedIfNeeded(text, width: bodyWidth)
+                    tv.setRenderedIfNeeded(text, width: bodyWidth, fadeIn: fadeIn)
                 case .image(let imageKey, let image):
                     let iv = take(&images, &imageIndex) {
                         let v = ImageThumbnailView()

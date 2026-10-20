@@ -324,9 +324,20 @@ extension AllAppTests {
             let config = try TOMLDecoder().decode(AppConfig.self, from: Data("".utf8))
             #expect(config.general.defaultRole == nil)
             #expect(config.chatBehaviour.expandToolUse == nil)
+            #expect(config.chatBehaviour.smoothStreaming == nil)
             #expect(config.chatFeatures.interfaceScale == nil)
             #expect(config.debug.appDebugEnabled == nil)
             #expect(config.window == nil)
+        }
+
+        @Test("smooth_streaming round-trips through [chat_behaviour]")
+        func smoothStreamingKey() throws {
+            let off = try TOMLDecoder().decode(
+                AppConfig.self, from: Data("[chat_behaviour]\nsmooth_streaming = false\n".utf8))
+            #expect(off.chatBehaviour.smoothStreaming == false)
+            let on = try TOMLDecoder().decode(
+                AppConfig.self, from: Data("[chat_behaviour]\nsmooth_streaming = true\n".utf8))
+            #expect(on.chatBehaviour.smoothStreaming == true)
         }
 
         @Test("AppConfig decodes a partial config with only one group")

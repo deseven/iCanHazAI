@@ -206,6 +206,7 @@ final class AppViewModel: ObservableObject {
     @Published var preferencesAppDebugEnabled: Bool = false
 
     @Published var preferencesExpandToolUse: Bool = false
+    @Published var preferencesSmoothStreaming: Bool = true
     @Published var preferencesWebSearchProvider: String = "none"
     @Published var preferencesWebSearchToken: String = ""
     @Published var preferencesLinkupRenderJS: Bool = false
@@ -442,6 +443,7 @@ final class AppViewModel: ObservableObject {
             let ad = await config.getAppDebugEnabled()
 
             let eu = await config.getExpandToolUse()
+            let ss = await config.getSmoothStreaming()
             let ws = await config.getWebSearchConfig()
             let clm = await config.getChatListConfig()
             preferencesDefaultRole = dr
@@ -455,6 +457,7 @@ final class AppViewModel: ObservableObject {
             preferencesAppDebugEnabled = ad
 
             preferencesExpandToolUse = eu
+            preferencesSmoothStreaming = ss
             preferencesWebSearchProvider = ws.provider ?? "none"
             preferencesWebSearchToken = ws.token ?? ""
             preferencesLinkupRenderJS = ws.linkupRenderJS ?? false
@@ -921,6 +924,16 @@ final class AppViewModel: ObservableObject {
             set: { newValue in
                 self.preferencesExpandToolUse = newValue
                 Task { await self.config.setExpandToolUse(newValue) }
+            }
+        )
+    }
+
+    var bindingSmoothStreaming: Binding<Bool> {
+        Binding(
+            get: { self.preferencesSmoothStreaming },
+            set: { newValue in
+                self.preferencesSmoothStreaming = newValue
+                Task { await self.config.setSmoothStreaming(newValue) }
             }
         )
     }

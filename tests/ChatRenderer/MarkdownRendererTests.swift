@@ -390,5 +390,91 @@ extension AllAppTests {
             #expect(view.writeSelection(to: board, type: .string))
             #expect(board.string(forType: .string) == "one\ntwo")
         }
+
+        // MARK: Fade-in
+
+        @MainActor
+        @Test("only the text past what the view already showed fades in")
+        func fadeTracksNewText() throws {
+            let view = MarkdownTextView()
+            view.frame = NSRect(x: 0, y: 0, width: 400, height: 100)
+            view.setRenderedIfNeeded(render("Hello wor"), width: 400)
+            #expect(view.fadingRanges.isEmpty)
+            let first = try #require(view.textStorage?.length)
+
+            view.setRenderedIfNeeded(render("Hello world"), width: 400, fadeIn: true)
+            let second = try #require(view.textStorage?.length)
+            #expect(view.fadingRanges == [NSRange(location: first, length: second - first)])
+
+            view.setRenderedIfNeeded(render("Hello world again"), width: 400, fadeIn: true)
+            let third = try #require(view.textStorage?.length)
+            #expect(
+                view.fadingRanges == [
+                    NSRange(location: first, length: second - first),
+                    NSRange(location: second, length: third - second),
+                ])
+
+            // A rewrite earlier in the text drops the fades that no longer apply.
+            view.setRenderedIfNeeded(render("Hello there"), width: 400, fadeIn: true)
+            let shared = "Hello ".utf16.count
+            #expect(view.fadingRanges.first?.location == shared)
+            #expect(view.fadingRanges.allSatisfy { NSMaxRange($0) <= (view.textStorage?.length ?? 0) })
+
+            view.setRenderedIfNeeded(render("Something else"), width: 400)
+            #expect(view.fadingRanges.isEmpty)
+        }
+
+        @Test("a fade is transparent when it starts and opaque when it ends")
+        func fadeAlpha() {
+            let fade = TextFade(range: NSRange(location: 0, length: 1), start: 10, duration: 0.5)
+            #expect(fade.alpha(at: 9) == 0)
+            #expect(fade.alpha(at: 10) == 0)
+            #expect(abs(fade.alpha(at: 10.25) - 0.5) < 1e-9)
+            #expect(fade.alpha(at: 10.5) == 1)
+            #expect(fade.alpha(at: 12) == 1)
+            #expect(fade.isRunning(at: 10.4))
+            #expect(!fade.isRunning(at: 10.5))
+        }
+
+        @MainActor
+        @Test("faded text is drawn translucent while the rest keeps its ink")
+        func fadedTextDraws() throws {
+            let text = render("Hello world")
+            let view = MarkdownTextView()
+            view.theme = theme
+            view.frame = NSRect(x: 0, y: 0, width: 300, height: text.height(forWidth: 300))
+            view.setRenderedIfNeeded(text, width: 300)
+            let lm = try #require(view.layoutManager as? MarkdownLayoutManager)
+            let container = try #require(view.textContainer)
+
+            func ink(_ range: NSRange) throws -> CGFloat {
+                let glyphs = lm.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+                let box = lm.boundingRect(forGlyphRange: glyphs, in: container).insetBy(dx: 1, dy: 1)
+                let rep = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+                view.cacheDisplay(in: view.bounds, to: rep)
+                let scale = CGFloat(rep.pixelsWide) / view.bounds.width
+                var total: CGFloat = 0
+                for y in Int(box.minY * scale)..<Int(box.maxY * scale) {
+                    for x in Int(box.minX * scale)..<Int(box.maxX * scale) {
+                        total += rep.colorAt(x: x, y: y)?.alphaComponent ?? 0
+                    }
+                }
+                return total
+            }
+
+            let world = NSRange(location: 6, length: 5)
+            let hello = NSRange(location: 0, length: 5)
+            let solidWorld = try ink(world)
+            let solidHello = try ink(hello)
+            #expect(solidWorld > 0)
+
+            lm.fades = [TextFade(range: world, start: CACurrentMediaTime() + 100, duration: 1)]
+            #expect(try ink(world) < solidWorld * 0.05)
+            #expect(try ink(hello) == solidHello)
+
+            lm.fades = [TextFade(range: world, start: CACurrentMediaTime() - 0.5, duration: 1)]
+            let half = try ink(world)
+            #expect(half > solidWorld * 0.2 && half < solidWorld * 0.8)
+        }
     }
 }

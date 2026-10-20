@@ -41,6 +41,9 @@ final class MessageRowView: FlippedView {
         bodyText?.searchHighlight = search
     }
 
+    /// The ranges of the message body that are still fading in.
+    var bodyFadingRanges: [NSRange] { bodyText?.fadingRanges ?? [] }
+
     /// The match's bounds in this view's coordinates, once the body is laid out.
     func rect(ofSearchRange range: NSRange) -> NSRect? {
         guard let tv = bodyText, !tv.isHidden, let lm = tv.layoutManager, let tc = tv.textContainer else { return nil }
@@ -145,6 +148,8 @@ final class MessageRowView: FlippedView {
             row: row.uid, version: row.version, width: textWidth, scale: layout.theme.scale, open: open,
             context: contextVersion, isFirst: isFirst)
         guard signature != self.signature, let rendered = row.rendered else { return }
+        // Only a view that already showed this very row can be continuing its text.
+        let fadeIn = context.easesStreaming && self.signature?.row == row.uid && StreamingMotion.fades
         self.signature = signature
         let theme = layout.theme
         let m = row.model
@@ -176,7 +181,7 @@ final class MessageRowView: FlippedView {
                 let isOpen = i < open.count && open[i]
                 let geometry = layout.collapsible(
                     c, open: isOpen, bodyHeight: i < row.heights.count ? row.heights[i] : nil)
-                v.configure(c, open: isOpen, geometry: geometry, layout: layout)
+                v.configure(c, open: isOpen, geometry: geometry, layout: layout, fadeIn: fadeIn)
             case .attachments(let a):
                 let v = take(&attachments, &counts.attachments) {
                     let v = AttachmentsView()
@@ -204,7 +209,7 @@ final class MessageRowView: FlippedView {
                     if tv.superview !== self { addSubview(tv) }
                     tv.frame = NSRect(x: x, y: f.y, width: textWidth, height: f.height)
                 }
-                tv.setRenderedIfNeeded(text, width: tv.frame.width)
+                tv.setRenderedIfNeeded(text, width: tv.frame.width, fadeIn: fadeIn)
             case .error(let text):
                 let v = take(&errors, &counts.errors) {
                     let v = ErrorBlockView()

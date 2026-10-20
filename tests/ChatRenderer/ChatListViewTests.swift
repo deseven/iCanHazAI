@@ -473,5 +473,187 @@ extension AllAppTests {
             #expect(h.list.testRowIDs == rows.map(\.id))
             #expect(h.list.testIsPinned)
         }
+
+        // MARK: Smooth streaming
+
+        /// A list showing a streaming reply that has just been appended (still empty), pinned to the bottom.
+        private func streamingHarness(smooth: Bool = true) -> (Harness, ChatRowModel) {
+            let h = Harness()
+            h.list.setMessages(ChatRendererFixtures.chat(30))
+            h.list.context.isStreaming = true
+            h.list.context.smoothStreaming = smooth
+            h.list.jumpToBottom()
+            let reply = ChatRendererFixtures.message("stream")
+            h.list.append(reply)
+            return (h, reply)
+        }
+
+        @Test("a reply growing at the end glides to the bottom instead of jumping")
+        func glides() {
+            guard StreamingMotion.glides else { return }
+            let (h, reply) = streamingHarness()
+            var grown = reply
+            grown.content = ChatRendererFixtures.streamingText
+            h.list.update(grown)
+            #expect(h.list.testIsPinned)
+            #expect(h.list.testIsGliding)
+            #expect(h.list.testDistanceFromBottom > 50)
+
+            var frames = 0
+            while h.list.testStepGlide(1.0 / 60), frames < 600 {
+                frames += 1
+                #expect(h.list.testIsPinned)
+            }
+            #expect(frames > 3 && frames < 600)
+            #expect(abs(h.list.testDistanceFromBottom) < 1)
+            #expect(!h.list.testIsGliding)
+            #expect(h.list.testViewsConsistent())
+        }
+
+        @Test("the spring eases in, never overshoots and settles")
+        func springShape() {
+            let smooth = StreamingMotion.scrollSmoothTime
+            var position: CGFloat = 0
+            var velocity: CGFloat = 0
+            var previous: CGFloat = 0
+            var steps: [CGFloat] = []
+            for _ in 0..<120 {
+                (position, velocity) = StreamingMotion.smoothDamp(
+                    from: position, to: 100, velocity: velocity, smoothTime: smooth, dt: 1.0 / 60)
+                #expect(position >= previous && position <= 100)
+                steps.append(position - previous)
+                previous = position
+            }
+            // Starts gently (a plain exponential would cover ~30% in the first frame), then speeds up.
+            #expect(steps[0] < 8)
+            #expect(steps[2] > steps[0])
+            #expect(abs(position - 100) < 0.5)
+        }
+
+        @Test("a long frame covers the same ground as the frames it replaced")
+        func springIsTimeBased() {
+            let smooth = StreamingMotion.scrollSmoothTime
+            var a = (position: CGFloat(0), velocity: CGFloat(0))
+            for _ in 0..<12 {
+                a = StreamingMotion.smoothDamp(
+                    from: a.position, to: 80, velocity: a.velocity, smoothTime: smooth, dt: 1.0 / 60)
+            }
+            let b = StreamingMotion.smoothDamp(from: 0, to: 80, velocity: 0, smoothTime: smooth, dt: 0.2)
+            #expect(abs(a.position - b.position) < 1)
+        }
+
+        @Test("moving the target mid-glide keeps the velocity")
+        func springRetarget() {
+            let smooth = StreamingMotion.scrollSmoothTime
+            var s = (position: CGFloat(0), velocity: CGFloat(0))
+            for _ in 0..<6 {
+                s = StreamingMotion.smoothDamp(
+                    from: s.position, to: 60, velocity: s.velocity, smoothTime: smooth, dt: 1.0 / 60)
+            }
+            let moving = s.velocity
+            #expect(moving > 100)
+            let next = StreamingMotion.smoothDamp(
+                from: s.position, to: 90, velocity: s.velocity, smoothTime: smooth, dt: 1.0 / 60)
+            #expect(next.velocity > moving * 0.8)
+            #expect(next.position > s.position)
+        }
+
+        @Test("the glide chases a bottom that keeps moving")
+        func glideRetargets() {
+            guard StreamingMotion.glides else { return }
+            let (h, reply) = streamingHarness()
+            var grown = reply
+            grown.content = ChatRendererFixtures.streamingText
+            h.list.update(grown)
+            for _ in 0..<3 { _ = h.list.testStepGlide(1.0 / 60) }
+            let lag = h.list.testDistanceFromBottom
+            grown.content += "\n\n" + ChatRendererFixtures.streamingText
+            h.list.update(grown)
+            #expect(h.list.testIsGliding)
+            #expect(h.list.testDistanceFromBottom > lag)
+            while h.list.testStepGlide(1.0 / 60) {}
+            #expect(abs(h.list.testDistanceFromBottom) < 1)
+        }
+
+        @Test("scrolling by hand stops the glide and unpins")
+        func userScrollStopsGlide() {
+            guard StreamingMotion.glides else { return }
+            let (h, reply) = streamingHarness()
+            var grown = reply
+            grown.content = ChatRendererFixtures.streamingText
+            h.list.update(grown)
+            #expect(h.list.testIsGliding)
+            h.list.testUserScroll(by: -300)
+            #expect(!h.list.testIsGliding)
+            #expect(!h.list.testIsPinned)
+            let y = h.list.testDistanceFromBottom
+            grown.content += "\n\nmore"
+            h.list.update(grown)
+            #expect(!h.list.testIsGliding)
+            #expect(h.list.testDistanceFromBottom >= y)
+        }
+
+        @Test("growth above the last row is compensated at once")
+        func growthAboveSnaps() {
+            let (h, _) = streamingHarness()
+            var above = ChatRendererFixtures.chat(30)[20]
+            above.content = ChatRendererFixtures.streamingText
+            h.list.update(above)
+            #expect(h.list.testIsPinned)
+            #expect(!h.list.testIsGliding)
+            #expect(abs(h.list.testDistanceFromBottom) < 1)
+        }
+
+        @Test("with the preference off the list jumps and nothing fades")
+        func smoothStreamingOff() {
+            let (h, reply) = streamingHarness(smooth: false)
+            var grown = reply
+            grown.content = "First paragraph.\n\nSecond"
+            h.list.update(grown)
+            grown.content += " paragraph grows" + ChatRendererFixtures.streamingText
+            h.list.update(grown)
+            #expect(!h.list.testIsGliding)
+            #expect(abs(h.list.testDistanceFromBottom) < 1)
+            #expect(h.list.testFadingRanges(of: "stream").isEmpty)
+        }
+
+        @Test("turning the preference off mid-glide snaps to the bottom")
+        func smoothStreamingOffMidGlide() {
+            guard StreamingMotion.glides else { return }
+            let (h, reply) = streamingHarness()
+            var grown = reply
+            grown.content = ChatRendererFixtures.streamingText
+            h.list.update(grown)
+            #expect(h.list.testIsGliding)
+            h.list.context.smoothStreaming = false
+            #expect(!h.list.testIsGliding)
+            #expect(abs(h.list.testDistanceFromBottom) < 1)
+        }
+
+        @Test("streamed text fades in on the row that keeps receiving it")
+        func streamedTextFades() {
+            guard StreamingMotion.fades else { return }
+            let (h, reply) = streamingHarness()
+            var grown = reply
+            grown.content = "First paragraph.\n\nSecond"
+            h.list.update(grown)
+            #expect(h.list.testFadingRanges(of: "stream").count == 1)
+
+            grown.content += " paragraph grows"
+            h.list.update(grown)
+            let ranges = h.list.testFadingRanges(of: "stream")
+            #expect(ranges.count == 2)
+            #expect(ranges.first.map(NSMaxRange) == ranges.last?.location)
+        }
+
+        @Test("a row that is not streaming shows its text without fading")
+        func settledTextDoesNotFade() {
+            let h = Harness()
+            h.list.setMessages(ChatRendererFixtures.chat(30))
+            var last = ChatRendererFixtures.chat(30).last!
+            last.content += " and a little more"
+            h.list.update(last)
+            #expect(h.list.testFadingRanges(of: last.id).isEmpty)
+        }
     }
 }
