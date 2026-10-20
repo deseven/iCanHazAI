@@ -208,7 +208,13 @@ final class AppViewModel: ObservableObject {
     @Published var preferencesExpandToolUse: Bool = false
     @Published var preferencesSmoothStreaming: Bool = true
     @Published var preferencesWebSearchProvider: String = "none"
-    @Published var preferencesWebSearchToken: String = ""
+    /// The stored token as shown in Preferences (first and last 4 characters);
+    /// the full secret never leaves `ConfigManager`.
+    @Published var preferencesWebSearchTokenMask: String = ""
+    /// True when a provider is selected and its token is stored.
+    @Published var preferencesWebSearchConfigured: Bool = false
+    /// Set when disconnecting web search failed, shown on the Web Search tab.
+    @Published var preferencesWebSearchError: String?
     @Published var preferencesLinkupRenderJS: Bool = false
     @Published var preferencesTavilyAdvancedExtraction: Bool = false
     /// User-managed list of working directories offered in the per-chat
@@ -358,7 +364,45 @@ final class AppViewModel: ObservableObject {
 
     /// Where a general-model picker returns to when done.
     private var settingsPickerReturnSheet: MainSheet {
-        onboardingActive ? .onboarding : .preferences
+        onboardingActive ? .onboarding : .preferences()
+    }
+
+    // MARK: - Web search setup
+
+    /// The provider the wizard starts on: one already chosen in the config
+    /// (without a stored token), else the first.
+    var webSearchWizardInitialProvider: WebSearchProviderKind {
+        WebSearchProviderKind(rawValue: preferencesWebSearchProvider) ?? .none
+    }
+
+    /// Hides Preferences and shows the Web Search setup wizard.
+    func presentWebSearchWizard() {
+        preferencesWebSearchError = nil
+        presentSheet(.webSearchWizard)
+    }
+
+    /// The wizard finished or was cancelled: pick up what it stored, then go
+    /// back to the Web Search tab of Preferences.
+    func closeWebSearchWizard() {
+        Task {
+            await loadWebSearchPreferences()
+            presentSheet(.preferences(.webSearch))
+        }
+    }
+
+    /// Removes the web search token, provider and options, resetting the
+    /// Web Search tab to its initial state.
+    func disconnectWebSearch() {
+        Task {
+            do {
+                try await config.resetWebSearch()
+                preferencesWebSearchError = nil
+            } catch {
+                debugLog("Config", "⚠️ failed to disconnect web search: \(error.localizedDescription)")
+                preferencesWebSearchError = "Couldn't remove the API key: \(error.localizedDescription)"
+            }
+            await loadWebSearchPreferences()
+        }
     }
 
     private func setSheet(_ sheet: MainSheet, shown: Bool) {
@@ -451,7 +495,6 @@ final class AppViewModel: ObservableObject {
 
             let eu = await config.getExpandToolUse()
             let ss = await config.getSmoothStreaming()
-            let ws = await config.getWebSearchConfig()
             let clm = await config.getChatListConfig()
             preferencesDefaultRole = dr
             preferencesDefaultModel = dm
@@ -465,10 +508,7 @@ final class AppViewModel: ObservableObject {
 
             preferencesExpandToolUse = eu
             preferencesSmoothStreaming = ss
-            preferencesWebSearchProvider = ws.provider ?? "none"
-            preferencesWebSearchToken = ws.token ?? ""
-            preferencesLinkupRenderJS = ws.linkupRenderJS ?? false
-            preferencesTavilyAdvancedExtraction = ws.tavilyAdvancedExtraction ?? false
+            await loadWebSearchPreferences()
             // Restore chat list mode and filter selections, falling back to
             // defaults when the stored role/directory no longer exists.
             isLoadingChatListState = true
@@ -499,6 +539,17 @@ final class AppViewModel: ObservableObject {
                     max(CGFloat(iw), SidebarSizing.chatInfoRange.lowerBound), SidebarSizing.chatInfoRange.upperBound)
             }
         }
+    }
+
+    /// Copies the web search settings from `ConfigManager` into the cached
+    /// `@Published` properties.
+    private func loadWebSearchPreferences() async {
+        let ws = await config.getWebSearchConfig()
+        preferencesWebSearchProvider = ws.provider ?? "none"
+        preferencesWebSearchConfigured = ws.isConfigured
+        preferencesWebSearchTokenMask = ws.isConfigured ? WebSearchConfig.maskedToken(ws.token ?? "") : ""
+        preferencesLinkupRenderJS = ws.linkupRenderJS ?? false
+        preferencesTavilyAdvancedExtraction = ws.tavilyAdvancedExtraction ?? false
     }
 
     /// Persists the sidebar states (info sidebar visibility, both sidebar
@@ -941,26 +992,6 @@ final class AppViewModel: ObservableObject {
             set: { newValue in
                 self.preferencesSmoothStreaming = newValue
                 Task { await self.config.setSmoothStreaming(newValue) }
-            }
-        )
-    }
-
-    var bindingWebSearchProvider: Binding<String> {
-        Binding(
-            get: { self.preferencesWebSearchProvider },
-            set: { newValue in
-                self.preferencesWebSearchProvider = newValue
-                Task { await self.config.setWebSearchProvider(newValue) }
-            }
-        )
-    }
-
-    var bindingWebSearchToken: Binding<String> {
-        Binding(
-            get: { self.preferencesWebSearchToken },
-            set: { newValue in
-                self.preferencesWebSearchToken = newValue
-                Task { await self.config.setWebSearchToken(newValue) }
             }
         )
     }

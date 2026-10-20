@@ -18,7 +18,7 @@ To address the elephant in the room: there are many AI chat apps and agentic har
 - BYOK support: OpenAI, Anthropic, DeepSeek and OpenRouter — add a key once, the model list and each model's capabilities are loaded for you and picked per chat from a searchable list; several named keys per provider, switchable from the Provider menu
 - roles: clearly defined templates bundling a prompt, tools, and a working directory — several bundled, easy to create your own
 - agentic toolset: built-in filesystem/code/shell/utils/web tool groups with per-tool approval and optional directory isolation; file editing uses the [oh-my-pi](https://github.com/can1357/oh-my-pi) hashline patch format for optimistic-concurrency edits
-- integrated web access: web search and page extraction via Exa, Linkup, or Tavily (unified interface, your choice of provider), plus raw URL fetching
+- integrated web access: web search and page extraction via Exa, Linkup, or Tavily (unified interface, your choice of provider, set up with a short wizard in Preferences > Web Search that verifies your API key), plus raw URL fetching
 - MCP: stdio and streamable HTTP servers with tool filtering, name prefixing, and run policies
 - remote work: seamless SSH working directories for agentic sessions on remote machines
 - CLI: one-shot and interactive modes, piping, unlimited concurrency — run ten chats in the CLI, ten more in the GUI, continue any of them anywhere

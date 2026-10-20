@@ -1358,7 +1358,7 @@ actor ChatEngine {
     /// prompt or the referenced prompt can't be found. Substitution happens here
     /// — never at load time — so each request gets fresh values (e.g. the
     /// current date) and the raw prompt text stays available for editing.
-    private func systemMessage(for chat: Chat) async -> ChatMessage? {
+    private func systemMessage(for chat: Chat) -> ChatMessage? {
         guard let promptContent = systemPromptContent(for: chat) else { return nil }
 
         let role = self.role(for: chat)
@@ -1380,18 +1380,8 @@ actor ChatEngine {
             ),
         ]
         let cache = loadFirstAvailableCache
-        var content = PromptVariables.substitute(text: promptContent, values: values) { args in
+        let content = PromptVariables.substitute(text: promptContent, values: values) { args in
             cache.resolve(args: args, baseDirectory: workdir)
-        }
-        // Provider-backed web tools are advertised even without a configured
-        // provider; tell the model about it so it can nudge the user.
-        let webFilter = resolvedToolSources(for: chat)
-            .first(where: { $0.isBuiltinGroup && $0.name == BuiltinTools.webGroup })?.toolsFilter
-        let webConfigured = await ConfigManager.shared.getWebSearchConfig().isConfigured
-        if let notice = BuiltinToolsWeb.providerMissingNotice(
-            webGroupToolsFilter: webFilter, isConfigured: webConfigured)
-        {
-            content += "\n\n" + notice
         }
         return ChatMessage(role: .system, content: content)
     }
@@ -1572,7 +1562,7 @@ actor ChatEngine {
         // variables substituted at request time. The request history is built
         // from the active path (derived for forked chats, identity for linear).
         var messages: [ChatMessage] = []
-        if let systemMsg = await systemMessage(for: baseChat) {
+        if let systemMsg = systemMessage(for: baseChat) {
             messages.append(systemMsg)
         }
         messages.append(contentsOf: baseChat.activeMessages)
@@ -1956,7 +1946,7 @@ actor ChatEngine {
         // with variables substituted) followed by the surviving prefix (the
         // active path up to but not including the new placeholder).
         var messages: [ChatMessage] = []
-        if let systemMsg = await systemMessage(for: updatedChat) {
+        if let systemMsg = systemMessage(for: updatedChat) {
             messages.append(systemMsg)
         }
         messages.append(contentsOf: updatedChat.activeMessages.dropLast())
@@ -2013,7 +2003,7 @@ actor ChatEngine {
         // with variables substituted) followed by all messages up to (and
         // including) the last user message.
         var messages: [ChatMessage] = []
-        if let systemMsg = await systemMessage(for: updatedChat) {
+        if let systemMsg = systemMessage(for: updatedChat) {
             messages.append(systemMsg)
         }
         messages.append(contentsOf: updatedChat.activeMessages.dropLast())
@@ -2269,8 +2259,8 @@ actor ChatEngine {
             if r.isBuiltinGroup {
                 // Built-in groups: tools are always available (in-process).
                 // Provider-backed web tools (web_search/web_extract) are
-                // advertised even without a configured provider — the system
-                // prompt carries a notice and calls fail with a clear error.
+                // advertised even without a configured provider; calls fail
+                // with an explanatory error instead.
                 let groupTools = BuiltinTools.tools(for: r.name)
                 let roleAllow = Set(r.toolsFilter)
                 let filtered = groupTools.filter { t in
@@ -3229,7 +3219,7 @@ actor ChatEngine {
             // Rebuild the request history: system prompt + surviving prefix
             // (the active path up to but not including the new placeholder).
             var messages: [ChatMessage] = []
-            if let systemMsg = await systemMessage(for: chat) {
+            if let systemMsg = systemMessage(for: chat) {
                 messages.append(systemMsg)
             }
             messages.append(contentsOf: chat.activeMessages.dropLast())
@@ -3370,19 +3360,12 @@ actor ChatEngine {
         let sshWorkdir = effectiveWorkingDirectory(for: chat).map { SSHSpec.isSSH($0) } ?? false
         var builtin: [ChatToolEntry] = []
         var external: [ChatToolEntry] = []
-        // Mirror the request-time gating: provider-backed web tools only
-        // exist when a provider is configured.
-        let webProviderConfigured = await ConfigManager.shared.getWebSearchConfig().isConfigured
         for r in resolved {
             if r.isBuiltinGroup {
                 let roleAllow = Set(r.toolsFilter)
                 for tool in BuiltinTools.tools(for: r.name) {
                     if sshWorkdir, BuiltinTools.sshUnavailableToolNames.contains(tool.name) { continue }
-                    if r.name == BuiltinTools.webGroup, !webProviderConfigured,
-                        BuiltinToolsWeb.providerToolNames.contains(tool.name)
-                    {
-                        continue
-                    }
+
                     if !roleAllow.isEmpty && !roleAllow.contains(tool.name) { continue }
                     builtin.append(
                         ChatToolEntry(

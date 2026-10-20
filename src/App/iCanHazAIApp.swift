@@ -358,7 +358,7 @@ struct iCanHazAIApp: App {
             CommandGroup(replacing: .appSettings) {
                 Group {
                     Button("Preferences...") {
-                        AppViewModel.shared?.presentSheetInMainWindow(.preferences)
+                        AppViewModel.shared?.presentSheetInMainWindow(.preferences())
                     }
                     .keyboardShortcut(",", modifiers: .command)
                 }

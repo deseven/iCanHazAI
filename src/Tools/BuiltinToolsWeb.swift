@@ -18,35 +18,6 @@ enum BuiltinToolsWeb {
     static let extractToolName = "web_extract"
     static let fetchToolName = "web_fetch"
 
-    /// Tools that require a configured provider. They're advertised even
-    /// without one (a `[SYSTEM NOTICE]` in the system prompt explains the
-    /// situation) but fail at call time. `web_fetch` always works.
-    static let providerToolNames: Set<String> = [searchToolName, extractToolName]
-
-    /// The notice appended to the system prompt when the role can call
-    /// provider-backed tools but no provider is configured; nil otherwise.
-    /// `webGroupToolsFilter` is the role's `tools` allowlist for the web
-    /// group (empty = all tools), nil when the group isn't enabled.
-    static func providerMissingNotice(webGroupToolsFilter: [String]?, isConfigured: Bool) -> String? {
-        guard let filter = webGroupToolsFilter, !isConfigured else { return nil }
-        let allowed = { (name: String) in filter.isEmpty || filter.contains(name) }
-        let providerTools = [searchToolName, extractToolName].filter(allowed)
-        guard !providerTools.isEmpty else { return nil }
-        let list = providerTools.map { "`\($0)`" }.joined(separator: " and ")
-        let plural = providerTools.count > 1
-        var notice = """
-            [SYSTEM NOTICE]
-            The user hasn't set up a web access provider yet. The \(list) tool\(plural ? "s" : "") \
-            \(plural ? "are" : "is") available to you, but calling \(plural ? "them" : "it") will fail. \
-            If you need \(plural ? "them" : "it") to complete your task, nudge the user to set up \
-            the provider in the app's Preferences > Web Search, or to ask the Configurator role for help.
-            """
-        if allowed(fetchToolName) {
-            notice += "\nThe `web_fetch` tool works without a provider."
-        }
-        return notice
-    }
-
     static let toolDefs: [BuiltinToolDef] = [
         BuiltinToolDef(
             name: searchToolName,
@@ -442,11 +413,18 @@ enum BuiltinToolsWeb {
 
     // MARK: - Helpers
 
-    /// Provider tools are advertised even while unconfigured (a system-prompt
-    /// notice explains the situation), so a call can legitimately arrive
-    /// here; the setting can also flip between gathering tools and executing.
-    private static let notConfiguredError = BuiltinToolError(
-        "no web search provider configured — ask the user to set one up in Preferences > Web Search")
+    /// `web_search` / `web_extract` are advertised to the model even while no
+    /// provider is configured, so a call can legitimately arrive here. The
+    /// message is written for the model: it explains the situation, tells it
+    /// not to retry or paper over the gap, and to stop and report to the user
+    /// when the task depends on these tools.
+    static let notConfiguredError = BuiltinToolError(
+        "web_search and web_extract are not available right now: no web search provider is set up "
+            + "(a provider and its API token are required). Do not retry them. "
+            + "If the task depends on web search or page extraction, there is no point in continuing: "
+            + "stop, tell the user these tools are unavailable and ask them to set up a provider in "
+            + "Preferences > Web Search. Don't substitute guesses or memory for the missing results. "
+            + "Only continue if you can fully complete the task without them.")
 
     private static func configured() async throws -> WebSearchConfig {
         let config = await ConfigManager.shared.getWebSearchConfig()

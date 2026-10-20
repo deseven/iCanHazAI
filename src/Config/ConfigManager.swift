@@ -146,6 +146,24 @@ struct WebSearchConfig: Codable, Equatable, Sendable {
         resolvedProvider != .none && !(token ?? "").isEmpty
     }
 
+    /// The config after a successful setup: `provider` selected and the
+    /// options that belong to other providers dropped.
+    func settingUp(_ provider: WebSearchProviderKind) -> WebSearchConfig {
+        var copy = self
+        copy.provider = provider.rawValue
+        if provider != .linkup { copy.linkupRenderJS = nil }
+        if provider != .tavily { copy.tavilyAdvancedExtraction = nil }
+        return copy
+    }
+
+    /// How a token is shown once stored: its first and last 4 characters, or
+    /// bullets when it's too short for that to hide most of it.
+    static func maskedToken(_ token: String) -> String {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 16 else { return String(repeating: "•", count: 8) }
+        return "\(trimmed.prefix(4))…\(trimmed.suffix(4))"
+    }
+
     enum CodingKeys: String, CodingKey {
         case provider
         case linkupRenderJS = "linkup_render_js"
@@ -617,20 +635,25 @@ actor ConfigManager {
         persist()
     }
 
-    func setWebSearchProvider(_ provider: String) {
-        config.webSearch.provider = provider
+    /// Stores a checked token and selects its provider. The token goes first,
+    /// so a failed store never leaves a provider selected without one.
+    func setUpWebSearch(provider: WebSearchProviderKind, token: String) throws {
+        try secrets.setNamedSecret(Self.webSearchTokenName, to: token)
+        webSearchToken = token
+        webSearchTokenLoaded = true
+        config.webSearch = config.webSearch.settingUp(provider)
         persist()
     }
 
-    func setWebSearchToken(_ token: String) {
-        let value = token.isEmpty ? nil : token
-        do {
-            try secrets.setNamedSecret(Self.webSearchTokenName, to: value)
-            webSearchToken = value
-            webSearchTokenLoaded = true
-        } catch {
-            debugLog("Config", "⚠️ failed to store web search token: \(error.localizedDescription)")
-        }
+    /// Disconnects web search: drops the token, the provider selection and
+    /// every provider option, leaving `[web_search]` as on a fresh install.
+    /// Throws without changing anything when the token can't be removed.
+    func resetWebSearch() throws {
+        try secrets.setNamedSecret(Self.webSearchTokenName, to: nil)
+        webSearchToken = nil
+        webSearchTokenLoaded = true
+        config.webSearch = WebSearchConfig()
+        persist()
     }
 
     func setLinkupRenderJS(_ enabled: Bool) {

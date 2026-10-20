@@ -3,41 +3,44 @@
 
 import SwiftUI
 
+/// The tabs of the Preferences sheet.
+enum PreferencesTab: String, CaseIterable, Identifiable, Equatable {
+    case general
+    case chat
+    case webSearch
+    case debug
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .general: return "General"
+        case .chat: return "Chat"
+        case .webSearch: return "Web Search"
+        case .debug: return "Debug"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .general: return "gearshape"
+        case .chat: return "text.bubble"
+        case .webSearch: return "globe"
+        case .debug: return "ladybug"
+        }
+    }
+}
+
 /// Preferences sheet with vertical tabs. Opened from the app menu (⌘,).
 struct PreferencesView: View {
     @EnvironmentObject var store: AppViewModel
     @Environment(\.dismiss) private var dismiss
 
-    /// Currently selected tab identifier.
-    @State private var selectedTab: Tab = .general
+    /// Currently selected tab.
+    @State private var selectedTab: PreferencesTab
 
-    // MARK: - Tab enumeration
-
-    private enum Tab: String, CaseIterable, Identifiable {
-        case general
-        case chat
-        case webSearch
-        case debug
-
-        var id: String { rawValue }
-
-        var label: String {
-            switch self {
-            case .general: return "General"
-            case .chat: return "Chat"
-            case .webSearch: return "Web Search"
-            case .debug: return "Debug"
-            }
-        }
-
-        var icon: String {
-            switch self {
-            case .general: return "gearshape"
-            case .chat: return "text.bubble"
-            case .webSearch: return "globe"
-            case .debug: return "ladybug"
-            }
-        }
+    init(initialTab: PreferencesTab = .general) {
+        _selectedTab = State(initialValue: initialTab)
     }
 
     // MARK: - Body
@@ -61,7 +64,7 @@ struct PreferencesView: View {
     private var tabs: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
-                ForEach(Tab.allCases) { tab in
+                ForEach(PreferencesTab.allCases) { tab in
                     Button {
                         selectedTab = tab
                     } label: {
@@ -256,62 +259,93 @@ private struct ChatTab: View {
 private struct WebSearchTab: View {
     @EnvironmentObject var store: AppViewModel
 
+    private var providerName: String {
+        WebSearchProviderKind(rawValue: store.preferencesWebSearchProvider)?.displayName ?? "None"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            PrefRow(
-                title: "Provider",
-                description:
-                    "The backend used by the web_search and web_extract tools. Without a provider those tools fail when called; only the raw web_fetch tool works."
-            ) {
-                Picker("", selection: store.bindingWebSearchProvider) {
-                    Text("None").tag("none")
-                    Text("Exa").tag("exa")
-                    Text("Linkup").tag("linkup")
-                    Text("Tavily").tag("tavily")
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .fixedSize()
-            }
-
-            if store.preferencesWebSearchProvider != "none" {
-                PrefRow(
-                    title: "Token",
-                    description: "API key for the selected provider."
-                ) {
-                    TextField("", text: store.bindingWebSearchToken)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 360)
-                }
-            }
-
-            if store.preferencesWebSearchProvider == "linkup" {
-                PrefRow(
-                    title: "Render JS for Extraction",
-                    description: "Render the page's JavaScript before extracting its content."
-                ) {
-                    Toggle("", isOn: store.bindingLinkupRenderJS)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                }
-            }
-
-            if store.preferencesWebSearchProvider == "tavily" {
-                PrefRow(
-                    title: "Advanced Extraction",
-                    description:
-                        "Retrieve more data, including tables and embedded content, at higher latency and cost."
-                ) {
-                    Toggle("", isOn: store.bindingTavilyAdvancedExtraction)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                }
+            if store.preferencesWebSearchConfigured {
+                connected
+            } else {
+                notSetUp
             }
 
             Spacer()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 8)
+    }
+
+    // MARK: - Not set up
+
+    private var notSetUp: some View {
+        PrefRow(
+            title: "Web Search",
+            description:
+                "Lets models search the web and read pages through Exa, Linkup, or Tavily, using your own API key. Without it the web_search and web_extract tools are unavailable; only the raw web_fetch tool works."
+        ) {
+            Button("Set up Web Search…") { store.presentWebSearchWizard() }
+        }
+    }
+
+    // MARK: - Set up
+
+    @ViewBuilder
+    private var connected: some View {
+        PrefRow(
+            title: "Provider",
+            description: "The backend used by the web_search and web_extract tools."
+        ) {
+            Text(providerName)
+                .fontWeight(.medium)
+        }
+
+        PrefRow(
+            title: "API Key",
+            description: "Stored encrypted and tied to this Mac, never in a config file."
+        ) {
+            Text(store.preferencesWebSearchTokenMask)
+                .font(.body.monospaced())
+                .textSelection(.enabled)
+        }
+
+        providerOptions
+
+        VStack(alignment: .leading, spacing: 6) {
+            Button("Disconnect", role: .destructive) { store.disconnectWebSearch() }
+            if let error = store.preferencesWebSearchError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var providerOptions: some View {
+        if store.preferencesWebSearchProvider == "linkup" {
+            PrefRow(
+                title: "Render JS for Extraction",
+                description: "Render the page's JavaScript before extracting its content."
+            ) {
+                Toggle("", isOn: store.bindingLinkupRenderJS)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+        }
+
+        if store.preferencesWebSearchProvider == "tavily" {
+            PrefRow(
+                title: "Advanced Extraction",
+                description:
+                    "Retrieve more data, including tables and embedded content, at higher latency and cost."
+            ) {
+                Toggle("", isOn: store.bindingTavilyAdvancedExtraction)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+        }
     }
 }
 

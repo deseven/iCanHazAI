@@ -49,8 +49,9 @@ extension AllAppTests {
             #expect(MainSheet.providerWizard.isOnboardingFlow)
             #expect(MainSheet.settingsModelPicker(.defaultModel).isOnboardingFlow)
             #expect(MainSheet.settingsModelPicker(.utilityModel).isOnboardingFlow)
-            #expect(!MainSheet.preferences.isOnboardingFlow)
+            #expect(!MainSheet.preferences().isOnboardingFlow)
             #expect(!MainSheet.mcpWizard.isOnboardingFlow)
+            #expect(!MainSheet.webSearchWizard.isOnboardingFlow)
             #expect(!MainSheet.modelPicker.isOnboardingFlow)
             #expect(!MainSheet.rolePicker.isOnboardingFlow)
         }

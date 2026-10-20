@@ -487,32 +487,54 @@ extension AllAppTests {
             #expect(!role.hasDirectoryRelevantTools)
         }
 
-        // MARK: - Provider-missing system prompt notice
+        // MARK: - Availability without a provider
 
-        @Test("Notice is present when provider tools are advertised without a provider")
-        func providerMissingNoticePresent() {
-            let notice = BuiltinToolsWeb.providerMissingNotice(webGroupToolsFilter: [], isConfigured: false)
-            #expect(notice?.contains("[SYSTEM NOTICE]") == true)
-            #expect(notice?.contains("`web_search` and `web_extract`") == true)
-            #expect(notice?.contains("Preferences > Web Search") == true)
-            // web_fetch is advertised too, so it's mentioned as working.
-            #expect(notice?.contains("`web_fetch`") == true)
+        @Test("The not-configured error tells the model the tools are unavailable and where the user sets them up")
+        func notConfiguredErrorMessage() {
+            let message = BuiltinToolsWeb.notConfiguredError.message
+            #expect(message.contains("web_search"))
+            #expect(message.contains("web_extract"))
+            #expect(message.contains("not available right now"))
+            #expect(message.contains("Preferences > Web Search"))
+            // The model is told to stop (not retry or guess) when the task needs these tools.
+            #expect(message.contains("Do not retry"))
+            #expect(message.contains("no point in continuing"))
+            #expect(message.contains("tell the user"))
         }
 
-        @Test("Notice is absent when the web group is off, the provider is set, or only web_fetch is allowed")
-        func providerMissingNoticeAbsent() {
-            #expect(BuiltinToolsWeb.providerMissingNotice(webGroupToolsFilter: nil, isConfigured: false) == nil)
-            #expect(BuiltinToolsWeb.providerMissingNotice(webGroupToolsFilter: [], isConfigured: true) == nil)
-            #expect(
-                BuiltinToolsWeb.providerMissingNotice(webGroupToolsFilter: ["web_fetch"], isConfigured: false) == nil)
+        @Test("Search and extract requests fail with the not-configured error when no provider is selected")
+        func requestsFailWithoutProvider() {
+            let expected = BuiltinToolsWeb.notConfiguredError.message
+            #expect {
+                try BuiltinToolsWeb.searchRequest(
+                    config: config("none"),
+                    params: .init(query: "q", numResults: 5, dateStart: nil, dateEnd: nil))
+            } throws: { ($0 as? BuiltinToolError)?.message == expected }
+            #expect {
+                try BuiltinToolsWeb.extractRequest(config: config("none"), url: "https://example.com")
+            } throws: { ($0 as? BuiltinToolError)?.message == expected }
         }
 
-        @Test("Notice reflects the role's tool allowlist")
-        func providerMissingNoticeFiltered() {
-            let notice = BuiltinToolsWeb.providerMissingNotice(webGroupToolsFilter: ["web_search"], isConfigured: false)
-            #expect(notice?.contains("`web_search`") == true)
-            #expect(notice?.contains("`web_extract`") == false)
-            #expect(notice?.contains("`web_fetch`") == false)
+        @Test("A role with the web group lists all web tools regardless of provider setup")
+        func webToolsListedWithoutProvider() async throws {
+            let temp = try TempEnv()
+            let registry = ProviderRegistry(store: InMemorySecretStore())
+            try await registry.load()
+            let catalog = ModelCatalog(
+                registry: registry, store: ModelCatalogStore(),
+                fetcher: StubFetcher { _ in .status(500) },
+                metadata: StubMetadataSource(result: .failure(TestFailure())))
+            let engine = ChatEngine(store: temp.store, env: temp.env, registry: registry, catalog: catalog)
+            try "[web]\n".write(
+                to: temp.env.rolesURL.appendingPathComponent("Web.toml"), atomically: true, encoding: .utf8)
+            await engine.applyConfigChange(.roles)
+            try temp.writeChatDirect(
+                Fixtures.chat(messages: [Fixtures.message()], role: "Web"), filename: "c.json")
+            await engine.loadFromCache()
+            await engine.ensureChatLoaded(filename: "c.json")
+
+            let snapshot = await engine.toolSnapshot(filename: "c.json")
+            #expect(snapshot.builtin.map(\.name) == ["web_extract", "web_fetch", "web_search"])
         }
 
         @Test("directory_isolation with only the web group is a validation error")

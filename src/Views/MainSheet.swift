@@ -15,9 +15,12 @@ enum MainSheet: Identifiable, Equatable {
     /// The first-run requirements sheet (provider, default and utility model).
     /// Shown whenever one of them is unmet; see `AppViewModel.onboardingActive`.
     case onboarding
-    case preferences
+    /// Preferences, opened on a tab. Dialogs launched from a tab (the Web
+    /// Search wizard) return to it, since Preferences is rebuilt each time.
+    case preferences(PreferencesTab = .general)
     case providerWizard
     case mcpWizard
+    case webSearchWizard
     case configErrors
     case rolePicker
     case sidebarRolePicker
@@ -43,6 +46,7 @@ enum MainSheet: Identifiable, Equatable {
         case .preferences: return "preferences"
         case .providerWizard: return "providerWizard"
         case .mcpWizard: return "mcpWizard"
+        case .webSearchWizard: return "webSearchWizard"
         case .configErrors: return "configErrors"
         case .rolePicker: return "rolePicker"
         case .sidebarRolePicker: return "sidebarRolePicker"
@@ -63,7 +67,9 @@ enum MainSheet: Identifiable, Equatable {
     /// Sheets that aren't tied to the selected chat's state.
     var isAppLevel: Bool {
         switch self {
-        case .onboarding, .preferences, .settingsModelPicker, .providerWizard, .mcpWizard, .configErrors: return true
+        case .onboarding, .preferences, .settingsModelPicker, .providerWizard, .mcpWizard, .webSearchWizard,
+            .configErrors:
+            return true
         default: return false
         }
     }
@@ -88,8 +94,8 @@ struct MainSheetContent: View {
         case .onboarding:
             OnboardingView()
 
-        case .preferences:
-            PreferencesView()
+        case .preferences(let tab):
+            PreferencesView(initialTab: tab)
 
         case .providerWizard:
             ProviderWizardView(
@@ -99,6 +105,11 @@ struct MainSheetContent: View {
 
         case .mcpWizard:
             MCPWizardView(onFinish: { store.refreshPreferences() })
+
+        case .webSearchWizard:
+            WebSearchWizardView(
+                initialProvider: store.webSearchWizardInitialProvider,
+                onClose: { store.closeWebSearchWizard() })
 
         case .configErrors:
             ConfigErrorsSheet(
