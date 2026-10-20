@@ -46,14 +46,24 @@ extension AllAppTests {
         @Test("only the onboarding flow may be shown while onboarding is active")
         func onboardingFlowSheets() {
             #expect(MainSheet.onboarding.isOnboardingFlow)
-            #expect(MainSheet.providerWizard.isOnboardingFlow)
+            #expect(MainSheet.providerWizard().isOnboardingFlow)
             #expect(MainSheet.settingsModelPicker(.defaultModel).isOnboardingFlow)
             #expect(MainSheet.settingsModelPicker(.utilityModel).isOnboardingFlow)
             #expect(!MainSheet.preferences().isOnboardingFlow)
+            #expect(!MainSheet.manageKeys.isOnboardingFlow)
             #expect(!MainSheet.mcpWizard.isOnboardingFlow)
             #expect(!MainSheet.webSearchWizard.isOnboardingFlow)
             #expect(!MainSheet.modelPicker.isOnboardingFlow)
             #expect(!MainSheet.rolePicker.isOnboardingFlow)
+        }
+
+        @Test("Manage Keys is an app-level sheet, and the wizard is one sheet whatever provider it starts on")
+        func manageKeysSheets() {
+            #expect(MainSheet.manageKeys.isAppLevel)
+            #expect(MainSheet.providerWizard(.openai).isAppLevel)
+            #expect(MainSheet.providerWizard(.openai).id == MainSheet.providerWizard().id)
+            #expect(MainSheet.providerWizard(.openai).id != MainSheet.manageKeys.id)
+            #expect(MainSheet.providerWizard(.openai) != MainSheet.providerWizard())
         }
     }
 }

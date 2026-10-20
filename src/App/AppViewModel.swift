@@ -353,12 +353,13 @@ final class AppViewModel: ObservableObject {
         maybePresentModelPickerForSelectedChat()
     }
 
-    /// The provider wizard finished or was cancelled.
+    /// The provider wizard finished or was cancelled. One opened for a given
+    /// provider came from Manage Keys and goes back there.
     func closeProviderWizard() {
         if onboardingActive {
             activeSheet = .onboarding
-        } else {
-            dismissSheet(.providerWizard)
+        } else if case .providerWizard(let provider) = activeSheet {
+            activeSheet = provider == nil ? nil : .manageKeys
         }
     }
 
@@ -1141,6 +1142,8 @@ final class AppViewModel: ObservableObject {
             // competes with the loader.
             providersLoaded = true
             updateOnboarding()
+            // With the last key gone there is nothing left to manage.
+            if providers.isEmpty { dismissSheet(.manageKeys) }
             maybePresentModelPickerForSelectedChat()
         case .modelsChanged(let models):
             self.models = models
@@ -2118,6 +2121,16 @@ final class AppViewModel: ObservableObject {
     /// Makes a key the one new requests use ("Provider > {provider} > Use '{key}' Key").
     func selectProviderKey(_ keyID: UUID) {
         Task { await engine.selectProviderKey(keyID) }
+    }
+
+    /// Changes a key's description ("Provider > Manage Keys…").
+    func renameProviderKey(_ keyID: UUID, to name: String) async throws {
+        try await engine.renameProviderKey(keyID, to: name)
+    }
+
+    /// Deletes a key; a provider left without keys is disabled ("Provider > Manage Keys…").
+    func deleteProviderKey(_ keyID: UUID) async throws {
+        try await engine.deleteProviderKey(keyID)
     }
 
     /// Triggers a full MCP configuration pass ("MCP > Reinitialize MCP Servers…"). Resets

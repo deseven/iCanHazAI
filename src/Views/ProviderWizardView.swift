@@ -5,7 +5,8 @@ import AppKit
 import SwiftUI
 
 /// The New Provider wizard sheet: pick a provider, enter its API key, check
-/// it, and store it encrypted. All state lives in `ProviderWizardModel`.
+/// it, and store it encrypted. All state lives in `ProviderWizardModel`. With
+/// an `initialProvider` (adding a key from Manage Keys) the first step is skipped.
 struct ProviderWizardView: View {
     @StateObject private var model: ProviderWizardModel
 
@@ -15,10 +16,11 @@ struct ProviderWizardView: View {
 
     @FocusState private var keyFocused: Bool
 
-    init(existingKeyNames: [Provider: [String]], onClose: @escaping () -> Void) {
+    init(existingKeyNames: [Provider: [String]], initialProvider: Provider? = nil, onClose: @escaping () -> Void) {
         _model = StateObject(
             wrappedValue: ProviderWizardModel(
                 existingKeyNames: existingKeyNames,
+                initialProvider: initialProvider,
                 validate: { provider, key in
                     try await ChatEngine.shared.validateProvider(provider, apiKey: key)
                 },
@@ -68,7 +70,7 @@ struct ProviderWizardView: View {
 
     private var stepIndicator: some View {
         HStack(spacing: 6) {
-            ForEach(ProviderWizardModel.Step.allCases) { s in
+            ForEach(model.steps) { s in
                 HStack(spacing: 6) {
                     Circle()
                         .fill(model.step.rawValue >= s.rawValue ? Color.accentColor : Color.secondary.opacity(0.3))
@@ -78,7 +80,7 @@ struct ProviderWizardView: View {
                         .foregroundStyle(model.step == s ? Color.primary : Color.secondary)
                         .fontWeight(model.step == s ? .semibold : .regular)
                 }
-                if s != ProviderWizardModel.Step.allCases.last {
+                if s != model.steps.last {
                     Spacer()
                 }
             }

@@ -8,12 +8,21 @@ struct StoredKey: Identifiable, Hashable, Sendable {
     let id: UUID
     let provider: Provider
     let name: String
+
+    /// How a secret is shown in the UI: its first and last 4 characters. One
+    /// too short to keep something hidden in between is masked completely.
+    static func preview(of secret: String) -> String {
+        guard secret.count >= 12 else { return String(repeating: "•", count: 8) }
+        return "\(secret.prefix(4))…\(secret.suffix(4))"
+    }
 }
 
 protocol SecretStore: Sendable {
     func listKeys() throws -> [StoredKey]
     func secret(for key: StoredKey) throws -> String
     func addKey(provider: Provider, name: String, secret: String) throws -> StoredKey
+    /// Changes the description only; the secret and the key's position stay.
+    func renameKey(_ key: StoredKey, to name: String) throws -> StoredKey
     func deleteKey(_ key: StoredKey) throws
 
     /// Standalone secrets that aren't provider keys, e.g. `web_search.token`.
@@ -69,6 +78,15 @@ final class InMemorySecretStore: SecretStore, @unchecked Sendable {
             keys.append(key)
             secrets[key.id] = secret
             return key
+        }
+    }
+
+    func renameKey(_ key: StoredKey, to name: String) throws -> StoredKey {
+        try lock.withLock {
+            guard let index = keys.firstIndex(where: { $0.id == key.id }) else { throw SecretStoreError.keyNotFound }
+            let renamed = StoredKey(id: key.id, provider: keys[index].provider, name: name)
+            keys[index] = renamed
+            return renamed
         }
     }
 

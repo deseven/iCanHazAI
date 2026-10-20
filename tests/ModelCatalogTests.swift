@@ -157,6 +157,47 @@ extension AllAppTests {
             #expect(h.fetcher.requests.map { $0.headers["Authorization"] } == ["Bearer fake-key", "Bearer second-key"])
         }
 
+        @Test("a provider that lost its last key drops its models and refresh state and stops being refreshed")
+        func providerRemoved() async throws {
+            let h = try await makeHarness(providers: [.deepseek, .openrouter]) { url in
+                url.host == "deepseek.test"
+                    ? .json(ProviderFixtures.deepseekModels(["a"]))
+                    : .json(ProviderFixtures.openRouterModels([("x", 1)]))
+            }
+            _ = await h.catalog.refreshAll()
+            #expect(await waitUntil { h.clock.sleeperCount == 2 })
+
+            let key = try #require(await h.registry.keys(for: .deepseek).first)
+            try await h.registry.deleteKey(key.id)
+            await h.catalog.providerRemoved(.deepseek)
+
+            #expect(names(await h.catalog.snapshot()) == ["openrouter:x"])
+            #expect(await h.catalog.refreshInfo(for: .deepseek) == nil)
+            #expect(await waitUntil { h.clock.sleeperCount == 1 })
+            let summary = await h.catalog.refreshAll()
+            #expect(Set(summary.outcomes.keys) == [.openrouter])
+        }
+
+        @Test("a refresh finishing after the provider lost its last key stores nothing")
+        func refreshFinishingAfterRemoval() async throws {
+            let h = try await makeHarness(providers: [.deepseek]) { _ in
+                try await Task.sleep(for: .milliseconds(150))
+                return .json(ProviderFixtures.deepseekModels(["a"]))
+            }
+            async let running = h.catalog.refreshAll()
+            try await Task.sleep(for: .milliseconds(40))
+
+            let key = try #require(await h.registry.keys(for: .deepseek).first)
+            try await h.registry.deleteKey(key.id)
+            await h.catalog.providerRemoved(.deepseek)
+            let summary = await running
+
+            if case .success = try #require(summary.outcomes[.deepseek]) { Issue.record("expected failure") }
+            #expect(await h.catalog.snapshot().isEmpty)
+            #expect(await h.catalog.refreshInfo(for: .deepseek) == nil)
+            #expect(h.clock.sleeperCount == 0)
+        }
+
         // MARK: - OpenAI metadata failure
 
         @Test("an OpenAI refresh survives a LiteLLM failure and keeps cached capabilities")

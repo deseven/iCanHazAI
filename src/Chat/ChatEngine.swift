@@ -332,9 +332,12 @@ actor ChatEngine {
         var list: [ConfiguredProvider] = []
         for provider in await registry.configuredProviders {
             let info = await catalog.refreshInfo(for: provider)
+            let keys = await registry.keys(for: provider)
+            var previews: [UUID: String] = [:]
+            for key in keys { previews[key.id] = await registry.preview(of: key.id) }
             list.append(
                 ConfiguredProvider(
-                    provider: provider, keys: await registry.keys(for: provider),
+                    provider: provider, keys: keys, keyPreviews: previews,
                     selectedKeyID: await registry.selectedKey(for: provider)?.id,
                     modelCount: info?.modelCount, isRefreshing: refreshingProviders.contains(provider),
                     lastRefresh: info?.lastSuccess, lastError: providerErrors[provider]))
@@ -398,6 +401,38 @@ actor ChatEngine {
         providerErrors[key.provider] = nil
         await emitProviders()
         refreshModelsAfterKeyChange(of: [key.provider])
+    }
+
+    /// Changes a key's description. The key and its models stay as they are.
+    func renameProviderKey(_ keyID: UUID, to name: String) async throws {
+        guard let key = try await registry.renameKey(keyID, to: name) else { return }
+        debugLog("Providers", "\(key.provider.displayName) key renamed → '\(key.name)'")
+        await emitProviders()
+    }
+
+    /// Deletes a key. When it was the active one, the provider's next key
+    /// takes over and the model list is re-fetched with it. A provider left
+    /// without keys is disabled: its models are dropped and a default or
+    /// utility model that belonged to it is reset.
+    func deleteProviderKey(_ keyID: UUID) async throws {
+        let wasActive = await registry.selectedKeyIDs.values.contains(keyID)
+        guard let key = try await registry.deleteKey(keyID) else { return }
+        let provider = key.provider
+        debugLog("Providers", "\(provider.displayName) key '\(key.name)' deleted")
+        await ConfigManager.shared.setProviderKeys(await registry.selectedKeyIDs)
+        providerErrors[provider] = nil
+        let disabled = !(await registry.isConfigured(provider))
+        if disabled {
+            await catalog.providerRemoved(provider)
+            models = await catalog.snapshot()
+            emit(.modelsChanged(models))
+        }
+        await emitProviders()
+        if disabled {
+            await validateGeneralModels()
+        } else if wasActive {
+            refreshModelsAfterKeyChange(of: [provider])
+        }
     }
 
     /// Manual "Refresh Models…": shows the loader and completes with the final

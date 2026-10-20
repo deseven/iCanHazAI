@@ -57,6 +57,26 @@ extension AllAppTests {
             #expect(try store.listKeys().map(\.id) == [other.id, alpha.id])
         }
 
+        @Test("renaming keeps the secret and the position, and survives a reopen")
+        func renameKey() throws {
+            let dir = makeDir()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let store = makeStore(dir)
+            let first = try store.addKey(provider: .openai, name: "Default", secret: "one")
+            let second = try store.addKey(provider: .openai, name: "Work", secret: "two")
+
+            let renamed = try store.renameKey(first, to: "Personal")
+            #expect(renamed == StoredKey(id: first.id, provider: .openai, name: "Personal"))
+
+            let reopened = makeStore(dir)
+            #expect(try reopened.listKeys().map(\.name) == ["Personal", "Work"])
+            #expect(try reopened.listKeys().map(\.id) == [first.id, second.id])
+            #expect(try reopened.secret(for: renamed) == "one")
+
+            let ghost = StoredKey(id: UUID(), provider: .openai, name: "Ghost")
+            #expect(throws: SecretStoreError.keyNotFound) { try store.renameKey(ghost, to: "Other") }
+        }
+
         @Test("the secret is not stored in plain text")
         func notPlainText() throws {
             let dir = makeDir()

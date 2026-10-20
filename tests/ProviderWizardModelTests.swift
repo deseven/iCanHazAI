@@ -23,9 +23,10 @@ private final class WizardProbe: @unchecked Sendable {
     var commits: [Commit] { lock.withLock { _commits } }
 
     @MainActor
-    func makeModel(existing: [Provider: [String]] = [:]) -> ProviderWizardModel {
+    func makeModel(existing: [Provider: [String]] = [:], initialProvider: Provider? = nil) -> ProviderWizardModel {
         ProviderWizardModel(
             existingKeyNames: existing,
+            initialProvider: initialProvider,
             validate: { [self] provider, key in
                 lock.withLock { _validations.append((provider, key)) }
                 return try await validateResult(provider, key)
@@ -274,6 +275,49 @@ extension AllAppTests {
             model.next()
             await model.settle()
             #expect(probe.commits.map(\.key.name) == ["Work"])
+        }
+
+        @Test("with an initial provider the wizard starts on the key step and has no provider step to return to")
+        func initialProvider() async {
+            let probe = WizardProbe()
+            let model = probe.makeModel(existing: [.openai: ["Default"]], initialProvider: .openai)
+            #expect(model.step == .apiKey)
+            #expect(model.selectedProvider == .openai)
+            #expect(model.skipsProviderStep)
+            #expect(model.steps == [.apiKey, .check, .summary])
+            #expect(!model.canGoBack)
+            #expect(!model.isFirstKey)
+            #expect(model.keyName.isEmpty)
+            #expect(model.makeActive)
+
+            model.apiKey = "fake"
+            model.keyName = "Work"
+            model.next()
+            await model.settle()
+            #expect(model.step == .check)
+            #expect(model.canGoBack)
+
+            model.back()
+            #expect(model.step == .apiKey)
+            #expect(!model.canGoBack)
+
+            model.next()
+            await model.settle()
+            model.next()
+            await model.settle()
+            #expect(model.step == .summary)
+            #expect(
+                probe.commits.map(\.key) == [
+                    NewProviderKey(provider: .openai, name: "Work", secret: "fake", makeActive: true)
+                ])
+        }
+
+        @Test("without an initial provider every step is shown, starting with the provider")
+        func defaultSteps() {
+            let model = WizardProbe().makeModel()
+            #expect(!model.skipsProviderStep)
+            #expect(model.steps == ProviderWizardModel.Step.allCases)
+            #expect(model.step == .provider)
         }
 
         @Test("a name already used by the provider is refused, ignoring case")

@@ -385,9 +385,13 @@ struct iCanHazAIApp: App {
                                 onSelectKey: { AppViewModel.shared?.selectProviderKey($0) })
                         }
                         Divider()
+                        Button("Manage Keys…") {
+                            AppViewModel.shared?.presentSheetInMainWindow(.manageKeys)
+                        }
+                        Divider()
                     }
                     Button("New Provider…") {
-                        AppViewModel.shared?.presentSheetInMainWindow(.providerWizard)
+                        AppViewModel.shared?.presentSheetInMainWindow(.providerWizard())
                     }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                 }

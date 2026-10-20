@@ -33,7 +33,7 @@ struct OnboardingView: View {
                     isEnabled: true,
                     buttonTitle: status.hasProvider ? "Add Another…" : "Add Provider…",
                     isProminent: firstUnmet == .provider,
-                    action: { store.presentSheet(.providerWizard) })
+                    action: { store.presentSheet(.providerWizard()) })
 
                 RequirementRow(
                     icon: "text.bubble",

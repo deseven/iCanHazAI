@@ -120,6 +120,19 @@ final class EncryptedSecretStore: SecretStore, @unchecked Sendable {
         }
     }
 
+    /// The sealed secret is bound to the id and provider, not the name, so it stays as it is.
+    func renameKey(_ key: StoredKey, to name: String) throws -> StoredKey {
+        try queue.sync {
+            let context = try openContext()
+            guard let entry = try fetch(StoredSecretEntry.self).first(where: { $0.id == key.id }) else {
+                throw SecretStoreError.keyNotFound
+            }
+            entry.name = name
+            try save(context)
+            return StoredKey(id: key.id, provider: key.provider, name: name)
+        }
+    }
+
     func deleteKey(_ key: StoredKey) throws {
         try queue.sync {
             let context = try openContext()

@@ -8,6 +8,8 @@ struct ConfiguredProvider: Sendable, Equatable, Identifiable {
     let provider: Provider
     /// The provider's keys, oldest first.
     var keys: [StoredKey]
+    /// Per key id, the first and last 4 characters of its secret, for display.
+    var keyPreviews: [UUID: String] = [:]
     /// The key new requests are made with.
     var selectedKeyID: UUID?
     var modelCount: Int?

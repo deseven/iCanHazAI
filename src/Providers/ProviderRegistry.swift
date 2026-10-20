@@ -66,6 +66,11 @@ actor ProviderRegistry {
         keys.filter { $0.provider == provider }
     }
 
+    /// The key as the UI shows it (see `StoredKey.preview(of:)`); the secret itself never leaves the registry.
+    func preview(of keyID: UUID) -> String? {
+        secrets[keyID].map(StoredKey.preview(of:))
+    }
+
     /// The key new requests use: the chosen one while it exists, else the
     /// provider's first key. Nil only for a provider without keys.
     func selectedKey(for provider: Provider) -> StoredKey? {
@@ -112,6 +117,28 @@ actor ProviderRegistry {
             return nil
         }
         selected[key.provider] = id
+        return key
+    }
+
+    /// Changes the key's description. Nil when the key is unknown.
+    @discardableResult
+    func renameKey(_ id: UUID, to name: String) throws -> StoredKey? {
+        guard let index = keys.firstIndex(where: { $0.id == id }) else { return nil }
+        let renamed = try store.renameKey(keys[index], to: name)
+        keys[index] = renamed
+        return renamed
+    }
+
+    /// Removes the key and its secret. When it was the provider's active key,
+    /// the next one takes over; a provider left without keys is disabled.
+    /// Nil when the key is unknown.
+    @discardableResult
+    func deleteKey(_ id: UUID) throws -> StoredKey? {
+        guard let key = keys.first(where: { $0.id == id }) else { return nil }
+        try store.deleteKey(key)
+        keys.removeAll { $0.id == id }
+        secrets[id] = nil
+        if selected[key.provider] == id { selected[key.provider] = nil }
         return key
     }
 

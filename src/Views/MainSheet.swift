@@ -18,7 +18,12 @@ enum MainSheet: Identifiable, Equatable {
     /// Preferences, opened on a tab. Dialogs launched from a tab (the Web
     /// Search wizard) return to it, since Preferences is rebuilt each time.
     case preferences(PreferencesTab = .general)
-    case providerWizard
+    /// The New Provider wizard. Opened for a given provider (adding a key
+    /// from Manage Keys) it skips the provider step and returns to Manage
+    /// Keys when done.
+    case providerWizard(Provider? = nil)
+    /// Lists the stored API keys to add, rename or delete.
+    case manageKeys
     case mcpWizard
     case webSearchWizard
     case configErrors
@@ -45,6 +50,7 @@ enum MainSheet: Identifiable, Equatable {
         case .onboarding: return "onboarding"
         case .preferences: return "preferences"
         case .providerWizard: return "providerWizard"
+        case .manageKeys: return "manageKeys"
         case .mcpWizard: return "mcpWizard"
         case .webSearchWizard: return "webSearchWizard"
         case .configErrors: return "configErrors"
@@ -67,8 +73,8 @@ enum MainSheet: Identifiable, Equatable {
     /// Sheets that aren't tied to the selected chat's state.
     var isAppLevel: Bool {
         switch self {
-        case .onboarding, .preferences, .settingsModelPicker, .providerWizard, .mcpWizard, .webSearchWizard,
-            .configErrors:
+        case .onboarding, .preferences, .settingsModelPicker, .providerWizard, .manageKeys, .mcpWizard,
+            .webSearchWizard, .configErrors:
             return true
         default: return false
         }
@@ -97,11 +103,19 @@ struct MainSheetContent: View {
         case .preferences(let tab):
             PreferencesView(initialTab: tab)
 
-        case .providerWizard:
+        case .providerWizard(let provider):
             ProviderWizardView(
                 existingKeyNames: Dictionary(
                     uniqueKeysWithValues: store.providers.map { ($0.provider, $0.keys.map(\.name)) }),
+                initialProvider: provider,
                 onClose: { store.closeProviderWizard() })
+
+        case .manageKeys:
+            ProviderKeysView(
+                model: ProviderKeysModel(
+                    providers: { store.providers },
+                    rename: { try await store.renameProviderKey($0, to: $1) },
+                    delete: { try await store.deleteProviderKey($0) }))
 
         case .mcpWizard:
             MCPWizardView(onFinish: { store.refreshPreferences() })

@@ -66,6 +66,9 @@ final class ProviderWizardModel: ObservableObject {
 
     /// Names of the keys each provider already has.
     let existingKeyNames: [Provider: [String]]
+    /// The provider was fixed up front (adding a key from Manage Keys), so the
+    /// wizard starts on the key step and has no provider step to return to.
+    let skipsProviderStep: Bool
     @Published private(set) var step: Step = .provider
     @Published private(set) var selectedProvider: Provider?
     @Published private(set) var checkState: CheckState = .idle
@@ -93,13 +96,25 @@ final class ProviderWizardModel: ObservableObject {
     private(set) var checkTask: Task<Void, Never>?
     private(set) var commitTask: Task<Void, Never>?
 
-    init(existingKeyNames: [Provider: [String]], validate: @escaping Validate, commit: @escaping Commit) {
+    init(
+        existingKeyNames: [Provider: [String]], initialProvider: Provider? = nil, validate: @escaping Validate,
+        commit: @escaping Commit
+    ) {
         self.existingKeyNames = existingKeyNames
+        self.skipsProviderStep = initialProvider != nil
         self.validate = validate
         self.commit = commit
-        let provider = Provider.allCases.first { existingKeyNames[$0, default: []].isEmpty } ?? Provider.allCases.first
+        let provider =
+            initialProvider ?? Provider.allCases.first { existingKeyNames[$0, default: []].isEmpty }
+            ?? Provider.allCases.first
         self.selectedProvider = provider
+        if initialProvider != nil { step = .apiKey }
         resetKeyFields()
+    }
+
+    /// The steps the wizard goes through, for the progress indicator.
+    var steps: [Step] {
+        skipsProviderStep ? Step.allCases.filter { $0 != .provider } : Step.allCases
     }
 
     func isAdded(_ provider: Provider) -> Bool { !existingKeyNames[provider, default: []].isEmpty }
@@ -134,7 +149,7 @@ final class ProviderWizardModel: ObservableObject {
         }
     }
 
-    var canGoBack: Bool { (step == .apiKey || step == .check) && !isCommitting }
+    var canGoBack: Bool { ((step == .apiKey && !skipsProviderStep) || step == .check) && !isCommitting }
 
     var canRetry: Bool {
         if case .failed = checkState { return step == .check && !isCommitting }

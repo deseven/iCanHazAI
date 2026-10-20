@@ -132,6 +132,94 @@ extension AllAppTests {
             #expect(!(await registry.isConfigured(.deepseek)))
         }
 
+        // MARK: - Renaming and deleting keys
+
+        @Test("renaming changes only the description, in memory and in the store")
+        func renameKey() async throws {
+            let store = InMemorySecretStore()
+            let registry = ProviderRegistry(store: store)
+            let first = try await registry.addKey(provider: .openai, name: "Default", secret: "1")
+            try await registry.addKey(provider: .openai, name: "Work", secret: "2")
+
+            let renamed = try await registry.renameKey(first.id, to: "Personal")
+            #expect(renamed == StoredKey(id: first.id, provider: .openai, name: "Personal"))
+            #expect(await registry.keys(for: .openai).map(\.name) == ["Personal", "Work"])
+            #expect(try store.listKeys().map(\.name) == ["Personal", "Work"])
+            // The renamed key is still the active one, with the same secret.
+            #expect(await registry.selectedKey(for: .openai)?.name == "Personal")
+            #expect(await registry.apiKey(for: .openai) == "1")
+
+            #expect(try await registry.renameKey(UUID(), to: "Ghost") == nil)
+        }
+
+        @Test("deleting the active key hands over to the first remaining one")
+        func deleteActiveKey() async throws {
+            let store = InMemorySecretStore()
+            let registry = ProviderRegistry(store: store)
+            let first = try await registry.addKey(provider: .openai, name: "Default", secret: "1")
+            let second = try await registry.addKey(provider: .openai, name: "Work", secret: "2", select: true)
+            let third = try await registry.addKey(provider: .openai, name: "Spare", secret: "3")
+
+            #expect(try await registry.deleteKey(second.id) == second)
+            #expect(await registry.keys(for: .openai) == [first, third])
+            #expect(await registry.selectedKey(for: .openai) == first)
+            #expect(await registry.apiKey(for: .openai) == "1")
+            #expect(await registry.selectedKeyIDs == [.openai: first.id])
+            #expect(await registry.preview(of: second.id) == nil)
+            #expect(try store.listKeys() == [first, third])
+        }
+
+        @Test("deleting another key keeps the active one")
+        func deleteInactiveKey() async throws {
+            let registry = ProviderRegistry(store: InMemorySecretStore())
+            try await registry.addKey(provider: .openai, name: "Default", secret: "1")
+            let second = try await registry.addKey(provider: .openai, name: "Work", secret: "2", select: true)
+            let third = try await registry.addKey(provider: .openai, name: "Spare", secret: "3")
+
+            try await registry.deleteKey(third.id)
+            #expect(await registry.selectedKey(for: .openai) == second)
+            #expect(await registry.apiKey(for: .openai) == "2")
+        }
+
+        @Test("deleting the last key of a provider disables it, and a new key starts over")
+        func deleteLastKey() async throws {
+            let store = InMemorySecretStore()
+            let registry = ProviderRegistry(store: store)
+            let only = try await registry.addKey(provider: .openai, name: "Default", secret: "1")
+            let other = try await registry.addKey(provider: .anthropic, name: "Default", secret: "2")
+
+            try await registry.deleteKey(only.id)
+            #expect(!(await registry.isConfigured(.openai)))
+            #expect(await registry.configuredProviders == [.anthropic])
+            #expect(await registry.apiKey(for: .openai) == nil)
+            #expect(await registry.selectedKeyIDs == [.anthropic: other.id])
+            #expect(try store.listKeys() == [other])
+
+            let again = try await registry.addKey(provider: .openai, name: "Fresh", secret: "3")
+            #expect(await registry.selectedKey(for: .openai) == again)
+        }
+
+        @Test("deleting an unknown key changes nothing")
+        func deleteUnknownKey() async throws {
+            let registry = ProviderRegistry(store: InMemorySecretStore())
+            let key = try await registry.addKey(provider: .openai, name: "Default", secret: "1")
+            #expect(try await registry.deleteKey(UUID()) == nil)
+            #expect(await registry.keys(for: .openai) == [key])
+        }
+
+        @Test("a key is previewed as its first and last 4 characters, a short one fully masked")
+        func preview() async throws {
+            #expect(StoredKey.preview(of: "sk-ant-api03-abcdefghijklmnop") == "sk-a…mnop")
+            #expect(StoredKey.preview(of: "123456789012") == "1234…9012")
+            #expect(StoredKey.preview(of: "12345678901") == "••••••••")
+            #expect(StoredKey.preview(of: "") == "••••••••")
+
+            let registry = ProviderRegistry(store: InMemorySecretStore())
+            let key = try await registry.addKey(provider: .openai, name: "Default", secret: "sk-proj-0123456789-WXYZ")
+            #expect(await registry.preview(of: key.id) == "sk-p…WXYZ")
+            #expect(await registry.preview(of: UUID()) == nil)
+        }
+
         @Test("an unreadable key is skipped and the next one becomes active")
         func undecryptableActiveKey() async throws {
             let dir = FileManager.default.temporaryDirectory.appendingPathComponent("registry-\(UUID().uuidString)")

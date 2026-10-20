@@ -149,6 +149,16 @@ actor ModelCatalog {
         scheduleTimer(provider)
     }
 
+    /// Forgets a provider that lost its last key: its schedule, cached models
+    /// and refresh state, as `start()` does for one without a usable key.
+    func providerRemoved(_ provider: Provider) {
+        timers[provider]?.cancel()
+        timers[provider] = nil
+        store.deleteAll(provider: provider)
+        reloadFromStore()
+        emit(.modelsChanged)
+    }
+
     func refreshAll() async -> RefreshSummary {
         let providers = await registry.configuredProviders
         var outcomes: [Provider: Result<Int, ProviderError>] = [:]
@@ -210,6 +220,8 @@ actor ModelCatalog {
         do {
             let listing = try await adapter(for: provider).fetchListing(
                 apiKey: key, fetcher: fetcher, metadata: metadata)
+            // The last key may have been deleted while the request was out.
+            guard await registry.isConfigured(provider) else { throw ProviderError.notConfigured }
             // An empty list is a glitch, not "no models": applying it would wipe the cache.
             if listing.models.isEmpty { throw ProviderError.badResponse }
             await apply(listing, to: provider)
