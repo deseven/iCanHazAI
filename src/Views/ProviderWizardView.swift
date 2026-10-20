@@ -15,15 +15,17 @@ struct ProviderWizardView: View {
 
     @FocusState private var keyFocused: Bool
 
-    init(addedProviders: Set<Provider>, onClose: @escaping () -> Void) {
+    init(existingKeyNames: [Provider: [String]], onClose: @escaping () -> Void) {
         _model = StateObject(
             wrappedValue: ProviderWizardModel(
-                addedProviders: addedProviders,
+                existingKeyNames: existingKeyNames,
                 validate: { provider, key in
                     try await ChatEngine.shared.validateProvider(provider, apiKey: key)
                 },
-                commit: { provider, key, validation in
-                    try await ChatEngine.shared.addProvider(provider, apiKey: key, validation: validation)
+                commit: { newKey, validation in
+                    try await ChatEngine.shared.addProvider(
+                        newKey.provider, keyName: newKey.name, apiKey: newKey.secret,
+                        makeActive: newKey.makeActive, validation: validation)
                 }))
         self.onClose = onClose
     }
@@ -116,15 +118,9 @@ struct ProviderWizardView: View {
 
     private var providerStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if model.allProvidersAdded {
-                Text("All supported providers are already added.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("Choose the provider you want to add.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
+            Text("Choose the provider you want to add a key for.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(Provider.allCases, id: \.self) { provider in
@@ -137,7 +133,7 @@ struct ProviderWizardView: View {
     }
 
     private func providerRow(_ provider: Provider) -> some View {
-        let added = model.isAdded(provider)
+        let keyCount = model.existingKeyNames[provider, default: []].count
         let selected = model.selectedProvider == provider
         return HStack(alignment: .top, spacing: 10) {
             Image(systemName: selected ? "largecircle.fill.circle" : "circle")
@@ -145,9 +141,13 @@ struct ProviderWizardView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(provider.displayName)
                     .fontWeight(.medium)
-                Text(added ? "Already added" : provider.summary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(
+                    keyCount == 0
+                        ? provider.summary
+                        : "\(provider.summary) · \(loaderPluralized(keyCount, singular: "key", plural: "keys")) added"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
             Spacer()
         }
@@ -158,7 +158,6 @@ struct ProviderWizardView: View {
             RoundedRectangle(cornerRadius: 6)
                 .fill(selected ? Color.accentColor.opacity(0.1) : Color.clear)
         )
-        .opacity(added ? 0.4 : 1)
     }
 
     private var apiKeyStep: some View {
@@ -178,6 +177,28 @@ struct ProviderWizardView: View {
                         .textFieldStyle(.roundedBorder)
                         .focused($keyFocused)
                         .onSubmit { model.next() }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Key name")
+                        .font(.headline)
+                    Text(
+                        "Tells this provider's keys apart in the Provider menu (up to \(ProviderWizardModel.maxKeyNameLength) characters)."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    TextField("e.g. Work", text: $model.keyName)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { model.next() }
+                    if model.isKeyNameTaken {
+                        Text("\(provider.displayName) already has a key with this name.")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+
+                if !model.isFirstKey {
+                    Toggle("Use this key for new requests", isOn: $model.makeActive)
                 }
 
                 Text("Stored encrypted and tied to this Mac, never in a config file.")
@@ -222,13 +243,14 @@ struct ProviderWizardView: View {
 
     private var summaryStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if let provider = model.selectedProvider {
-                Text("\(provider.displayName) added")
+            if let provider = model.selectedProvider, let key = model.committedKey {
+                Text(model.isFirstKey ? "\(provider.displayName) added" : "\(provider.displayName) key added")
                     .font(.headline)
                 if let count = model.modelCount {
                     summaryRow("Models", "\(loaderPluralized(count, singular: "model", plural: "models")) available")
                 }
-                summaryRow("Key name", "Default")
+                summaryRow("Key name", key.name)
+                summaryRow("Active", key.makeActive ? "Yes" : "No — switch to it in the Provider menu")
             }
 
             Spacer()

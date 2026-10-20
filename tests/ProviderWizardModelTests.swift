@@ -6,8 +6,7 @@ import Testing
 /// Records what the wizard model asked its injected closures to do.
 private final class WizardProbe: @unchecked Sendable {
     struct Commit: Sendable {
-        let provider: Provider
-        let key: String
+        let key: NewProviderKey
         let modelCount: Int
         let seedCount: Int
     }
@@ -24,20 +23,18 @@ private final class WizardProbe: @unchecked Sendable {
     var commits: [Commit] { lock.withLock { _commits } }
 
     @MainActor
-    func makeModel(added: Set<Provider> = []) -> ProviderWizardModel {
+    func makeModel(existing: [Provider: [String]] = [:]) -> ProviderWizardModel {
         ProviderWizardModel(
-            addedProviders: added,
+            existingKeyNames: existing,
             validate: { [self] provider, key in
                 lock.withLock { _validations.append((provider, key)) }
                 return try await validateResult(provider, key)
             },
-            commit: { [self] provider, key, validation in
+            commit: { [self] key, validation in
                 if let commitError { throw commitError }
                 lock.withLock {
                     _commits.append(
-                        Commit(
-                            provider: provider, key: key, modelCount: validation.modelCount,
-                            seedCount: validation.seed.count))
+                        Commit(key: key, modelCount: validation.modelCount, seedCount: validation.seed.count))
                 }
             })
     }
@@ -47,25 +44,23 @@ extension AllAppTests {
     @Suite("ProviderWizardModel")
     @MainActor
     struct ProviderWizardModelTests {
-        @Test("already-added providers are not selectable and the first free one is preselected")
+        @Test("the first provider without a key is preselected, but every provider stays selectable")
         func preselection() {
-            let model = WizardProbe().makeModel(added: [.openai, .anthropic])
+            let model = WizardProbe().makeModel(existing: [.openai: ["Default"], .anthropic: ["Default"]])
             #expect(model.selectedProvider == .deepseek)
-            #expect(model.availableProviders == [.deepseek, .openrouter])
-            #expect(model.isAdded(.openai))
 
             model.select(.openai)
-            #expect(model.selectedProvider == .deepseek)
+            #expect(model.selectedProvider == .openai)
             model.select(.openrouter)
             #expect(model.selectedProvider == .openrouter)
         }
 
-        @Test("with every provider added nothing is selected and Next is disabled")
+        @Test("with every provider added the first one is preselected and Next stays available")
         func allAdded() {
-            let model = WizardProbe().makeModel(added: Set(Provider.allCases))
-            #expect(model.allProvidersAdded)
-            #expect(model.selectedProvider == nil)
-            #expect(!model.canGoNext)
+            let existing = Dictionary(uniqueKeysWithValues: Provider.allCases.map { ($0, ["Default"]) })
+            let model = WizardProbe().makeModel(existing: existing)
+            #expect(model.selectedProvider == Provider.allCases.first)
+            #expect(model.canGoNext)
         }
 
         @Test("steps progress provider -> key -> check -> summary, with no Back from the summary")
@@ -181,9 +176,10 @@ extension AllAppTests {
             await model.settle()
 
             #expect(probe.commits.count == 1)
-            #expect(probe.commits[0].provider == .openai)
-            #expect(probe.commits[0].key == "fake")
+            #expect(probe.commits[0].key.provider == .openai)
+            #expect(probe.commits[0].key.secret == "fake")
             #expect(probe.commits[0].modelCount == 7)
+            #expect(model.committedKey == probe.commits[0].key)
         }
 
         @Test("a commit failure stays on the check step with the message")
@@ -223,6 +219,113 @@ extension AllAppTests {
             #expect(model.checkState == .idle)
             #expect(!model.canGoNext)
             #expect(probe.commits.isEmpty)
+        }
+
+        // MARK: - Key name and activation
+
+        @Test("the first key of a provider is named Default and is always made active")
+        func firstKey() async {
+            let probe = WizardProbe()
+            let model = probe.makeModel()
+            #expect(model.isFirstKey)
+            #expect(model.keyName == "Default")
+
+            model.next()
+            model.apiKey = "fake"
+            model.makeActive = false
+            model.next()
+            await model.settle()
+            model.next()
+            await model.settle()
+
+            #expect(probe.commits.map(\.key.name) == ["Default"])
+            #expect(probe.commits.map(\.key.makeActive) == [true])
+        }
+
+        @Test("a further key starts with an empty name and Next needs one")
+        func furtherKey() {
+            let model = WizardProbe().makeModel(existing: [.openai: ["Default"]])
+            model.select(.openai)
+            #expect(!model.isFirstKey)
+            #expect(model.keyName.isEmpty)
+            #expect(model.makeActive)
+
+            model.next()
+            model.apiKey = "fake"
+            #expect(!model.canGoNext)
+            model.keyName = "   "
+            #expect(!model.canGoNext)
+            model.keyName = "Work"
+            #expect(model.canGoNext)
+        }
+
+        @Test("the name is limited to 30 characters and trimmed when stored")
+        func nameLimit() async {
+            let probe = WizardProbe()
+            let model = probe.makeModel()
+            model.keyName = "  " + String(repeating: "x", count: 50)
+            #expect(model.keyName.count == ProviderWizardModel.maxKeyNameLength)
+
+            model.keyName = "  Work  "
+            model.next()
+            model.apiKey = "fake"
+            model.next()
+            await model.settle()
+            model.next()
+            await model.settle()
+            #expect(probe.commits.map(\.key.name) == ["Work"])
+        }
+
+        @Test("a name already used by the provider is refused, ignoring case")
+        func duplicateName() {
+            let model = WizardProbe().makeModel(existing: [.openai: ["Default", "Work"], .anthropic: ["Work"]])
+            model.select(.openai)
+            model.next()
+            model.apiKey = "fake"
+            model.keyName = "work"
+            #expect(model.isKeyNameTaken)
+            #expect(!model.canGoNext)
+
+            model.keyName = "Personal"
+            #expect(!model.isKeyNameTaken)
+            #expect(model.canGoNext)
+        }
+
+        @Test("another provider may reuse a name")
+        func sameNameOtherProvider() {
+            let model = WizardProbe().makeModel(existing: [.openai: ["Default"]])
+            model.select(.anthropic)
+            #expect(model.keyName == "Default")
+            #expect(!model.isKeyNameTaken)
+        }
+
+        @Test("the activation choice is passed on, and a provider switch resets the key fields")
+        func activationChoice() async {
+            let probe = WizardProbe()
+            let model = probe.makeModel(existing: [.openai: ["Default"]])
+            model.select(.openai)
+            model.keyName = "Spare"
+            model.makeActive = false
+
+            model.select(.anthropic)
+            #expect(model.keyName == "Default")
+            #expect(model.makeActive)
+
+            model.select(.openai)
+            #expect(model.keyName.isEmpty)
+            model.keyName = "Spare"
+            model.makeActive = false
+            model.next()
+            model.apiKey = "fake"
+            model.next()
+            await model.settle()
+            model.next()
+            await model.settle()
+
+            #expect(
+                probe.commits.map(\.key) == [
+                    NewProviderKey(provider: .openai, name: "Spare", secret: "fake", makeActive: false)
+                ])
         }
     }
 }

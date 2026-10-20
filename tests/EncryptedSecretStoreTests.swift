@@ -36,6 +36,27 @@ extension AllAppTests {
             #expect(try reopened.secret(for: openai) == "sk-secret-1")
         }
 
+        @Test("several keys of a provider are listed oldest first, grouped by provider")
+        func severalKeysPerProvider() throws {
+            let dir = makeDir()
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let store = makeStore(dir)
+
+            // Names that would sort differently than the order of creation.
+            let zeta = try store.addKey(provider: .anthropic, name: "Zeta", secret: "1")
+            let other = try store.addKey(provider: .openai, name: "Default", secret: "2")
+            let alpha = try store.addKey(provider: .anthropic, name: "Alpha", secret: "3")
+
+            let expected = [other.id, zeta.id, alpha.id]
+            #expect(try store.listKeys().map(\.id) == expected)
+            #expect(try makeStore(dir).listKeys().map(\.id) == expected)
+            #expect(try store.secret(for: zeta) == "1")
+            #expect(try store.secret(for: alpha) == "3")
+
+            try store.deleteKey(zeta)
+            #expect(try store.listKeys().map(\.id) == [other.id, alpha.id])
+        }
+
         @Test("the secret is not stored in plain text")
         func notPlainText() throws {
             let dir = makeDir()

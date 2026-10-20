@@ -5,12 +5,21 @@ import Foundation
 
 /// Configured providers and their API keys. Secrets are read once in `load()`
 /// and kept in memory, so decryption doesn't happen per request.
+///
+/// A provider can hold several keys, one of which is the active key that new
+/// requests use. The choice is persisted by the caller (`[providers]` in
+/// `config.toml`); the registry only keeps it in memory and guarantees that a
+/// provider with keys always has a usable active key.
 actor ProviderRegistry {
     static let shared = ProviderRegistry(store: EncryptedSecretStore.shared)
 
     private let store: SecretStore
+    /// In storage order: per provider, the oldest key first.
     private var keys: [StoredKey] = []
     private var secrets: [UUID: String] = [:]
+    /// The preferred active key per provider. May point at a key that no
+    /// longer exists; `selectedKey(for:)` falls back to the first key then.
+    private var selected: [Provider: UUID] = [:]
 
     init(store: SecretStore) {
         self.store = store
@@ -47,18 +56,73 @@ actor ProviderRegistry {
         return Provider.allCases.filter(present.contains)
     }
 
+    /// A provider without any key is disabled.
     func isConfigured(_ provider: Provider) -> Bool {
         keys.contains { $0.provider == provider }
     }
 
-    /// The first key of the provider (only `Default` exists for now).
-    func apiKey(for provider: Provider) -> String? {
-        keys.first { $0.provider == provider }.flatMap { secrets[$0.id] }
+    /// The provider's keys, oldest first.
+    func keys(for provider: Provider) -> [StoredKey] {
+        keys.filter { $0.provider == provider }
     }
 
-    func addKey(provider: Provider, name: String, secret: String) throws {
+    /// The key new requests use: the chosen one while it exists, else the
+    /// provider's first key. Nil only for a provider without keys.
+    func selectedKey(for provider: Provider) -> StoredKey? {
+        let candidates = keys(for: provider)
+        return candidates.first { $0.id == selected[provider] } ?? candidates.first
+    }
+
+    /// The active key id of every configured provider.
+    var selectedKeyIDs: [Provider: UUID] {
+        var result: [Provider: UUID] = [:]
+        for provider in configuredProviders { result[provider] = selectedKey(for: provider)?.id }
+        return result
+    }
+
+    /// The secret of the active key.
+    func apiKey(for provider: Provider) -> String? {
+        selectedKey(for: provider).flatMap { secrets[$0.id] }
+    }
+
+    /// Adopts the persisted choice. Per provider the active key becomes the
+    /// preferred one if it still exists, else the one that was active, else the
+    /// first. Returns the effective choice, so the caller can write back what
+    /// actually applies.
+    @discardableResult
+    func applySelection(_ preferred: [Provider: UUID]) -> [Provider: UUID] {
+        var next: [Provider: UUID] = [:]
+        for provider in configuredProviders {
+            let ids = keys(for: provider).map(\.id)
+            if let id = preferred[provider], ids.contains(id) {
+                next[provider] = id
+            } else if let id = selectedKey(for: provider)?.id {
+                next[provider] = id
+            }
+        }
+        selected = next
+        return next
+    }
+
+    /// Makes the key the active one. Returns the key when the selection
+    /// changed, nil when it is unknown or already active.
+    @discardableResult
+    func selectKey(_ id: UUID) -> StoredKey? {
+        guard let key = keys.first(where: { $0.id == id }), selectedKey(for: key.provider)?.id != id else {
+            return nil
+        }
+        selected[key.provider] = id
+        return key
+    }
+
+    /// The first key of a provider always becomes active; later ones only when `select` is set.
+    @discardableResult
+    func addKey(provider: Provider, name: String, secret: String, select: Bool = false) throws -> StoredKey {
+        let isFirst = !isConfigured(provider)
         let key = try store.addKey(provider: provider, name: name, secret: secret)
         keys.append(key)
         secrets[key.id] = secret
+        if isFirst || select { selected[provider] = key.id }
+        return key
     }
 }

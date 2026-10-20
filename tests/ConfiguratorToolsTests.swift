@@ -257,6 +257,36 @@ extension AllAppTests {
             #expect(AppConfig().general.defaultModel == nil)
         }
 
+        @Test("AppConfig [providers] round-trips the active key of each provider")
+        func roundTripsProviderKeys() throws {
+            var cfg = AppConfig()
+            cfg.providers = [
+                "anthropic": "6F1C2B3A-0000-4000-8000-000000000001",
+                "openai": "6F1C2B3A-0000-4000-8000-000000000002",
+            ]
+            let encoder = TOMLEncoder()
+            encoder.outputFormatting = .sortedKeys
+            encoder.keyEncodingStrategy = .convertToSnakeCase
+            let encoded = try encoder.encode(cfg)
+            let text = try #require(String(data: encoded, encoding: .utf8))
+            #expect(text.contains("[providers]"))
+            #expect(text.contains("anthropic = \"6F1C2B3A-0000-4000-8000-000000000001\""))
+            let decoded = try TOMLDecoder().decode(AppConfig.self, from: encoded)
+            #expect(decoded.providers == cfg.providers)
+        }
+
+        @Test("AppConfig without [providers] has no active keys, and an empty table survives a round trip")
+        func providerKeysDefault() throws {
+            #expect(AppConfig().providers.isEmpty)
+            #expect(try TOMLDecoder().decode(AppConfig.self, from: Data("".utf8)).providers.isEmpty)
+
+            let encoder = TOMLEncoder()
+            encoder.outputFormatting = .sortedKeys
+            encoder.keyEncodingStrategy = .convertToSnakeCase
+            let decoded = try TOMLDecoder().decode(AppConfig.self, from: try encoder.encode(AppConfig()))
+            #expect(decoded.providers.isEmpty)
+        }
+
         @Test("AppConfig interface_scale round-trips through TOML")
         func roundTripsInterfaceScale() throws {
             var cfg = AppConfig()

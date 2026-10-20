@@ -2064,6 +2064,11 @@ final class AppViewModel: ObservableObject {
         Task { await engine.refreshModels() }
     }
 
+    /// Makes a key the one new requests use ("Provider > {provider} > Use '{key}' Key").
+    func selectProviderKey(_ keyID: UUID) {
+        Task { await engine.selectProviderKey(keyID) }
+    }
+
     /// Triggers a full MCP configuration pass ("MCP > Reinitialize MCP Servers…"). Resets
     /// all configured MCPs and their tools cache, then re-connects and
     /// re-queries every server. The overlay is shown while in progress.

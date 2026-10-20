@@ -76,6 +76,30 @@ extension AllAppTests {
             #expect(resolved.headers == nil)
         }
 
+        @Test("a switched key applies to new resolutions only, a resolved model keeps its key")
+        func activeKeyAtResolveTime() async throws {
+            let secrets = InMemorySecretStore()
+            _ = try secrets.addKey(provider: .deepseek, name: "Default", secret: "first-key")
+            let second = try secrets.addKey(provider: .deepseek, name: "Work", secret: "second-key")
+            let registry = ProviderRegistry(store: secrets)
+            try await registry.load()
+            let catalog = ModelCatalog(
+                registry: registry, store: ModelCatalogStore(),
+                fetcher: StubFetcher { _ in .json(ProviderFixtures.deepseekModels(["a"])) },
+                metadata: StubMetadataSource(result: .failure(TestFailure())),
+                baseUrls: [.deepseek: "https://deepseek.test"])
+            _ = await catalog.refreshAll()
+            let resolver = ModelResolver(registry: registry, catalog: catalog)
+
+            let (before, _) = try #require(isOK(await resolver.resolve("deepseek:a")))
+            #expect(before.apiKey == "first-key")
+
+            await registry.selectKey(second.id)
+            let (after, _) = try #require(isOK(await resolver.resolve("deepseek:a")))
+            #expect(after.apiKey == "second-key")
+            #expect(before.apiKey == "first-key")
+        }
+
         @Test("endpoint overrides become the resolved base URL")
         func endpointOverride() async throws {
             let r = try await makeResolution(providers: [.deepseek], overrides: [.deepseek: "http://127.0.0.1:9"]) {

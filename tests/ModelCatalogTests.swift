@@ -122,6 +122,41 @@ extension AllAppTests {
             #expect(h.requests(to: "deepseek.test") == 1)
         }
 
+        @Test("refreshes use the active key, and a key change refetches with the new one")
+        func refreshAfterKeyChange() async throws {
+            let h = try await makeHarness(providers: [.deepseek]) { _ in
+                .json(ProviderFixtures.deepseekModels(["a"]))
+            }
+            _ = await h.catalog.refreshAll()
+            try await h.registry.addKey(provider: .deepseek, name: "Work", secret: "second-key")
+            _ = await h.catalog.refreshAll()
+            #expect(h.fetcher.requests.map { $0.headers["Authorization"] } == ["Bearer fake-key", "Bearer fake-key"])
+
+            let second = try #require(await h.registry.keys(for: .deepseek).last)
+            await h.registry.selectKey(second.id)
+            await h.catalog.refreshAfterKeyChange(.deepseek)
+            #expect(h.fetcher.requests.last?.headers["Authorization"] == "Bearer second-key")
+            #expect(h.requests(to: "deepseek.test") == 3)
+        }
+
+        @Test("a key change during a running refresh waits for it, then refetches with the new key")
+        func keyChangeDuringRefresh() async throws {
+            let h = try await makeHarness(providers: [.deepseek]) { _ in
+                try await Task.sleep(for: .milliseconds(150))
+                return .json(ProviderFixtures.deepseekModels(["a"]))
+            }
+            async let running = h.catalog.refreshAll()
+            try await Task.sleep(for: .milliseconds(40))
+
+            let second = try await h.registry.addKey(
+                provider: .deepseek, name: "Work", secret: "second-key", select: true)
+            await h.catalog.refreshAfterKeyChange(.deepseek)
+            _ = await running
+
+            #expect(second.name == "Work")
+            #expect(h.fetcher.requests.map { $0.headers["Authorization"] } == ["Bearer fake-key", "Bearer second-key"])
+        }
+
         // MARK: - OpenAI metadata failure
 
         @Test("an OpenAI refresh survives a LiteLLM failure and keeps cached capabilities")

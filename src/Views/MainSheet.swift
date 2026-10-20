@@ -93,7 +93,8 @@ struct MainSheetContent: View {
 
         case .providerWizard:
             ProviderWizardView(
-                addedProviders: Set(store.providers.map(\.provider)),
+                existingKeyNames: Dictionary(
+                    uniqueKeysWithValues: store.providers.map { ($0.provider, $0.keys.map(\.name)) }),
                 onClose: { store.closeProviderWizard() })
 
         case .mcpWizard:

@@ -26,6 +26,12 @@ struct AppConfig: Codable, Equatable {
     var debug: DebugConfig = DebugConfig()
     /// Window position and size for the UI layer.
     var window: WindowConfig?
+    /// The active API key of each provider: provider raw value → key id
+    /// (`anthropic = "<uuid>"`). Managed by the app; the keys themselves live
+    /// in the encrypted secret store. A raw-string dictionary so an unknown
+    /// provider or malformed id (hand-edited config) degrades instead of failing
+    /// the whole config decode.
+    var providers: [String: String] = [:]
 
     enum CodingKeys: String, CodingKey {
         case general
@@ -35,6 +41,7 @@ struct AppConfig: Codable, Equatable {
         case chatList = "chat_list"
         case debug
         case window
+        case providers
     }
 
     /// Every group is optional: a missing table (or a totally empty file)
@@ -51,6 +58,7 @@ struct AppConfig: Codable, Equatable {
         chatList = try c.decodeIfPresent(ChatListConfig.self, forKey: .chatList) ?? ChatListConfig()
         debug = try c.decodeIfPresent(DebugConfig.self, forKey: .debug) ?? DebugConfig()
         window = try c.decodeIfPresent(WindowConfig.self, forKey: .window)
+        providers = try c.decodeIfPresent([String: String].self, forKey: .providers) ?? [:]
     }
 
     init() {}
@@ -555,6 +563,22 @@ actor ConfigManager {
 
     func getChatListConfig() -> ChatListConfig {
         config.chatList
+    }
+
+    /// The persisted active key per provider. Entries for unknown providers or
+    /// with an unparsable id are ignored.
+    func getProviderKeys() -> [Provider: UUID] {
+        var result: [Provider: UUID] = [:]
+        for (name, id) in config.providers {
+            if let provider = Provider(rawValue: name), let uuid = UUID(uuidString: id) { result[provider] = uuid }
+        }
+        return result
+    }
+
+    /// Replaces the whole `[providers]` table, which also drops stale entries.
+    func setProviderKeys(_ keys: [Provider: UUID]) {
+        config.providers = Dictionary(uniqueKeysWithValues: keys.map { ($0.key.rawValue, $0.value.uuidString) })
+        persist()
     }
 
     func setChatListConfig(_ value: ChatListConfig) {

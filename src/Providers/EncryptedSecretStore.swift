@@ -82,16 +82,19 @@ final class EncryptedSecretStore: SecretStore, @unchecked Sendable {
 
     // MARK: - Provider keys
 
+    /// Grouped by provider (in `Provider.allCases` order), oldest key first.
     func listKeys() throws -> [StoredKey] {
         try queue.sync {
             let order = Dictionary(uniqueKeysWithValues: Provider.allCases.enumerated().map { ($1, $0) })
-            let keys: [StoredKey] = try fetch(StoredSecretEntry.self).compactMap { entry in
+            let entries: [(key: StoredKey, createdAt: Date)] = try fetch(StoredSecretEntry.self).compactMap { entry in
                 guard let provider = Provider(rawValue: entry.provider) else { return nil }
-                return StoredKey(id: entry.id, provider: provider, name: entry.name)
+                return (StoredKey(id: entry.id, provider: provider, name: entry.name), entry.createdAt)
             }
-            return keys.sorted {
-                ($0.provider != $1.provider) ? order[$0.provider]! < order[$1.provider]! : $0.name < $1.name
-            }
+            return entries.sorted {
+                if $0.key.provider != $1.key.provider { return order[$0.key.provider]! < order[$1.key.provider]! }
+                if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+                return $0.key.name < $1.key.name
+            }.map(\.key)
         }
     }
 

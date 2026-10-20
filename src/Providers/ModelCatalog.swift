@@ -161,6 +161,14 @@ actor ModelCatalog {
         return RefreshSummary(outcomes: outcomes)
     }
 
+    /// Re-fetches one provider's models after its active key changed, since
+    /// another key may expose a different set. A refresh already running was
+    /// started with the previous key, so this one waits for it and goes again.
+    func refreshAfterKeyChange(_ provider: Provider) async {
+        if let running = inFlight[provider] { _ = await running.value }
+        _ = await refresh(provider)
+    }
+
     func markUsed(_ id: ModelID) {
         store.markUsed(id)
     }

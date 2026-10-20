@@ -15,6 +15,16 @@ extension Provider {
     }
 }
 
+/// What the wizard hands over to be stored once the key has been checked.
+struct NewProviderKey: Sendable, Equatable {
+    let provider: Provider
+    let name: String
+    let secret: String
+    /// Whether new requests should use this key right away. Always true for
+    /// the first key of a provider.
+    let makeActive: Bool
+}
+
 /// State and transitions of the New Provider wizard. The view is a thin skin
 /// over it.
 @MainActor
@@ -49,9 +59,13 @@ final class ProviderWizardModel: ObservableObject {
     }
 
     typealias Validate = @Sendable (Provider, String) async throws -> ValidationResult
-    typealias Commit = @Sendable (Provider, String, ValidationResult) async throws -> Void
+    typealias Commit = @Sendable (NewProviderKey, ValidationResult) async throws -> Void
 
-    let addedProviders: Set<Provider>
+    static let maxKeyNameLength = 30
+    static let defaultKeyName = "Default"
+
+    /// Names of the keys each provider already has.
+    let existingKeyNames: [Provider: [String]]
     @Published private(set) var step: Step = .provider
     @Published private(set) var selectedProvider: Provider?
     @Published private(set) var checkState: CheckState = .idle
@@ -60,6 +74,15 @@ final class ProviderWizardModel: ObservableObject {
             if apiKey != oldValue { invalidateCheck() }
         }
     }
+    @Published var keyName: String = "" {
+        didSet {
+            if keyName.count > Self.maxKeyNameLength { keyName = String(keyName.prefix(Self.maxKeyNameLength)) }
+        }
+    }
+    /// Only offered for a provider that already has keys.
+    @Published var makeActive = true
+    /// What was stored, for the summary.
+    @Published private(set) var committedKey: NewProviderKey?
 
     private let validate: Validate
     private let commit: Commit
@@ -70,24 +93,40 @@ final class ProviderWizardModel: ObservableObject {
     private(set) var checkTask: Task<Void, Never>?
     private(set) var commitTask: Task<Void, Never>?
 
-    init(addedProviders: Set<Provider>, validate: @escaping Validate, commit: @escaping Commit) {
-        self.addedProviders = addedProviders
+    init(existingKeyNames: [Provider: [String]], validate: @escaping Validate, commit: @escaping Commit) {
+        self.existingKeyNames = existingKeyNames
         self.validate = validate
         self.commit = commit
-        self.selectedProvider = Provider.allCases.first { !addedProviders.contains($0) }
+        let provider = Provider.allCases.first { existingKeyNames[$0, default: []].isEmpty } ?? Provider.allCases.first
+        self.selectedProvider = provider
+        resetKeyFields()
     }
 
-    var availableProviders: [Provider] { Provider.allCases.filter { !isAdded($0) } }
-    var allProvidersAdded: Bool { availableProviders.isEmpty }
+    func isAdded(_ provider: Provider) -> Bool { !existingKeyNames[provider, default: []].isEmpty }
 
-    func isAdded(_ provider: Provider) -> Bool { addedProviders.contains(provider) }
+    /// True when the selected provider has no key yet, which makes the new one active no matter what.
+    var isFirstKey: Bool {
+        guard let selectedProvider else { return true }
+        return !isAdded(selectedProvider)
+    }
 
     var trimmedKey: String { apiKey.trimmingCharacters(in: .whitespacesAndNewlines) }
+    var trimmedKeyName: String { keyName.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// Two keys of one provider can't share a name (ignoring case), since the
+    /// menu tells them apart by it.
+    var isKeyNameTaken: Bool {
+        guard let selectedProvider else { return false }
+        let name = trimmedKeyName
+        return existingKeyNames[selectedProvider, default: []].contains {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(name) == .orderedSame
+        }
+    }
 
     var canGoNext: Bool {
         switch step {
         case .provider: return selectedProvider != nil
-        case .apiKey: return !trimmedKey.isEmpty
+        case .apiKey: return !trimmedKey.isEmpty && !trimmedKeyName.isEmpty && !isKeyNameTaken
         case .check:
             if case .ok = checkState { return !isCommitting }
             return false
@@ -107,12 +146,13 @@ final class ProviderWizardModel: ObservableObject {
         return nil
     }
 
-    /// Ignored for providers that are already added. Switching providers
-    /// drops the typed key, which belongs to the previous one.
+    /// Switching providers drops the typed key, which belongs to the previous
+    /// one, and restarts the key name and activation choice.
     func select(_ provider: Provider) {
-        guard !isAdded(provider), provider != selectedProvider else { return }
+        guard provider != selectedProvider else { return }
         selectedProvider = provider
         apiKey = ""
+        resetKeyFields()
         invalidateCheck()
     }
 
@@ -153,6 +193,12 @@ final class ProviderWizardModel: ObservableObject {
         await commitTask?.value
     }
 
+    /// The first key is named `Default`; later ones are left for the user to name.
+    private func resetKeyFields() {
+        keyName = isFirstKey ? Self.defaultKeyName : ""
+        makeActive = true
+    }
+
     private func invalidateCheck() {
         checkGeneration += 1
         checkTask?.cancel()
@@ -191,14 +237,17 @@ final class ProviderWizardModel: ObservableObject {
 
     /// The key is saved on the way from the check to the summary.
     private func startCommit() {
-        guard !isCommitting, let provider = selectedProvider, let validation, let key = validatedKey else { return }
+        guard !isCommitting, let provider = selectedProvider, let validation, let secret = validatedKey else { return }
         isCommitting = true
+        let newKey = NewProviderKey(
+            provider: provider, name: trimmedKeyName, secret: secret, makeActive: isFirstKey || makeActive)
         let commit = self.commit
         commitTask = Task { [weak self] in
             do {
-                try await commit(provider, key, validation)
+                try await commit(newKey, validation)
                 guard let self else { return }
                 self.isCommitting = false
+                self.committedKey = newKey
                 self.step = .summary
             } catch {
                 guard let self else { return }

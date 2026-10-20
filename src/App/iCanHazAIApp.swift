@@ -368,11 +368,23 @@ struct iCanHazAIApp: App {
                 Group {
                     Button("Providers: \(viewModel.providers.count)") {}
                         .disabled(true)
+                    Button("Models: \(viewModel.models.count)") {}
+                        .disabled(true)
                     Button("Refresh Models…") {
                         AppViewModel.shared?.refreshModels()
                     }
                     .disabled(viewModel.providers.isEmpty)
                     Divider()
+                    if !viewModel.providers.isEmpty {
+                        let modelCounts = Dictionary(grouping: viewModel.models, by: { $0.id.provider })
+                            .mapValues(\.count)
+                        ForEach(viewModel.providers) { configured in
+                            ProviderKeysMenu(
+                                configured: configured, modelCount: modelCounts[configured.provider] ?? 0,
+                                onSelectKey: { AppViewModel.shared?.selectProviderKey($0) })
+                        }
+                        Divider()
+                    }
                     Button("New Provider…") {
                         AppViewModel.shared?.presentSheetInMainWindow(.providerWizard)
                     }
@@ -460,6 +472,31 @@ struct iCanHazAIApp: App {
                     .disabled(!viewModel.canExportCurrentChat)
                 }
                 .disabled(viewModel.onboardingActive)
+            }
+        }
+    }
+}
+
+// MARK: - Provider menu
+
+/// One entry of the Provider menu: the provider's model count and a checkable
+/// item per key, the checked one being used for new requests.
+private struct ProviderKeysMenu: View {
+    let configured: ConfiguredProvider
+    let modelCount: Int
+    let onSelectKey: (UUID) -> Void
+
+    var body: some View {
+        Menu(configured.provider.displayName) {
+            Button("Models: \(modelCount)") {}
+                .disabled(true)
+            Divider()
+            ForEach(configured.keys) { key in
+                Toggle(
+                    "Use '\(key.name)' Key",
+                    isOn: Binding(
+                        get: { key.id == configured.selectedKeyID },
+                        set: { _ in onSelectKey(key.id) }))
             }
         }
     }

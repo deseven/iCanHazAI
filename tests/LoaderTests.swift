@@ -52,7 +52,8 @@ extension AllAppTests {
             -> ConfiguredProvider
         {
             ConfiguredProvider(
-                provider: p, modelCount: count, isRefreshing: refreshing, lastRefresh: nil, lastError: error)
+                provider: p, keys: [], selectedKeyID: nil, modelCount: count, isRefreshing: refreshing,
+                lastRefresh: nil, lastError: error)
         }
 
         @Test("startup seeds the Providers row with the configured count")

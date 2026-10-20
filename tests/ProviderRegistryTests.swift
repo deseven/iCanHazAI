@@ -58,5 +58,96 @@ extension AllAppTests {
             #expect(await registry.configuredProviders == [.openai, .openrouter])
             #expect(await registry.apiKey(for: .openai) == "2")
         }
+
+        // MARK: - Several keys per provider
+
+        @Test("the first key becomes active, later ones only when asked to")
+        func activeOnAdd() async throws {
+            let registry = ProviderRegistry(store: InMemorySecretStore())
+            let first = try await registry.addKey(provider: .openai, name: "Default", secret: "1")
+            let second = try await registry.addKey(provider: .openai, name: "Work", secret: "2")
+            #expect(await registry.selectedKey(for: .openai) == first)
+            #expect(await registry.apiKey(for: .openai) == "1")
+
+            let third = try await registry.addKey(provider: .openai, name: "Spare", secret: "3", select: true)
+            #expect(await registry.selectedKey(for: .openai) == third)
+            #expect(await registry.apiKey(for: .openai) == "3")
+            #expect(await registry.keys(for: .openai) == [first, second, third])
+        }
+
+        @Test("keys are tracked per provider")
+        func perProvider() async throws {
+            let registry = ProviderRegistry(store: InMemorySecretStore())
+            let openai = try await registry.addKey(provider: .openai, name: "Default", secret: "1")
+            let anthropic = try await registry.addKey(provider: .anthropic, name: "Default", secret: "2")
+            try await registry.addKey(provider: .anthropic, name: "Work", secret: "3", select: true)
+            #expect(await registry.keys(for: .openai) == [openai])
+            #expect(await registry.keys(for: .anthropic).count == 2)
+            #expect(await registry.keys(for: .deepseek).isEmpty)
+            #expect(await registry.selectedKey(for: .openai) == openai)
+            #expect(await registry.selectedKey(for: .anthropic) != anthropic)
+            #expect(await registry.selectedKey(for: .deepseek) == nil)
+            #expect(await registry.selectedKeyIDs.keys.sorted { $0.rawValue < $1.rawValue } == [.anthropic, .openai])
+        }
+
+        @Test("selectKey switches the key that requests use")
+        func selectKey() async throws {
+            let registry = ProviderRegistry(store: InMemorySecretStore())
+            try await registry.addKey(provider: .openai, name: "Default", secret: "1")
+            let second = try await registry.addKey(provider: .openai, name: "Work", secret: "2")
+
+            #expect(await registry.selectKey(second.id) == second)
+            #expect(await registry.apiKey(for: .openai) == "2")
+            // Already active or unknown: nothing changes.
+            #expect(await registry.selectKey(second.id) == nil)
+            #expect(await registry.selectKey(UUID()) == nil)
+            #expect(await registry.apiKey(for: .openai) == "2")
+        }
+
+        @Test("the active key is adopted from the persisted choice")
+        func applySelection() async throws {
+            let store = InMemorySecretStore()
+            let first = try store.addKey(provider: .openai, name: "Default", secret: "1")
+            let second = try store.addKey(provider: .openai, name: "Work", secret: "2")
+            let registry = ProviderRegistry(store: store)
+            try await registry.load()
+            #expect(await registry.selectedKey(for: .openai) == first)
+
+            let effective = await registry.applySelection([.openai: second.id])
+            #expect(effective == [.openai: second.id])
+            #expect(await registry.apiKey(for: .openai) == "2")
+        }
+
+        @Test("a missing key falls back to the first remaining one, and a provider without keys is dropped")
+        func applySelectionFallback() async throws {
+            let store = InMemorySecretStore()
+            let first = try store.addKey(provider: .openai, name: "Default", secret: "1")
+            _ = try store.addKey(provider: .openai, name: "Work", secret: "2")
+            let registry = ProviderRegistry(store: store)
+            try await registry.load()
+
+            let effective = await registry.applySelection([.openai: UUID(), .deepseek: UUID()])
+            #expect(effective == [.openai: first.id])
+            #expect(await registry.apiKey(for: .openai) == "1")
+            #expect(!(await registry.isConfigured(.deepseek)))
+        }
+
+        @Test("an unreadable key is skipped and the next one becomes active")
+        func undecryptableActiveKey() async throws {
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("registry-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let url = dir.appendingPathComponent(".storage/secrets.store")
+            let other = EncryptedSecretStore(storeURL: url, machineID: { "MACHINE-A" })
+            let lost = try other.addKey(provider: .openai, name: "Default", secret: "old")
+
+            let store = EncryptedSecretStore(storeURL: url, machineID: { "MACHINE-B" })
+            let kept = try store.addKey(provider: .openai, name: "Work", secret: "new")
+            let registry = ProviderRegistry(store: store)
+            try await registry.load()
+
+            let effective = await registry.applySelection([.openai: lost.id])
+            #expect(effective == [.openai: kept.id])
+            #expect(await registry.apiKey(for: .openai) == "new")
+        }
     }
 }

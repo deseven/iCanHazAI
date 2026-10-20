@@ -293,6 +293,8 @@ actor ChatEngine {
             debugLog("Engine", "provider keys failed to load: \(error.localizedDescription)")
             pendingStartupError = "Failed to read provider API keys: \(error.localizedDescription)"
         }
+        // Before the catalog starts, so its first refresh already uses the right keys.
+        await syncKeySelection()
         let events = await catalog.events
         catalogEventsTask = Task { [weak self] in
             for await event in events { await self?.handleCatalogEvent(event) }
@@ -332,11 +334,33 @@ actor ChatEngine {
             let info = await catalog.refreshInfo(for: provider)
             list.append(
                 ConfiguredProvider(
-                    provider: provider, modelCount: info?.modelCount,
-                    isRefreshing: refreshingProviders.contains(provider),
+                    provider: provider, keys: await registry.keys(for: provider),
+                    selectedKeyID: await registry.selectedKey(for: provider)?.id,
+                    modelCount: info?.modelCount, isRefreshing: refreshingProviders.contains(provider),
                     lastRefresh: info?.lastSuccess, lastError: providerErrors[provider]))
         }
         providers = list
+    }
+
+    /// Reconciles the registry's active keys with `[providers]` in config.toml
+    /// and writes back what actually applies: a stored key that no longer exists
+    /// falls back to the provider's first key, and a provider without keys is
+    /// dropped. Returns the providers whose active key changed.
+    @discardableResult
+    private func syncKeySelection() async -> Set<Provider> {
+        let before = await registry.selectedKeyIDs
+        let stored = await ConfigManager.shared.getProviderKeys()
+        let effective = await registry.applySelection(stored)
+        await ConfigManager.shared.setProviderKeys(effective)
+        return Set(effective.filter { before[$0.key] != $0.value }.keys)
+    }
+
+    /// Models can differ between keys of one provider, so the list is re-fetched
+    /// in the background; the catalog events carry the result to the UI.
+    private func refreshModelsAfterKeyChange(of changed: Set<Provider>) {
+        for provider in changed {
+            Task { await self.catalog.refreshAfterKeyChange(provider) }
+        }
     }
 
     private func emitProviders() async {
@@ -348,14 +372,32 @@ actor ChatEngine {
         try await catalog.validate(provider: provider, apiKey: apiKey)
     }
 
-    /// Stores the key and seeds the catalog with what validation already fetched.
-    func addProvider(_ provider: Provider, apiKey: String, validation: ValidationResult) async throws {
-        try await registry.addKey(provider: provider, name: "Default", secret: apiKey)
-        providerErrors[provider] = nil
-        await catalog.providerAdded(provider, validation: validation)
-        models = await catalog.snapshot()
-        emit(.modelsChanged(models))
+    /// Stores the key. The first key of a provider is always active; a later
+    /// one only with `makeActive`, which also seeds the catalog with what
+    /// validation already fetched (the list belongs to the active key).
+    func addProvider(
+        _ provider: Provider, keyName: String, apiKey: String, makeActive: Bool, validation: ValidationResult
+    ) async throws {
+        let key = try await registry.addKey(provider: provider, name: keyName, secret: apiKey, select: makeActive)
+        if await registry.selectedKey(for: provider)?.id == key.id {
+            await ConfigManager.shared.setProviderKeys(await registry.selectedKeyIDs)
+            providerErrors[provider] = nil
+            await catalog.providerAdded(provider, validation: validation)
+            models = await catalog.snapshot()
+            emit(.modelsChanged(models))
+        }
         await emitProviders()
+    }
+
+    /// Switches the key new requests are made with. Requests already running
+    /// keep the key they were resolved with.
+    func selectProviderKey(_ keyID: UUID) async {
+        guard let key = await registry.selectKey(keyID) else { return }
+        debugLog("Providers", "\(key.provider.displayName) active key → '\(key.name)'")
+        await ConfigManager.shared.setProviderKeys(await registry.selectedKeyIDs)
+        providerErrors[key.provider] = nil
+        await emitProviders()
+        refreshModelsAfterKeyChange(of: [key.provider])
     }
 
     /// Manual "Refresh Models…": shows the loader and completes with the final
@@ -448,7 +490,13 @@ actor ChatEngine {
             switch change {
             case .config:
                 await ConfigManager.shared.reload()
+                // The file may name another active key than the one in use.
+                let switched = await syncKeySelection()
                 emit(.configChanged)
+                if !switched.isEmpty {
+                    await emitProviders()
+                    refreshModelsAfterKeyChange(of: switched)
+                }
 
             case .roles: revalidateRoles()
             case .role(let name): reloadRole(name: name)

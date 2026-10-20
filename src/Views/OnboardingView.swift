@@ -32,7 +32,7 @@ struct OnboardingView: View {
                     title: "Provider",
                     detail: providerDetail(status),
                     isMet: status.hasProvider,
-                    isEnabled: store.providers.count < Provider.allCases.count,
+                    isEnabled: true,
                     buttonTitle: status.hasProvider ? "Add Another…" : "Add Provider…",
                     isProminent: firstUnmet == .provider,
                     action: { store.presentSheet(.providerWizard) })
