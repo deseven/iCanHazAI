@@ -145,6 +145,7 @@ struct MainSheetContent: View {
                 models: store.models,
                 hasProviders: !store.providers.isEmpty,
                 currentID: store.selectedChatModelID,
+                defaultID: store.preferencesModelID(for: .defaultModel),
                 onCancel: { store.modelPickerCancelled() },
                 onPick: { store.modelPickerPicked($0) }
             )
@@ -154,6 +155,7 @@ struct MainSheetContent: View {
                 models: store.models,
                 hasProviders: !store.providers.isEmpty,
                 currentID: store.preferencesModelID(for: setting),
+                defaultID: store.preferencesModelID(for: .defaultModel),
                 subtitle: setting == .defaultModel
                     ? "Pick the model preselected for new chats."
                     : "Pick the model for background tasks. A fast and cheap one is best.",

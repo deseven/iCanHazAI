@@ -107,6 +107,32 @@ extension AllAppTests {
             }
         }
 
+        @Test("the pinned default model goes first when it survives the filtering")
+        func pinnedDefault() {
+            let pinned = ModelID(provider: .deepseek, name: "deepseek-flash")
+            #expect(ModelPickerQuery("").filter(sample, pinning: pinned).first?.id == pinned)
+            #expect(ModelPickerQuery("").filter(sample, pinning: pinned).count == sample.count)
+            // The remaining models keep their order.
+            #expect(
+                ModelPickerQuery("").filter(sample, pinning: pinned).dropFirst().map(\.id.name)
+                    == ["gpt-5", "claude-sonnet-5-5", "anthropic/claude-sonnet-5.5", "meta/llama-4:free"])
+            // Ranking is overridden: the pin stays on top of a better match.
+            let sonnetPin = ModelID(provider: .openrouter, name: "anthropic/claude-sonnet-5.5")
+            let ranked = ModelPickerQuery("sonnet").filter(sample, pinning: sonnetPin)
+            #expect(ranked.first?.id == sonnetPin)
+            #expect(ranked.count == 2)
+        }
+
+        @Test("a pinned model that is filtered out, unknown or nil changes nothing")
+        func pinnedDefaultFilteredOut() {
+            let pinned = ModelID(provider: .deepseek, name: "deepseek-flash")
+            #expect(ModelPickerQuery("an.").filter(sample, pinning: pinned) == ModelPickerQuery("an.").filter(sample))
+            #expect(ModelPickerQuery("llama").filter(sample, pinning: pinned).count == 1)
+            let unknown = ModelID(provider: .openai, name: "gone")
+            #expect(ModelPickerQuery("").filter(sample, pinning: unknown) == sample)
+            #expect(ModelPickerQuery("").filter(sample, pinning: nil) == sample)
+        }
+
         @Test("OpenRouter `~vendor/model-latest` aliases are found with and without the prefix")
         func latestAliases() {
             let models = sample + [model(.openrouter, "~deepseek/deepseek-v4-flash-latest")]

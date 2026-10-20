@@ -101,15 +101,6 @@ extension AllAppTests {
             #expect(caps.effectiveOption(for: nil) == "medium")
         }
 
-        @Test("the fast setting is off when possible, else the lowest level")
-        func fast() {
-            #expect(capability(["low", "high"], canDisable: true).fastOption == ReasoningSetting.off)
-            #expect(capability(["none", "low", "high"]).fastOption == ReasoningSetting.off)
-            #expect(capability(["minimal", "low", "high"]).fastOption == "minimal")
-            #expect(capability([], supported: true).fastOption == nil)
-            #expect(ReasoningCapability.unsupported.fastOption == nil)
-        }
-
         @Test("titles read naturally")
         func titles() {
             #expect(ReasoningSetting.title("off") == "Off")

@@ -19,8 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
         ) { note in
-            if let window = note.object as? NSWindow, window.isSheet {
-                window.preventsApplicationTerminationWhenModal = false
+            guard let window = note.object as? NSWindow else { return }
+            MainActor.assumeIsolated {
+                if window.isSheet { window.preventsApplicationTerminationWhenModal = false }
             }
         }
         // Open ~/iCanHazAI/app.log (truncated) before anything else.

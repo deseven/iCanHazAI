@@ -216,7 +216,7 @@ final class ChatListController: ObservableObject {
 
         expandToolUse = store.preferencesExpandToolUse
         smoothStreaming = store.preferencesSmoothStreaming
-        listView.interfaceScale = ChatFeaturesConfig.normalizedInterfaceScale(store.preferencesInterfaceScale)
+        listView.interfaceScale = ChatConfig.normalizedInterfaceScale(store.preferencesInterfaceScale)
         listView.context = makeContext()
     }
 
@@ -359,7 +359,7 @@ final class ChatListController: ObservableObject {
     func enterTreeOverview() {
         guard let store, let chat = store.selectedChatItem?.chat else { return }
         closeSearch(refocusInput: false)
-        let scale = CGFloat(ChatFeaturesConfig.normalizedInterfaceScale(store.preferencesInterfaceScale) / 100)
+        let scale = CGFloat(ChatConfig.normalizedInterfaceScale(store.preferencesInterfaceScale) / 100)
         treeOverviewTask?.cancel()
         treeOverviewTask = Task {
             let content = await Task.detached { TreeOverviewContent(chat: chat, scale: scale) }.value

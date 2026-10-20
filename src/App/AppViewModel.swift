@@ -202,7 +202,7 @@ final class AppViewModel: ObservableObject {
     /// preferences above are real values rather than initial nils.
     private var preferencesLoaded = false
 
-    @Published var preferencesInterfaceScale: Double = ChatFeaturesConfig.defaultInterfaceScale
+    @Published var preferencesInterfaceScale: Double = ChatConfig.defaultInterfaceScale
     @Published var preferencesAppDebugEnabled: Bool = false
 
     @Published var preferencesExpandToolUse: Bool = false
@@ -308,7 +308,7 @@ final class AppViewModel: ObservableObject {
     // MARK: - Onboarding
 
     /// True from the moment a requirement is found unmet until the onboarding
-    /// sheet has faded out after all of them are met. Blocks every sheet
+    /// sheet has closed after all of them are met. Blocks every sheet
     /// outside the onboarding flow (see `presentSheet`) and the menu commands.
     @Published private(set) var onboardingActive = false
 
@@ -332,12 +332,19 @@ final class AppViewModel: ObservableObject {
         activeSheet = .onboarding
     }
 
-    /// Called by the onboarding sheet once it has faded out with everything
-    /// set up. Restores the normal UI.
+    /// Called by the onboarding sheet once everything is set up. Restores the
+    /// normal UI.
     func finishOnboarding() {
         guard onboardingActive, onboardingStatus.isComplete else { return }
         onboardingActive = false
-        if activeSheet == .onboarding { activeSheet = nil }
+        guard activeSheet == .onboarding else { return }
+        activeSheet = nil
+        // Pickers held back during onboarding (e.g. the model picker of a chat
+        // without a model) take over in the same state change, so SwiftUI sees
+        // one sheet replacing another instead of a dismissal immediately
+        // followed by a presentation, which can leave the sheet missing.
+        maybePresentRolePickerForSelectedChat()
+        maybePresentModelPickerForSelectedChat()
     }
 
     /// The provider wizard finished or was cancelled.
@@ -900,7 +907,7 @@ final class AppViewModel: ObservableObject {
         Binding(
             get: { self.preferencesInterfaceScale },
             set: { newValue in
-                let normalized = ChatFeaturesConfig.normalizedInterfaceScale(newValue)
+                let normalized = ChatConfig.normalizedInterfaceScale(newValue)
                 self.preferencesInterfaceScale = normalized
                 Task { await self.config.setInterfaceScale(normalized) }
             }

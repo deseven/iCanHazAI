@@ -28,11 +28,18 @@ struct ModelPickerQuery: Equatable {
         }
     }
 
-    func filter(_ models: [CatalogModel]) -> [CatalogModel] {
+    /// The models matching the query, best first. `pinnedID` (the default
+    /// model) is moved to the top whenever it survives the filtering, so it
+    /// never ranks below other matches.
+    func filter(_ models: [CatalogModel], pinning pinnedID: ModelID? = nil) -> [CatalogModel] {
         let scoped = provider.map { p in models.filter { $0.id.provider == p } } ?? models
-        return SearchMatcher.rank(scoped, query: text) { model in
+        var ranked = SearchMatcher.rank(scoped, query: text) { model in
             [model.id.description, model.displayName].compactMap { $0 }
         }
+        if let pinnedID, let index = ranked.firstIndex(where: { $0.id == pinnedID }), index > 0 {
+            ranked.insert(ranked.remove(at: index), at: 0)
+        }
+        return ranked
     }
 
 }

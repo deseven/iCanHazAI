@@ -173,10 +173,8 @@ extension AllAppTests {
                 default_role = "Assistant"
                 working_directories = ["/Users/me/proj1", "/Users/me/proj2"]
 
-                [chat_behaviour]
+                [chat]
                 expand_tool_use = false
-
-                [chat_features]
                 interface_scale = 100
 
                 [debug]
@@ -189,7 +187,7 @@ extension AllAppTests {
         @Test("AppConfig ignores keys of removed preferences")
         func ignoresRemovedKeys() throws {
             let toml = """
-                [chat_features]
+                [chat]
                 mermaid_enabled = true
                 katex_enabled = true
                 interface_scale = 120
@@ -199,7 +197,7 @@ extension AllAppTests {
                 chat_renderer_debug_enabled = true
                 """
             let config = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
-            #expect(config.chatFeatures.interfaceScale == 120)
+            #expect(config.chat.interfaceScale == 120)
             #expect(config.debug.appDebugEnabled == true)
         }
 
@@ -212,10 +210,8 @@ extension AllAppTests {
                 [general]
                 default_role = "Assistant"
 
-                [chat_behaviour]
+                [chat]
                 expand_tool_use = false
-
-                [chat_features]
                 interface_scale = 100
 
                 [debug]
@@ -290,7 +286,7 @@ extension AllAppTests {
         @Test("AppConfig interface_scale round-trips through TOML")
         func roundTripsInterfaceScale() throws {
             var cfg = AppConfig()
-            cfg.chatFeatures.interfaceScale = 125
+            cfg.chat.interfaceScale = 125
             let encoder = TOMLEncoder()
             encoder.outputFormatting = .sortedKeys
             encoder.keyEncodingStrategy = .convertToSnakeCase
@@ -298,21 +294,21 @@ extension AllAppTests {
             let text = try #require(String(data: encoded, encoding: .utf8))
             #expect(text.contains("interface_scale"))
             let decoded = try TOMLDecoder().decode(AppConfig.self, from: encoded)
-            #expect(decoded.chatFeatures.interfaceScale == 125)
+            #expect(decoded.chat.interfaceScale == 125)
         }
 
         @Test("Interface scale defaults to 100 and clamps to the supported range")
         func normalizesInterfaceScale() throws {
             let toml = """
-                [chat_features]
+                [chat]
                 interface_scale = 125.5
                 """
             let decoded = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
-            #expect(decoded.chatFeatures.interfaceScale == 125.5)
-            #expect(ChatFeaturesConfig.normalizedInterfaceScale(nil) == 100)
-            #expect(ChatFeaturesConfig.normalizedInterfaceScale(69) == 70)
-            #expect(ChatFeaturesConfig.normalizedInterfaceScale(201) == 200)
-            #expect(ChatFeaturesConfig.normalizedInterfaceScale(120) == 120)
+            #expect(decoded.chat.interfaceScale == 125.5)
+            #expect(ChatConfig.normalizedInterfaceScale(nil) == 100)
+            #expect(ChatConfig.normalizedInterfaceScale(69) == 70)
+            #expect(ChatConfig.normalizedInterfaceScale(201) == 200)
+            #expect(ChatConfig.normalizedInterfaceScale(120) == 120)
         }
 
         // MARK: - Missing-key tolerance
@@ -323,21 +319,21 @@ extension AllAppTests {
             // so all fields fall back to their defaults.
             let config = try TOMLDecoder().decode(AppConfig.self, from: Data("".utf8))
             #expect(config.general.defaultRole == nil)
-            #expect(config.chatBehaviour.expandToolUse == nil)
-            #expect(config.chatBehaviour.smoothStreaming == nil)
-            #expect(config.chatFeatures.interfaceScale == nil)
+            #expect(config.chat.expandToolUse == nil)
+            #expect(config.chat.smoothStreaming == nil)
+            #expect(config.chat.interfaceScale == nil)
             #expect(config.debug.appDebugEnabled == nil)
             #expect(config.window == nil)
         }
 
-        @Test("smooth_streaming round-trips through [chat_behaviour]")
+        @Test("smooth_streaming round-trips through [chat]")
         func smoothStreamingKey() throws {
             let off = try TOMLDecoder().decode(
-                AppConfig.self, from: Data("[chat_behaviour]\nsmooth_streaming = false\n".utf8))
-            #expect(off.chatBehaviour.smoothStreaming == false)
+                AppConfig.self, from: Data("[chat]\nsmooth_streaming = false\n".utf8))
+            #expect(off.chat.smoothStreaming == false)
             let on = try TOMLDecoder().decode(
-                AppConfig.self, from: Data("[chat_behaviour]\nsmooth_streaming = true\n".utf8))
-            #expect(on.chatBehaviour.smoothStreaming == true)
+                AppConfig.self, from: Data("[chat]\nsmooth_streaming = true\n".utf8))
+            #expect(on.chat.smoothStreaming == true)
         }
 
         @Test("AppConfig decodes a partial config with only one group")
@@ -350,21 +346,21 @@ extension AllAppTests {
                 """
             let config = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
             #expect(config.general.defaultRole == "Assistant")
-            #expect(config.chatBehaviour.expandToolUse == nil)
-            #expect(config.chatFeatures.interfaceScale == nil)
+            #expect(config.chat.expandToolUse == nil)
+            #expect(config.chat.interfaceScale == nil)
             #expect(config.debug.appDebugEnabled == nil)
         }
 
         @Test("AppConfig decodes a group with missing keys, substituting defaults")
         func decodesGroupWithMissingKeys() throws {
-            // [chat_behaviour] exists but has no keys (and a key of a removed
+            // [chat] exists but has no keys (and a key of a removed
             // preference) — expand_tool_use must default to nil rather than throwing.
             let toml = """
-                [chat_behaviour]
+                [chat]
                 expand_thinking = true
                 """
             let config = try TOMLDecoder().decode(AppConfig.self, from: Data(toml.utf8))
-            #expect(config.chatBehaviour.expandToolUse == nil)
+            #expect(config.chat.expandToolUse == nil)
         }
 
         @Test("AppConfig rejects invalid TOML syntax")

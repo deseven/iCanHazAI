@@ -70,14 +70,6 @@ extension ReasoningCapability {
         return efforts[efforts.count / 2]
     }
 
-    /// The setting for fast, throwaway requests: off when possible, otherwise
-    /// the lowest effort level. Nil leaves the provider default alone.
-    var fastOption: String? {
-        guard supported else { return nil }
-        if canTurnOff { return ReasoningSetting.off }
-        return effortLevels.first
-    }
-
     /// A stored setting resolved against this model: the setting itself when
     /// the model offers it, otherwise the default. Nil when the model has no
     /// reasoning control.
@@ -102,6 +94,22 @@ struct ModelCapabilities: Codable, Hashable, Sendable {
         maxOutputTokens: nil,
         reasoning: .unsupported
     )
+
+    /// A short, whole-number label for a token count: plain below 1000, then
+    /// `k`/`kk`/`kkk` ("999", "8k", "200k", "1kk"). Rounding that reaches
+    /// 1000 moves up a tier, so 999.5k becomes "1kk".
+    static func compactCount(_ count: Int) -> String {
+        let n = max(0, count)
+        if n < 1000 { return "\(n)" }
+        let suffixes = ["k", "kk", "kkk"]
+        var scaled = Double(n) / 1000
+        var tier = 0
+        while scaled.rounded() >= 1000, tier < suffixes.count - 1 {
+            scaled /= 1000
+            tier += 1
+        }
+        return "\(Int(scaled.rounded()))\(suffixes[tier])"
+    }
 }
 
 struct CatalogModel: Identifiable, Hashable, Sendable {

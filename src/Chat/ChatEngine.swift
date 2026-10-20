@@ -3091,12 +3091,12 @@ actor ChatEngine {
 
     /// The model used for utility tasks such as chat naming: the configured
     /// `[general].utility_model` when it resolves, else nil (task skipped).
-    /// Reasoning is turned off (or to the lowest level) because these requests
-    /// need to be fast.
+    /// Runs with the model's default reasoning setting (the provider's own
+    /// default level when known), never a hand-picked override.
     private func utilityModel() async -> ResolvedModel? {
         guard let model = await ConfigManager.shared.getUtilityModel() else { return nil }
         guard case .ok(let resolved, let entry) = await resolveModel(model) else { return nil }
-        return resolved.withReasoning(entry.capabilities.reasoning.fastOption)
+        return resolved.withReasoning(entry.capabilities.reasoning.defaultOption)
     }
 
     /// Kicks off a background request to generate a chat name via the utility

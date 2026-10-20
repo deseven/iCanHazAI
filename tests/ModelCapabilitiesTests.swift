@@ -17,6 +17,19 @@ extension AllAppTests {
             #expect(caps.reasoning.defaultLevel == nil)
         }
 
+        @Test("compact counts are whole numbers and move up a tier at 1000")
+        func compactCount() {
+            let cases: [(Int, String)] = [
+                (0, "0"), (999, "999"), (1000, "1k"), (8192, "8k"), (128_000, "128k"),
+                (131_072, "131k"), (200_000, "200k"), (999_499, "999k"), (999_500, "1kk"),
+                (1_000_000, "1kk"), (1_048_576, "1kk"), (2_000_000, "2kk"), (10_000_000, "10kk"),
+                (1_000_000_000, "1kkk"), (-5, "0"),
+            ]
+            for (count, expected) in cases {
+                #expect(ModelCapabilities.compactCount(count) == expected, "\(count)")
+            }
+        }
+
         @Test("Codable round trip")
         func codable() throws {
             let caps = ModelCapabilities(

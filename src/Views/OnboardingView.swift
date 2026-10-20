@@ -7,14 +7,12 @@ import SwiftUI
 /// The sheet that blocks the app until it has a provider, a default model and
 /// a utility model. Each requirement has a button opening the matching dialog
 /// (provider wizard / model picker); closing the dialog returns here. Once
-/// everything is set up the sheet fades out and the UI comes back — see
+/// everything is set up the sheet closes and the UI comes back — see
 /// `AppViewModel.onboardingActive`.
 struct OnboardingView: View {
     @EnvironmentObject var store: AppViewModel
-    @State private var window: NSWindow?
 
-    private static let fadeDuration: TimeInterval = 0.5
-    /// How long the all-set state stays visible before the fade starts.
+    /// How long the all-set state stays visible before the sheet closes.
     private static let settleDelay: Duration = .milliseconds(800)
 
     var body: some View {
@@ -74,12 +72,6 @@ struct OnboardingView: View {
         }
         .frame(width: 540)
         .animation(.easeInOut(duration: 0.25), value: status)
-        .background(
-            WindowReader { newWindow in
-                newWindow.alphaValue = 1
-                window = newWindow
-            }
-        )
         .interactiveDismissDisabled()
         .task(id: status.isComplete) { await finishWhenComplete() }
     }
@@ -130,28 +122,8 @@ struct OnboardingView: View {
     private func finishWhenComplete() async {
         guard store.onboardingStatus.isComplete else { return }
         try? await Task.sleep(for: Self.settleDelay)
-        guard !Task.isCancelled, store.onboardingStatus.isComplete else { return }
-        await fadeOut()
-        if Task.isCancelled || !store.onboardingStatus.isComplete {
-            window?.alphaValue = 1
-        } else {
-            store.finishOnboarding()
-        }
-    }
-
-    /// SwiftUI can't animate a sheet's removal, so the sheet's own window is
-    /// faded; the sheet is dismissed only once it is fully transparent.
-    private func fadeOut() async {
-        guard let window else { return }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            NSAnimationContext.runAnimationGroup(
-                { context in
-                    context.duration = Self.fadeDuration
-                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                    window.animator().alphaValue = 0
-                },
-                completionHandler: { continuation.resume() })
-        }
+        guard !Task.isCancelled else { return }
+        store.finishOnboarding()
     }
 }
 
@@ -207,30 +179,5 @@ private struct RequirementRow: View {
                 .strokeBorder(isMet ? Color.green.opacity(0.35) : Color.secondary.opacity(0.15))
         )
         .opacity(isEnabled || isMet ? 1 : 0.6)
-    }
-}
-
-// MARK: - Window access
-
-/// Reports the `NSWindow` hosting the view (the sheet's window), including
-/// when it is attached later than the view is created.
-private struct WindowReader: NSViewRepresentable {
-    let onWindow: (NSWindow) -> Void
-
-    func makeNSView(context: Context) -> NSView {
-        let view = WindowReportingView()
-        view.onWindow = onWindow
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {}
-
-    private final class WindowReportingView: NSView {
-        var onWindow: ((NSWindow) -> Void)?
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            if let window { onWindow?(window) }
-        }
     }
 }

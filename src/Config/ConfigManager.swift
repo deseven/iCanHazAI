@@ -8,16 +8,15 @@ import TOML
 
 /// The app configuration persisted to `~/iCanHazAI/config.toml`.
 /// Preferences are organized into TOML groups that mirror the preferences
-/// UI tabs: `[general]`, `[chat_features]`, `[debug]`, and `[window]`.
+/// UI tabs: `[general]`, `[chat]`, `[web_search]`, and `[debug]`, plus the
+/// app-managed `[window]`.
 /// All keys are sorted alphabetically on write via
 /// `TOMLEncoder.outputFormatting = .sortedKeys`.
 struct AppConfig: Codable, Equatable {
     /// General preferences: default role and working directories.
     var general: GeneralConfig = GeneralConfig()
-    /// Chat behaviour toggles: default expansion of thinking / tool use blocks.
-    var chatBehaviour: ChatBehaviourConfig = ChatBehaviourConfig()
-    /// Chat rendering preferences (interface scale).
-    var chatFeatures: ChatFeaturesConfig = ChatFeaturesConfig()
+    /// Chat preferences: tool use expansion, streaming animation and interface scale.
+    var chat: ChatConfig = ChatConfig()
     /// Web search provider settings for the built-in `web` tool group.
     var webSearch: WebSearchConfig = WebSearchConfig()
     /// Chat list sidebar display mode and filter selection.
@@ -35,8 +34,7 @@ struct AppConfig: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case general
-        case chatBehaviour = "chat_behaviour"
-        case chatFeatures = "chat_features"
+        case chat
         case webSearch = "web_search"
         case chatList = "chat_list"
         case debug
@@ -52,8 +50,7 @@ struct AppConfig: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         general = try c.decodeIfPresent(GeneralConfig.self, forKey: .general) ?? GeneralConfig()
-        chatBehaviour = try c.decodeIfPresent(ChatBehaviourConfig.self, forKey: .chatBehaviour) ?? ChatBehaviourConfig()
-        chatFeatures = try c.decodeIfPresent(ChatFeaturesConfig.self, forKey: .chatFeatures) ?? ChatFeaturesConfig()
+        chat = try c.decodeIfPresent(ChatConfig.self, forKey: .chat) ?? ChatConfig()
         webSearch = try c.decodeIfPresent(WebSearchConfig.self, forKey: .webSearch) ?? WebSearchConfig()
         chatList = try c.decodeIfPresent(ChatListConfig.self, forKey: .chatList) ?? ChatListConfig()
         debug = try c.decodeIfPresent(DebugConfig.self, forKey: .debug) ?? DebugConfig()
@@ -91,24 +88,14 @@ struct GeneralConfig: Codable, Equatable {
     }
 }
 
-/// `[chat_behaviour]` group — default expansion of tool use blocks and how a streaming reply is shown.
-struct ChatBehaviourConfig: Codable, Equatable {
+/// `[chat]` group — how chats are shown: tool use expansion, streaming animation and interface scale.
+struct ChatConfig: Codable, Equatable {
     /// Whether Tool Use blocks are expanded by default in the chat renderer.
     /// Nil/missing → false.
     var expandToolUse: Bool?
     /// Whether a streaming reply fades its new text in and glides the list down.
     /// Nil/missing → true.
     var smoothStreaming: Bool?
-
-    enum CodingKeys: String, CodingKey {
-
-        case expandToolUse = "expand_tool_use"
-        case smoothStreaming = "smooth_streaming"
-    }
-}
-
-/// `[chat_features]` group — chat rendering preferences.
-struct ChatFeaturesConfig: Codable, Equatable {
     /// Chat renderer interface scale, as a percentage. Nil/missing → 100.
     var interfaceScale: Double?
 
@@ -120,7 +107,8 @@ struct ChatFeaturesConfig: Codable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-
+        case expandToolUse = "expand_tool_use"
+        case smoothStreaming = "smooth_streaming"
         case interfaceScale = "interface_scale"
     }
 }
@@ -524,15 +512,15 @@ actor ConfigManager {
     }
 
     func getInterfaceScale() -> Double {
-        ChatFeaturesConfig.normalizedInterfaceScale(config.chatFeatures.interfaceScale)
+        ChatConfig.normalizedInterfaceScale(config.chat.interfaceScale)
     }
 
     func getExpandToolUse() -> Bool {
-        config.chatBehaviour.expandToolUse ?? false
+        config.chat.expandToolUse ?? false
     }
 
     func getSmoothStreaming() -> Bool {
-        config.chatBehaviour.smoothStreaming ?? true
+        config.chat.smoothStreaming ?? true
     }
 
     func getAppDebugEnabled() -> Bool {
@@ -610,17 +598,17 @@ actor ConfigManager {
     }
 
     func setInterfaceScale(_ scale: Double) {
-        config.chatFeatures.interfaceScale = ChatFeaturesConfig.normalizedInterfaceScale(scale)
+        config.chat.interfaceScale = ChatConfig.normalizedInterfaceScale(scale)
         persist()
     }
 
     func setExpandToolUse(_ enabled: Bool) {
-        config.chatBehaviour.expandToolUse = enabled
+        config.chat.expandToolUse = enabled
         persist()
     }
 
     func setSmoothStreaming(_ enabled: Bool) {
-        config.chatBehaviour.smoothStreaming = enabled
+        config.chat.smoothStreaming = enabled
         persist()
     }
 

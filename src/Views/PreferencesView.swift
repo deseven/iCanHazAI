@@ -15,8 +15,7 @@ struct PreferencesView: View {
 
     private enum Tab: String, CaseIterable, Identifiable {
         case general
-        case chatBehaviour
-        case chatFeatures
+        case chat
         case webSearch
         case debug
 
@@ -25,8 +24,7 @@ struct PreferencesView: View {
         var label: String {
             switch self {
             case .general: return "General"
-            case .chatBehaviour: return "Chat Behaviour"
-            case .chatFeatures: return "Chat Features"
+            case .chat: return "Chat"
             case .webSearch: return "Web Search"
             case .debug: return "Debug"
             }
@@ -35,8 +33,7 @@ struct PreferencesView: View {
         var icon: String {
             switch self {
             case .general: return "gearshape"
-            case .chatBehaviour: return "rectangle.expand.vertical"
-            case .chatFeatures: return "text.bubble"
+            case .chat: return "text.bubble"
             case .webSearch: return "globe"
             case .debug: return "ladybug"
             }
@@ -95,10 +92,8 @@ struct PreferencesView: View {
                 switch selectedTab {
                 case .general:
                     GeneralTab()
-                case .chatBehaviour:
-                    ChatBehaviourTab()
-                case .chatFeatures:
-                    ChatFeaturesTab()
+                case .chat:
+                    ChatTab()
                 case .webSearch:
                     WebSearchTab()
                 case .debug:
@@ -201,14 +196,13 @@ private struct ModelSettingButton: View {
     }
 }
 
-// MARK: - Chat behaviour tab
+// MARK: - Chat tab
 
-private struct ChatBehaviourTab: View {
+private struct ChatTab: View {
     @EnvironmentObject var store: AppViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-
             PrefRow(
                 title: "Expand Tool Use",
                 description: "Controls whether the Tool Use blocks will be expanded by default"
@@ -227,21 +221,6 @@ private struct ChatBehaviourTab: View {
                     .toggleStyle(.switch)
             }
 
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.top, 8)
-    }
-}
-
-// MARK: - Chat features tab
-
-private struct ChatFeaturesTab: View {
-    @EnvironmentObject var store: AppViewModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-
             PrefRow(
                 title: "Interface Scale",
                 description: "Adjust the size of the chat interface. 100% is the default."
@@ -252,7 +231,7 @@ private struct ChatFeaturesTab: View {
                         .foregroundStyle(.secondary)
                     Slider(
                         value: store.bindingInterfaceScale,
-                        in: ChatFeaturesConfig.interfaceScaleRange,
+                        in: ChatConfig.interfaceScaleRange,
                         step: 1
                     )
                     Text("200%")
