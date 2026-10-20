@@ -11,15 +11,22 @@ private final class WizardProbe: @unchecked Sendable {
         let seedCount: Int
     }
 
+    struct Validation: Sendable {
+        let provider: Provider
+        let custom: CustomProviderConfig?
+        let key: String
+    }
+
     private let lock = NSLock()
-    private var _validations: [(Provider, String)] = []
+    private var _validations: [Validation] = []
     private var _commits: [Commit] = []
-    var validateResult: @Sendable (Provider, String) async throws -> ValidationResult = { _, _ in
+    var validateResult: @Sendable (Provider, CustomProviderConfig?, String) async throws -> ValidationResult = {
+        _, _, _ in
         ValidationResult(modelCount: 3, seed: [])
     }
     var commitError: Error?
 
-    var validations: [(Provider, String)] { lock.withLock { _validations } }
+    var validations: [Validation] { lock.withLock { _validations } }
     var commits: [Commit] { lock.withLock { _commits } }
 
     @MainActor
@@ -27,9 +34,9 @@ private final class WizardProbe: @unchecked Sendable {
         ProviderWizardModel(
             existingKeyNames: existing,
             initialProvider: initialProvider,
-            validate: { [self] provider, key in
-                lock.withLock { _validations.append((provider, key)) }
-                return try await validateResult(provider, key)
+            validate: { [self] provider, custom, key in
+                lock.withLock { _validations.append(Validation(provider: provider, custom: custom, key: key)) }
+                return try await validateResult(provider, custom, key)
             },
             commit: { [self] key, validation in
                 if let commitError { throw commitError }
@@ -45,22 +52,49 @@ extension AllAppTests {
     @Suite("ProviderWizardModel")
     @MainActor
     struct ProviderWizardModelTests {
-        @Test("the first provider without a key is preselected, but every provider stays selectable")
+        @Test("the first provider without a key is preselected")
         func preselection() {
             let model = WizardProbe().makeModel(existing: [.openai: ["Default"], .anthropic: ["Default"]])
             #expect(model.selectedProvider == .deepseek)
+            #expect(!model.isCustomChosen)
 
-            model.select(.openai)
-            #expect(model.selectedProvider == .openai)
             model.select(.openrouter)
             #expect(model.selectedProvider == .openrouter)
         }
 
-        @Test("with every provider added the first one is preselected and Next stays available")
+        @Test("a provider that already has a key can't be picked")
+        func addedProvidersCannotBePicked() {
+            let model = WizardProbe().makeModel(existing: [.openai: ["Default"], .anthropic: ["Default"]])
+            #expect(model.isAdded(.openai))
+            #expect(!model.isAdded(.deepseek))
+
+            model.select(.openai)
+            model.select(.anthropic)
+            #expect(model.selectedProvider == .deepseek)
+
+            model.selectCustom()
+            model.select(.openai)
+            #expect(model.isCustomChosen)
+            #expect(model.selectedProvider == nil)
+        }
+
+        @Test("with every built-in provider added the custom provider is preselected")
         func allAdded() {
             let existing = Dictionary(uniqueKeysWithValues: Provider.allCases.map { ($0, ["Default"]) })
             let model = WizardProbe().makeModel(existing: existing)
-            #expect(model.selectedProvider == Provider.allCases.first)
+            #expect(model.isCustomChosen)
+            #expect(model.selectedProvider == nil)
+            #expect(model.canGoNext)
+        }
+
+        @Test("Next on the provider step works for a free built-in provider and for the custom one")
+        func providerStepNext() {
+            let model = WizardProbe().makeModel(existing: [.openai: ["Default"]])
+            #expect(model.selectedProvider == .anthropic)
+            #expect(model.canGoNext)
+            model.selectCustom()
+            #expect(model.canGoNext)
+            model.select(.deepseek)
             #expect(model.canGoNext)
         }
 
@@ -69,6 +103,7 @@ extension AllAppTests {
             let probe = WizardProbe()
             let model = probe.makeModel()
             #expect(model.step == .provider)
+            #expect(model.steps == [.provider, .apiKey, .check, .summary])
             #expect(!model.canGoBack)
 
             model.next()
@@ -84,7 +119,8 @@ extension AllAppTests {
             #expect(model.checkState == .ok(modelCount: 3))
             #expect(model.canGoBack)
             #expect(probe.validations.count == 1)
-            #expect(probe.validations[0].1 == "fake-key")
+            #expect(probe.validations[0].key == "fake-key")
+            #expect(probe.validations[0].custom == nil)
             #expect(probe.commits.isEmpty)
 
             model.next()
@@ -97,7 +133,7 @@ extension AllAppTests {
         @Test("an invalid key keeps Next disabled and offers retry")
         func invalidKey() async {
             let probe = WizardProbe()
-            probe.validateResult = { _, _ in throw ProviderError.invalidKey }
+            probe.validateResult = { _, _, _ in throw ProviderError.invalidKey }
             let model = probe.makeModel()
             model.next()
             model.apiKey = "bad"
@@ -109,7 +145,7 @@ extension AllAppTests {
             #expect(model.canRetry)
             #expect(model.canGoBack)
 
-            probe.validateResult = { _, _ in ValidationResult(modelCount: 5, seed: []) }
+            probe.validateResult = { _, _, _ in ValidationResult(modelCount: 5, seed: []) }
             model.retry()
             await model.settle()
             #expect(model.checkState == .ok(modelCount: 5))
@@ -119,7 +155,7 @@ extension AllAppTests {
         @Test("other errors show their underlying message")
         func otherErrors() async {
             let probe = WizardProbe()
-            probe.validateResult = { _, _ in throw ProviderError.http(status: 500, message: "boom") }
+            probe.validateResult = { _, _, _ in throw ProviderError.http(status: 500, message: "boom") }
             let model = probe.makeModel()
             model.next()
             model.apiKey = "k"
@@ -145,7 +181,7 @@ extension AllAppTests {
             model.apiKey = "two"
             model.next()
             await model.settle()
-            #expect(probe.validations.map(\.1) == ["one", "two"])
+            #expect(probe.validations.map(\.key) == ["one", "two"])
         }
 
         @Test("switching provider drops the typed key and the validation")
@@ -166,7 +202,7 @@ extension AllAppTests {
         @Test("commit is called exactly once with the validated key and result")
         func commitOnce() async {
             let probe = WizardProbe()
-            probe.validateResult = { _, _ in ValidationResult(modelCount: 7, seed: []) }
+            probe.validateResult = { _, _, _ in ValidationResult(modelCount: 7, seed: []) }
             let model = probe.makeModel()
             model.next()
             model.apiKey = "fake"
@@ -179,6 +215,7 @@ extension AllAppTests {
             #expect(probe.commits.count == 1)
             #expect(probe.commits[0].key.provider == .openai)
             #expect(probe.commits[0].key.secret == "fake")
+            #expect(probe.commits[0].key.custom == nil)
             #expect(probe.commits[0].modelCount == 7)
             #expect(model.committedKey == probe.commits[0].key)
         }
@@ -205,7 +242,7 @@ extension AllAppTests {
         @Test("cancelling during the check stores nothing")
         func cancelDuringCheck() async {
             let probe = WizardProbe()
-            probe.validateResult = { _, _ in
+            probe.validateResult = { _, _, _ in
                 try await Task.sleep(for: .milliseconds(200))
                 return ValidationResult(modelCount: 1, seed: [])
             }
@@ -245,13 +282,11 @@ extension AllAppTests {
 
         @Test("a further key starts with an empty name and Next needs one")
         func furtherKey() {
-            let model = WizardProbe().makeModel(existing: [.openai: ["Default"]])
-            model.select(.openai)
+            let model = WizardProbe().makeModel(existing: [.openai: ["Default"]], initialProvider: .openai)
             #expect(!model.isFirstKey)
             #expect(model.keyName.isEmpty)
             #expect(model.makeActive)
 
-            model.next()
             model.apiKey = "fake"
             #expect(!model.canGoNext)
             model.keyName = "   "
@@ -312,19 +347,27 @@ extension AllAppTests {
                 ])
         }
 
-        @Test("without an initial provider every step is shown, starting with the provider")
+        @Test("the provider can't be changed once it is fixed")
+        func fixedProvider() {
+            let model = WizardProbe().makeModel(existing: [.openai: ["Default"]], initialProvider: .openai)
+            model.select(.anthropic)
+            model.selectCustom()
+            #expect(model.selectedProvider == .openai)
+            #expect(!model.isCustomChosen)
+        }
+
+        @Test("without an initial provider every step but the custom details is shown, starting with the provider")
         func defaultSteps() {
             let model = WizardProbe().makeModel()
             #expect(!model.skipsProviderStep)
-            #expect(model.steps == ProviderWizardModel.Step.allCases)
+            #expect(model.steps == [.provider, .apiKey, .check, .summary])
             #expect(model.step == .provider)
         }
 
         @Test("a name already used by the provider is refused, ignoring case")
         func duplicateName() {
-            let model = WizardProbe().makeModel(existing: [.openai: ["Default", "Work"], .anthropic: ["Work"]])
-            model.select(.openai)
-            model.next()
+            let model = WizardProbe().makeModel(
+                existing: [.openai: ["Default", "Work"], .anthropic: ["Work"]], initialProvider: .openai)
             model.apiKey = "fake"
             model.keyName = "work"
             #expect(model.isKeyNameTaken)
@@ -346,29 +389,246 @@ extension AllAppTests {
         @Test("the activation choice is passed on, and a provider switch resets the key fields")
         func activationChoice() async {
             let probe = WizardProbe()
-            let model = probe.makeModel(existing: [.openai: ["Default"]])
-            model.select(.openai)
-            model.keyName = "Spare"
-            model.makeActive = false
-
-            model.select(.anthropic)
-            #expect(model.keyName == "Default")
-            #expect(model.makeActive)
-
-            model.select(.openai)
-            #expect(model.keyName.isEmpty)
-            model.keyName = "Spare"
-            model.makeActive = false
-            model.next()
-            model.apiKey = "fake"
-            model.next()
-            await model.settle()
-            model.next()
-            await model.settle()
-
+            let spare = probe.makeModel(existing: [.openai: ["Default"]], initialProvider: .openai)
+            spare.keyName = "Spare"
+            spare.makeActive = false
+            spare.apiKey = "fake"
+            spare.next()
+            await spare.settle()
+            spare.next()
+            await spare.settle()
             #expect(
                 probe.commits.map(\.key) == [
                     NewProviderKey(provider: .openai, name: "Spare", secret: "fake", makeActive: false)
+                ])
+
+            let model = probe.makeModel()
+            model.keyName = "Spare"
+            model.makeActive = false
+            model.select(.anthropic)
+            #expect(model.keyName == "Default")
+            #expect(model.makeActive)
+        }
+
+        // MARK: - Custom provider
+
+        private func customModel(
+            _ probe: WizardProbe = WizardProbe(), existing: [Provider: [String]] = [:]
+        ) -> ProviderWizardModel {
+            let model = probe.makeModel(existing: existing)
+            model.selectCustom()
+            return model
+        }
+
+        @Test("picking the custom provider adds the details step")
+        func customSteps() {
+            let model = WizardProbe().makeModel()
+            #expect(!model.steps.contains(.details))
+            model.selectCustom()
+            #expect(model.isCustomChosen)
+            #expect(model.selectedProvider == nil)
+            #expect(model.steps == [.provider, .details, .apiKey, .check, .summary])
+            #expect(model.isCustomProvider)
+            #expect(model.isKeyOptional)
+
+            model.select(.openai)
+            #expect(!model.isCustomChosen)
+            #expect(!model.steps.contains(.details))
+            #expect(!model.isKeyOptional)
+        }
+
+        @Test("the details need a usable name and endpoint")
+        func customDetailsGate() {
+            let model = customModel()
+            model.next()
+            #expect(model.step == .details)
+            #expect(model.canGoBack)
+            #expect(!model.canGoNext)
+
+            model.customName = "Ollama"
+            #expect(!model.canGoNext)
+            model.customEndpoint = "localhost:11434"
+            #expect(!model.canGoNext)
+            model.customEndpoint = "http://localhost:11434/v1"
+            #expect(model.canGoNext)
+            #expect(model.targetProvider == .custom("Ollama"))
+        }
+
+        @Test("custom names must be unique, not built-in, and fit the model id format")
+        func customNameValidation() {
+            let model = customModel(existing: [.custom("Ollama"): ["Default"]])
+            #expect(model.customNameProblem == .empty)
+
+            for reserved in ["openai", "OpenAI", " DeepSeek ", "OPENROUTER", "Anthropic"] {
+                model.customName = reserved
+                #expect(model.customNameProblem == .reserved, "\(reserved)")
+            }
+            model.customName = "ollama"
+            #expect(model.customNameProblem == .taken)
+            model.customName = "My:Server"
+            #expect(model.customNameProblem == .containsColon)
+            model.customName = "Line\nBreak"
+            #expect(model.customNameProblem == .containsControlCharacters)
+            model.customName = "   "
+            #expect(model.customNameProblem == .empty)
+
+            model.customName = "LM Studio"
+            #expect(model.customNameProblem == nil)
+            model.customName = String(repeating: "x", count: 50)
+            #expect(model.customName.count == CustomProviderConfig.maxNameLength)
+            #expect(model.customNameProblem == nil)
+        }
+
+        @Test("a taken name keeps the details from being accepted")
+        func takenNameBlocksNext() {
+            let model = customModel(existing: [.custom("Ollama"): ["Default"]])
+            model.next()
+            model.customName = "Ollama"
+            model.customEndpoint = "http://localhost:11434/v1"
+            #expect(!model.canGoNext)
+            model.customName = "Ollama 2"
+            #expect(model.canGoNext)
+        }
+
+        @Test("the endpoint must be an http(s) URL and loses surrounding space and trailing slashes")
+        func customEndpointValidation() {
+            let model = customModel()
+            for bad in ["", "localhost:11434", "ftp://example.com", "http://", "not a url", "/v1"] {
+                model.customEndpoint = bad
+                #expect(model.normalizedCustomEndpoint == nil, "\(bad)")
+            }
+            model.customEndpoint = "  https://api.example.com/v1//  "
+            #expect(model.normalizedCustomEndpoint == "https://api.example.com/v1")
+            model.customEndpoint = "http://localhost:1234"
+            #expect(model.normalizedCustomEndpoint == "http://localhost:1234")
+        }
+
+        @Test("a custom provider is checked at its endpoint, without a key, and created on commit")
+        func customFlow() async {
+            let probe = WizardProbe()
+            probe.validateResult = { _, _, _ in ValidationResult(modelCount: 4, seed: []) }
+            let model = customModel(probe)
+            model.next()
+            model.customName = "  Ollama "
+            model.customEndpoint = " http://localhost:11434/v1/ "
+            model.customColor = .orange
+            model.next()
+            #expect(model.step == .apiKey)
+            #expect(model.keyName == "Default")
+            #expect(model.canGoNext)
+
+            model.next()
+            #expect(model.step == .check)
+            await model.settle()
+            #expect(model.checkState == .ok(modelCount: 4))
+            let expected = CustomProviderConfig(name: "Ollama", endpoint: "http://localhost:11434/v1", color: "orange")
+            #expect(probe.validations.count == 1)
+            #expect(probe.validations[0].provider == .custom("Ollama"))
+            #expect(probe.validations[0].custom == expected)
+            #expect(probe.validations[0].key.isEmpty)
+
+            model.next()
+            await model.settle()
+            #expect(model.step == .summary)
+            #expect(
+                probe.commits.map(\.key) == [
+                    NewProviderKey(
+                        provider: .custom("Ollama"), name: "Default", secret: "", makeActive: true, custom: expected)
+                ])
+        }
+
+        @Test("a custom provider may be given an API key")
+        func customWithKey() async {
+            let probe = WizardProbe()
+            let model = customModel(probe)
+            model.next()
+            model.customName = "Together"
+            model.customEndpoint = "https://api.together.xyz/v1"
+            model.next()
+            model.apiKey = " secret \n"
+            model.next()
+            await model.settle()
+            model.next()
+            await model.settle()
+            #expect(probe.validations.map(\.key) == ["secret"])
+            #expect(probe.commits.map(\.key.secret) == ["secret"])
+            #expect(probe.commits.map(\.key.custom?.color) == ["teal"])
+        }
+
+        @Test("a built-in provider still needs a key")
+        func builtInKeyRequired() {
+            let model = WizardProbe().makeModel()
+            model.next()
+            #expect(!model.isKeyOptional)
+            #expect(!model.canGoNext)
+        }
+
+        @Test("Back from the key step returns to the details, then to the provider")
+        func customBack() {
+            let model = customModel()
+            model.next()
+            model.customName = "Ollama"
+            model.customEndpoint = "http://localhost:11434/v1"
+            model.next()
+            #expect(model.step == .apiKey)
+
+            model.back()
+            #expect(model.step == .details)
+            #expect(model.customName == "Ollama")
+            model.back()
+            #expect(model.step == .provider)
+            #expect(!model.canGoBack)
+        }
+
+        @Test("changing the endpoint after a check discards the validation")
+        func endpointChangeInvalidatesCheck() async {
+            let probe = WizardProbe()
+            let model = customModel(probe)
+            model.next()
+            model.customName = "Ollama"
+            model.customEndpoint = "http://localhost:11434/v1"
+            model.next()
+            model.next()
+            await model.settle()
+            #expect(model.canGoNext)
+
+            model.back()
+            model.back()
+            model.customEndpoint = "http://localhost:11435/v1"
+            #expect(model.checkState == .idle)
+            model.next()
+            model.next()
+            await model.settle()
+            #expect(
+                probe.validations.map { $0.custom?.endpoint } == [
+                    "http://localhost:11434/v1", "http://localhost:11435/v1",
+                ])
+        }
+
+        @Test("another key of an existing custom provider needs a key and creates nothing")
+        func extraKeyForCustomProvider() async {
+            let probe = WizardProbe()
+            let ollama = Provider.custom("Ollama")
+            let model = probe.makeModel(existing: [ollama: ["Default"]], initialProvider: ollama)
+            #expect(model.step == .apiKey)
+            #expect(model.steps == [.apiKey, .check, .summary])
+            #expect(model.isCustomProvider)
+            #expect(!model.isCustomChosen)
+            #expect(!model.isKeyOptional)
+            #expect(!model.isFirstKey)
+            #expect(!model.canGoNext)
+
+            model.apiKey = "second"
+            model.keyName = "Work"
+            model.next()
+            await model.settle()
+            model.next()
+            await model.settle()
+            #expect(probe.validations.map(\.provider) == [ollama])
+            #expect(probe.validations.map(\.custom) == [nil])
+            #expect(
+                probe.commits.map(\.key) == [
+                    NewProviderKey(provider: ollama, name: "Work", secret: "second", makeActive: true)
                 ])
         }
     }

@@ -169,8 +169,10 @@ struct MainSheetContent: View {
             ModelPickerView(
                 models: store.models,
                 hasProviders: !store.providers.isEmpty,
+                isLoadingModels: store.providers.hasPendingModels,
                 currentID: store.selectedChatModelID,
                 defaultID: store.preferencesModelID(for: .defaultModel),
+                customProviders: store.customProviderColors,
                 onCancel: { store.modelPickerCancelled() },
                 onPick: { store.modelPickerPicked($0) }
             )
@@ -179,8 +181,10 @@ struct MainSheetContent: View {
             ModelPickerView(
                 models: store.models,
                 hasProviders: !store.providers.isEmpty,
+                isLoadingModels: store.providers.hasPendingModels,
                 currentID: store.preferencesModelID(for: setting),
                 defaultID: store.preferencesModelID(for: .defaultModel),
+                customProviders: store.customProviderColors,
                 subtitle: setting == .defaultModel
                     ? "Pick the model preselected for new chats."
                     : "Pick the model for background tasks. A fast and cheap one is best.",

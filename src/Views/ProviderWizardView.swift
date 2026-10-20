@@ -4,9 +4,11 @@
 import AppKit
 import SwiftUI
 
-/// The New Provider wizard sheet: pick a provider, enter its API key, check
-/// it, and store it encrypted. All state lives in `ProviderWizardModel`. With
-/// an `initialProvider` (adding a key from Manage Keys) the first step is skipped.
+/// The New Provider wizard sheet: pick a provider (or define a custom
+/// OpenAI-compatible one), enter its API key, check it, and store it
+/// encrypted. All state lives in `ProviderWizardModel`. A provider that is
+/// already added can't be picked; with an `initialProvider` (adding a key from
+/// Manage Keys) the provider step is skipped.
 struct ProviderWizardView: View {
     @StateObject private var model: ProviderWizardModel
 
@@ -15,20 +17,26 @@ struct ProviderWizardView: View {
     let onClose: () -> Void
 
     @FocusState private var keyFocused: Bool
+    @FocusState private var nameFocused: Bool
 
     init(existingKeyNames: [Provider: [String]], initialProvider: Provider? = nil, onClose: @escaping () -> Void) {
-        _model = StateObject(
-            wrappedValue: ProviderWizardModel(
+        self.init(
+            model: ProviderWizardModel(
                 existingKeyNames: existingKeyNames,
                 initialProvider: initialProvider,
-                validate: { provider, key in
-                    try await ChatEngine.shared.validateProvider(provider, apiKey: key)
+                validate: { provider, custom, key in
+                    try await ChatEngine.shared.validateProvider(provider, custom: custom, apiKey: key)
                 },
                 commit: { newKey, validation in
                     try await ChatEngine.shared.addProvider(
-                        newKey.provider, keyName: newKey.name, apiKey: newKey.secret,
+                        newKey.provider, custom: newKey.custom, keyName: newKey.name, apiKey: newKey.secret,
                         makeActive: newKey.makeActive, validation: validation)
-                }))
+                }),
+            onClose: onClose)
+    }
+
+    init(model: @autoclosure @escaping () -> ProviderWizardModel, onClose: @escaping () -> Void) {
+        _model = StateObject(wrappedValue: model())
         self.onClose = onClose
     }
 
@@ -44,6 +52,7 @@ struct ProviderWizardView: View {
             Group {
                 switch model.step {
                 case .provider: providerStep
+                case .details: detailsStep
                 case .apiKey: apiKeyStep
                 case .check: checkStep
                 case .summary: summaryStep
@@ -60,6 +69,7 @@ struct ProviderWizardView: View {
         .onChange(of: model.step) { (_: ProviderWizardModel.Step, newStep: ProviderWizardModel.Step) in
             debugLog("Wizard", "Provider wizard step → \(newStep.title)")
             keyFocused = newStep == .apiKey
+            nameFocused = newStep == .details
         }
         .onDisappear { model.cancel() }
         .interactiveDismissDisabled()
@@ -120,7 +130,7 @@ struct ProviderWizardView: View {
 
     private var providerStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Choose the provider you want to add a key for.")
+            Text("Choose the provider you want to add.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -128,6 +138,7 @@ struct ProviderWizardView: View {
                 ForEach(Provider.allCases, id: \.self) { provider in
                     providerRow(provider)
                 }
+                customProviderRow
             }
 
             Spacer()
@@ -135,47 +146,161 @@ struct ProviderWizardView: View {
     }
 
     private func providerRow(_ provider: Provider) -> some View {
-        let keyCount = model.existingKeyNames[provider, default: []].count
-        let selected = model.selectedProvider == provider
-        return HStack(alignment: .top, spacing: 10) {
-            Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-                .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+        let added = model.isAdded(provider)
+        return choiceRow(
+            title: provider.displayName,
+            subtitle: added
+                ? "Already added. To add another key, use Provider → Manage Keys…"
+                : provider.summary,
+            isSelected: !model.isCustomChosen && model.selectedProvider == provider,
+            isEnabled: !added,
+            onSelect: { model.select(provider) })
+    }
+
+    private var customProviderRow: some View {
+        choiceRow(
+            title: "Custom Provider (OpenAI-compatible)",
+            subtitle: Provider.custom("").summary,
+            isSelected: model.isCustomChosen,
+            isEnabled: true,
+            onSelect: { model.selectCustom() })
+    }
+
+    private func choiceRow(
+        title: String, subtitle: String, isSelected: Bool, isEnabled: Bool, onSelect: @escaping () -> Void
+    ) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
             VStack(alignment: .leading, spacing: 2) {
-                Text(provider.displayName)
+                Text(title)
                     .fontWeight(.medium)
-                Text(
-                    keyCount == 0
-                        ? provider.summary
-                        : "\(provider.summary) · \(loaderPluralized(keyCount, singular: "key", plural: "keys")) added"
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Spacer()
         }
+        .opacity(isEnabled ? 1 : 0.45)
         .contentShape(Rectangle())
-        .onTapGesture { model.select(provider) }
+        .onTapGesture { if isEnabled { onSelect() } }
         .padding(8)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(selected ? Color.accentColor.opacity(0.1) : Color.clear)
+                .fill(isSelected ? Color.accentColor.opacity(0.1) : Color.clear)
         )
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private var detailsStep: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Describe the OpenAI-compatible API you want to connect.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Name")
+                    .font(.headline)
+                Text(
+                    "Tells the provider apart in the model picker and the Provider menu (up to \(CustomProviderConfig.maxNameLength) characters). It must be unique."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                TextField("e.g. Ollama", text: $model.customName)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($nameFocused)
+                    .onSubmit { model.next() }
+                if let problem = model.customNameProblem, problem != .empty {
+                    Text(problem.message)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Endpoint")
+                    .font(.headline)
+                Text(
+                    "The API's base URL. /models and /chat/completions are added to it as is, so include /v1 if the provider needs it."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                TextField("e.g. http://localhost:11434/v1", text: $model.customEndpoint)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { model.next() }
+                if !model.customEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    model.normalizedCustomEndpoint == nil
+                {
+                    Text("Enter a valid http:// or https:// URL.")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Color")
+                    .font(.headline)
+                Text("Used for the provider's label.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    colorSwatches
+                    Spacer()
+                    ProviderTag(
+                        provider: .custom(model.trimmedCustomName.isEmpty ? "Provider" : model.trimmedCustomName),
+                        color: model.customColor)
+                }
+            }
+
+            Spacer()
+        }
+        .onAppear { nameFocused = true }
+    }
+
+    private var colorSwatches: some View {
+        HStack(spacing: 7) {
+            ForEach(ProviderColor.allCases, id: \.self) { color in
+                Button {
+                    model.customColor = color
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(color.color)
+                            .frame(width: 20, height: 20)
+                        if model.customColor == color {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(color.textColor)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .help(color.displayName)
+                .accessibilityLabel(color.displayName)
+                .accessibilityAddTraits(model.customColor == color ? .isSelected : [])
+            }
+        }
     }
 
     private var apiKeyStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if let provider = model.selectedProvider {
-                Text("Enter your \(provider.displayName) API key.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+            if let provider = model.targetProvider {
+                Text(
+                    model.isKeyOptional
+                        ? "Enter the API key of \(provider.displayName), if it needs one."
+                        : "Enter your \(provider.displayName) API key."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("API Key")
+                    Text(model.isKeyOptional ? "API Key (optional)" : "API Key")
                         .font(.headline)
-                    Text(provider.apiKeyHint)
+                    Text(apiKeyHint(for: provider))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    SecureField("sk-...", text: $model.apiKey)
+                    SecureField(model.isKeyOptional ? "Leave empty for none" : "sk-...", text: $model.apiKey)
                         .textFieldStyle(.roundedBorder)
                         .focused($keyFocused)
                         .onSubmit { model.next() }
@@ -213,13 +338,20 @@ struct ProviderWizardView: View {
         .onAppear { keyFocused = true }
     }
 
+    private func apiKeyHint(for provider: Provider) -> String {
+        guard provider.isCustom else { return provider.apiKeyHint }
+        return model.isKeyOptional
+            ? "Leave it empty if the endpoint doesn't need one."
+            : "The key this endpoint expects."
+    }
+
     private var checkStep: some View {
         VStack(alignment: .leading, spacing: 14) {
             switch model.checkState {
             case .idle, .checking:
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("Checking key…")
+                    Text(model.isCustomProvider ? "Checking endpoint…" : "Checking key…")
                 }
             case .ok(let count):
                 HStack(spacing: 8) {
@@ -228,7 +360,9 @@ struct ProviderWizardView: View {
                         Text("Saving…")
                     } else {
                         Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                        Text("Key accepted — \(loaderPluralized(count, singular: "model", plural: "models")) available")
+                        Text(
+                            "\(model.isCustomProvider ? "Connected" : "Key accepted") — \(loaderPluralized(count, singular: "model", plural: "models")) available"
+                        )
                     }
                 }
             case .failed(let message):
@@ -245,11 +379,14 @@ struct ProviderWizardView: View {
 
     private var summaryStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if let provider = model.selectedProvider, let key = model.committedKey {
+            if let provider = model.targetProvider, let key = model.committedKey {
                 Text(model.isFirstKey ? "\(provider.displayName) added" : "\(provider.displayName) key added")
                     .font(.headline)
                 if let count = model.modelCount {
                     summaryRow("Models", "\(loaderPluralized(count, singular: "model", plural: "models")) available")
+                }
+                if let custom = key.custom {
+                    summaryRow("Endpoint", custom.endpoint)
                 }
                 summaryRow("Key name", key.name)
                 summaryRow("Active", key.makeActive ? "Yes" : "No — switch to it in the Provider menu")

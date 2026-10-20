@@ -31,6 +31,11 @@ struct AppConfig: Codable, Equatable {
     /// provider or malformed id (hand-edited config) degrades instead of failing
     /// the whole config decode.
     var providers: [String: String] = [:]
+    /// The user-defined OpenAI-compatible providers (`[[custom_providers]]`),
+    /// each with its endpoint, color and the id of its active API key. Managed
+    /// by the app; nil rather than empty so the file stays free of it until
+    /// there is one.
+    var customProviders: [CustomProviderConfig]?
 
     enum CodingKeys: String, CodingKey {
         case general
@@ -40,6 +45,7 @@ struct AppConfig: Codable, Equatable {
         case debug
         case window
         case providers
+        case customProviders = "custom_providers"
     }
 
     /// Every group is optional: a missing table (or a totally empty file)
@@ -56,9 +62,43 @@ struct AppConfig: Codable, Equatable {
         debug = try c.decodeIfPresent(DebugConfig.self, forKey: .debug) ?? DebugConfig()
         window = try c.decodeIfPresent(WindowConfig.self, forKey: .window)
         providers = try c.decodeIfPresent([String: String].self, forKey: .providers) ?? [:]
+        customProviders = try c.decodeIfPresent([CustomProviderConfig].self, forKey: .customProviders)
     }
 
     init() {}
+}
+
+extension AppConfig {
+    /// The active key per provider: the built-in ones from `[providers]`, the
+    /// custom ones from their `[[custom_providers]]` entry. Entries for
+    /// unknown providers or with an unparsable id are ignored.
+    var providerKeys: [Provider: UUID] {
+        var result: [Provider: UUID] = [:]
+        for (name, id) in providers {
+            if let provider = Provider.allCases.first(where: { $0.rawValue == name }),
+                let uuid = UUID(uuidString: id)
+            {
+                result[provider] = uuid
+            }
+        }
+        for custom in customProviders ?? [] {
+            if let id = custom.key, let uuid = UUID(uuidString: id) { result[custom.provider] = uuid }
+        }
+        return result
+    }
+
+    /// Replaces the `[providers]` table with the built-in providers' keys and
+    /// sets the key of every existing custom provider (one without a key
+    /// keeps none). Custom providers are never added or removed here.
+    mutating func setProviderKeys(_ keys: [Provider: UUID]) {
+        providers = Dictionary(
+            uniqueKeysWithValues: keys.filter { !$0.key.isCustom }.map { ($0.key.rawValue, $0.value.uuidString) })
+        customProviders = customProviders?.map { custom in
+            var updated = custom
+            updated.key = keys[custom.provider]?.uuidString
+            return updated
+        }
+    }
 }
 
 /// `[general]` group — default role, default/utility models and working directories.
@@ -579,19 +619,39 @@ actor ConfigManager {
         config.chatList
     }
 
-    /// The persisted active key per provider. Entries for unknown providers or
-    /// with an unparsable id are ignored.
+    /// The persisted active key per provider: the built-in ones from
+    /// `[providers]`, the custom ones from their `[[custom_providers]]` entry.
+    /// Entries for unknown providers or with an unparsable id are ignored.
     func getProviderKeys() -> [Provider: UUID] {
-        var result: [Provider: UUID] = [:]
-        for (name, id) in config.providers {
-            if let provider = Provider(rawValue: name), let uuid = UUID(uuidString: id) { result[provider] = uuid }
-        }
-        return result
+        config.providerKeys
     }
 
-    /// Replaces the whole `[providers]` table, which also drops stale entries.
+    /// Replaces the whole `[providers]` table, which also drops stale entries,
+    /// and updates the active key of every existing custom provider (one
+    /// without a key keeps none).
     func setProviderKeys(_ keys: [Provider: UUID]) {
-        config.providers = Dictionary(uniqueKeysWithValues: keys.map { ($0.key.rawValue, $0.value.uuidString) })
+        config.setProviderKeys(keys)
+        persist()
+    }
+
+    /// The custom providers as written in the config.
+    func getCustomProviders() -> [CustomProviderConfig] {
+        config.customProviders ?? []
+    }
+
+    /// Adds a custom provider, replacing one of the same name.
+    func addCustomProvider(_ provider: CustomProviderConfig) {
+        var list = config.customProviders ?? []
+        list.removeAll { $0.name == provider.name }
+        list.append(provider)
+        config.customProviders = list
+        persist()
+    }
+
+    func removeCustomProvider(named name: String) {
+        guard var list = config.customProviders else { return }
+        list.removeAll { $0.name == name }
+        config.customProviders = list.isEmpty ? nil : list
         persist()
     }
 

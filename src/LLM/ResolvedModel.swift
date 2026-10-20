@@ -13,7 +13,7 @@ enum LLMWire: String, Sendable {
 extension Provider {
     var wire: LLMWire {
         switch self {
-        case .openai, .deepseek, .openrouter: return .openai
+        case .openai, .deepseek, .openrouter, .custom: return .openai
         case .anthropic: return .anthropic
         }
     }

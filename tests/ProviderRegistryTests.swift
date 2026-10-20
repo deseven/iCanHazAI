@@ -207,12 +207,12 @@ extension AllAppTests {
             #expect(await registry.keys(for: .openai) == [key])
         }
 
-        @Test("a key is previewed as its first and last 4 characters, a short one fully masked")
+        @Test("a key is previewed as its first and last 4 characters, a short one fully masked, an empty one as none")
         func preview() async throws {
             #expect(StoredKey.preview(of: "sk-ant-api03-abcdefghijklmnop") == "sk-a…mnop")
             #expect(StoredKey.preview(of: "123456789012") == "1234…9012")
             #expect(StoredKey.preview(of: "12345678901") == "••••••••")
-            #expect(StoredKey.preview(of: "") == "••••••••")
+            #expect(StoredKey.preview(of: "") == "No API key")
 
             let registry = ProviderRegistry(store: InMemorySecretStore())
             let key = try await registry.addKey(provider: .openai, name: "Default", secret: "sk-proj-0123456789-WXYZ")

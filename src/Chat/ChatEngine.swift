@@ -287,11 +287,31 @@ actor ChatEngine {
     /// Loads the provider keys, then the model cache (fast). The catalog's
     /// background refresh starts here and never blocks startup.
     private func startProviders() async {
+        var keysLoaded = true
         do {
             try await registry.load()
         } catch {
+            keysLoaded = false
             debugLog("Engine", "provider keys failed to load: \(error.localizedDescription)")
             pendingStartupError = "Failed to read provider API keys: \(error.localizedDescription)"
+        }
+        await registry.setCustomProviders(await ConfigManager.shared.getCustomProviders())
+        // A custom provider exists only while it has both a definition and a key;
+        // whatever lost the other half is deleted. Only after the keys were read:
+        // a failed read would make every provider look keyless.
+        if keysLoaded {
+            for dropped in await registry.discardKeylessCustomProviders() {
+                debugLog("Providers", "custom provider '\(dropped.name)' has no key left — removing it from the config")
+                await ConfigManager.shared.removeCustomProvider(named: dropped.name)
+            }
+            do {
+                let deleted = try await registry.deleteOrphanedKeys()
+                if deleted > 0 {
+                    debugLog("Providers", "deleted \(deleted) key(s) of custom providers missing from the config")
+                }
+            } catch {
+                debugLog("Providers", "⚠️ could not delete orphaned keys: \(error.localizedDescription)")
+            }
         }
         // Before the catalog starts, so its first refresh already uses the right keys.
         await syncKeySelection()
@@ -340,7 +360,8 @@ actor ChatEngine {
                     provider: provider, keys: keys, keyPreviews: previews,
                     selectedKeyID: await registry.selectedKey(for: provider)?.id,
                     modelCount: info?.modelCount, isRefreshing: refreshingProviders.contains(provider),
-                    lastRefresh: info?.lastSuccess, lastError: providerErrors[provider]))
+                    lastRefresh: info?.lastSuccess, lastError: providerErrors[provider],
+                    custom: await registry.customProvider(for: provider)))
         }
         providers = list
     }
@@ -371,17 +392,34 @@ actor ChatEngine {
         emit(.providersChanged(providers))
     }
 
-    func validateProvider(_ provider: Provider, apiKey: String) async throws -> ValidationResult {
-        try await catalog.validate(provider: provider, apiKey: apiKey)
+    /// Checks the key against the provider. A custom provider that doesn't
+    /// exist yet is checked at `custom`'s endpoint.
+    func validateProvider(_ provider: Provider, custom: CustomProviderConfig? = nil, apiKey: String) async throws
+        -> ValidationResult
+    {
+        try await catalog.validate(provider: provider, apiKey: apiKey, endpoint: custom?.endpoint)
     }
 
     /// Stores the key. The first key of a provider is always active; a later
     /// one only with `makeActive`, which also seeds the catalog with what
-    /// validation already fetched (the list belongs to the active key).
+    /// validation already fetched (the list belongs to the active key). With
+    /// `custom` the provider is created first: it is defined in the registry
+    /// and in `[[custom_providers]]`, and stays only if the key is stored.
     func addProvider(
-        _ provider: Provider, keyName: String, apiKey: String, makeActive: Bool, validation: ValidationResult
+        _ provider: Provider, custom: CustomProviderConfig? = nil, keyName: String, apiKey: String,
+        makeActive: Bool, validation: ValidationResult
     ) async throws {
-        let key = try await registry.addKey(provider: provider, name: keyName, secret: apiKey, select: makeActive)
+        let alreadyDefined = await registry.customProvider(for: provider) != nil
+        let isNewCustom = custom != nil && !alreadyDefined
+        if let custom, isNewCustom { try await registry.addCustomProvider(custom) }
+        let key: StoredKey
+        do {
+            key = try await registry.addKey(provider: provider, name: keyName, secret: apiKey, select: makeActive)
+        } catch {
+            if isNewCustom { try? await registry.removeCustomProvider(provider) }
+            throw error
+        }
+        if let custom, isNewCustom { await ConfigManager.shared.addCustomProvider(custom) }
         if await registry.selectedKey(for: provider)?.id == key.id {
             await ConfigManager.shared.setProviderKeys(await registry.selectedKeyIDs)
             providerErrors[provider] = nil
@@ -423,6 +461,11 @@ actor ChatEngine {
         providerErrors[provider] = nil
         let disabled = !(await registry.isConfigured(provider))
         if disabled {
+            // A custom provider exists only while it has a key.
+            if provider.isCustom {
+                try? await registry.removeCustomProvider(provider)
+                await ConfigManager.shared.removeCustomProvider(named: provider.rawValue)
+            }
             await catalog.providerRemoved(provider)
             models = await catalog.snapshot()
             emit(.modelsChanged(models))

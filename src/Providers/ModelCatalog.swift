@@ -81,7 +81,7 @@ actor ModelCatalog {
     /// undecryptable) loses its cached models, so it can't look usable.
     func start() async {
         let configured = Set(await registry.configuredProviders)
-        for provider in Provider.allCases where !configured.contains(provider) {
+        for provider in Set(Provider.allCases).union(store.cachedProviders()) where !configured.contains(provider) {
             store.deleteAll(provider: provider)
         }
         reloadFromStore()
@@ -91,10 +91,7 @@ actor ModelCatalog {
     /// All cached models, grouped by provider and sorted by name.
     func snapshot() -> [CatalogModel] {
         models.values.sorted { lhs, rhs in
-            if lhs.id.provider != rhs.id.provider {
-                return Provider.allCases.firstIndex(of: lhs.id.provider)!
-                    < Provider.allCases.firstIndex(of: rhs.id.provider)!
-            }
+            if lhs.id.provider != rhs.id.provider { return lhs.id.provider < rhs.id.provider }
             return (lhs.displayName ?? lhs.id.name).localizedCaseInsensitiveCompare(rhs.displayName ?? rhs.id.name)
                 == .orderedAscending
         }
@@ -127,9 +124,18 @@ actor ModelCatalog {
         }
     }
 
-    func validate(provider: Provider, apiKey: String) async throws -> ValidationResult {
+    /// `endpoint` is the base URL of a custom provider that isn't defined yet
+    /// (the wizard checks it before storing anything); otherwise the
+    /// provider's own is used.
+    func validate(provider: Provider, apiKey: String, endpoint: String? = nil) async throws -> ValidationResult {
         do {
-            return try await adapter(for: provider).validate(apiKey: apiKey, fetcher: fetcher, metadata: metadata)
+            let service: ProviderAdapter
+            if let endpoint {
+                service = ProviderAdapters.make(provider, baseUrl: endpoint)
+            } else {
+                service = await adapter(for: provider)
+            }
+            return try await service.validate(apiKey: apiKey, fetcher: fetcher, metadata: metadata)
         } catch {
             throw Self.wrap(error)
         }
@@ -222,12 +228,22 @@ actor ModelCatalog {
                 apiKey: key, fetcher: fetcher, metadata: metadata)
             // The last key may have been deleted while the request was out.
             guard await registry.isConfigured(provider) else { throw ProviderError.notConfigured }
-            // An empty list is a glitch, not "no models": applying it would wipe the cache.
-            if listing.models.isEmpty { throw ProviderError.badResponse }
+            if listing.models.isEmpty {
+                // From a built-in provider an empty list is a glitch, not "no models":
+                // applying it would wipe the cache. A custom provider could be
+                // anything, so what it says is honored.
+                guard provider.isCustom else { throw ProviderError.badResponse }
+                debugLog("Catalog", "\(provider.displayName) lists no models, dropping the cached ones")
+            }
             await apply(listing, to: provider)
             result = .success(listing.modelCount)
         } catch {
-            result = .failure(Self.wrap(error))
+            let failure = Self.wrap(error)
+            if case .notConfigured = failure {
+            } else {
+                debugLog("Catalog", "⚠️ \(provider.displayName) refresh failed: \(failure.localizedDescription)")
+            }
+            result = .failure(failure)
         }
         emit(.refreshFinished(provider, result))
         return result
@@ -320,8 +336,9 @@ actor ModelCatalog {
 
     // MARK: - Helpers
 
-    private func adapter(for provider: Provider) -> ProviderAdapter {
-        ProviderAdapters.make(provider, baseUrl: baseUrls[provider])
+    private func adapter(for provider: Provider) async -> ProviderAdapter {
+        let custom = await registry.customProvider(for: provider)
+        return ProviderAdapters.make(provider, baseUrl: baseUrls[provider] ?? custom?.endpoint)
     }
 
     private var openRouterAdapter: OpenRouterAdapter {

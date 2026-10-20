@@ -97,7 +97,8 @@ struct OpenAIProvider: LLMProvider {
         let off = setting == ReasoningSetting.off
         let level = (off || setting == ReasoningSetting.on) ? nil : setting
         switch model.provider {
-        case .openai:
+        case .openai, .custom:
+            // A custom endpoint is assumed to speak OpenAI's own dialect.
             if off {
                 body["reasoning_effort"] = "none"
             } else if let level {

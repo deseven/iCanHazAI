@@ -44,6 +44,7 @@ extension ProviderAdapter {
 }
 
 enum ProviderAdapters {
+    /// A custom provider has no default base URL, so `baseUrl` is its endpoint.
     static func make(_ provider: Provider, baseUrl: String? = nil) -> ProviderAdapter {
         let base = baseUrl ?? provider.defaultBaseUrl
         switch provider {
@@ -51,6 +52,7 @@ enum ProviderAdapters {
         case .anthropic: return AnthropicAdapter(baseUrl: base)
         case .deepseek: return DeepSeekAdapter(baseUrl: base)
         case .openrouter: return OpenRouterAdapter(baseUrl: base)
+        case .custom: return CustomProviderAdapter(provider: provider, baseUrl: base)
         }
     }
 }

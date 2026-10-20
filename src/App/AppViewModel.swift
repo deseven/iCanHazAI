@@ -1378,6 +1378,19 @@ final class AppViewModel: ObservableObject {
         return (id.provider, models.first { $0.id == id }?.displayName ?? id.name)
     }
 
+    /// The tag colors the user picked for their custom providers.
+    var customProviderColors: [Provider: ProviderColor] {
+        Dictionary(
+            providers.compactMap { configured in configured.custom.map { (configured.provider, $0.providerColor) } },
+            uniquingKeysWith: { first, _ in first })
+    }
+
+    /// The color of a provider's tag: the user's pick for a custom provider, nil
+    /// for a built-in one (which has a brand color) or one that isn't configured.
+    func tagColor(for provider: Provider?) -> ProviderColor? {
+        provider.flatMap { customProviderColors[$0] }
+    }
+
     /// Pure decision: whether the model picker should be presented for a chat
     /// that has no model. Extracted so the picker state machine is testable
     /// without driving the UI.

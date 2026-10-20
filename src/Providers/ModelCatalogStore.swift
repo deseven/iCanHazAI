@@ -153,6 +153,15 @@ final class ModelCatalogStore: @unchecked Sendable {
         }
     }
 
+    /// Every provider that has cached models or a refresh state.
+    func cachedProviders() -> Set<Provider> {
+        queue.sync {
+            let states = (try? context.fetch(FetchDescriptor<ProviderRefreshState>())) ?? []
+            let names = entries().map(\.provider) + states.map(\.provider)
+            return Set(names.compactMap { Provider(rawValue: $0) })
+        }
+    }
+
     /// Inserts or updates entries. Existing entries keep their `isUsed` flag.
     func upsert(_ models: [CatalogModel], now: Date) {
         queue.sync {

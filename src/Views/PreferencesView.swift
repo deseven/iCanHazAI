@@ -192,7 +192,9 @@ private struct ModelSettingButton: View {
         Button {
             store.pickSettingsModel(setting)
         } label: {
-            ModelStatusLabel(provider: parts.provider, label: parts.name, hasModel: model != nil)
+            ModelStatusLabel(
+                provider: parts.provider, color: store.tagColor(for: parts.provider), label: parts.name,
+                hasModel: model != nil)
         }
         .buttonStyle(.borderless)
         .fixedSize()

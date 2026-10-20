@@ -6,7 +6,7 @@ import SwiftUI
 /// A modal sheet for picking the model of the current chat. Single-select:
 /// ↵ or a click picks the highlighted model. Typing `<provider>.` (or `:`)
 /// narrows the list to one provider, by name or alias (`or.`, `oa.`, `an.`,
-/// `ds.`); the rest is a case-insensitive search over the cached catalog. Built on
+/// `ds.`, or a custom provider's name); the rest is a case-insensitive search over the cached catalog. Built on
 /// [`PickerDialog`](src/Views/PickerDialog.swift); the model in effect is
 /// checkmarked. The default model from Preferences is pinned to the top
 /// (unless filtered out) and initially highlighted, so ↵ right after opening
@@ -14,8 +14,12 @@ import SwiftUI
 struct ModelPickerView: View {
     let models: [CatalogModel]
     let hasProviders: Bool
+    /// Whether an empty list is only because models are still being fetched.
+    var isLoadingModels: Bool = true
     let currentID: ModelID?
     let defaultID: ModelID?
+    /// The custom providers and their tag colors.
+    var customProviders: [Provider: ProviderColor] = [:]
     var subtitle: String = "Pick the model used by this chat."
     let onCancel: () -> Void
     let onPick: (ModelID) -> Void
@@ -23,7 +27,8 @@ struct ModelPickerView: View {
     @State private var queryText: String = ""
 
     var body: some View {
-        let items = ModelPickerQuery(queryText).filter(models, pinning: defaultID)
+        let query = ModelPickerQuery(queryText, providers: Provider.allCases + customProviders.keys.sorted())
+        let items = query.filter(models, pinning: defaultID)
         let initialSelection =
             items.first { $0.id == defaultID } ?? items.first { $0.id == currentID } ?? items.first
         return PickerDialog<CatalogModel>(
@@ -34,13 +39,16 @@ struct ModelPickerView: View {
             items: items,
             pinnedHeader: nil,
             pinnedItems: [],
-            emptyTitle: hasProviders ? "Loading models…" : "No providers",
-            emptySubtitle: hasProviders ? nil : "Add one via Provider → New Provider…",
+            emptyTitle: !hasProviders ? "No providers" : (isLoadingModels ? "Loading models…" : "No models available"),
+            emptySubtitle: !hasProviders
+                ? "Add one via Provider → New Provider…"
+                : (isLoadingModels ? nil : "Your providers returned none. Try Provider → Refresh Models…"),
             width: 480,
             rowContent: { model, _ in
                 AnyView(
                     ModelRowContent(
-                        model: model, isCurrent: model.id == currentID, isDefault: model.id == defaultID))
+                        model: model, tagColor: customProviders[model.id.provider], isCurrent: model.id == currentID,
+                        isDefault: model.id == defaultID))
             },
             onSelect: { onPick($0.id) },
             onCancel: onCancel,
@@ -54,13 +62,15 @@ struct ModelPickerView: View {
 /// is selected.
 struct ModelStatusLabel: View {
     let provider: Provider?
+    /// The color of a custom provider's tag.
+    var color: ProviderColor?
     let label: String
     let hasModel: Bool
 
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: "cpu")
-            if let provider { ProviderTag(provider: provider) }
+            if let provider { ProviderTag(provider: provider, color: color) }
             Text(label)
                 .padding(.horizontal, 5)
                 .padding(.vertical, 1)
@@ -75,6 +85,7 @@ struct ModelStatusLabel: View {
 
 private struct ModelRowContent: View {
     let model: CatalogModel
+    let tagColor: ProviderColor?
     let isCurrent: Bool
     let isDefault: Bool
 
@@ -86,7 +97,7 @@ private struct ModelRowContent: View {
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    ProviderTag(provider: model.id.provider)
+                    ProviderTag(provider: model.id.provider, color: tagColor)
                     Text(model.id.name)
                         .font(.callout)
                         .lineLimit(1)

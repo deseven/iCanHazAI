@@ -93,7 +93,7 @@ struct ProviderKeysView: View {
     private func providerSection(_ configured: ConfiguredProvider) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                ProviderTag(provider: configured.provider)
+                ProviderTag(provider: configured.provider, color: configured.custom?.providerColor)
                 Text(loaderPluralized(configured.keys.count, singular: "key", plural: "keys"))
                     .font(.caption)
                     .foregroundStyle(.secondary)

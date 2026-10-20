@@ -46,6 +46,10 @@ struct StubMetadataSource: ModelMetadataSource {
     var result: Result<[String: LiteLLMEntry], Error>
 
     func openAIEntries() async throws -> [String: LiteLLMEntry] { try result.get() }
+
+    func entries(named names: Set<String>) async throws -> [String: LiteLLMEntry] {
+        try result.get().filter { names.contains($0.key) }
+    }
 }
 
 /// Switchable at runtime so one catalog can see a working and then a broken source.
@@ -58,6 +62,10 @@ final class FlakyMetadataSource: ModelMetadataSource, @unchecked Sendable {
     func set(_ result: Result<[String: LiteLLMEntry], Error>) { lock.withLock { _result = result } }
 
     func openAIEntries() async throws -> [String: LiteLLMEntry] { try lock.withLock { _result }.get() }
+
+    func entries(named names: Set<String>) async throws -> [String: LiteLLMEntry] {
+        try lock.withLock { _result }.get().filter { names.contains($0.key) }
+    }
 }
 
 struct TestFailure: Error {}

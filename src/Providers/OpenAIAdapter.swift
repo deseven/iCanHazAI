@@ -75,12 +75,7 @@ struct OpenAIAdapter: ProviderAdapter {
         CatalogModel(
             id: ModelID(provider: .openai, name: id),
             displayName: nil,
-            capabilities: ModelCapabilities(
-                imageInput: entry.supportsVision,
-                contextWindow: entry.maxInputTokens ?? ModelCapabilities.safeDefaults.contextWindow,
-                maxOutputTokens: entry.maxOutputTokens,
-                reasoning: ReasoningCapability(
-                    supported: entry.supportsReasoning, levels: entry.reasoningLevels, defaultLevel: nil)))
+            capabilities: entry.capabilities(defaultContextWindow: ModelCapabilities.safeDefaults.contextWindow))
     }
 
     private static func isHiddenByName(_ id: String) -> Bool {

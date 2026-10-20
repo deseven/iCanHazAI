@@ -16,6 +16,17 @@ struct ConfiguredProvider: Sendable, Equatable, Identifiable {
     var isRefreshing: Bool
     var lastRefresh: Date?
     var lastError: String?
+    /// The definition (endpoint, color) of a custom provider; nil for a built-in one.
+    var custom: CustomProviderConfig?
 
     var id: Provider { provider }
+}
+
+extension Array where Element == ConfiguredProvider {
+    /// Some provider hasn't had its first refresh finish, successfully or not,
+    /// so its models may still be on their way. Once every provider has
+    /// answered, an empty model list is the answer, not a wait.
+    var hasPendingModels: Bool {
+        contains { $0.modelCount == nil && $0.lastError == nil }
+    }
 }

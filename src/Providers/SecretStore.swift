@@ -10,8 +10,10 @@ struct StoredKey: Identifiable, Hashable, Sendable {
     let name: String
 
     /// How a secret is shown in the UI: its first and last 4 characters. One
-    /// too short to keep something hidden in between is masked completely.
+    /// too short to keep something hidden in between is masked completely. A
+    /// custom provider may be set up without a key, which is stored as an empty secret.
     static func preview(of secret: String) -> String {
+        guard !secret.isEmpty else { return "No API key" }
         guard secret.count >= 12 else { return String(repeating: "•", count: 8) }
         return "\(secret.prefix(4))…\(secret.suffix(4))"
     }

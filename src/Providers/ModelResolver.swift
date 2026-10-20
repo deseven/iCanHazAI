@@ -40,9 +40,10 @@ struct ModelResolver: Sendable {
             // cache was empty: the model may well exist.
             return await catalog.hasModels(for: id.provider) ? .invalid : .unavailable
         }
+        let customEndpoint = await registry.customProvider(for: id.provider)?.endpoint
         let resolved = ResolvedModel(
             provider: id.provider, modelID: id.name, apiKey: apiKey,
-            baseUrl: endpointOverrides[id.provider], capabilities: model.capabilities)
+            baseUrl: endpointOverrides[id.provider] ?? customEndpoint, capabilities: model.capabilities)
         return .ok(resolved, model)
     }
 }

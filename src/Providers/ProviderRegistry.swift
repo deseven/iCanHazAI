@@ -10,6 +10,10 @@ import Foundation
 /// requests use. The choice is persisted by the caller (`[providers]` in
 /// `config.toml`); the registry only keeps it in memory and guarantees that a
 /// provider with keys always has a usable active key.
+///
+/// A custom provider exists only while it has a definition (`CustomProviderConfig`,
+/// kept in `[[custom_providers]]` of `config.toml` by the caller) and at least
+/// one key; stored keys of a custom provider without a definition are ignored.
 actor ProviderRegistry {
     static let shared = ProviderRegistry(store: EncryptedSecretStore.shared)
 
@@ -20,6 +24,7 @@ actor ProviderRegistry {
     /// The preferred active key per provider. May point at a key that no
     /// longer exists; `selectedKey(for:)` falls back to the first key then.
     private var selected: [Provider: UUID] = [:]
+    private var customProviders: [CustomProviderConfig] = []
 
     init(store: SecretStore) {
         self.store = store
@@ -50,20 +55,19 @@ actor ProviderRegistry {
         secrets = loaded
     }
 
-    /// Unique, in `Provider.allCases` order.
+    /// Unique, in `Provider` order: the built-in ones, then the custom ones by name.
     var configuredProviders: [Provider] {
-        let present = Set(keys.map(\.provider))
-        return Provider.allCases.filter(present.contains)
+        Set(keys.map(\.provider)).filter(isDefined).sorted()
     }
 
     /// A provider without any key is disabled.
     func isConfigured(_ provider: Provider) -> Bool {
-        keys.contains { $0.provider == provider }
+        isDefined(provider) && keys.contains { $0.provider == provider }
     }
 
     /// The provider's keys, oldest first.
     func keys(for provider: Provider) -> [StoredKey] {
-        keys.filter { $0.provider == provider }
+        isDefined(provider) ? keys.filter { $0.provider == provider } : []
     }
 
     /// The key as the UI shows it (see `StoredKey.preview(of:)`); the secret itself never leaves the registry.
@@ -151,5 +155,90 @@ actor ProviderRegistry {
         secrets[key.id] = secret
         if isFirst || select { selected[provider] = key.id }
         return key
+    }
+
+    // MARK: - Custom providers
+
+    /// Adopts the definitions read from the config. Entries that can't be
+    /// used (no usable name or endpoint, a built-in or repeated name) are
+    /// dropped; endpoints are normalized.
+    func setCustomProviders(_ configs: [CustomProviderConfig]) {
+        var accepted: [CustomProviderConfig] = []
+        for config in configs {
+            let name = config.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let problem = CustomProviderConfig.problem(withName: name, existing: accepted.map(\.name)) {
+                debugLog("Providers", "⚠️ ignoring custom provider '\(config.name)': \(problem.message)")
+                continue
+            }
+            guard let endpoint = CustomProviderConfig.normalizedEndpoint(config.endpoint) else {
+                debugLog("Providers", "⚠️ ignoring custom provider '\(name)': invalid endpoint '\(config.endpoint)'")
+                continue
+            }
+            var usable = config
+            usable.name = name
+            usable.endpoint = endpoint
+            accepted.append(usable)
+        }
+        customProviders = accepted
+    }
+
+    /// Drops the definitions of custom providers that have no key (hand-edited
+    /// away, or discarded as undecryptable) and returns them, so the caller
+    /// can remove them from the config. A custom provider exists only while it has a key.
+    func discardKeylessCustomProviders() -> [CustomProviderConfig] {
+        let withKeys = Set(keys.map(\.provider))
+        let dropped = customProviders.filter { !withKeys.contains($0.provider) }
+        customProviders.removeAll { !withKeys.contains($0.provider) }
+        return dropped
+    }
+
+    /// Deletes the stored keys of custom providers that have no definition
+    /// (the provider was removed from the config by hand). Returns how many were deleted.
+    @discardableResult
+    func deleteOrphanedKeys() throws -> Int {
+        let orphaned = keys.filter { !isDefined($0.provider) }
+        for key in orphaned {
+            try store.deleteKey(key)
+            keys.removeAll { $0.id == key.id }
+            secrets[key.id] = nil
+        }
+        return orphaned.count
+    }
+
+    /// The definitions of the custom providers, in the order they were added.
+    var customProviderConfigs: [CustomProviderConfig] { customProviders }
+
+    func customProvider(for provider: Provider) -> CustomProviderConfig? {
+        guard case .custom(let name) = provider else { return nil }
+        return customProviders.first { $0.name == name }
+    }
+
+    /// Defines a new custom provider. Keys left under its name by an earlier
+    /// provider (normally already swept at startup) are deleted, so it starts
+    /// without any. A name that is already defined is left as it is.
+    func addCustomProvider(_ config: CustomProviderConfig) throws {
+        guard customProvider(for: config.provider) == nil else { return }
+        try deleteKeys(of: config.provider)
+        customProviders.append(config)
+    }
+
+    /// Forgets a custom provider's definition and deletes its keys.
+    func removeCustomProvider(_ provider: Provider) throws {
+        customProviders.removeAll { $0.provider == provider }
+        try deleteKeys(of: provider)
+    }
+
+    private func isDefined(_ provider: Provider) -> Bool {
+        guard provider.isCustom else { return true }
+        return customProvider(for: provider) != nil
+    }
+
+    private func deleteKeys(of provider: Provider) throws {
+        for key in keys where key.provider == provider {
+            try store.deleteKey(key)
+            keys.removeAll { $0.id == key.id }
+            secrets[key.id] = nil
+        }
+        selected[provider] = nil
     }
 }

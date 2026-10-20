@@ -11,6 +11,7 @@ extension Provider {
         case .anthropic: return "Create a key at console.anthropic.com/settings/keys."
         case .deepseek: return "Create a key at platform.deepseek.com/api_keys."
         case .openrouter: return "Create a key at openrouter.ai/keys."
+        case .custom: return ""
         }
     }
 }
@@ -23,15 +24,24 @@ struct NewProviderKey: Sendable, Equatable {
     /// Whether new requests should use this key right away. Always true for
     /// the first key of a provider.
     let makeActive: Bool
+    /// The definition of the custom provider this key creates. Nil for a
+    /// built-in provider and for another key of an existing custom one.
+    var custom: CustomProviderConfig? = nil
 }
 
 /// State and transitions of the New Provider wizard. The view is a thin skin
 /// over it.
+///
+/// The wizard adds providers: one that already has a key can't be picked, and
+/// more keys for it are added from Manage Keys, which opens the wizard on a
+/// fixed provider (`initialProvider`) and skips straight to the key step.
 @MainActor
 final class ProviderWizardModel: ObservableObject {
 
     enum Step: Int, CaseIterable, Identifiable {
         case provider
+        /// Name, endpoint and color of a new custom provider.
+        case details
         case apiKey
         case check
         case summary
@@ -41,14 +51,12 @@ final class ProviderWizardModel: ObservableObject {
         var title: String {
             switch self {
             case .provider: return "Provider"
+            case .details: return "Details"
             case .apiKey: return "API Key"
             case .check: return "Check"
             case .summary: return "Summary"
             }
         }
-
-        var next: Step? { Step(rawValue: rawValue + 1) }
-        var back: Step? { Step(rawValue: rawValue - 1) }
     }
 
     enum CheckState: Equatable {
@@ -58,7 +66,9 @@ final class ProviderWizardModel: ObservableObject {
         case failed(String)
     }
 
-    typealias Validate = @Sendable (Provider, String) async throws -> ValidationResult
+    /// Checks the key (an empty one for a custom provider that needs none). A
+    /// custom provider that doesn't exist yet comes with its definition.
+    typealias Validate = @Sendable (Provider, CustomProviderConfig?, String) async throws -> ValidationResult
     typealias Commit = @Sendable (NewProviderKey, ValidationResult) async throws -> Void
 
     static let maxKeyNameLength = 30
@@ -70,7 +80,25 @@ final class ProviderWizardModel: ObservableObject {
     /// wizard starts on the key step and has no provider step to return to.
     let skipsProviderStep: Bool
     @Published private(set) var step: Step = .provider
+    /// The built-in provider picked in the list, or the fixed one. Nil while
+    /// the custom provider entry is picked.
     @Published private(set) var selectedProvider: Provider?
+    /// The "Custom Provider" entry is picked: a new custom provider is being defined.
+    @Published private(set) var isCustomChosen = false
+    @Published var customName: String = "" {
+        didSet {
+            if customName.count > CustomProviderConfig.maxNameLength {
+                customName = String(customName.prefix(CustomProviderConfig.maxNameLength))
+            }
+            if customName != oldValue { invalidateCheck() }
+        }
+    }
+    @Published var customEndpoint: String = "" {
+        didSet {
+            if customEndpoint != oldValue { invalidateCheck() }
+        }
+    }
+    @Published var customColor: ProviderColor = .default
     @Published private(set) var checkState: CheckState = .idle
     @Published var apiKey: String = "" {
         didSet {
@@ -104,44 +132,89 @@ final class ProviderWizardModel: ObservableObject {
         self.skipsProviderStep = initialProvider != nil
         self.validate = validate
         self.commit = commit
-        let provider =
-            initialProvider ?? Provider.allCases.first { existingKeyNames[$0, default: []].isEmpty }
-            ?? Provider.allCases.first
-        self.selectedProvider = provider
-        if initialProvider != nil { step = .apiKey }
+        if let initialProvider {
+            selectedProvider = initialProvider
+            step = .apiKey
+        } else if let free = Provider.allCases.first(where: { existingKeyNames[$0, default: []].isEmpty }) {
+            selectedProvider = free
+        } else {
+            isCustomChosen = true
+        }
         resetKeyFields()
     }
 
     /// The steps the wizard goes through, for the progress indicator.
     var steps: [Step] {
-        skipsProviderStep ? Step.allCases.filter { $0 != .provider } : Step.allCases
+        Step.allCases.filter { step in
+            switch step {
+            case .provider: return !skipsProviderStep
+            case .details: return isCustomChosen
+            default: return true
+            }
+        }
     }
 
     func isAdded(_ provider: Provider) -> Bool { !existingKeyNames[provider, default: []].isEmpty }
 
-    /// True when the selected provider has no key yet, which makes the new one active no matter what.
+    /// The provider the key goes to. For a new custom provider, once its name is usable.
+    var targetProvider: Provider? {
+        guard isCustomChosen else { return selectedProvider }
+        return customNameProblem == nil ? .custom(trimmedCustomName) : nil
+    }
+
+    /// Whether the provider is a custom one, new or existing.
+    var isCustomProvider: Bool { isCustomChosen || (selectedProvider?.isCustom ?? false) }
+
+    /// True when the target provider has no key yet, which makes the new one active no matter what.
     var isFirstKey: Bool {
-        guard let selectedProvider else { return true }
-        return !isAdded(selectedProvider)
+        guard let targetProvider else { return true }
+        return !isAdded(targetProvider)
     }
 
     var trimmedKey: String { apiKey.trimmingCharacters(in: .whitespacesAndNewlines) }
     var trimmedKeyName: String { keyName.trimmingCharacters(in: .whitespacesAndNewlines) }
 
+    /// An endpoint that needs no key is fine, so a new custom provider may have none.
+    var isKeyOptional: Bool { isCustomChosen }
+
+    // MARK: - Custom provider
+
+    var trimmedCustomName: String { customName.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// Names are unique among custom providers (ignoring case) and can't be a built-in one.
+    var customNameProblem: CustomProviderConfig.NameProblem? {
+        let existing = existingKeyNames.keys.filter(\.isCustom).map(\.rawValue)
+        return CustomProviderConfig.problem(withName: customName, existing: existing)
+    }
+
+    /// The endpoint as it will be used: trimmed, without trailing slashes. Nil
+    /// when it isn't an http(s) URL.
+    var normalizedCustomEndpoint: String? { CustomProviderConfig.normalizedEndpoint(customEndpoint) }
+
+    /// The custom provider being defined, once its name and endpoint are usable.
+    var newCustomProvider: CustomProviderConfig? {
+        guard isCustomChosen, customNameProblem == nil, let endpoint = normalizedCustomEndpoint else { return nil }
+        return CustomProviderConfig(name: trimmedCustomName, endpoint: endpoint, color: customColor.rawValue)
+    }
+
+    // MARK: - Navigation
+
     /// Two keys of one provider can't share a name (ignoring case), since the
     /// menu tells them apart by it.
     var isKeyNameTaken: Bool {
-        guard let selectedProvider else { return false }
+        guard let targetProvider else { return false }
         let name = trimmedKeyName
-        return existingKeyNames[selectedProvider, default: []].contains {
+        return existingKeyNames[targetProvider, default: []].contains {
             $0.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare(name) == .orderedSame
         }
     }
 
     var canGoNext: Bool {
         switch step {
-        case .provider: return selectedProvider != nil
-        case .apiKey: return !trimmedKey.isEmpty && !trimmedKeyName.isEmpty && !isKeyNameTaken
+        case .provider: return isCustomChosen || (selectedProvider.map { !isAdded($0) } ?? false)
+        case .details: return newCustomProvider != nil
+        case .apiKey:
+            return (isKeyOptional || !trimmedKey.isEmpty) && !trimmedKeyName.isEmpty && !isKeyNameTaken
         case .check:
             if case .ok = checkState { return !isCommitting }
             return false
@@ -149,7 +222,9 @@ final class ProviderWizardModel: ObservableObject {
         }
     }
 
-    var canGoBack: Bool { ((step == .apiKey && !skipsProviderStep) || step == .check) && !isCommitting }
+    var canGoBack: Bool {
+        (step == .details || (step == .apiKey && !skipsProviderStep) || step == .check) && !isCommitting
+    }
 
     var canRetry: Bool {
         if case .failed = checkState { return step == .check && !isCommitting }
@@ -161,20 +236,30 @@ final class ProviderWizardModel: ObservableObject {
         return nil
     }
 
-    /// Switching providers drops the typed key, which belongs to the previous
-    /// one, and restarts the key name and activation choice.
+    /// Picks a built-in provider. One that already has a key can't be picked:
+    /// its keys are managed from the Provider menu.
     func select(_ provider: Provider) {
-        guard provider != selectedProvider else { return }
+        guard !skipsProviderStep, !provider.isCustom, !isAdded(provider),
+            isCustomChosen || provider != selectedProvider
+        else { return }
+        isCustomChosen = false
         selectedProvider = provider
-        apiKey = ""
-        resetKeyFields()
-        invalidateCheck()
+        restartKeyEntry()
+    }
+
+    /// Picks the "Custom Provider" entry.
+    func selectCustom() {
+        guard !skipsProviderStep, !isCustomChosen else { return }
+        isCustomChosen = true
+        selectedProvider = nil
+        restartKeyEntry()
     }
 
     func next() {
-        guard canGoNext, let target = step.next else { return }
+        guard canGoNext, let index = steps.firstIndex(of: step), index + 1 < steps.count else { return }
+        let target = steps[index + 1]
         switch step {
-        case .provider:
+        case .provider, .details:
             step = target
         case .apiKey:
             step = target
@@ -187,9 +272,9 @@ final class ProviderWizardModel: ObservableObject {
     }
 
     func back() {
-        guard canGoBack, let target = step.back else { return }
+        guard canGoBack, let index = steps.firstIndex(of: step), index > 0 else { return }
         invalidateCheck()
-        step = target
+        step = steps[index - 1]
     }
 
     func retry() {
@@ -208,6 +293,14 @@ final class ProviderWizardModel: ObservableObject {
         await commitTask?.value
     }
 
+    /// Switching providers drops the typed key, which belongs to the previous
+    /// one, and restarts the key name and activation choice.
+    private func restartKeyEntry() {
+        apiKey = ""
+        resetKeyFields()
+        invalidateCheck()
+    }
+
     /// The first key is named `Default`; later ones are left for the user to name.
     private func resetKeyFields() {
         keyName = isFirstKey ? Self.defaultKeyName : ""
@@ -224,8 +317,9 @@ final class ProviderWizardModel: ObservableObject {
     }
 
     private func startCheck() {
-        guard let provider = selectedProvider else { return }
+        guard let provider = targetProvider else { return }
         let key = trimmedKey
+        let custom = newCustomProvider
         checkGeneration += 1
         let generation = checkGeneration
         validation = nil
@@ -234,7 +328,7 @@ final class ProviderWizardModel: ObservableObject {
         checkTask = Task { [weak self] in
             let outcome: Result<ValidationResult, Error>
             do {
-                outcome = .success(try await validate(provider, key))
+                outcome = .success(try await validate(provider, custom, key))
             } catch {
                 outcome = .failure(error)
             }
@@ -252,10 +346,11 @@ final class ProviderWizardModel: ObservableObject {
 
     /// The key is saved on the way from the check to the summary.
     private func startCommit() {
-        guard !isCommitting, let provider = selectedProvider, let validation, let secret = validatedKey else { return }
+        guard !isCommitting, let provider = targetProvider, let validation, let secret = validatedKey else { return }
         isCommitting = true
         let newKey = NewProviderKey(
-            provider: provider, name: trimmedKeyName, secret: secret, makeActive: isFirstKey || makeActive)
+            provider: provider, name: trimmedKeyName, secret: secret, makeActive: isFirstKey || makeActive,
+            custom: newCustomProvider)
         let commit = self.commit
         commitTask = Task { [weak self] in
             do {

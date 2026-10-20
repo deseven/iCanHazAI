@@ -15,8 +15,9 @@ struct ModelID: Hashable, Codable, Sendable, CustomStringConvertible {
 
     /// Splits on the first colon only, because model names may contain colons
     /// themselves (OpenRouter's `:free`, `:batch`). The provider part is
-    /// case-sensitive and must be the lowercase raw value. Returns nil for an
-    /// unknown provider or an empty name.
+    /// case-sensitive: a built-in provider's lowercase id, or else the name of
+    /// a custom provider (whether it exists is for the registry to say).
+    /// Returns nil for an empty provider or name.
     init?(parsing string: String) {
         guard let colon = string.firstIndex(of: ":"),
             let provider = Provider(rawValue: String(string[..<colon]))

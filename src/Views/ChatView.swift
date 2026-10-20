@@ -84,7 +84,8 @@ struct ChatView: View {
                         store.showModelPicker = true
                     } label: {
                         ModelStatusLabel(
-                            provider: parts.provider, label: parts.name, hasModel: store.selectedChatHasModel)
+                            provider: parts.provider, color: store.tagColor(for: parts.provider), label: parts.name,
+                            hasModel: store.selectedChatHasModel)
                     }
                     .buttonStyle(.borderless)
                     .fixedSize()
