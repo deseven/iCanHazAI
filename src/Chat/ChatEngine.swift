@@ -397,7 +397,7 @@ actor ChatEngine {
     func validateProvider(_ provider: Provider, custom: CustomProviderConfig? = nil, apiKey: String) async throws
         -> ValidationResult
     {
-        try await catalog.validate(provider: provider, apiKey: apiKey, endpoint: custom?.endpoint)
+        try await catalog.validate(provider: provider, apiKey: apiKey, custom: custom)
     }
 
     /// Stores the key. The first key of a provider is always active; a later

@@ -40,6 +40,8 @@ final class ProviderWizardModel: ObservableObject {
 
     enum Step: Int, CaseIterable, Identifiable {
         case provider
+        /// What a new custom provider speaks: OpenAI-compatible, Ollama or llama.cpp.
+        case type
         /// Name, endpoint and color of a new custom provider.
         case details
         case apiKey
@@ -51,6 +53,7 @@ final class ProviderWizardModel: ObservableObject {
         var title: String {
             switch self {
             case .provider: return "Provider"
+            case .type: return "Type"
             case .details: return "Details"
             case .apiKey: return "API Key"
             case .check: return "Check"
@@ -98,6 +101,8 @@ final class ProviderWizardModel: ObservableObject {
             if customEndpoint != oldValue { invalidateCheck() }
         }
     }
+    /// The API the new custom provider speaks. Chosen first, since it decides what the endpoint means.
+    @Published private(set) var customType: CustomProviderType = .openai
     @Published var customColor: ProviderColor = .default
     @Published private(set) var checkState: CheckState = .idle
     @Published var apiKey: String = "" {
@@ -148,7 +153,7 @@ final class ProviderWizardModel: ObservableObject {
         Step.allCases.filter { step in
             switch step {
             case .provider: return !skipsProviderStep
-            case .details: return isCustomChosen
+            case .type, .details: return isCustomChosen
             default: return true
             }
         }
@@ -187,14 +192,27 @@ final class ProviderWizardModel: ObservableObject {
         return CustomProviderConfig.problem(withName: customName, existing: existing)
     }
 
-    /// The endpoint as it will be used: trimmed, without trailing slashes. Nil
-    /// when it isn't an http(s) URL.
-    var normalizedCustomEndpoint: String? { CustomProviderConfig.normalizedEndpoint(customEndpoint) }
+    /// The endpoint as it will be used: trimmed, without trailing slashes (and, for
+    /// Ollama and llama.cpp, without a pasted `/v1` or `/api`). Nil when it isn't
+    /// an http(s) URL.
+    var normalizedCustomEndpoint: String? {
+        CustomProviderConfig.normalizedEndpoint(customEndpoint, type: customType)
+    }
+
+    /// What the endpoint is shortened to, to tell the user (a pasted `/v1` or `/api` is dropped), or nil
+    /// when it is used as typed.
+    var adjustedEndpointNote: String? {
+        guard let normalized = normalizedCustomEndpoint else { return nil }
+        var typed = customEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        while typed.hasSuffix("/") { typed.removeLast() }
+        return normalized == typed ? nil : normalized
+    }
 
     /// The custom provider being defined, once its name and endpoint are usable.
     var newCustomProvider: CustomProviderConfig? {
         guard isCustomChosen, customNameProblem == nil, let endpoint = normalizedCustomEndpoint else { return nil }
-        return CustomProviderConfig(name: trimmedCustomName, endpoint: endpoint, color: customColor.rawValue)
+        return CustomProviderConfig(
+            name: trimmedCustomName, type: customType, endpoint: endpoint, color: customColor.rawValue)
     }
 
     // MARK: - Navigation
@@ -212,6 +230,7 @@ final class ProviderWizardModel: ObservableObject {
     var canGoNext: Bool {
         switch step {
         case .provider: return isCustomChosen || (selectedProvider.map { !isAdded($0) } ?? false)
+        case .type: return true
         case .details: return newCustomProvider != nil
         case .apiKey:
             return (isKeyOptional || !trimmedKey.isEmpty) && !trimmedKeyName.isEmpty && !isKeyNameTaken
@@ -223,7 +242,8 @@ final class ProviderWizardModel: ObservableObject {
     }
 
     var canGoBack: Bool {
-        (step == .details || (step == .apiKey && !skipsProviderStep) || step == .check) && !isCommitting
+        (step == .type || step == .details || (step == .apiKey && !skipsProviderStep) || step == .check)
+            && !isCommitting
     }
 
     var canRetry: Bool {
@@ -247,6 +267,14 @@ final class ProviderWizardModel: ObservableObject {
         restartKeyEntry()
     }
 
+    /// Picks what the custom provider speaks. The endpoint typed so far stays: it is read per type (a
+    /// pasted `/v1` is dropped for Ollama and llama.cpp), and the key belongs to the server, not the type.
+    func selectType(_ type: CustomProviderType) {
+        guard isCustomChosen, type != customType else { return }
+        customType = type
+        invalidateCheck()
+    }
+
     /// Picks the "Custom Provider" entry.
     func selectCustom() {
         guard !skipsProviderStep, !isCustomChosen else { return }
@@ -259,7 +287,7 @@ final class ProviderWizardModel: ObservableObject {
         guard canGoNext, let index = steps.firstIndex(of: step), index + 1 < steps.count else { return }
         let target = steps[index + 1]
         switch step {
-        case .provider, .details:
+        case .provider, .type, .details:
             step = target
         case .apiKey:
             step = target

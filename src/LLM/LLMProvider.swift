@@ -18,8 +18,10 @@ protocol LLMProvider: Sendable {
     /// The wire format this strategy implements.
     var wire: LLMWire { get }
     /// The path appended to the base URL for chat completions
-    /// (e.g. `/chat/completions` or `/messages`).
+    /// (e.g. `/chat/completions`, `/messages` or `/chat`).
     var chatPath: String { get }
+    /// How the response body is cut into events. SSE unless the strategy says otherwise.
+    var framing: StreamFraming { get }
 
     /// Builds the HTTP headers for a request to this provider.
     /// Includes `Content-Type` and the provider-specific auth headers.
@@ -47,6 +49,32 @@ protocol LLMProvider: Sendable {
 
     /// Parses an error response body into a structured [`LLMError`](src/LLM/LLMError.swift).
     func parseError(_ data: Data, statusCode: Int) -> LLMError
+}
+
+extension LLMProvider {
+    var framing: StreamFraming { .sse }
+}
+
+/// How a streamed response body is framed. Either way the transport hands
+/// the strategy one JSON payload per event.
+enum StreamFraming: Sendable {
+    /// Server-Sent Events: `data: {...}` lines, `[DONE]` ends the stream.
+    case sse
+    /// Newline-delimited JSON (Ollama's native API): one JSON object per line,
+    /// no prefix and no sentinel; the last event says it is done itself.
+    case ndjson
+
+    /// The payload a raw line carries, or nil for lines to skip (comments,
+    /// `event:` lines, blank keep-alive lines).
+    func payload(from line: String) -> SSEParser.SSEPayload? {
+        switch self {
+        case .sse:
+            return SSEParser.parsePayload(line)
+        case .ndjson:
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : .data(trimmed)
+        }
+    }
 }
 
 // MARK: - Streaming accumulator
@@ -106,6 +134,14 @@ final class ToolCallAccumulator: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return entries.isEmpty
+    }
+
+    /// How many tool calls have been recorded. A protocol that sends whole
+    /// calls without an index (Ollama) takes the next index from it.
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries.count
     }
 
     /// Materialize the accumulated tool calls into [`ToolCall`](src/MCP/MCPModels.swift)

@@ -57,6 +57,7 @@ enum MockStep: Sendable {
 struct MockRequest: @unchecked Sendable {
     let seq: Int
     let channel: String
+    let method: String
     let path: String
     let query: [String: String]
     let headers: [String: String]
@@ -71,6 +72,7 @@ struct MockRequest: @unchecked Sendable {
     init(_ json: [String: Any]) {
         seq = json["seq"] as? Int ?? 0
         channel = json["channel"] as? String ?? ""
+        method = json["method"] as? String ?? ""
         path = json["path"] as? String ?? ""
         query = json["query"] as? [String: String] ?? [:]
         headers = json["headers"] as? [String: String] ?? [:]
@@ -83,7 +85,9 @@ struct MockRequest: @unchecked Sendable {
         mockError = json["mock_error"] as? String
     }
 
-    var isChat: Bool { path.hasSuffix("/chat/completions") || path.hasSuffix("/messages") }
+    var isChat: Bool {
+        path.hasSuffix("/chat/completions") || path.hasSuffix("/messages") || path.hasSuffix("/api/chat")
+    }
     var json: [String: Any] { body as? [String: Any] ?? [:] }
     var messages: [[String: Any]] { json["messages"] as? [[String: Any]] ?? [] }
     func header(_ name: String) -> String? { headers[name.lowercased()] }
@@ -146,7 +150,9 @@ struct MockServer: Sendable {
 
     func release(_ gate: String) async throws { try await call("POST", "/__mock/gates/\(gate)/release") }
 
-    /// `page_size`, `models`, `models_status`, `reject_keys`; `NSNull()` clears an override.
+    /// `page_size`, `models`, `models_status`, `reject_keys`, and per channel `loaded`, `show_failures`,
+    /// `ps_status` (Ollama) or `router`, `props`, `props_by_model`, `props_status` (llama.cpp); `NSNull()`
+    /// clears an override.
     func configure(_ channel: MockChannel, _ settings: [String: Any]) async throws {
         var body = settings
         body["channel"] = channel.rawValue

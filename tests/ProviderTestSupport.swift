@@ -13,30 +13,57 @@ struct StubResponse: Sendable {
 /// Canned HTTP responses keyed by whatever the handler decides, with a request log.
 final class StubFetcher: HTTPFetching, @unchecked Sendable {
     typealias Handler = @Sendable (URL) async throws -> StubResponse
+    typealias RequestHandler = @Sendable (Request) async throws -> StubResponse
 
     struct Request: Sendable {
         var url: URL
         var headers: [String: String]
+        /// Nil for a GET.
+        var body: Data?
+        var method: String { body == nil ? "GET" : "POST" }
+        /// The JSON object of a POST body.
+        var json: [String: Any]? {
+            body.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        }
     }
 
     private let lock = NSLock()
-    private var _handler: Handler
+    private var _handler: RequestHandler
     private var _requests: [Request] = []
 
-    init(_ handler: @escaping Handler) { _handler = handler }
+    init(_ handler: @escaping Handler) { _handler = { request in try await handler(request.url) } }
 
-    func setHandler(_ handler: @escaping Handler) { lock.withLock { _handler = handler } }
+    /// A fetcher whose handler sees the whole request, for a POST that is answered by what it carries.
+    /// (Not an initializer: a trailing closure would be ambiguous with `init(_:)`.)
+    static func serving(_ handler: @escaping RequestHandler) -> StubFetcher {
+        let fetcher = StubFetcher { _ in StubResponse.status(500) }
+        fetcher.lock.withLock { fetcher._handler = handler }
+        return fetcher
+    }
+
+    func setHandler(_ handler: @escaping Handler) {
+        lock.withLock { _handler = { request in try await handler(request.url) } }
+    }
 
     var requests: [Request] { lock.withLock { _requests } }
 
     func count(where predicate: (URL) -> Bool) -> Int { requests.filter { predicate($0.url) }.count }
 
     func get(_ url: URL, headers: [String: String]) async throws -> (Data, HTTPURLResponse) {
+        try await respond(url, headers: headers, body: nil)
+    }
+
+    func post(_ url: URL, headers: [String: String], body: Data) async throws -> (Data, HTTPURLResponse) {
+        try await respond(url, headers: headers, body: body)
+    }
+
+    private func respond(_ url: URL, headers: [String: String], body: Data?) async throws -> (Data, HTTPURLResponse) {
+        let request = Request(url: url, headers: headers, body: body)
         let handler = lock.withLock {
-            _requests.append(Request(url: url, headers: headers))
+            _requests.append(request)
             return _handler
         }
-        let response = try await handler(url)
+        let response = try await handler(request)
         let http = HTTPURLResponse(url: url, statusCode: response.status, httpVersion: nil, headerFields: nil)!
         return (Data(response.body.utf8), http)
     }

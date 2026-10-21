@@ -7,6 +7,8 @@ import Foundation
 /// Tests inject a stub; production uses `URLSessionFetcher`.
 protocol HTTPFetching: Sendable {
     func get(_ url: URL, headers: [String: String]) async throws -> (Data, HTTPURLResponse)
+    /// A POST with a JSON body (Ollama's `/api/show` takes its question that way).
+    func post(_ url: URL, headers: [String: String], body: Data) async throws -> (Data, HTTPURLResponse)
 }
 
 /// Catalog traffic is independent of chat traffic, so it has its own session.
@@ -22,10 +24,24 @@ struct URLSessionFetcher: HTTPFetching {
     }
 
     func get(_ url: URL, headers: [String: String]) async throws -> (Data, HTTPURLResponse) {
+        try await send(url, method: "GET", headers: headers, body: nil)
+    }
+
+    func post(_ url: URL, headers: [String: String], body: Data) async throws -> (Data, HTTPURLResponse) {
+        try await send(url, method: "POST", headers: headers, body: body)
+    }
+
+    private func send(_ url: URL, method: String, headers: [String: String], body: Data?) async throws -> (
+        Data, HTTPURLResponse
+    ) {
         var request = URLRequest(url: url)
-        request.httpMethod = "GET"
+        request.httpMethod = method
         request.setValue(AppInfo.userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let body {
+            request.httpBody = body
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw ProviderError.badResponse }
@@ -62,10 +78,26 @@ enum ProviderHTTP {
     /// Fetches and maps every failure to a `ProviderError`: 401/403 become
     /// `.invalidKey`, other non-2xx statuses `.http`, transport errors `.network`.
     static func get(_ url: URL, headers: [String: String], fetcher: HTTPFetching) async throws -> Data {
+        try await perform { try await fetcher.get(url, headers: headers) }
+    }
+
+    /// `get` for a POST with a JSON `body`.
+    static func postJSON(
+        _ url: URL, body: [String: Any], headers: [String: String], fetcher: HTTPFetching
+    ) async throws -> [String: Any] {
+        let payload = try JSONSerialization.data(withJSONObject: body)
+        let data = try await perform { try await fetcher.post(url, headers: headers, body: payload) }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ProviderError.badResponse
+        }
+        return object
+    }
+
+    private static func perform(_ request: () async throws -> (Data, HTTPURLResponse)) async throws -> Data {
         let data: Data
         let response: HTTPURLResponse
         do {
-            (data, response) = try await fetcher.get(url, headers: headers)
+            (data, response) = try await request()
         } catch let error as ProviderError {
             throw error
         } catch is CancellationError {

@@ -90,6 +90,23 @@ extension AllSmokeTests {
                     #expect(plain.maxOutputTokens == 8_192)
                     #expect(!plain.reasoning.supported)
                 case .ollama:
+                    // Ollama says it itself: capabilities and thinking levels from /api/show, and the context a
+                    // model really runs with (the Modelfile's, else the loaded one, else the default).
+                    let llama = try #require(caps["llama3.2:latest"])
+                    #expect(!llama.imageInput)
+                    #expect(!llama.reasoning.supported)
+                    #expect(llama.contextWindow == OllamaAdapter.defaultContextWindow)
+                    let vision = try #require(caps["qwen3-vl:8b"])
+                    #expect(vision.imageInput)
+                    #expect(vision.contextWindow == 8192)
+                    #expect(vision.reasoning.options == [ReasoningSetting.off, ReasoningSetting.on])
+                    let oss = try #require(caps["gpt-oss:20b"])
+                    #expect(oss.contextWindow == 32_768)
+                    #expect(oss.reasoning.levels == ["low", "medium", "high"])
+                    #expect(oss.reasoning.defaultLevel == "medium")
+                    #expect(!oss.reasoning.canDisable)
+                    #expect(!oss.imageInput)
+                case .ollamaOpenAI:
                     // Known to LiteLLM: enriched. Unknown: the custom-provider defaults.
                     let oss = try #require(caps["gpt-oss:20b"])
                     #expect(oss.reasoning.supported)
@@ -97,7 +114,12 @@ extension AllSmokeTests {
                     #expect(caps["qwen3-vl:8b"]?.imageInput == true)
                     #expect(caps["llama3.2:latest"] == ModelCapabilities.customProviderDefaults)
                 case .llamaCpp:
-                    #expect(caps["qwen3-8b"] == ModelCapabilities.customProviderDefaults)
+                    // The loaded model's own context, and a reasoning switch because its template has one.
+                    let qwen = try #require(caps["qwen3-8b"])
+                    #expect(qwen.contextWindow == 32_768)
+                    #expect(!qwen.imageInput)
+                    #expect(qwen.reasoning.supported)
+                    #expect(qwen.reasoning.options == [ReasoningSetting.off, ReasoningSetting.on])
                 }
             }
         }

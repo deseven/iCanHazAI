@@ -3,6 +3,8 @@
 import copy
 from typing import Optional
 
+from multidict import MultiMapping
+
 DEEPSEEK_MODELS = [
     {
         "id": "deepseek-flash", "object": "model", "owned_by": "deepseek", "name": "DeepSeek-V4.1-Flash",
@@ -112,20 +114,74 @@ OPENROUTER_MODELS = [
 ]
 
 
-def _ollama_model(model_id: str) -> dict:
-    return {"id": model_id, "object": "model", "created": 1727912233, "owned_by": "library"}
+def _ollama_model(name: str, *, capabilities, arch: str, context_train: int, thinking=None, parameters: str = "",
+                  parameter_size: str = "8.0B") -> dict:
+    """One Ollama model in the shape of `GET /api/tags`, plus a private `show` entry that `POST /api/show` serves.
+    The OpenAI layer's `/v1/models` is derived from `name`."""
+    details = {"format": "gguf", "family": arch, "families": [arch], "parameter_size": parameter_size,
+               "quantization_level": "Q4_K_M"}
+    show = {
+        "capabilities": list(capabilities), "parameters": parameters, "license": "Mock license",
+        "modified_at": "2026-10-01T12:00:00Z", "details": {"parent_model": "", **details},
+        "model_info": {"general.architecture": arch, f"{arch}.context_length": context_train,
+                       f"{arch}.embedding_length": 4096},
+    }
+    if thinking is not None:
+        show["thinking"] = thinking
+    return {"name": name, "model": name, "modified_at": "2026-10-01T12:00:00Z", "size": 4_920_000_000,
+            "digest": "c6eb396dbd5992bbe3f5cdb947e8bbc0ee413d7c17e2beaae69f5d569cf982eb", "details": details,
+            "show": show}
 
 
-OLLAMA_MODELS = [_ollama_model("llama3.2:latest"), _ollama_model("qwen3-vl:8b"), _ollama_model("gpt-oss:20b")]
+# Together they cover every way the app can learn a model's context: a Modelfile `num_ctx` (qwen3-vl),
+# a loaded model reported by /api/ps (gpt-oss, see OLLAMA_LOADED) and neither (llama3.2).
+OLLAMA_MODELS = [
+    _ollama_model("llama3.2:latest", capabilities=("completion", "tools"), arch="llama", context_train=131072,
+                  parameter_size="3.2B"),
+    _ollama_model("qwen3-vl:8b", capabilities=("completion", "vision", "tools", "thinking"), arch="qwen3vl",
+                  context_train=262144, thinking={"values": [False, True], "default": True},
+                  parameters="temperature 0.7\nnum_ctx 8192"),
+    _ollama_model("gpt-oss:20b", capabilities=("completion", "tools", "thinking"), arch="gptoss",
+                  context_train=131072, thinking={"values": ["low", "medium", "high"], "default": "medium"},
+                  parameter_size="20.9B"),
+    # Installed, but not a chat model.
+    _ollama_model("nomic-embed-text:latest", capabilities=("embedding",), arch="nomic-bert", context_train=2048,
+                  parameter_size="137M"),
+]
 
-LLAMA_CPP_MODELS = [
-    {
-        "id": "qwen3-8b", "object": "model", "created": 1735142223, "owned_by": "llamacpp",
-        "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
-        "meta": {"vocab_type": 2, "n_vocab": 151936, "n_ctx_train": 40960, "n_embd": 4096,
+# `GET /api/ps`: what is loaded right now and the context it runs with (override with the `loaded` config).
+OLLAMA_LOADED = [{"name": "gpt-oss:20b", "context_length": 32768}]
+
+
+def _llama_cpp_model(model_id: str, *, n_ctx: int, n_ctx_train: int, vision: bool = False) -> dict:
+    return {
+        "id": model_id, "object": "model", "created": 1735142223, "owned_by": "llamacpp",
+        "architecture": {"input_modalities": ["text", "image"] if vision else ["text"],
+                         "output_modalities": ["text"]},
+        "meta": {"vocab_type": 2, "n_vocab": 151936, "n_ctx": n_ctx, "n_ctx_train": n_ctx_train, "n_embd": 4096,
                  "n_params": 8190735360, "size": 5027783488},
     }
+
+
+LLAMA_CPP_MODELS = [_llama_cpp_model("qwen3-8b", n_ctx=32768, n_ctx_train=40960)]
+
+# What a router lists: no `meta` unless the model is loaded, and a `status` on each entry.
+LLAMA_CPP_ROUTER_MODELS = [
+    {**_llama_cpp_model("qwen3-8b", n_ctx=8192, n_ctx_train=40960), "status": {"value": "loaded", "args": []}},
+    {
+        "id": "gemma-3-4b-it", "object": "model", "created": 1735142223, "owned_by": "llamacpp",
+        "architecture": {"input_modalities": ["text", "image"], "output_modalities": ["text"]},
+        "status": {"value": "unloaded"},
+    },
 ]
+
+LLAMA_CPP_CHAT_TEMPLATE = "{%- if enable_thinking is defined and enable_thinking %}<think>{%- endif %}{{ messages }}"
+
+LLAMA_CPP_TEMPLATE_CAPS = {
+    "supports_tools": True, "supports_tool_calls": True, "supports_parallel_tool_calls": True,
+    "supports_system_role": True, "supports_preserve_reasoning": False, "supports_reasoning_effort": False,
+    "supports_string_content": True, "supports_typed_content": False, "supports_object_arguments": True,
+}
 
 DEFAULT_MODELS = {
     "deepseek": DEEPSEEK_MODELS,
@@ -158,22 +214,96 @@ LITELLM = {
                     "supports_reasoning": True},
     "qwen3-vl:8b": {"litellm_provider": "ollama", "mode": "chat", "supports_vision": True,
                     "max_input_tokens": 262144},
+    "nomic-embed-text:latest": {"litellm_provider": "ollama", "mode": "embedding", "max_input_tokens": 8192},
 }
 
 
 def models_for(channel: str, config: dict) -> list:
     override = config.get("models")
+    if override is None and channel == "llama-cpp" and config.get("router"):
+        return copy.deepcopy(LLAMA_CPP_ROUTER_MODELS)
     return copy.deepcopy(override if override is not None else DEFAULT_MODELS[channel])
 
 
+def model_id(model: dict) -> str:
+    """Ollama's native listing calls the id `name`."""
+    return model.get("id") or model.get("name") or ""
+
+
 def model_ids(channel: str, config: dict) -> set:
-    return {m["id"] for m in models_for(channel, config)}
+    return {model_id(m) for m in models_for(channel, config)}
 
 
-def listing(channel: str, config: dict, query: dict) -> dict:
+def ollama_tags(config: dict) -> dict:
+    """`GET /api/tags`: the models without the private `show` entry."""
+    return {"models": [{k: v for k, v in m.items() if k != "show"} for m in models_for("ollama", config)]}
+
+
+def ollama_show(config: dict, name: str) -> Optional[dict]:
+    """`POST /api/show` for a model, or None when it doesn't exist."""
+    model = next((m for m in models_for("ollama", config) if model_id(m) == name), None)
+    return copy.deepcopy(model["show"]) if model is not None else None
+
+
+def ollama_ps(config: dict) -> dict:
+    """`GET /api/ps`: the loaded models, each with the context it runs with."""
+    loaded = config.get("loaded")
+    entries = OLLAMA_LOADED if loaded is None else loaded
+    return {"models": [
+        {"name": e["name"], "model": e["name"], "size": 6_591_830_464, "digest": "c6eb396d",
+         "details": {"parent_model": "", "format": "gguf", "family": "mock", "families": ["mock"],
+                     "parameter_size": "8.0B", "quantization_level": "Q4_K_M"},
+         "expires_at": "2099-01-01T00:00:00Z", "size_vram": 5_333_539_264, "context_length": e["context_length"]}
+        for e in entries
+    ]}
+
+
+def llama_cpp_props(config: dict, model: Optional[str] = None) -> dict:
+    """`GET /props`. `config["props"]` is merged over the defaults; with `?model=` (router mode) so is
+    `config["props_by_model"][model]`, and `n_ctx` follows that model's loaded `meta`."""
+    models = models_for("llama-cpp", config)
+    first = models[0] if models else {}
+    chosen = next((m for m in models if model_id(m) == model), None) if model else first
+    meta = (chosen or {}).get("meta") or {}
+    architecture = (chosen or {}).get("architecture") or {}
+    props = {
+        "default_generation_settings": {
+            "params": {"temperature": 0.8, "top_k": 40, "top_p": 0.95},
+            "n_ctx": meta.get("n_ctx", 4096),
+        },
+        "total_slots": 1,
+        "model_alias": model_id(chosen or {}),
+        "model_path": f"../models/{model_id(chosen or {})}.gguf",
+        "modalities": {"vision": "image" in architecture.get("input_modalities", []), "video": False,
+                       "audio": "audio" in architecture.get("input_modalities", [])},
+        "chat_template": LLAMA_CPP_CHAT_TEMPLATE,
+        "chat_template_caps": dict(LLAMA_CPP_TEMPLATE_CAPS),
+        "bos_token": "<s>", "eos_token": "</s>", "build_info": "b6000-mock", "is_sleeping": False,
+        "endpoint_slots": True, "endpoint_props": False, "endpoint_metrics": False,
+    }
+    for override in (config.get("props"), (config.get("props_by_model") or {}).get(model or "")):
+        if override:
+            props = _merge(props, override)
+    return props
+
+
+def _merge(base: dict, override: dict) -> dict:
+    merged = dict(base)
+    for key, value in override.items():
+        merged[key] = _merge(merged[key], value) if isinstance(value, dict) and isinstance(merged.get(key), dict) \
+            else value
+    return merged
+
+
+def listing(channel: str, config: dict, query: MultiMapping[str]) -> dict:
     """The documented /models response for a provider, honouring the pagination its API supports."""
     models = models_for(channel, config)
     page_size = config.get("page_size")
+
+    if channel == "ollama":
+        # The OpenAI layer: the same models, as `id`/`created`/`owned_by` and nothing more.
+        return {"object": "list", "data": [
+            {"id": model_id(m), "object": "model", "created": 1727912233, "owned_by": "library"} for m in models]}
 
     if channel == "anthropic":
         # Retired models only appear when asked for explicitly.

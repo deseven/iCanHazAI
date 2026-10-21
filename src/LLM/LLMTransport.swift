@@ -78,16 +78,21 @@ enum LLMTransport {
         switch model.wire {
         case .openai: return OpenAIProvider()
         case .anthropic: return AnthropicProvider()
+        case .ollama: return OllamaProvider()
         }
     }
 
     /// Resolves the effective base URL for a model, falling back to its
-    /// provider's default when the model doesn't specify one.
+    /// provider's default when the model doesn't specify one. A custom
+    /// provider of a server-root type gets its API's path added (`/api`, `/v1`).
     static func resolveBaseUrl(model: ResolvedModel) -> String {
+        let base: String
         if let baseUrl = model.baseUrl, !baseUrl.isEmpty {
-            return baseUrl
+            base = baseUrl
+        } else {
+            base = model.provider.defaultBaseUrl
         }
-        return model.provider.defaultBaseUrl
+        return base + (model.customType?.chatBasePath ?? "")
     }
 
     // MARK: - Request building
@@ -257,7 +262,7 @@ enum LLMTransport {
                     state.touchData()
 
                     rawDump.append(line)
-                    guard let payload = SSEParser.parsePayload(line) else { continue }
+                    guard let payload = provider.framing.payload(from: line) else { continue }
                     if case .done = payload { break }
                     guard case .data(let jsonString) = payload,
                         let data = jsonString.data(using: .utf8)

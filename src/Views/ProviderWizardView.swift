@@ -4,10 +4,10 @@
 import AppKit
 import SwiftUI
 
-/// The New Provider wizard sheet: pick a provider (or define a custom
-/// OpenAI-compatible one), enter its API key, check it, and store it
-/// encrypted. All state lives in `ProviderWizardModel`. A provider that is
-/// already added can't be picked; with an `initialProvider` (adding a key from
+/// The New Provider wizard sheet: pick a provider (or define a custom one:
+/// OpenAI-compatible, Ollama or llama.cpp), enter its API key, check it, and
+/// store it encrypted. All state lives in `ProviderWizardModel`. A provider that
+/// is already added can't be picked; with an `initialProvider` (adding a key from
 /// Manage Keys) the provider step is skipped.
 struct ProviderWizardView: View {
     @StateObject private var model: ProviderWizardModel
@@ -52,6 +52,7 @@ struct ProviderWizardView: View {
             Group {
                 switch model.step {
                 case .provider: providerStep
+                case .type: typeStep
                 case .details: detailsStep
                 case .apiKey: apiKeyStep
                 case .check: checkStep
@@ -159,11 +160,32 @@ struct ProviderWizardView: View {
 
     private var customProviderRow: some View {
         choiceRow(
-            title: "Custom Provider (OpenAI-compatible)",
+            title: "Custom Provider",
             subtitle: Provider.custom("").summary,
             isSelected: model.isCustomChosen,
             isEnabled: true,
             onSelect: { model.selectCustom() })
+    }
+
+    private var typeStep: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("What kind of server is it?")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(CustomProviderType.allCases, id: \.self) { type in
+                    choiceRow(
+                        title: type.displayName,
+                        subtitle: type.summary,
+                        isSelected: model.customType == type,
+                        isEnabled: true,
+                        onSelect: { model.selectType(type) })
+                }
+            }
+
+            Spacer()
+        }
     }
 
     private func choiceRow(
@@ -195,7 +217,7 @@ struct ProviderWizardView: View {
 
     private var detailsStep: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Describe the OpenAI-compatible API you want to connect.")
+            Text("Describe the \(model.customType.displayName) server you want to connect.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -221,12 +243,10 @@ struct ProviderWizardView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Endpoint")
                     .font(.headline)
-                Text(
-                    "The API's base URL. /models and /chat/completions are added to it as is, so include /v1 if the provider needs it."
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                TextField("e.g. http://localhost:11434/v1", text: $model.customEndpoint)
+                Text(model.customType.endpointHint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField(model.customType.endpointPlaceholder, text: $model.customEndpoint)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { model.next() }
                 if !model.customEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -235,6 +255,10 @@ struct ProviderWizardView: View {
                     Text("Enter a valid http:// or https:// URL.")
                         .font(.caption)
                         .foregroundStyle(.red)
+                } else if let adjusted = model.adjustedEndpointNote {
+                    Text("It will be used as \(adjusted): the app adds the API paths itself.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -340,9 +364,15 @@ struct ProviderWizardView: View {
 
     private func apiKeyHint(for provider: Provider) -> String {
         guard provider.isCustom else { return provider.apiKeyHint }
-        return model.isKeyOptional
-            ? "Leave it empty if the endpoint doesn't need one."
-            : "The key this endpoint expects."
+        guard model.isKeyOptional else { return "The key this endpoint expects." }
+        switch model.customType {
+        case .ollama:
+            return "Only Ollama's cloud (ollama.com) needs one. Leave it empty for a local server."
+        case .llamacpp:
+            return "Only needed if llama-server was started with --api-key. Leave it empty otherwise."
+        case .openai:
+            return "Leave it empty if the endpoint doesn't need one."
+        }
     }
 
     private var checkStep: some View {
@@ -386,6 +416,7 @@ struct ProviderWizardView: View {
                     summaryRow("Models", "\(loaderPluralized(count, singular: "model", plural: "models")) available")
                 }
                 if let custom = key.custom {
+                    summaryRow("Type", custom.type.displayName)
                     summaryRow("Endpoint", custom.endpoint)
                 }
                 summaryRow("Key name", key.name)

@@ -5,11 +5,13 @@ documented error response. The point is to fail loudly when the app builds a req
 would reject.
 """
 
+import base64
+import binascii
 import re
 from dataclasses import dataclass
 from typing import Optional
 
-from catalog import models_for
+from catalog import model_ids, models_for
 from providers import Provider
 
 
@@ -31,13 +33,18 @@ ANTHROPIC_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 def check_model(provider: Provider, model, config: dict) -> Optional[Err]:
     if not isinstance(model, str) or not model:
         return Err(400, "Missing required parameter: 'model'.")
-    if not provider.validates_model:
+    # A single-model llama-server answers whatever name is asked for; a router routes by it.
+    if not provider.validates_model and not (provider.name == "llama-cpp" and config.get("router")):
         return None
-    known = {m["id"] for m in models_for(provider.name, config)}
+    known = model_ids(provider.name, config)
     if model in known:
         return None
+    if provider.wire == "ollama":
+        return Err(404, f"model '{model}' not found")
     if provider.name == "ollama":
         return Err(404, f'model "{model}" not found, try pulling it first')
+    if provider.name == "llama-cpp":
+        return Err(400, f"model '{model}' not found", "invalid_request_error")
     if provider.name == "openrouter":
         return Err(400, f"{model} is not a valid model ID")
     if provider.name == "anthropic":
@@ -182,6 +189,139 @@ def _openai_tools(tools) -> Optional[Err]:
 
 
 # ---------------------------------------------------------------------------------------------------------
+# Ollama native wire (/api/chat)
+# ---------------------------------------------------------------------------------------------------------
+
+OLLAMA_ROLES = {"system", "user", "assistant", "tool"}
+
+
+def validate_ollama(provider: Provider, body, config: dict) -> Optional[Err]:
+    if not isinstance(body, dict):
+        return Err(400, "invalid request: the body must be a JSON object")
+    if err := check_model(provider, body.get("model"), config):
+        return err
+
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return Err(400, "invalid request: 'messages' must be a non-empty array")
+    if "stream" in body and not isinstance(body["stream"], bool):
+        return Err(400, "invalid request: 'stream' must be a boolean")
+    if "options" in body and body["options"] is not None and not isinstance(body["options"], dict):
+        return Err(400, "invalid request: 'options' must be an object")
+    think = body.get("think")
+    if think is not None and not isinstance(think, (bool, str)):
+        return Err(400, "invalid request: 'think' must be a boolean or a string")
+    # A request never carries OpenAI-style leftovers: they would be silently ignored by the real server.
+    for stray in ("stream_options", "max_tokens", "reasoning_effort", "temperature", "top_p"):
+        if stray in body:
+            return Err(400, f"invalid request: '{stray}' is not an Ollama parameter (use 'options')")
+
+    capabilities = _ollama_capabilities(config, body["model"])
+    if think not in (None, False) and "thinking" not in capabilities:
+        return Err(400, f'"{body["model"]}" does not support thinking')
+    if body.get("tools") and "tools" not in capabilities:
+        return Err(400, f'"{body["model"]}" does not support tools')
+
+    if err := _ollama_messages(messages, capabilities, body["model"]):
+        return err
+    return _ollama_tools(body.get("tools"))
+
+
+def _ollama_capabilities(config: dict, name: str) -> set:
+    for m in models_for("ollama", config):
+        if (m.get("name") or m.get("id")) == name:
+            return set((m.get("show") or {}).get("capabilities", ["completion", "tools", "thinking", "vision"]))
+    return set()
+
+
+def _ollama_messages(messages: list, capabilities: set, model: str) -> Optional[Err]:
+    pending: list = []  # names of the calls the next tool messages must answer, in order
+    for i, m in enumerate(messages):
+        if not isinstance(m, dict) or str(m.get("role", "")).lower() not in OLLAMA_ROLES:
+            return Err(400, f"invalid message role at messages[{i}]")
+        role = m["role"].lower()
+
+        if pending and role != "tool":
+            return Err(400, f"messages[{i}]: the tool calls of the previous message were not answered "
+                            f"(missing a result for '{pending[0]}')")
+        if not isinstance(m.get("content", ""), str):
+            return Err(400, f"json: cannot unmarshal non-string into Go struct field Message.messages[{i}].content "
+                            "of type string")
+
+        calls = m.get("tool_calls")
+        if calls is not None:
+            if role != "assistant":
+                return Err(400, f"messages[{i}]: only an assistant message carries tool_calls")
+            if not isinstance(calls, list) or not calls:
+                return Err(400, f"messages[{i}].tool_calls must be a non-empty array")
+            names = []
+            for j, call in enumerate(calls):
+                function = call.get("function") if isinstance(call, dict) else None
+                if not isinstance(function, dict) or not isinstance(function.get("name"), str) \
+                        or not function["name"]:
+                    return Err(400, f"messages[{i}].tool_calls[{j}].function.name is required")
+                if not isinstance(function.get("arguments"), dict):
+                    # What Go's decoder says about a string where an object belongs.
+                    return Err(400, "json: cannot unmarshal string into Go struct field "
+                                    "ToolCallFunction.messages.tool_calls.function.arguments of type "
+                                    "api.ToolCallFunctionArguments")
+                names.append(function["name"])
+            pending = names
+            continue
+
+        if role == "tool":
+            name = m.get("tool_name")
+            if not isinstance(name, str) or not name:
+                return Err(400, f"messages[{i}]: a tool message needs 'tool_name'")
+            if not pending:
+                return Err(400, f"messages[{i}]: a tool message must answer a preceding assistant tool call")
+            if name != pending[0]:
+                return Err(400, f"messages[{i}]: expected the result of '{pending[0]}' (results come in call "
+                                f"order), got '{name}'")
+            pending.pop(0)
+
+        images = m.get("images")
+        if images is not None:
+            if not isinstance(images, list) or not all(isinstance(x, str) and x for x in images):
+                return Err(400, f"messages[{i}].images must be an array of base64 strings")
+            for image in images:
+                if image.startswith("data:"):
+                    return Err(400, f"messages[{i}].images: send bare base64, not a data URL")
+                try:
+                    base64.b64decode(image, validate=True)
+                except (binascii.Error, ValueError):
+                    return Err(400, f"messages[{i}].images: invalid base64")
+            if images and "vision" not in capabilities:
+                return Err(400, f'"{model}" does not support image input')
+
+    if pending:
+        return Err(400, f"the tool calls of the last assistant message were not answered "
+                        f"(missing a result for '{pending[0]}')")
+    return None
+
+
+def _ollama_tools(tools) -> Optional[Err]:
+    if tools is None:
+        return None
+    if not isinstance(tools, list) or not tools:
+        return Err(400, "invalid request: 'tools' must be a non-empty array")
+    names = set()
+    for i, tool in enumerate(tools):
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if not isinstance(tool, dict) or tool.get("type") != "function" or not isinstance(function, dict):
+            return Err(400, f"tools[{i}] must be a function tool")
+        name = function.get("name")
+        if not isinstance(name, str) or not name:
+            return Err(400, f"tools[{i}].function.name is required")
+        if name in names:
+            return Err(400, f"duplicate tool name '{name}'")
+        names.add(name)
+        if not isinstance(function.get("parameters"), dict):
+            return Err(400, f"tools[{i}].function.parameters is required and must be an object")
+    return None
+
+
+# ---------------------------------------------------------------------------------------------------------
 # Anthropic wire
 # ---------------------------------------------------------------------------------------------------------
 
@@ -295,6 +435,7 @@ def _anthropic_messages(messages: list) -> Optional[Err]:
                                         allow_empty_text=last and role == "assistant")
         if err:
             return err
+        assert blocks is not None  # `_anthropic_blocks` returns blocks or an error
         # Consecutive turns of the same role are combined by the API.
         if normalized and normalized[-1]["role"] == role:
             normalized[-1]["content"] = normalized[-1]["content"] + blocks

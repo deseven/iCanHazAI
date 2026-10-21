@@ -53,8 +53,14 @@ extension AllSmokeTests {
                     #expect(request.json["max_tokens"] as? Int == AnthropicProvider.maxTokensCap)
                     #expect(request.messages.count == 1)
                 } else {
-                    let options = request.json["stream_options"] as? [String: Any]
-                    #expect(options?["include_usage"] as? Bool == true)
+                    if sp.isOllamaNative {
+                        // Ollama's own shape: no OpenAI leftovers, and the context is left to the server.
+                        #expect(request.json["stream_options"] == nil)
+                        #expect(request.json["options"] == nil)
+                    } else {
+                        let options = request.json["stream_options"] as? [String: Any]
+                        #expect(options?["include_usage"] as? Bool == true)
+                    }
                     #expect(request.messages.count == 2)
                     #expect(request.messages.first?["role"] as? String == "system")
                     #expect(text(request.messages.first) == SmokeFixture.systemPrompt)
@@ -127,7 +133,22 @@ extension AllSmokeTests {
                 }
 
                 let history = try #require(requests.last).messages
-                if sp.isAnthropic {
+                if sp.isOllamaNative {
+                    // Whole calls with object arguments, and no ids on the wire: the result names its function.
+                    #expect(history.count == 4)
+                    #expect(history[2]["role"] as? String == "assistant")
+                    #expect(text(history[2]) == "Let me compute.")
+                    let calls = try #require(history[2]["tool_calls"] as? [[String: Any]])
+                    #expect(calls.count == 1)
+                    #expect(calls.first?["id"] == nil)
+                    let function = try #require(calls.first?["function"] as? [String: Any])
+                    #expect(function["name"] as? String == "calc")
+                    #expect((function["arguments"] as? [String: Any])?["expression"] as? String == "2+2")
+                    #expect(history[3]["role"] as? String == "tool")
+                    #expect(history[3]["tool_name"] as? String == "calc")
+                    #expect(history[3]["tool_call_id"] == nil)
+                    #expect(text(history[3])?.trimmingCharacters(in: .whitespacesAndNewlines) == "4")
+                } else if sp.isAnthropic {
                     #expect(history.count == 3)
                     #expect(history[1]["role"] as? String == "assistant")
                     let blocks = try #require(history[1]["content"] as? [[String: Any]])

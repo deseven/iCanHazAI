@@ -3,12 +3,13 @@ import Testing
 
 @testable import iCanHazAI
 
-/// The six providers the mock speaks, as the app sees them: four built-in ones whose base URL is swapped for
-/// the mock, and two custom OpenAI-compatible ones (Ollama, llama.cpp) defined by endpoint.
+/// The seven ways the app reaches the mock: four built-in providers whose base URL is swapped for the mock,
+/// and three custom ones, one per type. `ollama` and `ollamaOpenAI` are the same Ollama server (one channel)
+/// reached through its native API and through its OpenAI layer.
 enum SmokeProvider: String, CaseIterable, Sendable, CustomTestStringConvertible {
-    case deepseek, openai, anthropic, openrouter, ollama, llamaCpp
+    case deepseek, openai, anthropic, openrouter, ollama, ollamaOpenAI, llamaCpp
 
-    var testDescription: String { channel.rawValue }
+    var testDescription: String { rawValue }
 
     var channel: MockChannel {
         switch self {
@@ -16,8 +17,18 @@ enum SmokeProvider: String, CaseIterable, Sendable, CustomTestStringConvertible 
         case .openai: return .openai
         case .anthropic: return .anthropic
         case .openrouter: return .openrouter
-        case .ollama: return .ollama
+        case .ollama, .ollamaOpenAI: return .ollama
         case .llamaCpp: return .llamaCpp
+        }
+    }
+
+    /// What a custom provider is, or nil for a built-in one.
+    var customType: CustomProviderType? {
+        switch self {
+        case .ollama: return .ollama
+        case .ollamaOpenAI: return .openai
+        case .llamaCpp: return .llamacpp
+        default: return nil
         }
     }
 
@@ -27,31 +38,51 @@ enum SmokeProvider: String, CaseIterable, Sendable, CustomTestStringConvertible 
         case .openai: return .openai
         case .anthropic: return .anthropic
         case .openrouter: return .openrouter
-        case .ollama, .llamaCpp: return .custom(channel.rawValue)
+        case .ollama: return .custom("ollama")
+        case .ollamaOpenAI: return .custom("ollama-openai")
+        case .llamaCpp: return .custom("llama-cpp")
         }
     }
 
     var isCustom: Bool { provider.isCustom }
     var isAnthropic: Bool { self == .anthropic }
+    /// Ollama's native API: NDJSON, `options`, object tool arguments, results paired by tool name.
+    var isOllamaNative: Bool { self == .ollama }
 
     /// Whether the mock streams reasoning text for this provider (OpenAI's chat completions never do).
     var streamsThinking: Bool { self != .openai }
 
-    /// The URL the app talks to: the mock under this provider's prefix, with the path of the real base URL
-    /// (so a regression in a default URL path is caught).
+    /// The URL the app talks to: the mock under this provider's prefix. A built-in provider has the path of
+    /// the real base URL (so a regression in a default URL path is caught); a custom one is given as the
+    /// user would type it: the server's address for the native types, with `/v1` for an OpenAI-compatible one.
     var baseURL: String {
         let root = MockServer.shared.baseURL.absoluteString
-        if isCustom { return "\(root)/\(channel.rawValue)/v1" }
-        return "\(root)/\(channel.rawValue)\(URL(string: provider.defaultBaseUrl)!.path)"
+        switch self {
+        case .ollama, .llamaCpp: return "\(root)/\(channel.rawValue)"
+        case .ollamaOpenAI: return "\(root)/\(channel.rawValue)/v1"
+        default: return "\(root)/\(channel.rawValue)\(URL(string: provider.defaultBaseUrl)!.path)"
+        }
     }
 
     var customConfig: CustomProviderConfig? {
-        isCustom ? CustomProviderConfig(name: channel.rawValue, endpoint: baseURL) : nil
+        customType.map { CustomProviderConfig(name: provider.rawValue, type: $0, endpoint: baseURL) }
     }
 
     /// The path of the chat request on the mock.
-    var chatPath: String { baseURLPath + (isAnthropic ? "/messages" : "/chat/completions") }
-    var modelsPath: String { baseURLPath + "/models" }
+    var chatPath: String {
+        switch self {
+        case .ollama: return "/ollama/api/chat"
+        case .llamaCpp: return "/llama-cpp/v1/chat/completions"
+        default: return baseURLPath + (isAnthropic ? "/messages" : "/chat/completions")
+        }
+    }
+    var modelsPath: String {
+        switch self {
+        case .ollama: return "/ollama/api/tags"
+        case .llamaCpp: return "/llama-cpp/v1/models"
+        default: return baseURLPath + "/models"
+        }
+    }
     private var baseURLPath: String { URL(string: baseURL)!.path }
 
     /// A model of this provider that chats are created with.
@@ -61,7 +92,7 @@ enum SmokeProvider: String, CaseIterable, Sendable, CustomTestStringConvertible 
         case .openai: return "gpt-4o"
         case .anthropic: return "claude-sonnet-5-5"
         case .openrouter: return "anthropic/claude-sonnet-5-5"
-        case .ollama: return "llama3.2:latest"
+        case .ollama, .ollamaOpenAI: return "llama3.2:latest"
         case .llamaCpp: return "qwen3-8b"
         }
     }
@@ -79,7 +110,9 @@ enum SmokeProvider: String, CaseIterable, Sendable, CustomTestStringConvertible 
                 "anthropic/claude-sonnet-5-5", "openai/gpt-5", "deepseek/deepseek-flash",
                 "meta-llama/llama-3.3-70b-instruct:free", "foo/bar",
             ]
-        case .ollama: return ["llama3.2:latest", "qwen3-vl:8b", "gpt-oss:20b"]
+        // The embedding model installed next to them is left out: by its capabilities for the native API,
+        // by LiteLLM's mode for the OpenAI layer.
+        case .ollama, .ollamaOpenAI: return ["llama3.2:latest", "qwen3-vl:8b", "gpt-oss:20b"]
         case .llamaCpp: return ["qwen3-8b"]
         }
     }
@@ -203,10 +236,11 @@ final class SmokeFixture: @unchecked Sendable {
         await engine.applyConfigChange(.roles)
     }
 
-    /// A new chat on the provider's model, selected like the GUI does when the user opens it (which also
-    /// keeps its content loaded after the stream ends).
-    func newChat(_ sp: SmokeProvider, role: String = "SmokePlain") async -> String {
-        let filename = await engine.createNewChat(role: role, model: sp.modelString)
+    /// A new chat on the provider's model (or on `model` of it), selected like the GUI does when the user
+    /// opens it (which also keeps its content loaded after the stream ends).
+    func newChat(_ sp: SmokeProvider, model: String? = nil, role: String = "SmokePlain") async -> String {
+        let modelString = model.map { "\(sp.provider.rawValue):\($0)" } ?? sp.modelString
+        let filename = await engine.createNewChat(role: role, model: modelString)
         await engine.selectChat(filename: filename)
         chats.append(filename)
         return filename

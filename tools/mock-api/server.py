@@ -28,7 +28,7 @@ async def serve(host: str, port: int) -> None:
     await runner.setup()
     site = web.TCPSite(runner, host, port)
     await site.start()
-    bound = site._server.sockets[0].getsockname()[1]  # noqa: SLF001 - the only way to learn an ephemeral port
+    bound = runner.addresses[0][1]
     print(f"LISTENING http://{host}:{bound}", flush=True)
 
     stop = asyncio.Event()

@@ -8,9 +8,13 @@ import Foundation
 enum LLMWire: String, Sendable {
     case openai
     case anthropic
+    /// Ollama's native `/api/chat`: NDJSON instead of SSE, `options`, object tool arguments.
+    case ollama
 }
 
 extension Provider {
+    /// A custom provider's wire depends on its type, which the name alone
+    /// doesn't carry: see `ResolvedModel.wire`.
     var wire: LLMWire {
         switch self {
         case .openai, .deepseek, .openrouter, .custom: return .openai
@@ -19,11 +23,18 @@ extension Provider {
     }
 }
 
+extension CustomProviderType {
+    var wire: LLMWire { self == .ollama ? .ollama : .openai }
+}
+
 /// Everything the transport needs to send one request: where to, with which
 /// key, which model, and the per-request knobs. Internal value, not a config
 /// entity.
 struct ResolvedModel: Hashable, Sendable {
     let provider: Provider
+    /// What a custom provider speaks; nil for the built-in ones. llama.cpp shares the OpenAI wire but has
+    /// its own reasoning switches.
+    let customType: CustomProviderType?
     /// The model-name part of the model id; goes into the request's `model` field.
     let modelID: String
     let apiKey: String
@@ -66,6 +77,7 @@ struct ResolvedModel: Hashable, Sendable {
 
     init(
         provider: Provider,
+        customType: CustomProviderType? = nil,
         modelID: String,
         apiKey: String,
         baseUrl: String? = nil,
@@ -79,6 +91,7 @@ struct ResolvedModel: Hashable, Sendable {
         numRetries: Int? = nil
     ) {
         self.provider = provider
+        self.customType = customType
         self.modelID = modelID
         self.apiKey = apiKey
         self.baseUrl = baseUrl
@@ -94,7 +107,8 @@ struct ResolvedModel: Hashable, Sendable {
 
     func withReasoning(_ reasoning: String?) -> ResolvedModel {
         ResolvedModel(
-            provider: provider, modelID: modelID, apiKey: apiKey, baseUrl: baseUrl, capabilities: capabilities,
+            provider: provider, customType: customType, modelID: modelID, apiKey: apiKey, baseUrl: baseUrl,
+            capabilities: capabilities,
             reasoning: reasoning, requestParameters: requestParameters, headers: headers,
             readTimeout: readTimeout, progressTimeout: progressTimeout, transportTimeout: transportTimeout,
             numRetries: numRetries)
@@ -102,7 +116,7 @@ struct ResolvedModel: Hashable, Sendable {
 
     /// `provider:modelID`, used in logs.
     var id: String { "\(provider.rawValue):\(modelID)" }
-    var wire: LLMWire { provider.wire }
+    var wire: LLMWire { customType?.wire ?? provider.wire }
     var imageInput: Bool { capabilities.imageInput }
 
     func hash(into hasher: inout Hasher) {

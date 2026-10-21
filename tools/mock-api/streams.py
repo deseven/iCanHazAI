@@ -1,4 +1,5 @@
-"""SSE encoders for both wire formats and the interpreter that plays a scenario into a response."""
+"""Encoders for the three wire formats (OpenAI SSE, Anthropic SSE, Ollama NDJSON) and the interpreter that
+plays a scenario into a response."""
 
 import asyncio
 import json
@@ -6,7 +7,8 @@ import socket
 import struct
 import time
 import uuid
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
 
 from aiohttp import web
 
@@ -206,6 +208,69 @@ class AnthropicEncoder:
 
 
 # ---------------------------------------------------------------------------------------------------------
+# Ollama native: newline-delimited JSON, no `data:` prefix and no [DONE]
+# ---------------------------------------------------------------------------------------------------------
+
+
+def ndjson(data: dict) -> bytes:
+    return json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode() + b"\n"
+
+
+class OllamaEncoder:
+    content_type = "application/x-ndjson"
+
+    def __init__(self, provider: Provider, model: str):
+        self.p = provider
+        self.model = model
+        self.tool_index = 0
+
+    def _event(self, message: dict, done: bool = False, extra: Optional[dict] = None) -> bytes:
+        now = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        obj = {"model": self.model, "created_at": now, "message": {"role": "assistant", **message}, "done": done}
+        if extra:
+            obj.update(extra)
+        return ndjson(obj)
+
+    def start(self) -> list:
+        return []  # no preamble: the first event is the first token
+
+    def text(self, text: str) -> list:
+        return [self._event({"content": text})]
+
+    def thinking(self, text: str) -> list:
+        return [self._event({"content": "", "thinking": text})]
+
+    def tool_call(self, call_id: Optional[str], name: str, arguments, split: int) -> list:
+        """A tool call arrives whole, with object arguments. It has no id unless the scenario names one."""
+        if isinstance(arguments, str):
+            arguments = json.loads(arguments or "{}")
+        call: dict[str, Any] = {"function": {"index": self.tool_index, "name": name, "arguments": arguments or {}}}
+        if call_id:
+            call["id"] = call_id
+        self.tool_index += 1
+        return [self._event({"content": "", "tool_calls": [call]})]
+
+    def keepalive(self) -> list:
+        return [b"\n"]  # the real server sends none; a client has to skip blank lines anyway
+
+    def error(self, message: str, error_type: Optional[str]) -> list:
+        return [ndjson({"error": message})]
+
+    def finish(self, reason: str, usage: dict) -> list:
+        prompt = usage["input"] + usage["cached"]  # `prompt_eval_count` includes the cached tokens
+        metrics = {
+            # A tool call ends with `stop`: there is no `tool_calls` reason.
+            "done_reason": "length" if reason == "length" else "stop",
+            "total_duration": 174560334, "load_duration": 101397084,
+            "prompt_eval_count": prompt, "prompt_eval_duration": 13074791,
+            "eval_count": usage["output"], "eval_duration": 52479709,
+        }
+        if usage["cached"]:
+            metrics["prompt_eval_cached_count"] = usage["cached"]  # absent on servers that don't report it
+        return [self._event({"content": ""}, done=True, extra=metrics)]
+
+
+# ---------------------------------------------------------------------------------------------------------
 # Scenario interpreter
 # ---------------------------------------------------------------------------------------------------------
 
@@ -265,17 +330,20 @@ async def play(request: web.Request, state: State, record: RequestRecord, provid
     wanted = next((s["reason"] for s in reversed(steps) if s["type"] == "finish"), None)
     if provider.wire == "anthropic":
         encoder = AnthropicEncoder(provider, model, usage)
+    elif provider.wire == "ollama":
+        encoder = OllamaEncoder(provider, model)
     else:
         include = (body.get("stream_options") or {}).get("include_usage") is True
         encoder = OpenAIEncoder(provider, model, include)
+    content_type = getattr(encoder, "content_type", "text/event-stream")
 
     response: Optional[web.StreamResponse] = None
 
-    async def emit(chunks: list) -> None:
+    async def emit(chunks: list) -> web.StreamResponse:
         nonlocal response
         if response is None:
             response = web.StreamResponse(status=200, headers={
-                "Content-Type": "text/event-stream", "Cache-Control": "no-cache"})
+                "Content-Type": content_type, "Cache-Control": "no-cache"})
             await response.prepare(request)
             record.status = 200
             record.state = "streaming"
@@ -283,6 +351,7 @@ async def play(request: web.Request, state: State, record: RequestRecord, provid
                 await response.write(chunk)
         for chunk in chunks:
             await response.write(chunk)
+        return response
 
     had_tool_calls = False
     for step in steps:
@@ -296,6 +365,8 @@ async def play(request: web.Request, state: State, record: RequestRecord, provid
             call_id = step.get("id") or f"call_{uuid.uuid4().hex[:12]}"
             if provider.wire == "anthropic" and not step.get("id"):
                 call_id = f"toolu_{uuid.uuid4().hex[:12]}"
+            if provider.wire == "ollama":
+                call_id = step.get("id")  # Ollama's tool calls carry no id of their own
             await emit(encoder.tool_call(call_id, step["name"], step.get("arguments"), int(step.get("split", 2))))
         elif kind == "open":
             await emit([])
@@ -311,29 +382,31 @@ async def play(request: web.Request, state: State, record: RequestRecord, provid
             record.waiting_gate = None
             record.state = previous
         elif kind == "sse_error":
-            await emit(encoder.error(step["message"], step.get("error_type")))
-            await response.write_eof()
+            stream = await emit(encoder.error(step["message"], step.get("error_type")))
+            await stream.write_eof()
             record.state = "done"
-            return response
+            return stream
         elif kind == "drop":
             # A reset (RST), as a network failure looks like: the client sees an error.
             record.state = "done"
-            sock = request.transport.get_extra_info("socket")
-            if sock is not None:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
-            request.transport.abort()
+            if (transport := request.transport) is not None:
+                sock = transport.get_extra_info("socket")
+                if sock is not None:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                transport.abort()
             raise Dropped()
         elif kind == "close":
             # A clean close (FIN) in the middle of the stream, without the terminating chunk.
             record.state = "done"
-            request.transport.close()
+            if (transport := request.transport) is not None:
+                transport.close()
             raise Dropped()
         elif kind == "hold":
             record.state = "held"
             await asyncio.Event().wait()  # until the client disconnects (cancels this handler)
 
     reason = wanted or ("tool_calls" if had_tool_calls else "stop")
-    await emit(encoder.finish(reason, usage))
-    await response.write_eof()
+    stream = await emit(encoder.finish(reason, usage))
+    await stream.write_eof()
     record.state = "done"
-    return response
+    return stream

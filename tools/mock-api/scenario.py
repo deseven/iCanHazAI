@@ -10,7 +10,7 @@ Steps (all are JSON objects with a `type`):
   open       {}                            send the response headers (and the stream preamble) now
   gate       {name}                        pause until /__mock/gates/<name>/release
   delay      {ms}                          fixed delay
-  keepalive  {}                            SSE comment / ping event
+  keepalive  {}                            SSE comment / ping event (a blank line on Ollama's NDJSON)
   sse_error  {message, error_type?}        provider error inside a 200 stream; ends the stream
   http_error {status, message?, error_type?}   non-2xx instead of a stream; must be the first step
   drop       {}                            reset the connection (the client sees a network error)
@@ -19,6 +19,10 @@ Steps (all are JSON objects with a `type`):
 
 `usage` and `finish` apply when the steps run out. Without `finish` the stream ends with `stop`
 (`tool_calls` when a tool_call step ran); without `usage` the usage is derived from the text length.
+
+On Ollama's native API (`/ollama/api/chat`) a tool call arrives whole with object arguments and no id
+(unless the step names one), `thinking` becomes `message.thinking`, and a tool-calling response ends with
+`done_reason: stop`. The scenario queue is shared with the OpenAI routes under `/ollama/v1`.
 """
 
 from providers import Provider

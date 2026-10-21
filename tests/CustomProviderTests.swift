@@ -233,6 +233,52 @@ extension AllAppTests {
             #expect(list[1].key == nil)
         }
 
+        @Test("`type` is read from the entry; a missing or unknown one means OpenAI-compatible")
+        func typeDecoding() throws {
+            let toml = """
+                [[custom_providers]]
+                name = "A"
+                type = "ollama"
+                endpoint = "http://localhost:11434"
+
+                [[custom_providers]]
+                name = "B"
+                type = "llamacpp"
+                endpoint = "http://127.0.0.1:9931"
+
+                [[custom_providers]]
+                name = "C"
+                type = "openai"
+                endpoint = "http://c.test/v1"
+
+                [[custom_providers]]
+                name = "D"
+                endpoint = "http://d.test/v1"
+
+                [[custom_providers]]
+                name = "E"
+                type = "carrier-pigeon"
+                endpoint = "http://e.test/v1"
+                """
+            let list = try #require(try ConfigValidation.decodeAppConfig(Data(toml.utf8)).customProviders)
+            #expect(list.map(\.type) == [.ollama, .llamacpp, .openai, .openai, .openai])
+        }
+
+        @Test("the type is written to every entry, as its own key")
+        func typeEncoding() throws {
+            var config = AppConfig()
+            config.customProviders = [
+                CustomProviderConfig(name: "Local", type: .ollama, endpoint: "http://localhost:11434"),
+                CustomProviderConfig(name: "Server", type: .llamacpp, endpoint: "http://127.0.0.1:9931"),
+                CustomProviderConfig(name: "Gateway", endpoint: "http://gw.test/v1"),
+            ]
+            let toml = try encode(config)
+            #expect(toml.contains(#"type = "ollama""#))
+            #expect(toml.contains(#"type = "llamacpp""#))
+            #expect(toml.contains(#"type = "openai""#))
+            #expect(try ConfigValidation.decodeAppConfig(Data(toml.utf8)) == config)
+        }
+
         @Test("without the table there are no custom providers, and none are written")
         func absent() throws {
             let config = try ConfigValidation.decodeAppConfig(Data("".utf8))
@@ -303,6 +349,95 @@ extension AllAppTests {
     }
 
     // MARK: - Adapter
+
+    @Suite("Custom provider types")
+    struct CustomProviderTypeTests {
+        @Test("the types have a name, a description and a raw value for the config")
+        func descriptions() {
+            #expect(CustomProviderType.allCases == [.openai, .ollama, .llamacpp])
+            #expect(CustomProviderType.allCases.map(\.rawValue) == ["openai", "ollama", "llamacpp"])
+            #expect(CustomProviderType.allCases.map(\.displayName) == ["OpenAI-compatible", "Ollama", "llama.cpp"])
+            #expect(CustomProviderType.allCases.allSatisfy { !$0.summary.isEmpty && !$0.endpointHint.isEmpty })
+            #expect(CustomProviderType.allCases.allSatisfy { $0.endpointPlaceholder.hasPrefix("e.g. http") })
+        }
+
+        @Test("Ollama speaks its own wire, the others the OpenAI one")
+        func wires() {
+            #expect(CustomProviderType.openai.wire == .openai)
+            #expect(CustomProviderType.ollama.wire == .ollama)
+            #expect(CustomProviderType.llamacpp.wire == .openai)
+            #expect(ResolvedModel(provider: ollama, customType: .ollama, modelID: "m", apiKey: "").wire == .ollama)
+            #expect(ResolvedModel(provider: ollama, customType: .llamacpp, modelID: "m", apiKey: "").wire == .openai)
+            #expect(ResolvedModel(provider: ollama, modelID: "m", apiKey: "").wire == .openai)
+        }
+
+        @Test("the chat URL is built from the endpoint and the type's API path")
+        func chatUrls() throws {
+            func url(_ type: CustomProviderType?, _ base: String) throws -> String {
+                let model = ResolvedModel(provider: ollama, customType: type, modelID: "m", apiKey: "", baseUrl: base)
+                let request = try LLMTransport.buildRequest(
+                    model: model, messages: [ChatMessage(role: .user, content: "hi")], chatFilename: "c", tools: nil,
+                    stream: true)
+                return request.url?.absoluteString ?? ""
+            }
+            #expect(try url(.openai, "http://h.test/v1") == "http://h.test/v1/chat/completions")
+            #expect(try url(nil, "http://h.test/v1") == "http://h.test/v1/chat/completions")
+            #expect(try url(.ollama, "http://h.test:11434") == "http://h.test:11434/api/chat")
+            #expect(try url(.llamacpp, "http://h.test:9931") == "http://h.test:9931/v1/chat/completions")
+        }
+
+        @Test("a server-root endpoint loses a pasted /v1 or /api, an OpenAI one is left as written")
+        func endpointNormalization() {
+            func norm(_ raw: String, _ type: CustomProviderType) -> String? {
+                CustomProviderConfig.normalizedEndpoint(raw, type: type)
+            }
+            #expect(norm("http://localhost:11434", .ollama) == "http://localhost:11434")
+            #expect(norm("http://localhost:11434/", .ollama) == "http://localhost:11434")
+            #expect(norm("http://localhost:11434/v1", .ollama) == "http://localhost:11434")
+            #expect(norm(" http://localhost:11434/api/ ", .ollama) == "http://localhost:11434")
+            #expect(norm("https://ollama.com/v1", .ollama) == "https://ollama.com")
+            #expect(norm("http://host/proxy/ollama/api", .ollama) == "http://host/proxy/ollama")
+            #expect(norm("http://127.0.0.1:9931/v1", .llamacpp) == "http://127.0.0.1:9931")
+            #expect(norm("http://127.0.0.1:9931/api", .llamacpp) == "http://127.0.0.1:9931/api")
+            #expect(norm("http://localhost:11434/v1", .openai) == "http://localhost:11434/v1")
+            #expect(norm("http://localhost:11434/api", .openai) == "http://localhost:11434/api")
+        }
+
+        @Test("only a whole path segment is dropped, and never the host")
+        func endpointSegments() {
+            #expect(CustomProviderConfig.normalizedEndpoint("http://api", type: .ollama) == "http://api")
+            #expect(CustomProviderConfig.normalizedEndpoint("http://v1", type: .llamacpp) == "http://v1")
+            #expect(CustomProviderConfig.normalizedEndpoint("http://host/myapi", type: .ollama) == "http://host/myapi")
+            #expect(CustomProviderConfig.normalizedEndpoint("http://host/api/v1", type: .ollama) == "http://host")
+            #expect(CustomProviderConfig.normalizedEndpoint("localhost:11434", type: .ollama) == nil)
+            #expect(CustomProviderConfig.normalizedEndpoint("ftp://host", type: .llamacpp) == nil)
+        }
+
+        @Test("the registry normalizes each definition by its own type")
+        func registryNormalizes() async {
+            let registry = ProviderRegistry(store: InMemorySecretStore())
+            await registry.setCustomProviders([
+                CustomProviderConfig(name: "Local", type: .ollama, endpoint: "http://localhost:11434/v1/"),
+                CustomProviderConfig(name: "Server", type: .llamacpp, endpoint: "http://127.0.0.1:9931/v1"),
+                CustomProviderConfig(name: "Gateway", type: .openai, endpoint: "http://gw.test/v1"),
+            ])
+            #expect(
+                await registry.customProviderConfigs.map(\.endpoint) == [
+                    "http://localhost:11434", "http://127.0.0.1:9931", "http://gw.test/v1",
+                ])
+        }
+
+        @Test("the adapter factory builds the adapter of the type")
+        func factory() {
+            let openai = ProviderAdapters.make(ollama, baseUrl: "http://h.test/v1", type: .openai)
+            let native = ProviderAdapters.make(ollama, baseUrl: "http://h.test", type: .ollama)
+            let llama = ProviderAdapters.make(ollama, baseUrl: "http://h.test", type: .llamacpp)
+            #expect(openai is CustomProviderAdapter)
+            #expect((native as? OllamaAdapter)?.baseUrl == "http://h.test")
+            #expect((llama as? LlamaCppAdapter)?.baseUrl == "http://h.test")
+            #expect(ProviderAdapters.make(ollama, baseUrl: "http://h.test/v1") is CustomProviderAdapter)
+        }
+    }
 
     @Suite("CustomProviderAdapter")
     struct CustomProviderAdapterTests {
@@ -845,7 +980,8 @@ extension AllAppTests {
         func validateNewProvider() async throws {
             let s = try await makeSetup(keys: [], definitions: [])
             let result = try await s.catalog.validate(
-                provider: .custom("Fresh"), apiKey: "", endpoint: "http://custom.test/api")
+                provider: .custom("Fresh"), apiKey: "",
+                custom: CustomProviderConfig(name: "Fresh", endpoint: "http://custom.test/api"))
             #expect(result.modelCount == 2)
             #expect(result.seed.map(\.id.description) == ["Fresh:gpt-4o", "Fresh:mystery"])
             #expect(
@@ -865,14 +1001,16 @@ extension AllAppTests {
         func validateFailure() async throws {
             let s = try await makeSetup(keys: [], definitions: []) { .status(404) }
             await #expect(throws: ProviderError.self) {
-                _ = try await s.catalog.validate(provider: .custom("Fresh"), apiKey: "", endpoint: customBase)
+                _ = try await s.catalog.validate(
+                    provider: .custom("Fresh"), apiKey: "",
+                    custom: CustomProviderConfig(name: "Fresh", endpoint: customBase))
             }
         }
 
         @Test("the first provider added stores what validation fetched and schedules the refresh")
         func providerAdded() async throws {
             let s = try await makeSetup(keys: [], definitions: [])
-            let validation = try await s.catalog.validate(provider: ollama, apiKey: "", endpoint: customBase)
+            let validation = try await s.catalog.validate(provider: ollama, apiKey: "", custom: definition)
             try await s.registry.addCustomProvider(definition)
             try await s.registry.addKey(provider: ollama, name: "Default", secret: "")
             await s.catalog.providerAdded(ollama, validation: validation)

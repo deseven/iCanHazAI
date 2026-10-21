@@ -40,6 +40,7 @@ struct LLMError: Error, LocalizedError, Sendable {
         switch wire {
         case .openai: return "OpenAI"
         case .anthropic: return "Anthropic"
+        case .ollama: return "Ollama"
         }
     }
 
@@ -57,6 +58,13 @@ struct LLMError: Error, LocalizedError, Sendable {
         {
             message = error["message"] as? String
             type = error["type"] as? String
+            // llama.cpp says how far over the limit a prompt is, next to the error.
+            if type == "exceed_context_size_error", let prompt = JSONField.int(json["n_prompt_tokens"]),
+                let context = JSONField.int(json["n_ctx"])
+            {
+                message =
+                    "\(message ?? "The prompt doesn't fit the context") (the prompt has \(prompt) tokens, the context holds \(context))"
+            }
         }
         return LLMError(
             statusCode: statusCode,
@@ -64,6 +72,30 @@ struct LLMError: Error, LocalizedError, Sendable {
             errorType: type,
             rawBody: rawBody,
             wire: .openai
+        )
+    }
+
+    /// Parses an Ollama error response body.
+    ///
+    /// Shape: `{"error":"..."}`
+    static func parseOllama(_ data: Data, statusCode: Int) -> LLMError {
+        let rawBody = String(data: data, encoding: .utf8)
+        var message: String?
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let error = json["error"]
+        {
+            if let text = error as? String {
+                message = text
+            } else if let nested = error as? [String: Any] {
+                message = nested["message"] as? String
+            }
+        }
+        return LLMError(
+            statusCode: statusCode,
+            providerMessage: message,
+            errorType: nil,
+            rawBody: rawBody,
+            wire: .ollama
         )
     }
 

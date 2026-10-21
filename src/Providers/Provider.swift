@@ -4,9 +4,10 @@
 import Foundation
 
 /// Who serves a model. The four built-in providers are fixed; `.custom` is a
-/// user-defined OpenAI-compatible endpoint whose unique name is its identity
-/// (the `Name` of `Name:model-id`). A custom provider's endpoint and color
-/// aren't part of the value — they live in `CustomProviderConfig`.
+/// user-defined endpoint (OpenAI-compatible, Ollama or llama.cpp) whose unique
+/// name is its identity (the `Name` of `Name:model-id`). A custom provider's
+/// type, endpoint and color aren't part of the value — they live in
+/// `CustomProviderConfig`.
 enum Provider: Hashable, Comparable, Sendable, CaseIterable, RawRepresentable, Codable {
     case openai, anthropic, deepseek, openrouter
     case custom(String)
@@ -105,7 +106,7 @@ enum Provider: Hashable, Comparable, Sendable, CaseIterable, RawRepresentable, C
         case .anthropic: return "Claude models"
         case .deepseek: return "DeepSeek models"
         case .openrouter: return "One key for hundreds of models from many vendors"
-        case .custom: return "Any OpenAI-compatible API, such as Ollama, LM Studio or vLLM"
+        case .custom: return "Ollama, llama.cpp, or any OpenAI-compatible API such as LM Studio or vLLM"
         }
     }
 

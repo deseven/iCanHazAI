@@ -97,6 +97,17 @@ struct OpenAIProvider: LLMProvider {
         let off = setting == ReasoningSetting.off
         let level = (off || setting == ReasoningSetting.on) ? nil : setting
         switch model.provider {
+        case .custom where model.customType == .llamacpp:
+            // `reasoning_effort: none` is how llama-server turns thinking off, and an effort level is
+            // handed to the chat template. A template with only an on/off switch reads `enable_thinking`,
+            // which "on" has to set explicitly to override a server started with thinking off.
+            if off {
+                body["reasoning_effort"] = "none"
+            } else if let level {
+                body["reasoning_effort"] = level
+            } else {
+                body["chat_template_kwargs"] = ["enable_thinking": true]
+            }
         case .openai, .custom:
             // A custom endpoint is assumed to speak OpenAI's own dialect.
             if off {

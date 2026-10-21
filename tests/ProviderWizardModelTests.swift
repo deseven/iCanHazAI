@@ -356,7 +356,7 @@ extension AllAppTests {
             #expect(!model.isCustomChosen)
         }
 
-        @Test("without an initial provider every step but the custom details is shown, starting with the provider")
+        @Test("without an initial provider every step but the custom ones is shown, starting with the provider")
         func defaultSteps() {
             let model = WizardProbe().makeModel()
             #expect(!model.skipsProviderStep)
@@ -412,29 +412,115 @@ extension AllAppTests {
 
         // MARK: - Custom provider
 
+        /// A model with the custom provider picked and the wizard on the type step, which
+        /// the OpenAI-compatible default type lets through to the details with one `next()`.
         private func customModel(
             _ probe: WizardProbe = WizardProbe(), existing: [Provider: [String]] = [:]
         ) -> ProviderWizardModel {
             let model = probe.makeModel(existing: existing)
             model.selectCustom()
+            model.next()
             return model
         }
 
-        @Test("picking the custom provider adds the details step")
+        @Test("picking the custom provider adds the type and details steps")
         func customSteps() {
             let model = WizardProbe().makeModel()
             #expect(!model.steps.contains(.details))
+            #expect(!model.steps.contains(.type))
             model.selectCustom()
             #expect(model.isCustomChosen)
             #expect(model.selectedProvider == nil)
-            #expect(model.steps == [.provider, .details, .apiKey, .check, .summary])
+            #expect(model.steps == [.provider, .type, .details, .apiKey, .check, .summary])
             #expect(model.isCustomProvider)
             #expect(model.isKeyOptional)
 
             model.select(.openai)
             #expect(!model.isCustomChosen)
             #expect(!model.steps.contains(.details))
+            #expect(!model.steps.contains(.type))
             #expect(!model.isKeyOptional)
+        }
+
+        @Test("the type is asked first, defaults to OpenAI-compatible, and Back returns to the provider")
+        func typeStep() {
+            let model = WizardProbe().makeModel()
+            model.selectCustom()
+            model.next()
+            #expect(model.step == .type)
+            #expect(model.customType == .openai)
+            #expect(model.canGoNext)
+            #expect(model.canGoBack)
+
+            model.selectType(.llamacpp)
+            #expect(model.customType == .llamacpp)
+            model.back()
+            #expect(model.step == .provider)
+            #expect(!model.canGoBack)
+            model.next()
+            #expect(model.customType == .llamacpp, "the choice survives going back")
+            model.next()
+            #expect(model.step == .details)
+        }
+
+        @Test("the type is part of the custom provider and decides how its endpoint is read")
+        func typeDecidesEndpoint() {
+            let model = customModel()
+            model.customName = "Local"
+            model.customEndpoint = "http://localhost:11434/v1/"
+            #expect(model.normalizedCustomEndpoint == "http://localhost:11434/v1")
+            #expect(model.newCustomProvider?.type == .openai)
+            #expect(model.adjustedEndpointNote == nil)
+
+            model.selectType(.ollama)
+            #expect(model.normalizedCustomEndpoint == "http://localhost:11434")
+            #expect(
+                model.newCustomProvider
+                    == CustomProviderConfig(
+                        name: "Local", type: .ollama, endpoint: "http://localhost:11434", color: "teal"))
+            #expect(model.adjustedEndpointNote == "http://localhost:11434")
+
+            model.customEndpoint = "http://localhost:11434/"
+            #expect(model.adjustedEndpointNote == nil, "a trailing slash alone isn't worth a note")
+
+            model.selectType(.llamacpp)
+            model.customEndpoint = "http://127.0.0.1:9931/v1"
+            #expect(model.newCustomProvider?.endpoint == "http://127.0.0.1:9931")
+            #expect(model.newCustomProvider?.type == .llamacpp)
+        }
+
+        @Test("a type changed after a check is checked again, with the new type")
+        func typeChangeIsChecked() async {
+            let probe = WizardProbe()
+            let model = customModel(probe)
+            model.next()
+            model.customName = "Local"
+            model.customEndpoint = "http://localhost:11434"
+            model.next()
+            model.next()
+            await model.settle()
+            #expect(model.canGoNext)
+
+            model.back()
+            model.back()
+            model.back()
+            #expect(model.step == .type)
+            model.selectType(.ollama)
+            #expect(model.checkState == .idle)
+            model.next()
+            model.next()
+            model.next()
+            await model.settle()
+            #expect(probe.validations.map { $0.custom?.type } == [.openai, .ollama])
+            #expect(
+                probe.validations.map { $0.custom?.endpoint } == ["http://localhost:11434", "http://localhost:11434"])
+        }
+
+        @Test("the type can only be picked while a custom provider is being defined")
+        func typeNeedsCustom() {
+            let model = WizardProbe().makeModel()
+            model.selectType(.ollama)
+            #expect(model.customType == .openai)
         }
 
         @Test("the details need a usable name and endpoint")
@@ -563,7 +649,7 @@ extension AllAppTests {
             #expect(!model.canGoNext)
         }
 
-        @Test("Back from the key step returns to the details, then to the provider")
+        @Test("Back from the key step returns to the details, then to the type, then to the provider")
         func customBack() {
             let model = customModel()
             model.next()
@@ -575,6 +661,8 @@ extension AllAppTests {
             model.back()
             #expect(model.step == .details)
             #expect(model.customName == "Ollama")
+            model.back()
+            #expect(model.step == .type)
             model.back()
             #expect(model.step == .provider)
             #expect(!model.canGoBack)

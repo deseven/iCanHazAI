@@ -13,14 +13,92 @@ enum ProviderColor: String, CaseIterable, Sendable {
     var displayName: String { rawValue.capitalized }
 }
 
-/// A user-defined OpenAI-compatible provider: one `[[custom_providers]]` entry
-/// of `config.toml`. The API keys themselves live in the encrypted secret
-/// store, like every provider's.
+/// The API a custom provider speaks (`type` of a `[[custom_providers]]` entry).
+enum CustomProviderType: String, CaseIterable, Sendable {
+    /// Any server that implements the OpenAI Chat Completions API.
+    case openai
+    /// Ollama's own API (`/api/chat`, `/api/tags`, `/api/show`), not its OpenAI layer.
+    case ollama
+    /// llama.cpp's `llama-server`: the OpenAI chat route it implements natively, plus its `/props`.
+    case llamacpp
+
+    var displayName: String {
+        switch self {
+        case .openai: return "OpenAI-compatible"
+        case .ollama: return "Ollama"
+        case .llamacpp: return "llama.cpp"
+        }
+    }
+
+    /// One line for the radio button in the wizard.
+    var summary: String {
+        switch self {
+        case .openai:
+            return "Any server that implements the OpenAI API, such as LM Studio, vLLM, LiteLLM or a gateway"
+        case .ollama:
+            return
+                "Ollama's own API: reads each model's real capabilities, reasoning levels and context, with local and cloud models"
+        case .llamacpp:
+            return "llama-server from llama.cpp: reads the loaded model's context size, vision and reasoning support"
+        }
+    }
+
+    /// The API root is the server's address (`http://host:port`) rather than a
+    /// base URL that includes a version path: the app adds `/api` or `/v1` itself.
+    var usesServerRoot: Bool { self != .openai }
+
+    /// Added to the endpoint to get the base URL the chat path is appended to.
+    var chatBasePath: String {
+        switch self {
+        case .openai: return ""
+        case .ollama: return "/api"
+        case .llamacpp: return "/v1"
+        }
+    }
+
+    var endpointPlaceholder: String {
+        switch self {
+        case .openai: return "e.g. http://localhost:1234/v1"
+        case .ollama: return "e.g. http://localhost:11434"
+        case .llamacpp: return "e.g. http://127.0.0.1:9931"
+        }
+    }
+
+    var endpointHint: String {
+        switch self {
+        case .openai:
+            return
+                "The API's base URL. /models and /chat/completions are added to it as is, so include /v1 if the provider needs it."
+        case .ollama:
+            return
+                "The address of the Ollama server, without /api or /v1: the app adds the paths itself. Use https://ollama.com for Ollama's cloud (it needs an API key)."
+        case .llamacpp:
+            return
+                "The address of llama-server, without /v1: the app adds the paths itself (/v1/chat/completions, /v1/models and /props)."
+        }
+    }
+
+    /// The path suffixes a user may paste along with the address of a server-root API.
+    fileprivate var strippedSuffixes: [String] {
+        switch self {
+        case .openai: return []
+        case .ollama: return ["/api", "/v1"]
+        case .llamacpp: return ["/v1"]
+        }
+    }
+}
+
+/// A user-defined provider: one `[[custom_providers]]` entry of `config.toml`.
+/// The API keys themselves live in the encrypted secret store, like every
+/// provider's.
 struct CustomProviderConfig: Codable, Equatable, Hashable, Sendable {
     /// Unique among all providers; it is also the provider part of model ids (`Name:model-id`).
     var name: String
-    /// The API's base URL as the user wrote it (no `/v1` is added), `/models` and
-    /// `/chat/completions` are appended to it.
+    /// What the endpoint speaks. Missing or unknown in the file reads as `openai`.
+    var type: CustomProviderType
+    /// For `openai` the API's base URL as the user wrote it (no `/v1` is added),
+    /// `/models` and `/chat/completions` are appended to it. For `ollama` and
+    /// `llamacpp` the server's address; the paths are added by the app.
     var endpoint: String
     /// A `ProviderColor` raw value. Nil or unknown falls back to the default.
     var color: String?
@@ -30,11 +108,14 @@ struct CustomProviderConfig: Codable, Equatable, Hashable, Sendable {
     static let maxNameLength = 30
 
     enum CodingKeys: String, CodingKey {
-        case name, endpoint, color, key
+        case name, type, endpoint, color, key
     }
 
-    init(name: String, endpoint: String, color: String? = nil, key: String? = nil) {
+    init(
+        name: String, type: CustomProviderType = .openai, endpoint: String, color: String? = nil, key: String? = nil
+    ) {
         self.name = name
+        self.type = type
         self.endpoint = endpoint
         self.color = color
         self.key = key
@@ -45,9 +126,20 @@ struct CustomProviderConfig: Codable, Equatable, Hashable, Sendable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        let rawType = try c.decodeIfPresent(String.self, forKey: .type)
+        type = rawType.flatMap(CustomProviderType.init(rawValue:)) ?? .openai
         endpoint = try c.decodeIfPresent(String.self, forKey: .endpoint) ?? ""
         color = try c.decodeIfPresent(String.self, forKey: .color)
         key = try c.decodeIfPresent(String.self, forKey: .key)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(name, forKey: .name)
+        try c.encode(type.rawValue, forKey: .type)
+        try c.encode(endpoint, forKey: .endpoint)
+        try c.encodeIfPresent(color, forKey: .color)
+        try c.encodeIfPresent(key, forKey: .key)
     }
 
     var provider: Provider { .custom(name) }
@@ -99,14 +191,28 @@ struct CustomProviderConfig: Codable, Equatable, Hashable, Sendable {
     }
 
     /// The endpoint without surrounding whitespace and trailing slashes, or nil
-    /// when it isn't an http(s) URL with a host.
-    static func normalizedEndpoint(_ raw: String) -> String? {
+    /// when it isn't an http(s) URL with a host. For a server-root type a
+    /// trailing `/v1` (or, for Ollama, `/api`) is dropped too, since the app adds
+    /// those paths itself and people paste the OpenAI-style URL out of habit.
+    static func normalizedEndpoint(_ raw: String, type: CustomProviderType = .openai) -> String? {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         while text.hasSuffix("/") { text.removeLast() }
         guard let components = URLComponents(string: text),
             let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
             let host = components.host, !host.isEmpty
         else { return nil }
+        var stripped = true
+        while stripped {
+            stripped = false
+            for suffix in type.strippedSuffixes where text.lowercased().hasSuffix(suffix) {
+                // Only a whole path segment: `http://host/api` loses `/api`, `http://hostapi` has none.
+                let rest = String(text.dropLast(suffix.count))
+                guard URLComponents(string: rest)?.host?.isEmpty == false else { continue }
+                text = rest
+                while text.hasSuffix("/") { text.removeLast() }
+                stripped = true
+            }
+        }
         return text
     }
 }

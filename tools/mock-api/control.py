@@ -8,11 +8,11 @@ from typing import Optional
 from aiohttp import web
 
 import catalog
-from providers import LITELLM_PATH, PROVIDERS, Provider, error_body
+from providers import LITELLM_PATH, LLAMA_CPP_PROPS_PATH, OLLAMA_NATIVE, PROVIDERS, Provider, error_body
 from scenario import ScenarioError, validate_steps
 from state import RequestRecord, State
 from streams import Dropped, default_steps, play
-from validate import Err, validate_anthropic, validate_openai
+from validate import Err, validate_anthropic, validate_ollama, validate_openai
 
 DEFAULT_REJECTED_KEYS = {"bad-key"}
 
@@ -65,10 +65,12 @@ def chat_handler(provider: Provider, state: State):
 
         if err := check_auth(provider, request, config):
             return _reject(provider, record, err)
-        validator = validate_anthropic if provider.wire == "anthropic" else validate_openai
+        validator = {"anthropic": validate_anthropic, "ollama": validate_ollama}.get(provider.wire, validate_openai)
         if err := validator(provider, body, config):
             return _reject(provider, record, err)
-        if body.get("stream") is not True:
+        assert isinstance(body, dict)  # the validators reject anything else
+        # Ollama streams unless told not to.
+        if body.get("stream", True if provider.wire == "ollama" else None) is not True:
             return _reject(provider, record, Err(400, "The mock only serves streamed completions (stream: true)."))
 
         scenario = state.next_scenario(provider.name)
@@ -107,7 +109,57 @@ def models_handler(provider: Provider, state: State):
             return web.json_response(error_body(provider, status, "Mock models error"), status=status)
         record.status = 200
         record.state = "done"
+        if provider.wire == "ollama":
+            return web.json_response(catalog.ollama_tags(config))
         return web.json_response(catalog.listing(provider.name, config, request.query))
+
+    return handler
+
+
+def _simple_get(provider: Provider, state: State, status_key: str, payload):
+    """A GET that answers `payload(config, request)`, or the status configured under `status_key`."""
+
+    async def handler(request: web.Request) -> web.Response:
+        record = _record(state, provider.name, request)
+        config = state.config[provider.name]
+        if err := check_auth(provider, request, config):
+            return _reject(provider, record, err)
+        record.finished_at = time.time()
+        if status := config.get(status_key):
+            record.status = status
+            record.state = "done"
+            return web.json_response(error_body(provider, status, "Mock error"), status=status)
+        record.status = 200
+        record.state = "done"
+        return web.json_response(payload(config, request))
+
+    return handler
+
+
+def ollama_show_handler(provider: Provider, state: State):
+    async def handler(request: web.Request) -> web.Response:
+        record = _record(state, provider.name, request)
+        config = state.config[provider.name]
+        try:
+            body = await request.json()
+            record.body = body
+        except ValueError:
+            body = None
+        if err := check_auth(provider, request, config):
+            return _reject(provider, record, err)
+        record.finished_at = time.time()
+        name = body.get("model") if isinstance(body, dict) else None
+        if not isinstance(name, str) or not name:
+            return _reject(provider, record, Err(400, "invalid request: 'model' is required"))
+        # Lets a test make one model's details fail while the listing works.
+        if name in (config.get("show_failures") or []):
+            record.status, record.state = 500, "done"
+            return web.json_response(error_body(provider, 500, "Mock show error"), status=500)
+        shown = catalog.ollama_show(config, name)
+        if shown is None:
+            return _reject(provider, record, Err(404, f"model '{name}' not found"))
+        record.status, record.state = 200, "done"
+        return web.json_response(shown)
 
     return handler
 
@@ -169,9 +221,10 @@ def control_routes(state: State) -> list:
 
     async def enqueue(request):
         body = await _json(request)
-        provider = PROVIDERS.get(body.get("channel"))
+        channel = body.get("channel")
+        provider = PROVIDERS.get(channel) if isinstance(channel, str) else None
         if provider is None:
-            raise web.HTTPBadRequest(text=f"unknown channel {body.get('channel')!r}; one of {sorted(PROVIDERS)}")
+            raise web.HTTPBadRequest(text=f"unknown channel {channel!r}; one of {sorted(PROVIDERS)}")
         steps = body.get("steps", [])
         try:
             validate_steps(provider, steps)
@@ -201,7 +254,7 @@ def control_routes(state: State) -> list:
             "pending_scenarios": state.pending(),
             "request_count": len(state.requests),
             "unscripted": [r.seq for r in state.requests
-                           if r.path.endswith(("/chat/completions", "/messages")) and not r.scripted
+                           if r.path.endswith(("/chat/completions", "/messages", "/api/chat")) and not r.scripted
                            and r.mock_error is None],
             "mock_errors": [{"seq": r.seq, "path": r.path, "error": r.mock_error}
                             for r in state.requests if r.mock_error],
@@ -224,6 +277,16 @@ def provider_routes(state: State) -> list:
     for provider in PROVIDERS.values():
         routes.append(web.post(provider.chat_path, chat_handler(provider, state)))
         routes.append(web.get(provider.models_path, models_handler(provider, state)))
+    native = OLLAMA_NATIVE
+    routes.append(web.post(native.chat_path, chat_handler(native, state)))
+    routes.append(web.get(native.models_path, models_handler(native, state)))
+    routes.append(web.post(f"{native.prefix}{native.base_path}/show", ollama_show_handler(native, state)))
+    routes.append(web.get(f"{native.prefix}{native.base_path}/ps",
+                          _simple_get(native, state, "ps_status", lambda config, _r: catalog.ollama_ps(config))))
+    llama = PROVIDERS["llama-cpp"]
+    routes.append(web.get(LLAMA_CPP_PROPS_PATH, _simple_get(
+        llama, state, "props_status",
+        lambda config, request: catalog.llama_cpp_props(config, request.query.get("model")))))
     routes.append(web.get(f"{PROVIDERS['openrouter'].prefix}{PROVIDERS['openrouter'].base_path}/key",
                           openrouter_key_handler(state)))
     routes.append(web.get(LITELLM_PATH, litellm_handler(state)))

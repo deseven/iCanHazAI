@@ -170,7 +170,7 @@ actor ProviderRegistry {
                 debugLog("Providers", "⚠️ ignoring custom provider '\(config.name)': \(problem.message)")
                 continue
             }
-            guard let endpoint = CustomProviderConfig.normalizedEndpoint(config.endpoint) else {
+            guard let endpoint = CustomProviderConfig.normalizedEndpoint(config.endpoint, type: config.type) else {
                 debugLog("Providers", "⚠️ ignoring custom provider '\(name)': invalid endpoint '\(config.endpoint)'")
                 continue
             }

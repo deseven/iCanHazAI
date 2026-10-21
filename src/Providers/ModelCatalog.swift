@@ -124,14 +124,16 @@ actor ModelCatalog {
         }
     }
 
-    /// `endpoint` is the base URL of a custom provider that isn't defined yet
-    /// (the wizard checks it before storing anything); otherwise the
-    /// provider's own is used.
-    func validate(provider: Provider, apiKey: String, endpoint: String? = nil) async throws -> ValidationResult {
+    /// `custom` is a custom provider that isn't defined yet (the wizard checks
+    /// its endpoint before storing anything); otherwise the provider's own
+    /// definition is used.
+    func validate(provider: Provider, apiKey: String, custom: CustomProviderConfig? = nil) async throws
+        -> ValidationResult
+    {
         do {
             let service: ProviderAdapter
-            if let endpoint {
-                service = ProviderAdapters.make(provider, baseUrl: endpoint)
+            if let custom {
+                service = ProviderAdapters.make(provider, baseUrl: custom.endpoint, type: custom.type)
             } else {
                 service = await adapter(for: provider)
             }
@@ -254,9 +256,11 @@ actor ModelCatalog {
     /// ones found by `ensureModel`, and re-verifies them individually.
     private func apply(_ listing: ProviderListing, to provider: Provider) async {
         var fetched = listing.models
-        if listing.capabilitiesUnknown {
+        if listing.capabilitiesUnknown || !listing.unknownCapabilities.isEmpty {
             fetched = fetched.map { model in
-                guard let cached = models[model.id] else { return model }
+                guard listing.capabilitiesUnknown || listing.unknownCapabilities.contains(model.id),
+                    let cached = models[model.id]
+                else { return model }
                 var kept = model
                 kept.capabilities = cached.capabilities
                 return kept
@@ -338,7 +342,8 @@ actor ModelCatalog {
 
     private func adapter(for provider: Provider) async -> ProviderAdapter {
         let custom = await registry.customProvider(for: provider)
-        return ProviderAdapters.make(provider, baseUrl: baseUrls[provider] ?? custom?.endpoint)
+        return ProviderAdapters.make(
+            provider, baseUrl: baseUrls[provider] ?? custom?.endpoint, type: custom?.type ?? .openai)
     }
 
     private var openRouterAdapter: OpenRouterAdapter {

@@ -12,6 +12,10 @@ struct ProviderListing: Sendable {
     /// The capability source was unreachable, so `models` carry safe defaults
     /// that must not overwrite capabilities we already know.
     var capabilitiesUnknown: Bool = false
+    /// The same for single models: their capabilities couldn't be determined
+    /// this time (a failed request, a model that isn't loaded), so a cached
+    /// entry keeps what it has.
+    var unknownCapabilities: Set<ModelID> = []
 
     var modelCount: Int { totalCount ?? models.count }
 }
@@ -44,15 +48,23 @@ extension ProviderAdapter {
 }
 
 enum ProviderAdapters {
-    /// A custom provider has no default base URL, so `baseUrl` is its endpoint.
-    static func make(_ provider: Provider, baseUrl: String? = nil) -> ProviderAdapter {
+    /// A custom provider has no default base URL, so `baseUrl` is its endpoint;
+    /// `type` says which API it speaks.
+    static func make(_ provider: Provider, baseUrl: String? = nil, type: CustomProviderType = .openai)
+        -> ProviderAdapter
+    {
         let base = baseUrl ?? provider.defaultBaseUrl
         switch provider {
         case .openai: return OpenAIAdapter(baseUrl: base)
         case .anthropic: return AnthropicAdapter(baseUrl: base)
         case .deepseek: return DeepSeekAdapter(baseUrl: base)
         case .openrouter: return OpenRouterAdapter(baseUrl: base)
-        case .custom: return CustomProviderAdapter(provider: provider, baseUrl: base)
+        case .custom:
+            switch type {
+            case .openai: return CustomProviderAdapter(provider: provider, baseUrl: base)
+            case .ollama: return OllamaAdapter(provider: provider, baseUrl: base)
+            case .llamacpp: return LlamaCppAdapter(provider: provider, baseUrl: base)
+            }
         }
     }
 }
