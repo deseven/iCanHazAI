@@ -8,6 +8,8 @@ ident="wtf.d7.icanhazai"
 loc="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 logFile="$loc/build.log"
 stepLog="$loc/build-step.log"
+mockDir="$loc/tools/mock-api"
+mockLog="$loc/mock-api.log"
 
 if [ -f "$loc/.env" ]; then
     set -a
@@ -30,6 +32,7 @@ case "${1:-}" in
     release)     mode="release" ;;
     clean)       mode="clean" ;;
     test)        mode="test" ;;
+    smoke)       mode="smoke" ;;
     apply-roles) mode="apply-roles" ;;
     *)           mode="dev" ;;
 esac
@@ -133,6 +136,52 @@ do_build_swift() {
 }
 
 do_run_app_tests() { swift test --filter AllAppTests; }
+
+# ── Smoke tests (engine vs. mock provider API) ──────────────────────
+
+# The mock server lives in tools/mock-api (Python + aiohttp). Its venv is created
+# on first use and rebuilt whenever requirements.txt changes.
+do_prepare_mock_api() {
+    command -v python3 > /dev/null || { echo "python3 is required for the mock API server"; return 1; }
+    local venv="$mockDir/.venv" stamp="$mockDir/.venv/.requirements.sha" want
+    want="$(shasum -a 256 "$mockDir/requirements.txt" | cut -d' ' -f1)"
+    if [ ! -x "$venv/bin/python" ] || [ "$(cat "$stamp" 2> /dev/null || true)" != "$want" ]; then
+        echo "setting up the mock API server environment (needs network on the first run)"
+        python3 -m venv --clear "$venv"
+        "$venv/bin/pip" install --quiet --disable-pip-version-check -r "$mockDir/requirements.txt"
+        echo "$want" > "$stamp"
+    fi
+}
+
+MOCK_PID=""
+MOCK_URL=""
+
+do_start_mock_api() {
+    : > "$mockLog"
+    "$mockDir/.venv/bin/python" "$mockDir/server.py" --port 0 > "$mockLog" 2>&1 &
+    MOCK_PID=$!
+    local url="" _
+    for _ in $(seq 1 150); do
+        url="$(sed -n 's/^LISTENING //p' "$mockLog")"
+        [ -n "$url" ] && break
+        kill -0 "$MOCK_PID" 2> /dev/null || { echo "the mock API server exited early:"; cat "$mockLog"; return 1; }
+        sleep 0.1
+    done
+    [ -n "$url" ] || { echo "timed out waiting for the mock API server:"; cat "$mockLog"; return 1; }
+    MOCK_URL="$url"
+    echo "mock API server at $MOCK_URL"
+}
+
+stop_mock_api() {
+    if [ -n "$MOCK_PID" ]; then
+        kill "$MOCK_PID" 2> /dev/null || true
+        wait "$MOCK_PID" 2> /dev/null || true
+        MOCK_PID=""
+        { echo "--- mock API server log ---"; cat "$mockLog"; } >> "$logFile" 2> /dev/null || true
+    fi
+}
+
+do_run_smoke_tests() { ICHAI_MOCK_URL="$MOCK_URL" swift test --filter AllSmokeTests; }
 
 
 do_clean_app_cache() {
@@ -289,8 +338,8 @@ fi
 # ── Assemble pipeline ────────────────────────────────────────────────
 
 do_init_log
-# Test mode doesn't produce dist artifacts — don't wipe them either.
-if [ "$mode" != "test" ]; then
+# Test modes don't produce dist artifacts — don't wipe them either.
+if [ "$mode" != "test" ] && [ "$mode" != "smoke" ]; then
     do_clean_dist
 fi
 
@@ -299,6 +348,18 @@ if [ "$mode" = "test" ]; then
     run_pipeline
     echo ""
     echo -e "  ${greenColor}${bold}Tests passed!${noColor}"
+    exit 0
+fi
+
+# Manual run only: boots the mock provider API and runs the AllSmokeTests suites against it.
+if [ "$mode" = "smoke" ]; then
+    trap stop_mock_api EXIT
+    add "Preparing mock API server..." "mock API server setup failed"                do_prepare_mock_api
+    add "Starting mock API server..."  "mock API server did not start"                do_start_mock_api
+    add "Running smoke tests..."       "smoke tests failed"                           do_run_smoke_tests
+    run_pipeline
+    echo ""
+    echo -e "  ${greenColor}${bold}Smoke tests passed!${noColor}"
     exit 0
 fi
 

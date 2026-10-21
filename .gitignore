@@ -9,3 +9,6 @@ Package.resolved
 .env
 TODO/*
 dist/*
+dev-docs/*
+tools/mock-api/.venv/
+__pycache__/

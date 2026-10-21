@@ -8,8 +8,8 @@ import Testing
 /// chats keep attachments in the system temp dir, never in the chats folder),
 /// the `isTemporary` projections on `ChatRecord`/`ChatSummary`, and stale
 /// draft pruning. The engine's lifecycle itself (destroy-on-deselect) is not
-/// covered here because `ChatEngine` is a singleton bound to the real
-/// environment.
+/// covered here. An engine can be built on a temp environment (see
+/// `tests/Smoke/SmokeFixture.swift`), so it could be tested there.
 extension AllAppTests {
 
     @Suite("TemporaryChat")

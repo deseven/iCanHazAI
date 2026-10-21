@@ -93,6 +93,8 @@ This builds the app and launches it. See `build.sh` for additional build modes (
 
 Run `./build.sh test` for tests.
 
+`./build.sh smoke` is a manual run that drives the whole engine against a local mock of the provider APIs (see `tools/mock-api`). It needs `python3`, and the first run installs the mock server's dependencies into a local venv (network required).
+
 
 ## Third-Party Notices
 

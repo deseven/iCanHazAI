@@ -2094,6 +2094,13 @@ actor ChatEngine {
         records.first(where: { $0.filename == filename })?.isStreaming ?? false
     }
 
+    /// Whether the chat's stream task is still registered. `stopStreaming` clears `isStreaming` at once, but
+    /// the cancelled task keeps running until it unwinds through `finishStream` (which saves the chat), so
+    /// this is what tells "stopped" from "fully unwound".
+    func hasActiveStreamTask(filename: String) -> Bool {
+        streamTasks[filename] != nil
+    }
+
     /// Starts (or restarts) the tool-calling loop for the given chat. The loop
     /// iterates: stream a completion with tools attached → if the model emitted
     /// tool calls, execute them via `MCPManager`, append the results, and stream

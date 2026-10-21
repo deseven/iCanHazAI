@@ -26,6 +26,12 @@ Generally two things might need updates:
 # Tests
 Please write new tests or update the old ones when needed. To run the tests, use `./build.sh test` (outputs quick summary, on failure check `build-step.log`) or `swift test`/`npm test` for more targeted approach.
 
+# Smoke tests
+`./build.sh smoke` (manual only, not part of `test`/`release`) starts the mock provider API in `tools/mock-api` (Python + aiohttp, own venv created on first run) and runs the `AllSmokeTests` suites in `tests/Smoke` against it with `ICHAI_MOCK_URL` set; without it those suites are skipped. They drive a real `ChatEngine` (built per test on a temp environment, never `ChatEngine.shared`) with the real provider adapters: provider setup and catalogs, streams, tool loop and approval, stop, queue and the stop-then-send race.
+- The mock mirrors each provider's real URL layout under `/<provider>` (`deepseek`, `openai`, `anthropic`, `openrouter`, `ollama`, `llama-cpp`), validates requests strictly against `dev-docs/` and answers with the provider's own errors. Behaviour is scripted per test through its `/__mock` control API (steps incl. gates, errors, drops), see `tools/mock-api/README.md`. When a provider's request/response shape changes in the app, update the mock and `dev-docs/` with it.
+- Tests go through `SmokeFixture.run { fx in ... }`: it installs the sandbox (`EnvironmentManager.mainDirOverride`, so singletons like `ConfigManager.shared` never touch `~/iCanHazAI`), resets the mock, and on exit fails the test on unconsumed scenarios, unscripted requests or requests the mock rejected. Wait on engine events/state (`fx.wait`, `waitUntilIdle`) and mock gates, never on sleeps. Don't use a recursive `TestScoping` suite trait on the root suite: it hangs Swift Testing's plan construction.
+- Only run smoke testing when relevant parts of the engine were touched
+
 # Code Style
 Keep comments minimal. Don't describe the obvious — focus only on:
 - Complex or non-obvious behavior
