@@ -159,8 +159,9 @@ Keys are `snake_case`. **Every group and every key is optional** — a missing g
 ```toml
 [general]
 default_role = "Assistant"                 # falls back to "Assistant" if nil/invalid
-default_model = "anthropic:claude-sonnet-5-5"  # optional, `provider:model-id`; preselected for every new chat unless the role sets preferred_model. Reset (removed) automatically when the model no longer exists. Required: when omitted the app shows a blocking onboarding sheet until the user picks one (they can't pick one without a configured provider)
-utility_model = "deepseek:deepseek-chat"       # optional, `provider:model-id`; used for background tasks such as generating chat names (a fast, cheap model is preferred). Reset automatically when the model no longer exists. Required: when omitted the app shows a blocking onboarding sheet until the user picks one
+default_model = "anthropic:claude-sonnet-5-5"  # optional, `provider:model-id`; preselected for every new chat unless the role sets preferred_model. Reset (removed) automatically when the model no longer exists, in which case the onboarding sheet explains in a red note which model went away. Required: when omitted the app shows a blocking onboarding sheet until the user picks one (they can't pick one without a configured provider)
+utility_model = "deepseek:deepseek-chat"       # optional, `provider:model-id`; used for background tasks such as generating chat names (a fast, cheap model is preferred). Reset automatically when the model no longer exists (the onboarding sheet then says so in a red note). Required: when omitted the app shows a blocking onboarding sheet until the user picks one
+favorite_models = ["anthropic:claude-sonnet-5-5"]  # optional list of `provider:model-id` starred in the model picker (⇧↵ toggles); managed by the app — the picker lists them right after the default model, sorted by name. Entries whose model no longer exists are removed silently, so don't edit by hand unless asked
 working_directories = []                   # MRU list of recently picked directories (max 30, most recent first); managed by the app — every directory picked in the per-chat picker is moved to the front
 
 [chat]

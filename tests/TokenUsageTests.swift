@@ -406,6 +406,23 @@ func contextSizeReportedOnly() {
     #expect(ctx?.displayValue == "150")
 }
 
+@Test("context size reads against the model's context window as '{current} of {max} ({percentage}%)'")
+func contextSizeAgainstWindow() {
+    func context(tokens: Int) -> ChatContextSize? {
+        let usage = TokenUsage(tokensUsed: tokens, inputTokens: tokens, outputTokens: 0)
+        let messages = [ChatMessage(role: .assistant, content: "x", tokenUsage: usage)]
+        return ChatContextSize(messages: messages)
+    }
+    #expect(context(tokens: 45_000)?.displayValue(contextWindow: 200_000) == "45 000 of 200k (23%)")
+    #expect(context(tokens: 150)?.displayValue(contextWindow: 1_000_000) == "150 of 1kk (<1%)")
+    #expect(context(tokens: 300_000)?.displayValue(contextWindow: 200_000) == "300.0k of 200k (150%)")
+    // Estimation keeps its marker, an unknown window leaves just the count.
+    let estimated = ChatContextSize(messages: [ChatMessage(role: .user, content: String(repeating: "x", count: 400))])
+    #expect(estimated?.displayValue(contextWindow: 1_000) == "~100 of 1k (10%)")
+    #expect(context(tokens: 150)?.displayValue(contextWindow: nil) == "150")
+    #expect(context(tokens: 150)?.displayValue(contextWindow: 0) == "150")
+}
+
 @Test("context size is fully estimated without usage and nil for empty chats")
 func contextSizeEstimatedAndEmpty() {
     let ctx = ChatContextSize(messages: [ChatMessage(role: .user, content: String(repeating: "x", count: 10))])

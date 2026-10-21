@@ -29,6 +29,7 @@ struct OnboardingView: View {
                     icon: "key.horizontal",
                     title: "Provider",
                     detail: providerDetail(status),
+                    warning: nil,
                     isMet: status.hasProvider,
                     isEnabled: true,
                     buttonTitle: status.hasProvider ? "Add Another…" : "Add Provider…",
@@ -41,6 +42,7 @@ struct OnboardingView: View {
                     detail: modelDetail(
                         .defaultModel, met: status.hasDefaultModel, canPick: status.canPickModels,
                         hint: "Preselected for every new chat."),
+                    warning: store.lostModelNote(for: .defaultModel),
                     isMet: status.hasDefaultModel,
                     isEnabled: status.canPickModels,
                     buttonTitle: status.hasDefaultModel ? "Change…" : "Choose…",
@@ -53,6 +55,7 @@ struct OnboardingView: View {
                     detail: modelDetail(
                         .utilityModel, met: status.hasUtilityModel, canPick: status.canPickModels,
                         hint: "Used for background tasks such as naming chats. A fast, cheap model is best."),
+                    warning: store.lostModelNote(for: .utilityModel),
                     isMet: status.hasUtilityModel,
                     isEnabled: status.canPickModels,
                     buttonTitle: status.hasUtilityModel ? "Change…" : "Choose…",
@@ -133,6 +136,7 @@ private struct RequirementRow: View {
     let icon: String
     let title: String
     let detail: String
+    let warning: String?
     let isMet: Bool
     let isEnabled: Bool
     let buttonTitle: String
@@ -155,6 +159,12 @@ private struct RequirementRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
+                if let warning {
+                    Text(warning)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Spacer(minLength: 12)

@@ -114,6 +114,10 @@ struct GeneralConfig: Codable, Equatable {
     /// naming. Nil → "No model" (utility tasks are skipped).
     var utilityModel: String?
 
+    /// `provider:model-id` entries starred in the model picker, which lists
+    /// them right after the default model. Managed by the app; nil → none.
+    var favoriteModels: [String]?
+
     /// User-managed list of working directories offered in the per-chat
     /// directory picker. Nil/missing in older configs → treated as empty.
     /// The selected directory is saved to the chat data (alongside role and
@@ -124,6 +128,7 @@ struct GeneralConfig: Codable, Equatable {
         case defaultRole = "default_role"
         case defaultModel = "default_model"
         case utilityModel = "utility_model"
+        case favoriteModels = "favorite_models"
         case workingDirectories = "working_directories"
     }
 }
@@ -554,6 +559,36 @@ actor ConfigManager {
 
     func getUtilityModel() -> String? {
         config.general.utilityModel
+    }
+
+    func getFavoriteModels() -> [String] {
+        config.general.favoriteModels ?? []
+    }
+
+    /// Adds or removes one model. Applied to the live list rather than a
+    /// whole replacement, so concurrent edits (the picker, the engine pruning
+    /// vanished models) never overwrite each other.
+    func setFavoriteModel(_ model: String, favorite: Bool) {
+        var list = config.general.favoriteModels ?? []
+        if favorite {
+            guard !list.contains(model) else { return }
+            list.append(model)
+        } else {
+            list.removeAll { $0 == model }
+        }
+        config.general.favoriteModels = list.isEmpty ? nil : list
+        persist()
+    }
+
+    /// Drops the given models from the favorites. Returns whether any was there.
+    @discardableResult
+    func removeFavoriteModels(_ models: Set<String>) -> Bool {
+        let list = config.general.favoriteModels ?? []
+        let kept = list.filter { !models.contains($0) }
+        guard kept.count != list.count else { return false }
+        config.general.favoriteModels = kept.isEmpty ? nil : kept
+        persist()
+        return true
     }
 
     func getWorkingDirectories() -> [String] {

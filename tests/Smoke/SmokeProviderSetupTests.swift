@@ -176,6 +176,76 @@ extension AllSmokeTests {
             }
         }
 
+        /// The first `.generalModelsLost` on the stream, including what was buffered for it already.
+        private func firstLostModels(in events: AsyncStream<EngineEvent>) async throws -> LostGeneralModels {
+            try await withThrowingTaskGroup(of: LostGeneralModels.self) { group in
+                group.addTask {
+                    for await event in events {
+                        if case .generalModelsLost(let lost) = event { return lost }
+                    }
+                    throw SmokeTimeout(description: "event stream ended without .generalModelsLost")
+                }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(10))
+                    throw SmokeTimeout(description: "timed out waiting for .generalModelsLost")
+                }
+                defer { group.cancelAll() }
+                return try await group.next()!
+            }
+        }
+
+        private func deleteOnlyKey(_ fx: SmokeFixture, of sp: SmokeProvider) async throws {
+            let key = try #require(await fx.registry.keys(for: sp.provider).first)
+            try await fx.engine.deleteProviderKey(key.id)
+        }
+
+        @Test("deleting the last key resets the general models and reports what was lost")
+        func lastKeyDeletedReportsLostModels() async throws {
+            try await SmokeFixture.run { fx in
+                try await fx.addProvider(.openai)
+                await ConfigManager.shared.setDefaultModel("openai:gpt-5")
+                await ConfigManager.shared.setUtilityModel("openai:gpt-4o-mini")
+
+                let events = await fx.engine.subscribe()
+                try await deleteOnlyKey(fx, of: .openai)
+
+                #expect(await ConfigManager.shared.getDefaultModel() == nil)
+                #expect(await ConfigManager.shared.getUtilityModel() == nil)
+                let lost = try await firstLostModels(in: events)
+                #expect(lost == LostGeneralModels(defaultModel: "openai:gpt-5", utilityModel: "openai:gpt-4o-mini"))
+            }
+        }
+
+        @Test("a reset nobody could see yet is delivered to the first subscriber")
+        func lostModelsReplayedOnSubscribe() async throws {
+            try await SmokeFixture.run { fx in
+                try await fx.addProvider(.openai)
+                await ConfigManager.shared.setDefaultModel("openai:gpt-5")
+                await ConfigManager.shared.setUtilityModel(nil)
+
+                try await deleteOnlyKey(fx, of: .openai)
+
+                let lost = try await firstLostModels(in: await fx.engine.subscribe())
+                #expect(lost == LostGeneralModels(defaultModel: "openai:gpt-5", utilityModel: nil))
+            }
+        }
+
+        @Test("favorites of a removed provider or a delisted model are dropped silently, the rest stay")
+        func favoritesArePruned() async throws {
+            try await SmokeFixture.run { fx in
+                try await fx.addProvider(.openai)
+                try await fx.addProvider(.deepseek)
+                let config = ConfigManager.shared
+                await config.setFavoriteModel("openai:gpt-5", favorite: true)
+                await config.setFavoriteModel("deepseek:deepseek-flash", favorite: true)
+                await config.setFavoriteModel("deepseek:delisted", favorite: true)
+
+                try await deleteOnlyKey(fx, of: .openai)
+
+                #expect(await config.getFavoriteModels() == ["deepseek:deepseek-flash"])
+            }
+        }
+
         @Test("an OpenRouter model missing from the listing is looked up by name")
         func openRouterLookup() async throws {
             try await SmokeFixture.run { fx in

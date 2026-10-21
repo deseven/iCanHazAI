@@ -95,7 +95,9 @@ struct ChatView: View {
 
                 // Reasoning level: only for models that expose a control. The
                 // menu lists every option the model offers; the current one is
-                // checkmarked.
+                // checkmarked. `.buttonStyle(.plain)` rather than a menu style:
+                // a styled `Menu` flattens its label to plain text and an
+                // image, losing the capsule and the font.
                 if let reasoning = store.selectedChatReasoning, let current = store.selectedChatReasoningSetting {
                     Menu {
                         Picker(
@@ -119,7 +121,7 @@ struct ChatView: View {
                         .font(.callout)
                         .lineLimit(1)
                     }
-                    .menuStyle(.borderlessButton)
+                    .buttonStyle(.plain)
                     .menuIndicator(.hidden)
                     .fixedSize()
                     .help("Reasoning for this chat")

@@ -44,12 +44,23 @@ import SwiftUI
 /// into the search field), ↵ applies the selection (the footer gains a
 /// default "Apply" button before "Cancel"), and Esc still cancels. The toggle
 /// state itself is owned by the caller.
+///
+/// Single-select mode can offer an extra ⇧↵ action on the highlighted item
+/// (`secondaryAction`, e.g. the model picker's favorite toggle). The dialog
+/// stays open and follows the item if the list re-sorts.
 struct PickerDialog<Item: Identifiable & Hashable>: View {
     /// Multi-select behavior. When set, the dialog toggles items instead of
     /// picking one: `onToggle` fires on tap/⇧↵, `onApply` on ↵/Apply.
     struct MultiSelect {
         let onToggle: (Item) -> Void
         let onApply: () -> Void
+    }
+
+    /// The ⇧↵ action of a single-select dialog. `hint` completes the footer's
+    /// "⇧↵ …" label.
+    struct SecondaryAction {
+        let hint: String
+        let perform: (Item) -> Void
     }
 
     let title: String
@@ -76,6 +87,9 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
     let initialSelection: Item?
     /// When non-nil, the dialog runs in multi-select mode (see `MultiSelect`).
     var multiSelect: MultiSelect? = nil
+    /// ⇧↵ action on the highlighted item in single-select mode. Ignored in
+    /// multi-select mode, where ⇧↵ toggles.
+    var secondaryAction: SecondaryAction? = nil
     /// Optional extra button(s) placed in the footer before Apply/Cancel
     /// (e.g. a destructive "Delete All" in the archived-chats picker).
     var footerExtra: (() -> AnyView)? = nil
@@ -94,6 +108,9 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
     /// mouse movement over the dialog — scroll/layout-induced hover events
     /// under a stationary cursor would otherwise steal the highlight.
     @State private var hoverEnabled: Bool = true
+    /// Bumped to scroll the highlighted item back into view after an action
+    /// that re-sorted the list.
+    @State private var revealToken: Int = 0
     @FocusState private var searchFocused: Bool
     /// The sheet window hosting the dialog (resolved after appear).
     @State private var sheetWindow: NSWindow?
@@ -102,6 +119,12 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
 
     /// Combined ordered list used for keyboard navigation.
     private var allItems: [Item] { items + pinnedItems }
+
+    private var footerHint: String {
+        if multiSelect != nil { return "↑↓ navigate · ⇧↵ toggle · ↵ apply" }
+        if let secondaryAction { return "↑↓ navigate · ⇧↵ \(secondaryAction.hint) · ↵ select" }
+        return "↑↓ navigate · ↵ select"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -197,6 +220,10 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
                         isKeyboardSelection = false
                         proxy.scrollTo(newItem.id, anchor: .center)
                     }
+                    .onChange(of: revealToken) { _, _ in
+                        guard let selection else { return }
+                        proxy.scrollTo(selection.id, anchor: .center)
+                    }
                 }
             }
 
@@ -204,7 +231,7 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
                 Divider()
 
                 HStack {
-                    Text(multiSelect != nil ? "↑↓ navigate · ⇧↵ toggle · ↵ apply" : "↑↓ navigate · ↵ select")
+                    Text(footerHint)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -327,7 +354,8 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
     }
 
     /// Handles ↑/↓/↵ for the search field and the dialog container. ⇧↵
-    /// toggles in multi-select mode; plain ↵ picks (or applies).
+    /// toggles in multi-select mode and runs the secondary action in
+    /// single-select mode (when there is one); plain ↵ picks (or applies).
     private func handleKeyPress(_ press: KeyPress) -> KeyPress.Result {
         switch press.key {
         case .upArrow:
@@ -337,6 +365,8 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
         case .return:
             if press.modifiers.contains(.shift), multiSelect != nil {
                 toggleCurrent()
+            } else if press.modifiers.contains(.shift), let secondaryAction {
+                performSecondaryAction(secondaryAction)
             } else {
                 confirmCurrent()
             }
@@ -377,6 +407,18 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
         } else if let first = all.first {
             multiSelect.onToggle(first)
         }
+    }
+
+    /// Runs the secondary action on the highlighted item (falling back to the
+    /// first), then keeps that item in view: the action may have moved it.
+    private func performSecondaryAction(_ action: SecondaryAction) {
+        let all = allItems
+        let target = selection.flatMap { all.contains($0) ? $0 : nil } ?? all.first
+        guard let target else { return }
+        selection = target
+        hoverEnabled = false
+        action.perform(target)
+        revealToken += 1
     }
 
     /// Selects the currently highlighted item (falling back to the first when

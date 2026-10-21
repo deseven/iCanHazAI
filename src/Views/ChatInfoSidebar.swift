@@ -52,7 +52,8 @@ struct ChatInfoSidebar: View {
                         }
                         InfoCell(
                             label: "Current Context",
-                            value: item.contextSize?.displayValue ?? "N/A"
+                            value: item.contextSize?.displayValue(
+                                contextWindow: store.selectedChatModel?.capabilities.contextWindow) ?? "N/A"
                         )
                     }
                     if let snapshot = toolSnapshot {

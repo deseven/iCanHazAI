@@ -180,6 +180,16 @@ struct ChatContextSize: Equatable, Sendable {
     var displayValue: String {
         "\(isEstimated ? "~" : "")\(TokenUsage.formatCount(tokens))"
     }
+
+    /// `displayValue` set against the model's context window, as
+    /// "{current} of {max} ({percentage}%)" ("<1%" for a sliver). Just the
+    /// count when the window is unknown.
+    func displayValue(contextWindow: Int?) -> String {
+        guard let contextWindow, contextWindow > 0 else { return displayValue }
+        let percent = Double(tokens) / Double(contextWindow) * 100
+        let shown = percent < 1 ? "<1" : "\(Int(percent.rounded()))"
+        return "\(displayValue) of \(ModelCapabilities.compactCount(contextWindow)) (\(shown)%)"
+    }
 }
 
 /// A shared chunk coalescer used by both providers so they stream at the same

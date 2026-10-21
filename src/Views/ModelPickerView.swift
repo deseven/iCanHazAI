@@ -7,10 +7,12 @@ import SwiftUI
 /// ↵ or a click picks the highlighted model. Typing `<provider>.` (or `:`)
 /// narrows the list to one provider, by name or alias (`or.`, `oa.`, `an.`,
 /// `ds.`, or a custom provider's name); the rest is a case-insensitive search over the cached catalog. Built on
-/// [`PickerDialog`](src/Views/PickerDialog.swift); the model in effect is
-/// checkmarked. The default model from Preferences is pinned to the top
-/// (unless filtered out) and initially highlighted, so ↵ right after opening
-/// picks it; without one, the model in effect is highlighted instead.
+/// [`PickerDialog`](src/Views/PickerDialog.swift). The default model from
+/// Preferences is pinned to the top (unless filtered out) and initially
+/// highlighted, so ↵ right after opening picks it; without one, the model in
+/// effect is highlighted instead. ⇧↵ stars or unstars the highlighted model;
+/// favorites follow the default model, sorted by name. This picker is the
+/// only place favorites are managed.
 struct ModelPickerView: View {
     let models: [CatalogModel]
     let hasProviders: Bool
@@ -18,17 +20,19 @@ struct ModelPickerView: View {
     var isLoadingModels: Bool = true
     let currentID: ModelID?
     let defaultID: ModelID?
+    var favorites: Set<ModelID> = []
     /// The custom providers and their tag colors.
     var customProviders: [Provider: ProviderColor] = [:]
     var subtitle: String = "Pick the model used by this chat."
     let onCancel: () -> Void
     let onPick: (ModelID) -> Void
+    let onToggleFavorite: (ModelID) -> Void
 
     @State private var queryText: String = ""
 
     var body: some View {
         let query = ModelPickerQuery(queryText, providers: Provider.allCases + customProviders.keys.sorted())
-        let items = query.filter(models, pinning: defaultID)
+        let items = query.filter(models, pinning: defaultID, favorites: favorites)
         let initialSelection =
             items.first { $0.id == defaultID } ?? items.first { $0.id == currentID } ?? items.first
         return PickerDialog<CatalogModel>(
@@ -47,12 +51,13 @@ struct ModelPickerView: View {
             rowContent: { model, _ in
                 AnyView(
                     ModelRowContent(
-                        model: model, tagColor: customProviders[model.id.provider], isCurrent: model.id == currentID,
-                        isDefault: model.id == defaultID))
+                        model: model, tagColor: customProviders[model.id.provider],
+                        isDefault: model.id == defaultID, isFavorite: favorites.contains(model.id)))
             },
             onSelect: { onPick($0.id) },
             onCancel: onCancel,
-            initialSelection: initialSelection
+            initialSelection: initialSelection,
+            secondaryAction: .init(hint: "favorite", perform: { onToggleFavorite($0.id) })
         )
     }
 }
@@ -86,15 +91,11 @@ struct ModelStatusLabel: View {
 private struct ModelRowContent: View {
     let model: CatalogModel
     let tagColor: ProviderColor?
-    let isCurrent: Bool
     let isDefault: Bool
+    let isFavorite: Bool
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: isCurrent ? "checkmark.circle.fill" : "circle")
-                .font(.title3)
-                .foregroundStyle(isCurrent ? Color.accentColor : Color.secondary)
-                .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     ProviderTag(provider: model.id.provider, color: tagColor)
@@ -109,6 +110,11 @@ private struct ModelRowContent: View {
                     .lineLimit(1)
             }
             Spacer()
+            if isFavorite {
+                Image(systemName: "star.fill")
+                    .foregroundStyle(.yellow)
+                    .help("Favorite")
+            }
             if model.capabilities.imageInput {
                 Image(systemName: "photo")
                     .foregroundStyle(.secondary)

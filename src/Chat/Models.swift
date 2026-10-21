@@ -1264,6 +1264,10 @@ enum EngineEvent: Sendable {
     /// `config.toml` was reloaded from disk or cleaned by reference validation.
     /// The UI should refresh its cached preferences from `ConfigManager`.
     case configChanged
+    /// `[general].default_model` / `utility_model` were reset because the model
+    /// is no longer available (provider key removed, model delisted). Carries
+    /// only what was reset by this pass; onboarding uses it to explain itself.
+    case generalModelsLost(LostGeneralModels)
     /// The engine is waiting for the user to approve a tool call. The UI uses
     /// this to draw attention: blink the chat in the sidebar (if it isn't the
     /// active one) and bounce the dock icon (if the window isn't key/front).

@@ -31,6 +31,9 @@ actor ChatEngine {
     /// A startup failure no subscriber could have seen yet; delivered with the
     /// first subscription snapshot.
     private var pendingStartupError: String?
+    /// General models reset before anyone subscribed (validation runs during
+    /// startup); delivered with the first subscription snapshot.
+    private var pendingLostModels = LostGeneralModels()
     /// The chat data abstraction layer. Owns the SwiftData metadata cache and
     /// all chat file I/O. The engine never reads/writes chat files directly.
     private let store: ChatStore
@@ -244,7 +247,7 @@ actor ChatEngine {
         emit(.modelsChanged(models))
         emit(.mcpsChanged(mcps))
         // May involve an OpenRouter lookup, so it must not delay startup.
-        Task { await self.validateGeneralModels() }
+        Task { await self.validateModelPreferences() }
         // Kick off the initial MCP configuration pass now that configs are
         // loaded. This connects stdio servers, queries tools, and reports
         // status for the overlay. Skipped if no MCPs are configured.
@@ -277,6 +280,10 @@ actor ChatEngine {
             if let message = self.pendingStartupError {
                 self.pendingStartupError = nil
                 continuation.yield(.error(message))
+            }
+            if !self.pendingLostModels.isEmpty {
+                continuation.yield(.generalModelsLost(self.pendingLostModels))
+                self.pendingLostModels = LostGeneralModels()
             }
         }
         return stream
@@ -332,7 +339,7 @@ actor ChatEngine {
         case .refreshFinished(let provider, let result):
             recordRefreshOutcome(provider, result)
             await emitProviders()
-            await validateGeneralModels()
+            await validateModelPreferences()
         case .modelsChanged:
             models = await catalog.snapshot()
             emit(.modelsChanged(models))
@@ -472,7 +479,7 @@ actor ChatEngine {
         }
         await emitProviders()
         if disabled {
-            await validateGeneralModels()
+            await validateModelPreferences()
         } else if wasActive {
             refreshModelsAfterKeyChange(of: [provider])
         }
@@ -1043,24 +1050,50 @@ actor ChatEngine {
         records.first(where: { $0.filename == filename })?.chat?.model
     }
 
+    /// Re-checks every model reference kept in the config: the general models
+    /// and the favorites.
+    func validateModelPreferences() async {
+        await validateGeneralModels()
+        await pruneFavoriteModels()
+    }
+
+    /// Silently drops `[general].favorite_models` entries that definitely no
+    /// longer resolve (provider key removed, model delisted). Undecidable ones
+    /// (`.unavailable`) stay. Emits `.configChanged` when something was dropped
+    /// so the UI refreshes.
+    func pruneFavoriteModels() async {
+        let config = ConfigManager.shared
+        var gone: Set<String> = []
+        for model in await config.getFavoriteModels() {
+            if case .invalid = await resolveModel(model) { gone.insert(model) }
+        }
+        guard !gone.isEmpty, await config.removeFavoriteModels(gone) else { return }
+        debugLog("Engine", "favorite models no longer available — removed: \(gone.sorted().joined(separator: ", "))")
+        emit(.configChanged)
+    }
+
     /// Resets `[general].default_model` / `utility_model` to nil when they
     /// definitely no longer resolve (provider key removed, model delisted).
     /// Undecidable models (`.unavailable`) are left alone. Emits
+    /// `.generalModelsLost` (what was reset, for the onboarding note) and
     /// `.configChanged` when something was reset so the UI refreshes.
     func validateGeneralModels() async {
         let config = ConfigManager.shared
-        var changed = false
+        var lost = LostGeneralModels()
         if let model = await config.getDefaultModel(), case .invalid = await resolveModel(model) {
             debugLog("Engine", "default model \"\(model)\" is unusable — resetting")
             await config.setDefaultModel(nil)
-            changed = true
+            lost.defaultModel = model
         }
         if let model = await config.getUtilityModel(), case .invalid = await resolveModel(model) {
             debugLog("Engine", "utility model \"\(model)\" is unusable — resetting")
             await config.setUtilityModel(nil)
-            changed = true
+            lost.utilityModel = model
         }
-        if changed { emit(.configChanged) }
+        guard !lost.isEmpty else { return }
+        if continuations.isEmpty { pendingLostModels.merge(lost) }
+        emit(.generalModelsLost(lost))
+        emit(.configChanged)
     }
 
     /// Destroys the given temporary chats, if they exist. Used by the CLI

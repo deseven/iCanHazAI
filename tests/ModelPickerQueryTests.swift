@@ -133,6 +133,51 @@ extension AllAppTests {
             #expect(ModelPickerQuery("").filter(sample, pinning: nil) == sample)
         }
 
+        @Test("favorites follow the default model, sorted by name, ahead of the rest in rank order")
+        func favoritesOrder() {
+            let pinned = ModelID(provider: .openai, name: "gpt-5")
+            let favorites: Set<ModelID> = [
+                ModelID(provider: .openrouter, name: "meta/llama-4:free"),
+                ModelID(provider: .anthropic, name: "claude-sonnet-5-5"),
+                pinned,
+            ]
+            let result = ModelPickerQuery("").filter(sample, pinning: pinned, favorites: favorites)
+            #expect(
+                result.map(\.id.name) == [
+                    "gpt-5", "claude-sonnet-5-5", "meta/llama-4:free", "deepseek-flash", "anthropic/claude-sonnet-5.5",
+                ])
+        }
+
+        @Test("favorites go first without a default model and keep the search ranking among the rest")
+        func favoritesWithoutDefault() {
+            let favorite = ModelID(provider: .openrouter, name: "meta/llama-4:free")
+            #expect(ModelPickerQuery("").filter(sample, favorites: [favorite]).first?.id == favorite)
+            #expect(
+                ModelPickerQuery("").filter(sample, favorites: [favorite]).dropFirst().map(\.id.name)
+                    == ["gpt-5", "claude-sonnet-5-5", "deepseek-flash", "anthropic/claude-sonnet-5.5"])
+            // Lifted above a better match.
+            let lifted = ModelPickerQuery("sonnet").filter(
+                sample, favorites: [ModelID(provider: .openrouter, name: "anthropic/claude-sonnet-5.5")])
+            #expect(lifted.first?.id.name == "anthropic/claude-sonnet-5.5")
+            #expect(lifted.count == 2)
+        }
+
+        @Test("favorites that are filtered out or not in the catalog change nothing")
+        func favoritesFilteredOut() {
+            let favorite = ModelID(provider: .deepseek, name: "deepseek-flash")
+            #expect(
+                ModelPickerQuery("an.").filter(sample, favorites: [favorite]) == ModelPickerQuery("an.").filter(sample))
+            let unknown = ModelID(provider: .openai, name: "gone")
+            #expect(ModelPickerQuery("").filter(sample, favorites: [unknown]) == sample)
+        }
+
+        @Test("favorites with the same name are ordered by provider")
+        func favoritesTieBreak() {
+            let models = [model(.openrouter, "same"), model(.openai, "same"), model(.anthropic, "other")]
+            let result = ModelPickerQuery("").filter(models, favorites: Set(models.map(\.id)))
+            #expect(result.map(\.id.description) == ["anthropic:other", "openai:same", "openrouter:same"])
+        }
+
         @Test("OpenRouter `~vendor/model-latest` aliases are found with and without the prefix")
         func latestAliases() {
             let models = sample + [model(.openrouter, "~deepseek/deepseek-v4-flash-latest")]

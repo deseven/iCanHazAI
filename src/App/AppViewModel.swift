@@ -198,6 +198,8 @@ final class AppViewModel: ObservableObject {
     /// `provider:model-id` strings; nil means "No model".
     @Published var preferencesDefaultModel: String?
     @Published var preferencesUtilityModel: String?
+    /// Models starred in the model picker, mirrored from `[general].favorite_models`.
+    @Published private(set) var favoriteModels: Set<ModelID> = []
     /// Whether `loadPreferences` has completed at least once, so the model
     /// preferences above are real values rather than initial nils.
     private var preferencesLoaded = false
@@ -326,6 +328,20 @@ final class AppViewModel: ObservableObject {
             utilityModel: preferencesUtilityModel)
     }
 
+    /// General models the engine reset because they went away. Explains to the
+    /// user why onboarding came back; an entry is dropped once its model is
+    /// picked again, all of them when onboarding finishes.
+    @Published private(set) var lostGeneralModels = LostGeneralModels()
+
+    /// The red note for a model requirement that is unmet because its model
+    /// went away; nil when it was never set or has been replaced since.
+    func lostModelNote(for setting: ModelSetting) -> String? {
+        guard let raw = lostGeneralModels[setting], (preferencesModel(for: setting) ?? "").isEmpty else { return nil }
+        let displayName = ModelID(parsing: raw).flatMap { id in models.first { $0.id == id }?.displayName }
+        return LostGeneralModels.note(
+            for: setting, raw: raw, displayName: displayName, canPick: onboardingStatus.canPickModels)
+    }
+
     /// Raises the onboarding sheet over whatever is showing when a requirement
     /// is unmet. Called whenever the inputs may have changed (providers
     /// loaded, preferences reloaded); a no-op until both have been loaded once,
@@ -343,6 +359,7 @@ final class AppViewModel: ObservableObject {
     func finishOnboarding() {
         guard onboardingActive, onboardingStatus.isComplete else { return }
         onboardingActive = false
+        lostGeneralModels = LostGeneralModels()
         guard activeSheet == .onboarding else { return }
         activeSheet = nil
         // Pickers held back during onboarding (e.g. the model picker of a chat
@@ -486,6 +503,7 @@ final class AppViewModel: ObservableObject {
             let dr = await config.getDefaultRole()
             let dm = await config.getDefaultModel()
             let um = await config.getUtilityModel()
+            let fm = await config.getFavoriteModels()
             let wd = await config.getWorkingDirectories()
             let rs = await config.getChatInfoSidebarVisible()
             let lw = await config.getChatListSidebarWidth()
@@ -500,6 +518,7 @@ final class AppViewModel: ObservableObject {
             preferencesDefaultRole = dr
             preferencesDefaultModel = dm
             preferencesUtilityModel = um
+            favoriteModels = Set(fm.compactMap { ModelID(parsing: $0) })
             preferencesLoaded = true
             updateOnboarding()
             workingDirectories = wd
@@ -909,6 +928,17 @@ final class AppViewModel: ObservableObject {
         preferencesModel(for: setting).flatMap { ModelID(parsing: $0) }
     }
 
+    /// Stars or unstars a model. A favorite is marked as used, so the catalog
+    /// keeps it across OpenRouter refreshes like a model a chat uses.
+    func toggleFavoriteModel(_ id: ModelID) {
+        let favorite = !favoriteModels.contains(id)
+        if favorite { favoriteModels.insert(id) } else { favoriteModels.remove(id) }
+        Task {
+            await config.setFavoriteModel(id.description, favorite: favorite)
+            if favorite { await engine.markModelUsed(id) }
+        }
+    }
+
     /// What a model status block shows: the display name when the model is in
     /// the catalog, else the raw id; "No model" when unset.
     func modelLabel(for raw: String?) -> String {
@@ -926,6 +956,7 @@ final class AppViewModel: ObservableObject {
     /// Stores the picked model and returns to Preferences (or onboarding).
     func settingsModelPicked(_ setting: ModelSetting, _ id: ModelID) {
         let value = id.description
+        lostGeneralModels[setting] = nil
         switch setting {
         case .defaultModel:
             preferencesDefaultModel = value
@@ -1159,6 +1190,8 @@ final class AppViewModel: ObservableObject {
         case .configChanged:
             refreshPreferences()
             LoaderController.shared.markApplicationCompleted(.configuration, loaded: 1)
+        case .generalModelsLost(let lost):
+            lostGeneralModels.merge(lost)
         case .toolApprovalRequested(let filename, _):
             // Blink the chat in the sidebar if the user isn't already viewing
             // it (otherwise the renderer shows the Allow/Deny buttons).

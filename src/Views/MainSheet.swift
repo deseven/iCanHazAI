@@ -172,9 +172,11 @@ struct MainSheetContent: View {
                 isLoadingModels: store.providers.hasPendingModels,
                 currentID: store.selectedChatModelID,
                 defaultID: store.preferencesModelID(for: .defaultModel),
+                favorites: store.favoriteModels,
                 customProviders: store.customProviderColors,
                 onCancel: { store.modelPickerCancelled() },
-                onPick: { store.modelPickerPicked($0) }
+                onPick: { store.modelPickerPicked($0) },
+                onToggleFavorite: { store.toggleFavoriteModel($0) }
             )
 
         case .settingsModelPicker(let setting):
@@ -184,12 +186,14 @@ struct MainSheetContent: View {
                 isLoadingModels: store.providers.hasPendingModels,
                 currentID: store.preferencesModelID(for: setting),
                 defaultID: store.preferencesModelID(for: .defaultModel),
+                favorites: store.favoriteModels,
                 customProviders: store.customProviderColors,
                 subtitle: setting == .defaultModel
                     ? "Pick the model preselected for new chats."
                     : "Pick the model for background tasks. A fast and cheap one is best.",
                 onCancel: { store.settingsModelPickerCancelled() },
-                onPick: { store.settingsModelPicked(setting, $0) }
+                onPick: { store.settingsModelPicked(setting, $0) },
+                onToggleFavorite: { store.toggleFavoriteModel($0) }
             )
 
         case .mcpPicker:

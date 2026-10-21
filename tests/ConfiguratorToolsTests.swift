@@ -235,6 +235,24 @@ extension AllAppTests {
             #expect(decoded.general.workingDirectories == ["/a", "/b"])
         }
 
+        @Test("AppConfig favorite_models round-trips through TOML and is nil when omitted")
+        func roundTripsFavoriteModels() throws {
+            var cfg = AppConfig()
+            #expect(cfg.general.favoriteModels == nil)
+            cfg.general.favoriteModels = ["openai:gpt-5", "openrouter:meta/llama-4:free"]
+            let encoder = TOMLEncoder()
+            encoder.outputFormatting = .sortedKeys
+            encoder.keyEncodingStrategy = .convertToSnakeCase
+            let encoded = try encoder.encode(cfg)
+            let text = try #require(String(data: encoded, encoding: .utf8))
+            #expect(text.contains("favorite_models"))
+            let decoded = try TOMLDecoder().decode(AppConfig.self, from: encoded)
+            #expect(decoded.general.favoriteModels == ["openai:gpt-5", "openrouter:meta/llama-4:free"])
+            let plain = try TOMLDecoder().decode(
+                AppConfig.self, from: Data("[general]\ndefault_role = \"Assistant\"\n".utf8))
+            #expect(plain.general.favoriteModels == nil)
+        }
+
         @Test("AppConfig default_model and utility_model round-trip through TOML")
         func roundTripsGeneralModels() throws {
             var cfg = AppConfig()

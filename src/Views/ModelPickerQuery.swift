@@ -30,18 +30,35 @@ struct ModelPickerQuery: Equatable {
         }
     }
 
-    /// The models matching the query, best first. `pinnedID` (the default
-    /// model) is moved to the top whenever it survives the filtering, so it
-    /// never ranks below other matches.
-    func filter(_ models: [CatalogModel], pinning pinnedID: ModelID? = nil) -> [CatalogModel] {
+    /// The models matching the query, best first, except that the ones that
+    /// survive the filtering are lifted to the top regardless of their rank:
+    /// `pinnedID` (the default model) first, then the `favorites` sorted by
+    /// name, then the rest.
+    func filter(
+        _ models: [CatalogModel], pinning pinnedID: ModelID? = nil, favorites: Set<ModelID> = []
+    ) -> [CatalogModel] {
         let scoped = provider.map { p in models.filter { $0.id.provider == p } } ?? models
-        var ranked = SearchMatcher.rank(scoped, query: text) { model in
+        let ranked = SearchMatcher.rank(scoped, query: text) { model in
             [model.id.description, model.displayName].compactMap { $0 }
         }
-        if let pinnedID, let index = ranked.firstIndex(where: { $0.id == pinnedID }), index > 0 {
-            ranked.insert(ranked.remove(at: index), at: 0)
+        guard pinnedID != nil || !favorites.isEmpty else { return ranked }
+        var pinned: [CatalogModel] = []
+        var starred: [CatalogModel] = []
+        var rest: [CatalogModel] = []
+        for model in ranked {
+            if model.id == pinnedID {
+                pinned.append(model)
+            } else if favorites.contains(model.id) {
+                starred.append(model)
+            } else {
+                rest.append(model)
+            }
         }
-        return ranked
+        starred.sort { lhs, rhs in
+            let order = lhs.id.name.localizedStandardCompare(rhs.id.name)
+            return order == .orderedSame ? lhs.id.provider < rhs.id.provider : order == .orderedAscending
+        }
+        return pinned + starred + rest
     }
 
 }

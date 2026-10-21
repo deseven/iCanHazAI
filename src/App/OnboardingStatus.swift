@@ -21,3 +21,47 @@ struct OnboardingStatus: Equatable {
     /// Without a provider there is nothing to pick a model from.
     var canPickModels: Bool { hasProvider }
 }
+
+/// The `[general]` models (raw `provider:model-id`) that were reset because
+/// they no longer resolve, so onboarding can say what happened.
+struct LostGeneralModels: Sendable, Equatable {
+    var defaultModel: String?
+    var utilityModel: String?
+
+    var isEmpty: Bool { defaultModel == nil && utilityModel == nil }
+
+    subscript(setting: ModelSetting) -> String? {
+        get {
+            switch setting {
+            case .defaultModel: return defaultModel
+            case .utilityModel: return utilityModel
+            }
+        }
+        set {
+            switch setting {
+            case .defaultModel: defaultModel = newValue
+            case .utilityModel: utilityModel = newValue
+            }
+        }
+    }
+
+    mutating func merge(_ other: LostGeneralModels) {
+        defaultModel = other.defaultModel ?? defaultModel
+        utilityModel = other.utilityModel ?? utilityModel
+    }
+
+    /// The red note onboarding shows for a requirement that is unmet because
+    /// its model went away. `displayName` is the catalog's name for the model
+    /// when it is still known; `canPick` is false while no provider is left.
+    static func note(for setting: ModelSetting, raw: String, displayName: String?, canPick: Bool) -> String {
+        let kind = setting == .defaultModel ? "default" : "utility"
+        let model: String
+        if let id = ModelID(parsing: raw) {
+            model = "\(displayName ?? id.name) from \(id.provider.displayName)"
+        } else {
+            model = raw
+        }
+        let prefix = "Your \(kind) model \(model) is no longer available"
+        return canPick ? "\(prefix), please select a new one." : "\(prefix). Add a provider, then select a new model."
+    }
+}
