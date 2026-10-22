@@ -9,7 +9,7 @@ enum StreamingMotion {
     /// A list pinned to the bottom glides to the new bottom as the reply grows, as a
     /// critically damped spring: it covers about 60% of the way in this long and about
     /// 90% in twice that, starting and ending gently.
-    nonisolated static let scrollSmoothTime: CFTimeInterval = 0.1
+    nonisolated static let scrollSmoothTime: CFTimeInterval = 0.045
 
     static var fades: Bool { fadeDuration > 0 && !reduced }
     static var glides: Bool { scrollSmoothTime > 0 && !reduced }
