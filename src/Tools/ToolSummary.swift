@@ -345,8 +345,7 @@ extension ToolSummary {
     /// `[path#TAG]` section header in the `input` string.
     static func extractEditFilePaths(_ input: String) -> [String] {
         var paths: [String] = []
-        for line in input.split(separator: "\n", omittingEmptySubsequences: false) {
-            let s = String(line)
+        for s in HashlineFormat.splitLines(input) {
             let range = NSRange(s.startIndex..., in: s)
             guard let match = hashlineSectionHeaderRegex.firstMatch(in: s, range: range),
                 let r = Range(match.range(at: 1), in: s)

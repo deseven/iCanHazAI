@@ -54,6 +54,15 @@ enum HashlineFormat {
         return String(format: "%04X", low2)
     }
 
+    /// A strong 16-hex (64-bit) identity of the same normalized text the tag
+    /// hashes. The 4-hex tag stays model-facing; this one never collides in
+    /// practice, so internal bookkeeping can compare versions by it.
+    static func computeContentID(_ text: String) -> String {
+        let normalized = normalizeFileHashText(text)
+        let digest = SHA256.hash(data: Data(normalized.utf8))
+        return digest.prefix(8).map { String(format: "%02X", $0) }.joined()
+    }
+
     // MARK: - Display helpers
 
     /// Format a hashline section header for a file path and snapshot tag.
@@ -66,10 +75,25 @@ enum HashlineFormat {
         "\(lineNumber)\(lineBodySep)\(content)"
     }
 
-    /// Split LF-delimited file text into lines hashline anchors can address.
-    /// A terminal newline terminates the preceding line; it is not content.
+    /// Splits text on `\n` (UTF-16 literal match). `String.split(separator: "\n")`
+    /// and `Character == "\n"` must not be used on file text: `"\r\n"` is a
+    /// single `Character`, so a CRLF file would never split. Always yields at
+    /// least one element; a terminal newline yields a trailing `""`.
+    static func splitLines(_ text: String) -> [String] {
+        text.components(separatedBy: "\n")
+    }
+
+    /// Drops one trailing `\r` left over after splitting CRLF text on `\n`.
+    static func dropTrailingCR(_ line: String) -> String {
+        line.hasSuffix("\r") ? String(line.dropLast()) : line
+    }
+
+    /// Split LF-normalized file text into lines hashline anchors can address.
+    /// A terminal newline terminates the preceding line; it is not content, so
+    /// the phantom empty element after it is dropped. `""` still yields one
+    /// empty line — callers treat an empty file separately.
     static func splitAddressableFileLines(_ text: String) -> [String] {
-        var lines = text.components(separatedBy: "\n")
+        var lines = splitLines(text)
         if lines.count > 1 && lines.last == "" {
             lines.removeLast()
         }
@@ -78,7 +102,7 @@ enum HashlineFormat {
 
     /// Format file text with hashline-mode line-number prefixes for display.
     static func formatNumberedLines(_ text: String, startLine: Int = 1) -> String {
-        text.components(separatedBy: "\n").enumerated().map { i, line in
+        splitLines(text).enumerated().map { i, line in
             formatNumberedLine(lineNumber: startLine + i, content: line)
         }.joined(separator: "\n")
     }
@@ -86,9 +110,9 @@ enum HashlineFormat {
     // MARK: - Prefix stripping
 
     /// Regex for a leading line-number prefix (`N:` or `N|`), optionally with
-    /// leading whitespace or `>>>`/`>>` markers.
+    /// leading whitespace or `>>>`/`>>` markers. Group 1 is the number.
     private static let prefixRegex = try! NSRegularExpression(
-        pattern: #"^\s*(?:>>>|>>)?\s*(?:[+*-]\s*)?\d+[:|]"#
+        pattern: #"^\s*(?:>>>|>>)?\s*(?:[+*-]\s*)?(\d+)[:|]"#
     )
 
     /// Regex for a hashline header line (`[path#TAG]`).
@@ -112,12 +136,19 @@ enum HashlineFormat {
         pattern: #"^\s*(?:…|\.\.\.)\s*$"#
     )
 
+    /// Regex for the plain notices `read_file` prints in place of or after rows.
+    private static let readNoticeRegex = try! NSRegularExpression(
+        pattern:
+            #"^\s*(?:\.\.\. \(truncated at \d+ lines\)|\(empty file\)|\(offset \d+ is past the end of the file: \d+ lines?\))\s*$"#
+    )
+
     /// Whether a row is display-only metadata emitted by `read`, never source.
     static func isReadMetadataLine(_ line: String) -> Bool {
         let range = NSRange(line.startIndex..., in: line)
         return truncationNoticeRegex.firstMatch(in: line, range: range) != nil
             || rangeElisionRegex.firstMatch(in: line, range: range) != nil
             || singleElisionRegex.firstMatch(in: line, range: range) != nil
+            || readNoticeRegex.firstMatch(in: line, range: range) != nil
     }
 
     /// Strip a single leading line-number prefix (`N:`, `N|`, `>>>N:`, `+N:`).
@@ -131,10 +162,13 @@ enum HashlineFormat {
         return String(line[r.upperBound...])
     }
 
-    /// Whether a line carries a hashline line-number prefix.
-    static func hasHashlinePrefix(_ line: String) -> Bool {
+    /// The line number of a leading hashline prefix, nil when there is none.
+    static func leadingLineNumber(_ line: String) -> Int? {
         let range = NSRange(line.startIndex..., in: line)
-        return prefixRegex.firstMatch(in: line, range: range) != nil
+        guard let match = prefixRegex.firstMatch(in: line, range: range),
+            let digits = Range(match.range(at: 1), in: line)
+        else { return nil }
+        return Int(line[digits])
     }
 
     /// Whether a line is a hashline header (`[path#TAG]`).
@@ -143,49 +177,42 @@ enum HashlineFormat {
         return headerRegex.firstMatch(in: line, range: range) != nil
     }
 
-    /// Strict strip: remove hashline prefixes only when every non-empty content
-    /// line carries one. Returns the lines unchanged otherwise.
-    static func stripHashlinePrefixes(_ lines: [String]) -> [String] {
-        var nonEmpty = 0
-        var headerCount = 0
-        var prefixCount = 0
-        for line in lines {
-            if line.isEmpty { continue }
-            if isHashlineHeader(line) {
-                nonEmpty += 1
-                headerCount += 1
-                continue
-            }
-            nonEmpty += 1
-            if hasHashlinePrefix(line) { prefixCount += 1 }
-        }
-        let contentCount = nonEmpty - headerCount
-        guard contentCount > 0, prefixCount == contentCount else { return lines }
-
-        return lines.filter { line in
-            !isReadMetadataLine(line) && !isHashlineHeader(line)
-        }.map { line in
-            stripOneLeadingHashlinePrefix(line)
-        }
-    }
-
-    /// Strip pasted `read_file` output (header + line-number prefixes) from
-    /// content before writing. Removes a leading `[path#TAG]` header line and
-    /// uniform `N:` prefixes from all content lines.
-    static func stripPastedPrefixes(_ content: String) -> String {
-        var lines = content.components(separatedBy: "\n")
-
-        // Remove leading header line(s).
+    /// Strip pasted `read_file` output from `write_file` content. Content is
+    /// only touched on positive evidence of a paste, since `8080:80` or
+    /// `12:00 standup` are legitimate file lines:
+    /// - a leading `[path#TAG]` header (also drops read notices and, when every
+    ///   content row is numbered, the `N:` prefixes), or
+    /// - no header, but every content row is numbered, there are at least two
+    ///   of them, and the numbers run consecutively from 1 (a whole-file read).
+    static func stripPastedPrefixes(_ content: String) -> (content: String, stripped: Bool) {
+        var lines = splitLines(content)
+        var hadHeader = false
         while let first = lines.first, isHashlineHeader(first) {
             lines.removeFirst()
+            hadHeader = true
         }
 
-        // Remove read metadata lines.
+        var numbers: [Int] = []
+        var allNumbered = true
+        for line in lines where !(line.isEmpty || line == "\r") && !isReadMetadataLine(line) {
+            if let number = leadingLineNumber(line) {
+                numbers.append(number)
+            } else {
+                allNumbered = false
+            }
+        }
+        let consecutiveFromOne =
+            numbers.count >= 2 && numbers[0] == 1
+            && zip(numbers, numbers.dropFirst()).allSatisfy { $1 == $0 + 1 }
+        let stripPrefixes = allNumbered && !numbers.isEmpty && (hadHeader || consecutiveFromOne)
+
+        guard hadHeader || stripPrefixes else { return (content, false) }
         lines = lines.filter { !isReadMetadataLine($0) }
-
-        // Strip uniform line-number prefixes.
-        lines = stripHashlinePrefixes(lines)
-
-        return lines.joined(separator: "\n")
+        if stripPrefixes {
+            lines = lines.map { stripOneLeadingHashlinePrefix($0) }
+        }
+        return (lines.joined(separator: "\n"), true)
     }
+
+    static let strippedPastedPrefixesNote = "Note: stripped pasted read_file line-number prefixes before writing."
 }

@@ -72,6 +72,119 @@ extension AllAppTests {
             let lines = HashlineFormat.splitAddressableFileLines("")
             #expect(lines == [""])
         }
+
+        @Test func splitAddressableFileLinesLoneNewline() {
+            #expect(HashlineFormat.splitAddressableFileLines("\n") == [""])
+        }
+
+        @Test func splitLinesSplitsCRLF() {
+            // "\r\n" is a single Character, so Character-based splitting never
+            // sees a line break in it.
+            #expect(HashlineFormat.splitLines("a\r\nb\r\n") == ["a\r", "b\r", ""])
+            #expect(HashlineFormat.splitLines("") == [""])
+        }
+
+        @Test func contentIDIs16HexAndStable() {
+            let id = HashlineFormat.computeContentID("hello\nworld\n")
+            #expect(id.count == 16)
+            #expect(id.allSatisfy { $0.isHexDigit })
+            #expect(id == HashlineFormat.computeContentID("hello\nworld\n"))
+        }
+
+        @Test func contentIDNormalizesLikeTheTag() {
+            #expect(
+                HashlineFormat.computeContentID("a  \r\nb\t\n") == HashlineFormat.computeContentID("a\nb\n"))
+            #expect(HashlineFormat.computeContentID("a\n") != HashlineFormat.computeContentID("b\n"))
+        }
+    }
+
+    // MARK: - TextFile
+
+    @Suite struct TextFileTests {
+
+        private let bom: [UInt8] = [0xEF, 0xBB, 0xBF]
+
+        @Test func decodesLF() throws {
+            let file = try #require(TextFile.decode(Data("a\nb\n".utf8)))
+            #expect(!file.hasBOM)
+            #expect(file.lineEnding == .lf)
+            #expect(file.text == "a\nb\n")
+        }
+
+        @Test func decodesCRLFAndNormalizes() throws {
+            let file = try #require(TextFile.decode(Data("a\r\nb\r\n".utf8)))
+            #expect(file.lineEnding == .crlf)
+            #expect(file.text == "a\nb\n")
+        }
+
+        @Test func noLineBreaksIsLF() throws {
+            let file = try #require(TextFile.decode(Data("abc".utf8)))
+            #expect(file.lineEnding == .lf)
+            #expect(file.text == "abc")
+        }
+
+        @Test func mixedEndingsMajorityWins() throws {
+            let crlfMajority = try #require(TextFile.decode(Data("a\r\nb\r\nc\n".utf8)))
+            #expect(crlfMajority.lineEnding == .crlf)
+            #expect(crlfMajority.text == "a\nb\nc\n")
+            let lfMajority = try #require(TextFile.decode(Data("a\nb\nc\r\n".utf8)))
+            #expect(lfMajority.lineEnding == .lf)
+            #expect(lfMajority.text == "a\nb\nc\n")
+            let tie = try #require(TextFile.decode(Data("a\r\nb\n".utf8)))
+            #expect(tie.lineEnding == .lf)
+        }
+
+        @Test func detectsBOMOnRawBytes() throws {
+            // `String(data:encoding:)` would drop the BOM without a trace.
+            let file = try #require(TextFile.decode(Data(bom + Array("x\n".utf8))))
+            #expect(file.hasBOM)
+            #expect(file.text == "x\n")
+        }
+
+        @Test func onlyOneLeadingBOMIsStripped() throws {
+            let file = try #require(TextFile.decode(Data(bom + bom + Array("x".utf8))))
+            #expect(file.hasBOM)
+            #expect(file.text == "\u{FEFF}x")
+        }
+
+        @Test func invalidUTF8IsNil() {
+            #expect(TextFile.decode(Data([0x61, 0xFF, 0xFE, 0x62])) == nil)
+        }
+
+        @Test func emptyData() throws {
+            let file = try #require(TextFile.decode(Data()))
+            #expect(!file.hasBOM)
+            #expect(file.lineEnding == .lf)
+            #expect(file.text == "")
+            #expect(file.encode("").isEmpty)
+        }
+
+        @Test func roundTripsLFCRLFAndBOM() throws {
+            let inputs: [Data] = [
+                Data("a\nb\n".utf8),
+                Data("a\nb".utf8),
+                Data("a\r\nb\r\n".utf8),
+                Data("a\r\n\r\nb".utf8),
+                Data(bom + Array("a\nb\n".utf8)),
+                Data(bom + Array("a\r\nb\r\n".utf8)),
+                Data("héllo \u{1F680}\r\n世界\r\n".utf8),
+            ]
+            for data in inputs {
+                let file = try #require(TextFile.decode(data))
+                #expect(file.encode(file.text) == data, "round trip changed \(Array(data))")
+            }
+        }
+
+        @Test func encodeRestoresLineEndingForNewText() throws {
+            let file = try #require(TextFile.decode(Data(bom + Array("a\r\nb\r\n".utf8))))
+            let encoded = file.encode("a\nNEW\nb\n")
+            #expect(encoded == Data(bom + Array("a\r\nNEW\r\nb\r\n".utf8)))
+        }
+
+        @Test func encodeDoesNotDoubleExistingCR() throws {
+            let file = try #require(TextFile.decode(Data("a\r\nb\r\n".utf8)))
+            #expect(file.encode("x\r\ny") == Data("x\r\ny".utf8))
+        }
     }
 
     // MARK: - Tokenizer
@@ -234,6 +347,33 @@ extension AllAppTests {
             #expect(tokens.count == 4)
             #expect(tokens[0] == .header(lineNum: 1, path: "src/app.swift", fileHash: "A1B2"))
             #expect(tokens[3] == .envelopeEnd(lineNum: 4))
+        }
+
+        @Test func tokenizeAllCRLF() {
+            let tokenizer = HashlineTokenizer()
+            let tokens = tokenizer.tokenizeAll("[src/app.swift#A1B2]\r\nPUT 2.=2:\r\n+hello\r\n*** End Patch\r\n")
+            #expect(tokens.count == 4)
+            #expect(tokens[0] == .header(lineNum: 1, path: "src/app.swift", fileHash: "A1B2"))
+            #expect(tokens[2] == .payloadLiteral(lineNum: 3, text: "hello"))
+            #expect(tokens[3] == .envelopeEnd(lineNum: 4))
+        }
+
+        @Test func feedHandlesCRLFSplitAcrossChunks() {
+            let tokenizer = HashlineTokenizer()
+            var tokens = tokenizer.feed("PUT 2.=2:\r")
+            #expect(tokens.isEmpty)
+            tokens += tokenizer.feed("\n+hello\r\n")
+            #expect(tokens.count == 2)
+            #expect(tokens[1] == .payloadLiteral(lineNum: 2, text: "hello"))
+        }
+
+        @Test func splitHashlineLinesNormalizesCRLF() {
+            #expect(HashlineTokenizer.splitHashlineLines("a\r\nb\r\n") == ["a", "b"])
+            #expect(HashlineTokenizer.splitHashlineLines("a\r\n\r\nb") == ["a", "", "b"])
+            #expect(HashlineTokenizer.splitHashlineLines("a\nb\n") == ["a", "b"])
+            #expect(HashlineTokenizer.splitHashlineLines("a\n") == ["a"])
+            #expect(HashlineTokenizer.splitHashlineLines("\n") == [""])
+            #expect(HashlineTokenizer.splitHashlineLines("") == [""])
         }
     }
 
@@ -660,20 +800,61 @@ extension AllAppTests {
         @Test func stripPastedPrefixes() {
             let content = "[src/app.swift#A1B2]\n1:line1\n2:line2\n3:line3"
             let stripped = HashlineFormat.stripPastedPrefixes(content)
-            #expect(stripped == "line1\nline2\nline3")
+            #expect(stripped.content == "line1\nline2\nline3")
+            #expect(stripped.stripped)
         }
 
         @Test func stripPastedPrefixesNoPrefix() {
             let content = "line1\nline2\nline3"
             let stripped = HashlineFormat.stripPastedPrefixes(content)
-            #expect(stripped == "line1\nline2\nline3")
+            #expect(stripped.content == "line1\nline2\nline3")
+            #expect(!stripped.stripped)
         }
 
         @Test func stripPastedPrefixesMixed() {
             // Not all lines have prefix — should not strip
             let content = "1:line1\nnoPrefix\n3:line3"
             let stripped = HashlineFormat.stripPastedPrefixes(content)
-            #expect(stripped == "1:line1\nnoPrefix\n3:line3")
+            #expect(stripped.content == "1:line1\nnoPrefix\n3:line3")
+            #expect(!stripped.stripped)
+        }
+
+        @Test func stripPastedPrefixesKeepsPortAndTimeLines() {
+            // Without a header or a numbered run from line 1 these are real content.
+            for content in ["8080:80", "12:00 a\n13:00 b", "5:x\n6:y\n7:z", "1:x\n3:y"] {
+                let stripped = HashlineFormat.stripPastedPrefixes(content)
+                #expect(stripped.content == content, "\(content.debugDescription) was modified")
+                #expect(!stripped.stripped)
+            }
+        }
+
+        @Test func stripPastedPrefixesWithoutHeaderNeedsConsecutiveRunFromOne() {
+            let stripped = HashlineFormat.stripPastedPrefixes("1:x\n2:y")
+            #expect(stripped.content == "x\ny")
+            #expect(stripped.stripped)
+        }
+
+        @Test func stripPastedPrefixesHeaderIsEvidenceOnItsOwn() {
+            let single = HashlineFormat.stripPastedPrefixes("[f#ABCD]\n8080:80")
+            #expect(single.content == "80")
+            #expect(single.stripped)
+            // A header with un-numbered content still drops the header.
+            let bare = HashlineFormat.stripPastedPrefixes("[f#ABCD]\nhello")
+            #expect(bare.content == "hello")
+            #expect(bare.stripped)
+        }
+
+        @Test func stripPastedPrefixesDropsReadNoticesWhenPasted() {
+            let content = "[f#ABCD]\n1:a\n2:b\n... (truncated at 2000 lines)"
+            let stripped = HashlineFormat.stripPastedPrefixes(content)
+            #expect(stripped.content == "a\nb")
+        }
+
+        @Test func stripPastedPrefixesKeepsEllipsisLineWithoutEvidence() {
+            let content = "intro\n...\noutro"
+            let stripped = HashlineFormat.stripPastedPrefixes(content)
+            #expect(stripped.content == content)
+            #expect(!stripped.stripped)
         }
     }
 
@@ -845,6 +1026,20 @@ extension AllAppTests {
             let result = try HashlineEdit.applySection(patch.sections[0], fileContent: fileContent)
             let newTag = HashlineFormat.computeFileHash(result.text)
             #expect(newTag != tag)
+        }
+
+        @Test func parseAcceptsCRLFPatch() throws {
+            let input =
+                "*** Begin Patch\r\n[src/app.swift#A1B2]\r\nPUT 1.=1:\r\n+world\r\n+again\r\n*** End Patch\r\n"
+            let patch = try HashlineEdit.parse(input)
+            #expect(patch.sections.count == 1)
+            #expect(patch.sections[0].path == "src/app.swift")
+            #expect(patch.sections[0].fileHash == "A1B2")
+            let texts = patch.sections[0].edits.compactMap { edit -> String? in
+                if case .insert(_, let text, _, _, _) = edit { return text }
+                return nil
+            }
+            #expect(texts == ["world", "again"])
         }
 
         @Test func e2eWithoutEnvelope() throws {

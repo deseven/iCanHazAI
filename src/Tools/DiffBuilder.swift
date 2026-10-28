@@ -65,7 +65,7 @@ enum DiffBuilder {
             guard let data = FileManager.default.contents(atPath: resolved) else {
                 return .error(message: "invalid argument 'input': file not found: \(section.path)")
             }
-            guard let old = String(data: data, encoding: .utf8) else {
+            guard let old = TextFile.decode(data)?.text else {
                 return .error(
                     message:
                         "File \(section.path) is not a text file and cannot be edited with edit_file. Use write_file to replace it entirely."

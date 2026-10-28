@@ -301,19 +301,121 @@ extension AllAppTests {
             #expect(!r.contains("\t"), "gutter must not use tabs: \(r)")
         }
 
-        @Test("read_file shows the trailing empty line so line counts match edit_file")
-        func readTrailingEmptyLine() async throws {
+        @Test("read_file hides the phantom line after a final newline")
+        func readHidesPhantomLine() async throws {
             let tmp = try TestDir()
-            try tmp.write("trail.txt", content: "a\nb\n")
-            let (r, err) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": tmp.sub("trail.txt")])
+            let cases: [(content: String, rows: [String])] = [
+                ("a\nb\n", ["1:a", "2:b"]),
+                ("a\nb", ["1:a", "2:b"]),
+                ("\n", ["1:"]),
+                ("a\n\n", ["1:a", "2:"]),
+            ]
+            for (i, c) in cases.enumerated() {
+                let path = try tmp.write("phantom\(i).txt", content: c.content)
+                let (r, err) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": path])
+                #expect(!err, "read_file failed: \(r)")
+                let tag = HashlineFormat.computeFileHash(c.content)
+                let expected = ([HashlineFormat.formatHashlineHeader(path: path, fileHash: tag)] + c.rows)
+                    .joined(separator: "\n")
+                #expect(r == expected, "\(c.content.debugDescription): got \(r.debugDescription)")
+            }
+        }
+
+        @Test("read_file on an empty file returns the header and a notice")
+        func readEmptyFile() async throws {
+            let tmp = try TestDir()
+            let path = try tmp.write("empty.txt", content: "")
+            let (r, err) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": path])
             #expect(!err, "read_file failed: \(r)")
-            // "a\nb\n" splits to ["a", "b", ""] — 3 lines. The trailing
-            // empty line (line 3) is shown so edit_file's bounds check
-            // ("file has 3 lines") matches what the model saw.
-            #expect(r.contains("\n1:a"))
-            #expect(r.contains("\n2:b"))
-            #expect(r.contains("\n3:"))
-            #expect(!r.contains("\n4:"))
+            let tag = HashlineFormat.computeFileHash("")
+            #expect(r == "\(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))\n(empty file)")
+        }
+
+        @Test("read_file past the end says so and still returns the header")
+        func readOffsetPastEnd() async throws {
+            let tmp = try TestDir()
+            let path = try tmp.write("short.txt", content: "a\nb\n")
+            let (r, err) = await Self.call(
+                "read_file", BuiltinTools.filesystemGroup, ["path": path, "offset": 3])
+            #expect(!err, "read_file failed: \(r)")
+            let tag = HashlineFormat.computeFileHash("a\nb\n")
+            #expect(
+                r
+                    == "\(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))\n(offset 3 is past the end of the file: 2 lines)"
+            )
+        }
+
+        @Test("read_file rejects a limit below 1")
+        func readInvalidLimit() async throws {
+            let tmp = try TestDir()
+            let path = try tmp.write("a.txt", content: "a\n")
+            let (r, err) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": path, "limit": 0])
+            #expect(err)
+            #expect(r.contains("limit"))
+        }
+
+        @Test("read_file shows CRLF files without carriage returns and keeps the LF tag")
+        func readCRLFFile() async throws {
+            let tmp = try TestDir()
+            let path = try tmp.write("crlf.txt", content: "a\r\nb\r\nc\r\n")
+            let (r, err) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": path])
+            #expect(!err, "read_file failed: \(r)")
+            let tag = HashlineFormat.computeFileHash("a\nb\nc\n")
+            #expect(r == "\(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))\n1:a\n2:b\n3:c")
+        }
+
+        @Test("read_file does not show a BOM")
+        func readBOMFile() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("bom.txt")
+            try Data([0xEF, 0xBB, 0xBF] + Array("a\n".utf8)).write(to: URL(fileURLWithPath: path))
+            let (r, err) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": path])
+            #expect(!err, "read_file failed: \(r)")
+            #expect(r.hasSuffix("\n1:a"))
+            #expect(!r.contains("\u{FEFF}"))
+        }
+
+        @Test("write_file writes port and time lines verbatim")
+        func writeKeepsPortAndTimeLines() async throws {
+            let tmp = try TestDir()
+            for content in ["8080:80", "12:00 a\n13:00 b"] {
+                let path = tmp.sub("verbatim.txt")
+                let (w, err) = await Self.call(
+                    "write_file", BuiltinTools.filesystemGroup, ["path": path, "content": content])
+                #expect(!err, "write_file failed: \(w)")
+                #expect(try tmp.read("verbatim.txt") == content)
+                #expect(!w.contains("Note:"), "unexpected note: \(w)")
+            }
+        }
+
+        @Test("write_file notes when it strips a pasted read")
+        func writeNotesStrippedPaste() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("pasted.txt")
+            let cases: [(pasted: String, written: String)] = [
+                ("[f#ABCD]\n1:x\n2:y", "x\ny"),
+                ("1:x\n2:y", "x\ny"),
+            ]
+            for c in cases {
+                let (w, err) = await Self.call(
+                    "write_file", BuiltinTools.filesystemGroup, ["path": path, "content": c.pasted])
+                #expect(!err, "write_file failed: \(w)")
+                #expect(try tmp.read("pasted.txt") == c.written)
+                #expect(w.hasSuffix(HashlineFormat.strippedPastedPrefixesNote), "missing note: \(w)")
+            }
+        }
+
+        @Test("write_file returns the tag a later read computes")
+        func writeTagMatchesRead() async throws {
+            let tmp = try TestDir()
+            let path = tmp.sub("crlf.txt")
+            let (w, err) = await Self.call(
+                "write_file", BuiltinTools.filesystemGroup, ["path": path, "content": "a\r\nb\r\n"])
+            #expect(!err, "write_file failed: \(w)")
+            let (r, rErr) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": path])
+            #expect(!rErr)
+            let header = try #require(r.components(separatedBy: "\n").first)
+            #expect(w.contains(header))
         }
 
         @Test("read_file handles large files with multi-byte UTF-8")
@@ -651,6 +753,21 @@ extension AllAppTests {
                 "find_text", BuiltinTools.filesystemGroup, ["path": tmp.sub("s"), "regex": "section"])
             #expect(!err)
             #expect(text.contains("multi.txt"))
+        }
+
+        @Test("find_text reports real line numbers for CRLF files")
+        func findTextCRLF() async throws {
+            let tmp = try TestDir()
+            try tmp.write("s/a.txt", content: "a\r\nb\r\nneedle\r\nc\r\n")
+            let (text, err) = await Self.call(
+                "find_text", BuiltinTools.filesystemGroup, ["path": tmp.sub("s"), "regex": "needle", "context": 1])
+            #expect(!err)
+            #expect(text.contains("\n3:needle"))
+            #expect(text.contains("\n2-b"))
+            #expect(text.contains("\n4-c"))
+            #expect(!text.contains("\r"))
+            let tag = HashlineFormat.computeFileHash("a\nb\nneedle\nc\n")
+            #expect(text.contains("#\(tag)]"))
         }
 
         @Test("find_text file_pattern filters by glob")

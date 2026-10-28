@@ -55,11 +55,7 @@ final class HashlineTokenizer {
         let buf = buffer
         buffer = ""
         if buf.isEmpty { return [] }
-        var stop = buf.endIndex
-        if stop > buf.startIndex, buf[buf.index(before: stop)] == "\r" {
-            stop = buf.index(before: stop)
-        }
-        return [Self.classifyLine(String(buf[..<stop]), lineNum: nextLineNum)]
+        return [Self.classifyLine(HashlineFormat.dropTrailingCR(buf), lineNum: nextLineNum)]
     }
 
     func reset() {
@@ -96,57 +92,26 @@ final class HashlineTokenizer {
     // MARK: - Internal line splitting
 
     private func drainCompleteLines() -> [Token] {
+        var parts = HashlineFormat.splitLines(buffer)
+        // The last element is the incomplete tail ("" after a final newline).
+        buffer = parts.removeLast()
         var tokens: [Token] = []
-        let buf = buffer
-        var start = buf.startIndex
-        var idx = buf.startIndex
-        while idx < buf.endIndex {
-            if buf[idx] != "\n" {
-                idx = buf.index(after: idx)
-                continue
-            }
-            var stop = idx
-            if stop > start, buf[buf.index(before: stop)] == "\r" {
-                stop = buf.index(before: stop)
-            }
-            tokens.append(Self.classifyLine(String(buf[start..<stop]), lineNum: nextLineNum))
+        for part in parts {
+            tokens.append(Self.classifyLine(HashlineFormat.dropTrailingCR(part), lineNum: nextLineNum))
             nextLineNum += 1
-            start = buf.index(after: idx)
-            idx = buf.index(after: idx)
         }
-        buffer = start < buf.endIndex ? String(buf[start...]) : ""
         return tokens
     }
 
     // MARK: - Line classification
 
-    /// Split text into lines, normalizing CRLF to LF.
+    /// Split text into lines, normalizing CRLF to LF. A terminal newline does
+    /// not produce a trailing empty line.
     static func splitHashlineLines(_ text: String) -> [String] {
         if text.isEmpty { return [""] }
-        var lines: [String] = []
-        var start = text.startIndex
-        var idx = text.startIndex
-        while idx < text.endIndex {
-            if text[idx] != "\n" {
-                idx = text.index(after: idx)
-                continue
-            }
-            var end = idx
-            if end > start, text[text.index(before: end)] == "\r" {
-                end = text.index(before: end)
-            }
-            lines.append(String(text[start..<end]))
-            start = text.index(after: idx)
-            idx = text.index(after: idx)
-        }
-        if start < text.endIndex {
-            var end = text.endIndex
-            if end > start, text[text.index(before: end)] == "\r" {
-                end = text.index(before: end)
-            }
-            lines.append(String(text[start..<end]))
-        }
-        return lines
+        var lines = HashlineFormat.splitLines(text)
+        if lines.last == "" { lines.removeLast() }
+        return lines.map(HashlineFormat.dropTrailingCR)
     }
 
     static func classifyLine(_ line: String, lineNum: Int) -> Token {

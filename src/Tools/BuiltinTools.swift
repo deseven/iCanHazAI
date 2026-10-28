@@ -1050,11 +1050,7 @@ enum BuiltinTools {
         _ args: [String: Any], workdir: Workdir, chatFilename: String, snapshotStore: SnapshotStore?
     ) throws -> ToolOutput {
         let path = try requireString(args, "path")
-        let offset = optionalInt(args, "offset") ?? 1
-        let limit = optionalInt(args, "limit") ?? 2000
-        if offset < 1 {
-            throw BuiltinToolError("invalid argument 'offset': must be >= 1")
-        }
+        let (offset, limit) = try readWindow(args)
         let resolved = try workdir.resolve(path)
 
         let fm = FileManager.default
@@ -1075,6 +1071,20 @@ enum BuiltinTools {
             resolvedPath: resolved, snapshotStore: snapshotStore)
     }
 
+    /// Validated `offset`/`limit` of a `read_file` call (shared with the SSH
+    /// implementation).
+    static func readWindow(_ args: [String: Any]) throws -> (offset: Int, limit: Int) {
+        let offset = optionalInt(args, "offset") ?? 1
+        let limit = optionalInt(args, "limit") ?? 2000
+        if offset < 1 {
+            throw BuiltinToolError("invalid argument 'offset': must be >= 1")
+        }
+        if limit < 1 {
+            throw BuiltinToolError("invalid argument 'limit': must be >= 1")
+        }
+        return (offset, limit)
+    }
+
     /// Shared read_file formatting pipeline (classification, document/image
     /// extraction, text slicing with line numbers, truncation), used by both
     /// the local and the SSH-backed implementations once the raw bytes are in
@@ -1093,11 +1103,11 @@ enum BuiltinTools {
 
         switch kind {
         case .text:
-            guard let text = String(data: data, encoding: .utf8) else {
+            guard let file = TextFile.decode(data) else {
                 throw BuiltinToolError("invalid argument 'path': file is not valid UTF-8: \(path)")
             }
             return formatTextLines(
-                text, path: path, offset: offset, limit: limit, resolvedPath: resolvedPath,
+                file.text, path: path, offset: offset, limit: limit, resolvedPath: resolvedPath,
                 snapshotStore: snapshotStore)
 
         case .document(let format):
@@ -1106,6 +1116,9 @@ enum BuiltinTools {
                 // Extracted text is not the file on disk — a hash tag would be
                 // meaningless and line numbers misleading, so return as-is.
                 let slice = sliceText(extraction.text, offset: offset, limit: limit)
+                if slice.total > 0, offset > slice.total {
+                    return ToolOutput(content: pastEndNotice(offset: offset, total: slice.total), isError: false)
+                }
                 var doc = slice.lines.joined(separator: "\n")
                 if slice.truncated {
                     doc += "\n... (truncated at 2000 lines)"
@@ -1147,56 +1160,62 @@ enum BuiltinTools {
         return ToolOutput(content: fallback, isError: false, image: image)
     }
 
-    /// Slices text into an offset/limit window. Returns the windowed lines and
-    /// whether more content follows beyond the hard 2000-line cap. A lone empty
-    /// line (a file containing just a newline) stays addressable: the file has
-    /// no lines only when the text itself is empty.
-    /// Slices text into an offset/limit window. Returns the windowed lines and
-    /// whether more content follows beyond the hard 2000-line cap. The file's
-    /// trailing empty line (the phantom line produced by a final newline) is
-    /// kept and shown so that `read_file` and `edit_file` agree on line count:
-    /// `"a\nb\n"` has 3 lines (the third empty), matching the applier's split.
-    /// A truly empty file has zero lines.
-    private static func sliceText(_ text: String, offset: Int, limit: Int) -> (lines: [String], truncated: Bool) {
-        if text.isEmpty { return ([], false) }
-        let lines = text.components(separatedBy: "\n")
+    /// Slices text into an offset/limit window over its addressable lines (the
+    /// phantom element after a final newline is not a line, so `"a\nb\n"` has 2).
+    /// `total` is the line count of the whole text (0 for empty text);
+    /// `truncated` tells whether more content follows beyond the hard 2000-line
+    /// cap.
+    private static func sliceText(_ text: String, offset: Int, limit: Int) -> (
+        lines: [String], total: Int, truncated: Bool
+    ) {
+        if text.isEmpty { return ([], 0, false) }
+        let lines = HashlineFormat.splitAddressableFileLines(text)
 
         let hardLimit = 2000
         let effectiveLimit = min(limit, hardLimit)
         let startIdx = offset - 1
         guard startIdx < lines.count else {
-            return ([], false)
+            return ([], lines.count, false)
         }
         let endIdx = min(startIdx + effectiveLimit, lines.count)
-        return (Array(lines[startIdx..<endIdx]), endIdx - startIdx == hardLimit && lines.count > endIdx)
+        return (Array(lines[startIdx..<endIdx]), lines.count, endIdx - startIdx == hardLimit && lines.count > endIdx)
+    }
+
+    private static func pastEndNotice(offset: Int, total: Int) -> String {
+        "(offset \(offset) is past the end of the file: \(total) \(total == 1 ? "line" : "lines"))"
     }
 
     /// Formats text as hashline output: a `[path#TAG]` header (tag computed
     /// from the full file text, so partial reads still anchor edits to the
     /// whole file) followed by unpadded `N:content` lines. The hash comes from
-    /// the full `text`, not the visible slice. When a snapshot store is
-    /// present, the read is recorded live with the displayed line numbers so
-    /// the seen-lines guard knows what the model actually saw.
+    /// the full `text`, not the visible slice. An empty file and an offset past
+    /// the end still get the header (so the file can be edited) plus a notice.
+    /// When a snapshot store is present, the read is recorded live with the
+    /// displayed line numbers so the seen-lines guard knows what the model
+    /// actually saw.
     private static func formatTextLines(
         _ text: String, path: String, offset: Int, limit: Int, resolvedPath: String, snapshotStore: SnapshotStore?
     ) -> ToolOutput {
         let slice = sliceText(text, offset: offset, limit: limit)
-        guard !slice.lines.isEmpty else {
-            return ToolOutput(content: "", isError: false)
-        }
         let tag = HashlineFormat.computeFileHash(text)
         if let snapshotStore {
-            let canonical = canonicalPath(resolvedPath)
-            let seen = Set(offset...(offset + slice.lines.count - 1))
-            snapshotStore.record(path: canonical, hash: tag, text: text, seenLines: seen)
+            // An empty file has one addressable (empty) line, and the notice
+            // below tells the model so.
+            let seen: Set<Int> = text.isEmpty ? [1] : Set(offset..<(offset + slice.lines.count))
+            snapshotStore.record(path: canonicalPath(resolvedPath), hash: tag, text: text, seenLines: seen)
         }
-        var out: [String] = []
-        out.append(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))
-        for (i, line) in slice.lines.enumerated() {
-            out.append(HashlineFormat.formatNumberedLine(lineNumber: offset + i, content: line))
-        }
-        if slice.truncated {
-            out.append("... (truncated at 2000 lines)")
+        var out: [String] = [HashlineFormat.formatHashlineHeader(path: path, fileHash: tag)]
+        if text.isEmpty {
+            out.append("(empty file)")
+        } else if offset > slice.total {
+            out.append(pastEndNotice(offset: offset, total: slice.total))
+        } else {
+            for (i, line) in slice.lines.enumerated() {
+                out.append(HashlineFormat.formatNumberedLine(lineNumber: offset + i, content: line))
+            }
+            if slice.truncated {
+                out.append("... (truncated at 2000 lines)")
+            }
         }
         return ToolOutput(content: out.joined(separator: "\n"), isError: false)
     }
@@ -1218,7 +1237,7 @@ enum BuiltinTools {
         -> ToolOutput
     {
         let path = try requireString(args, "path")
-        let content = HashlineFormat.stripPastedPrefixes(try requireString(args, "content"))
+        let (content, strippedPrefixes) = HashlineFormat.stripPastedPrefixes(try requireString(args, "content"))
         let resolved = try workdir.resolve(path)
 
         let fm = FileManager.default
@@ -1237,18 +1256,19 @@ enum BuiltinTools {
         }
         // A write replaced the whole file, so every line is now seen. Return
         // the minted #TAG so the model can edit the file without re-reading.
+        let text = TextFile.decode(data)?.text ?? content
         let tag: String
         if let snapshotStore {
-            let canonical = canonicalPath(resolved)
-            let lineCount = HashlineFormat.splitAddressableFileLines(content).count
-            tag = snapshotStore.record(path: canonical, text: content, seenLines: Set(1...lineCount))
+            let lineCount = HashlineFormat.splitAddressableFileLines(text).count
+            tag = snapshotStore.record(
+                path: canonicalPath(resolved), text: text, seenLines: Set(1...lineCount))
         } else {
-            tag = HashlineFormat.computeFileHash(content)
+            tag = HashlineFormat.computeFileHash(text)
         }
-        return ToolOutput(
-            content:
-                "Wrote \(data.count) bytes to \(path)\n\(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))",
-            isError: false)
+        var result =
+            "Wrote \(data.count) bytes to \(path)\n\(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))"
+        if strippedPrefixes { result += "\n\(HashlineFormat.strippedPastedPrefixesNote)" }
+        return ToolOutput(content: result, isError: false)
     }
 
     /// Edits existing text files with a hashline patch. The #TAG in each
@@ -1281,11 +1301,12 @@ enum BuiltinTools {
             guard let data = fm.contents(atPath: resolved) else {
                 throw BuiltinToolError("invalid argument 'input': could not read: \(section.path)")
             }
-            guard let currentContent = String(data: data, encoding: .utf8) else {
+            guard let file = TextFile.decode(data) else {
                 throw BuiltinToolError(
                     "File \(section.path) is not a text file and cannot be edited with edit_file. Use write_file to replace it entirely."
                 )
             }
+            let currentContent = file.text
 
             let result: ApplyResult
             do {
@@ -1337,7 +1358,7 @@ enum BuiltinTools {
                 if !fm.fileExists(atPath: destDir) {
                     try fm.createDirectory(atPath: destDir, withIntermediateDirectories: true)
                 }
-                try Data(result.text.utf8).write(to: URL(fileURLWithPath: resolvedDest))
+                try file.encode(result.text).write(to: URL(fileURLWithPath: resolvedDest))
                 try fm.removeItem(atPath: resolved)
                 let newTag = HashlineFormat.computeFileHash(result.text)
                 // The edit applied to the source first; the post-edit content
@@ -1353,7 +1374,7 @@ enum BuiltinTools {
                     Self.updatedSummary(
                         "Updated: \(section.path) [\(dest)#\(newTag)]", old: currentContent, new: result.text))
             case nil:
-                try Data(result.text.utf8).write(to: URL(fileURLWithPath: resolved))
+                try file.encode(result.text).write(to: URL(fileURLWithPath: resolved))
                 let newTag = HashlineFormat.computeFileHash(result.text)
                 snapshotStore?.recordEdit(
                     path: canonical, preTag: section.fileHash, postHash: newTag, postText: result.text,
@@ -1482,6 +1503,9 @@ enum BuiltinTools {
         while idx < lines.count {
             let line = lines[idx]
             if HashlineTokenizer.isHeader(line) { break }
+            if line == "(empty file)" {
+                seen.insert(1)
+            }
             let range = NSRange(line.startIndex..., in: line)
             guard let m = numberedResultLineRegex.firstMatch(in: line, range: range) else {
                 idx += 1
@@ -1492,7 +1516,7 @@ enum BuiltinTools {
             }
             idx += 1
         }
-        guard !seen.isEmpty, let canonical = canonicalKey(header.path, workdir: workdir) else {
+        guard let canonical = canonicalKey(header.path, workdir: workdir) else {
             return (idx, seen)
         }
         store.record(path: canonical, hash: tag, text: nil, seenLines: seen)
@@ -1659,9 +1683,15 @@ enum BuiltinTools {
     /// Output safety net on top of max_results (context lines can add up).
     static let findTextMaxOutputBytes = 64 * 1024
 
+    /// The line as printed, and whether it was cut (a cut line was not shown in
+    /// full, so it must not count as seen).
+    static func clipMatchLine(_ line: String) -> (text: String, clipped: Bool) {
+        if line.count <= findTextMaxLineLength { return (line, false) }
+        return (String(line.prefix(findTextMaxLineLength)) + "…", true)
+    }
+
     static func truncateMatchLine(_ line: String) -> String {
-        if line.count <= findTextMaxLineLength { return line }
-        return String(line.prefix(findTextMaxLineLength)) + "…"
+        clipMatchLine(line).text
     }
 
     private static func findText(_ args: [String: Any], workdir: Workdir, snapshotStore: SnapshotStore?) async throws
@@ -1746,12 +1776,9 @@ enum BuiltinTools {
 
         fileLoop: for (file, display) in files {
             guard let data = fm.contents(atPath: file), isText(data),
-                let text = String(data: data, encoding: .utf8)
+                let text = TextFile.decode(data)?.text, !text.isEmpty
             else { continue }
-            var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-            // An empty final element is the artifact of a trailing newline.
-            if lines.last?.isEmpty == true { lines.removeLast() }
-            guard !lines.isEmpty else { continue }
+            let lines = HashlineFormat.splitAddressableFileLines(text)
 
             var matching: Set<Int> = []
             for (i, line) in lines.enumerated() where line.firstMatch(of: regex) != nil {
@@ -1775,19 +1802,12 @@ enum BuiltinTools {
             // One hashline header per file, then 'N:content' lines for matches
             // and context (context uses '-', matching lines ':').
             let tag = HashlineFormat.computeFileHash(text)
-            if let snapshotStore {
-                // The matching lines (+ context) are seen; line numbers are
-                // 1-indexed in the output. The full text is in hand, so record
-                // it (it dedups versions; the guard never inlines it).
-                var seen = Set<Int>()
-                for group in groups {
-                    for i in group.range { seen.insert(i + 1) }
-                }
-                snapshotStore.record(path: canonicalPath(file), hash: tag, text: text, seenLines: seen)
-            }
             let header = HashlineFormat.formatHashlineHeader(path: display, fileHash: tag)
             var headerEmitted = false
-            for group in groups {
+            // 1-indexed lines printed in full — the only ones the model saw.
+            var seen = Set<Int>()
+            var capped = false
+            groupLoop: for group in groups {
                 if context > 0, !out.isEmpty {
                     out.append("--")
                     outBytes += 3
@@ -1802,20 +1822,27 @@ enum BuiltinTools {
                     if isMatch {
                         if matchCount >= maxResults {
                             hitResultCap = true
-                            break fileLoop
+                            capped = true
+                            break groupLoop
                         }
                         matchCount += 1
                     }
                     if outBytes >= Self.findTextMaxOutputBytes {
                         hitByteCap = true
-                        break fileLoop
+                        capped = true
+                        break groupLoop
                     }
-                    let content = truncateMatchLine(lines[i])
-                    let line = "\(i + 1)\(isMatch ? ":" : "-")\(content)"
+                    let clipped = clipMatchLine(lines[i])
+                    let line = "\(i + 1)\(isMatch ? ":" : "-")\(clipped.text)"
                     out.append(line)
                     outBytes += line.utf8.count + 1
+                    if !clipped.clipped { seen.insert(i + 1) }
                 }
             }
+            if headerEmitted, let snapshotStore {
+                snapshotStore.record(path: canonicalPath(file), hash: tag, text: text, seenLines: seen)
+            }
+            if capped { break fileLoop }
         }
 
         var result = out.joined(separator: "\n")

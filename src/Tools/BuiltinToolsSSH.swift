@@ -207,8 +207,7 @@ enum BuiltinToolsSSH {
         snapshotStore: SnapshotStore?
     ) async throws -> ToolOutput {
         let path = try BuiltinTools.requireString(args, "path")
-        let offset = BuiltinTools.optionalInt(args, "offset") ?? 1
-        let limit = BuiltinTools.optionalInt(args, "limit") ?? 2000
+        let (offset, limit) = try BuiltinTools.readWindow(args)
         let resolved = try workdir.resolve(path)
 
         // Stat the remote file first and refuse oversized files before
@@ -233,28 +232,31 @@ enum BuiltinToolsSSH {
         _ args: [String: Any], workdir: Workdir, ssh: SSHContext, snapshotStore: SnapshotStore?
     ) async throws -> ToolOutput {
         let path = try BuiltinTools.requireString(args, "path")
-        let content = HashlineFormat.stripPastedPrefixes(try BuiltinTools.requireString(args, "content"))
+        let (content, strippedPrefixes) = HashlineFormat.stripPastedPrefixes(
+            try BuiltinTools.requireString(args, "content"))
         let resolved = try workdir.resolve(path)
 
         // `cat >` consumes the raw bytes from the same stdin stream right
         // after the script line; EOF terminates it — no heredoc markers.
         let script = "mkdir -p \(qp(posixDirname(resolved))) && cat > \(qp(resolved))"
-        let r = try await run(ssh, script: script, stdin: Data(content.utf8))
+        let data = Data(content.utf8)
+        let r = try await run(ssh, script: script, stdin: data)
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
         // A write replaced the whole file, so every line is now seen. Return
         // the minted #TAG so the model can edit the file without re-reading.
+        let text = TextFile.decode(data)?.text ?? content
         let tag: String
         if let snapshotStore {
-            let canonical = BuiltinTools.canonicalPath(resolved)
-            let lineCount = HashlineFormat.splitAddressableFileLines(content).count
-            tag = snapshotStore.record(path: canonical, text: content, seenLines: Set(1...lineCount))
+            let lineCount = HashlineFormat.splitAddressableFileLines(text).count
+            tag = snapshotStore.record(
+                path: BuiltinTools.canonicalPath(resolved), text: text, seenLines: Set(1...lineCount))
         } else {
-            tag = HashlineFormat.computeFileHash(content)
+            tag = HashlineFormat.computeFileHash(text)
         }
-        return ToolOutput(
-            content:
-                "Wrote \(content.utf8.count) bytes to \(path)\n\(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))",
-            isError: false)
+        var result =
+            "Wrote \(data.count) bytes to \(path)\n\(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))"
+        if strippedPrefixes { result += "\n\(HashlineFormat.strippedPastedPrefixesNote)" }
+        return ToolOutput(content: result, isError: false)
     }
 
     /// Edits a remote text file with a hashline patch. Hash computation and
@@ -281,11 +283,12 @@ enum BuiltinToolsSSH {
             guard remote.exists, let data = remote.data else {
                 throw BuiltinToolError("invalid argument 'input': file not found: \(section.path)")
             }
-            guard let currentContent = String(data: data, encoding: .utf8) else {
+            guard let file = TextFile.decode(data) else {
                 throw BuiltinToolError(
                     "File \(section.path) is not a text file and cannot be edited with edit_file. Use write_file to replace it entirely."
                 )
             }
+            let currentContent = file.text
 
             let result: ApplyResult
             do {
@@ -336,7 +339,7 @@ enum BuiltinToolsSSH {
                 let write = try await run(
                     ssh,
                     script: "mkdir -p \(qp(posixDirname(resolvedDest))) && cat > \(qp(resolvedDest))",
-                    stdin: Data(result.text.utf8))
+                    stdin: file.encode(result.text))
                 try requireSuccess(
                     write, scrubbing: [(resolvedDest, workdir.displayPath(forResolved: resolvedDest))])
                 try requireSuccess(
@@ -353,7 +356,7 @@ enum BuiltinToolsSSH {
                         "Updated: \(section.path) [\(dest)#\(newTag)]", old: currentContent, new: result.text))
             case nil:
                 let write = try await run(
-                    ssh, script: "cat > \(qp(resolved))", stdin: Data(result.text.utf8))
+                    ssh, script: "cat > \(qp(resolved))", stdin: file.encode(result.text))
                 try requireSuccess(
                     write, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
                 let newTag = HashlineFormat.computeFileHash(result.text)
@@ -521,8 +524,10 @@ enum BuiltinToolsSSH {
         var cur: [String] = []
         var curMatches = 0
         var curKey: String?
-        for rawLine in r.stdoutString.split(separator: "\n", omittingEmptySubsequences: false) {
-            var line = String(rawLine)
+        // grep passes a CRLF file's line endings through; "\r\n" is a single
+        // Character, so the split must go through the UTF-16 based helper.
+        for rawLine in HashlineFormat.splitLines(r.stdoutString) {
+            var line = HashlineFormat.dropTrailingCR(rawLine)
             if displayBase != resolved, line.hasPrefix(resolved) {
                 line = displayBase + line.dropFirst(resolved.count)
             }
@@ -803,7 +808,7 @@ enum BuiltinToolsSSH {
             guard remote.exists, let fileData = remote.data else {
                 throw BuiltinToolError("invalid argument 'input': file not found: \(section.path)")
             }
-            guard let old = String(data: fileData, encoding: .utf8) else {
+            guard let old = TextFile.decode(fileData)?.text else {
                 throw BuiltinToolError(
                     "File \(section.path) is not a text file and cannot be edited with edit_file. Use write_file to replace it entirely."
                 )

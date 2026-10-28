@@ -145,6 +145,39 @@ extension AllAppTests {
             #expect(!err, "edit_file failed: \(text)")
             #expect(try tmp.read("a.txt") == "a\ne\n")
         }
+
+        @Test("editing a CRLF file keeps CRLF endings")
+        func crlfFileKeepsLineEndings() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "a\r\nb\r\nc\r\n")
+            let tag = HashlineFormat.computeFileHash("a\nb\nc\n")
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=2:\n+B1\n+B2\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "a\r\nB1\r\nB2\r\nc\r\n")
+        }
+
+        @Test("editing a file keeps its BOM")
+        func bomFileKeepsBOM() async throws {
+            let tmp = try EditTestDir()
+            let path = tmp.sub("bom.txt")
+            try Data([0xEF, 0xBB, 0xBF] + Array("a\nb\n".utf8)).write(to: URL(fileURLWithPath: path))
+            let tag = HashlineFormat.computeFileHash("a\nb\n")
+            let (text, err) = await AllAppTests.editCall(patch(path, "PUT 1.=1:\n+A\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(
+                try Data(contentsOf: URL(fileURLWithPath: path)) == Data([0xEF, 0xBB, 0xBF] + Array("A\nb\n".utf8)))
+        }
+
+        @Test("a CRLF patch is accepted")
+        func crlfPatch() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "a\nb\n")
+            let tag = HashlineFormat.computeFileHash("a\nb\n")
+            let crlf = patch(file, "PUT 2.=2:\n+B\n", tag: tag).replacingOccurrences(of: "\n", with: "\r\n")
+            let (text, err) = await AllAppTests.editCall(crlf)
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "a\nB\n")
+        }
     }
 
     // MARK: - edit_file: diff preview
@@ -496,9 +529,8 @@ extension AllAppTests {
         @Test("out-of-bounds error reports the real line count including trailing empty line")
         func outOfBoundsLineCount() async throws {
             let tmp = try EditTestDir()
-            // "a\nb\nc\n" splits to ["a","b","c",""] — 4 lines. read_file
-            // shows all 4 (including the empty line 4), so edit_file's
-            // bounds error must also report 4, not 3.
+            // The applier splits "a\nb\nc\n" to ["a","b","c",""] and its
+            // bounds error reports that count (4), trailing empty element included.
             let file = try tmp.write("a.txt", content: "a\nb\nc\n")
             let tag = HashlineFormat.computeFileHash("a\nb\nc\n")
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT 5.=5:\n+X\n", tag: tag))
@@ -847,6 +879,37 @@ extension AllAppTests {
             // line 8; the guard reports each anchor line once.
             #expect(!text.contains("8, 8"))
             #expect(try tmp.read("a.txt") == content)
+        }
+
+        @Test("an empty file read then PUT >$ is accepted")
+        func emptyFileReadThenAppend() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "")
+            let store = SnapshotStore()
+            let readOut = await Self.read("a.txt", tmp: tmp, store: store)
+            #expect(readOut.hasSuffix("(empty file)"))
+            let tag = HashlineFormat.computeFileHash("")
+            let (text, err) = await Self.editWithStore(patch(file, "PUT >$:\n+first\n", tag: tag), store: store)
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "first")
+        }
+
+        @Test("find_text only records the lines it printed in full")
+        func findTextRecordsPrintedLines() async throws {
+            let tmp = try EditTestDir()
+            let long = "needle " + String(repeating: "x", count: 500)
+            let content = "\(long)\nneedle two\nneedle three\nother\n"
+            let file = try tmp.write("a.txt", content: content)
+            let store = SnapshotStore()
+            let result = await BuiltinTools.call(
+                name: "find_text",
+                arguments: AllAppTests.argsJSON(["path": file, "regex": "needle", "max_results": 2]),
+                callID: "test", group: BuiltinTools.filesystemGroup, workdir: .none, chatFilename: "test.json",
+                snapshotStore: store)
+            #expect(!result.isError, "find_text failed: \(result.content)")
+            // Line 1 was column-clipped and line 3 cut by max_results.
+            let snapshot = try #require(store.head(path: BuiltinTools.canonicalPath(file)))
+            #expect(snapshot.seenLines == [2])
         }
 
         @Test("full read then editing any line succeeds")
