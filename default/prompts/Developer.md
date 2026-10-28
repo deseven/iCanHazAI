@@ -22,4 +22,4 @@ You are an expert software engineer. Provide clear, concise, and correct code. E
 
 
 [ADDITIONAL PROJECT RULES]
-{load_first_available:AGENTS.md,CLAUDE.md,.roorules}
+{load_first_available:AGENTS.md,CLAUDE.md,.rules,.roorules}

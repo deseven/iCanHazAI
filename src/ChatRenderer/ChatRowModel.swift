@@ -95,6 +95,13 @@ extension ChatRowModel {
         role == .assistant && !isFirst && features.responseRegen && !streaming
     }
 
+    /// The action bar (copy, regenerate, branches, edit, delete) is hidden on
+    /// the tail of a streaming chat: that row is still being written to — its
+    /// text or its tool calls are arriving — so acting on it makes no sense.
+    func allowsActions(isLast: Bool, streaming: Bool) -> Bool {
+        !(streaming && isLast)
+    }
+
     func result(for call: ToolCall) -> ToolResult? {
         toolResults.first { $0.callID == call.id }
     }

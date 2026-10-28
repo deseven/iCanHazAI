@@ -45,17 +45,18 @@ enum SeenLinesGuard {
         guard !unseen.isEmpty else { return nil }
 
         let lines = HashlineFormat.splitAddressableFileLines(file.text)
-        var clipped = false
+        var clipped: [Int] = []
         var rows: [String] = []
         for number in unseen.prefix(revealCap) where number >= 1 && number <= lines.count {
             var text = lines[number - 1]
             if text.count > revealMaxColumns {
                 text = String(text.prefix(revealMaxColumns)) + "…"
-                clipped = true
+                clipped.append(number)
             }
             rows.append(HashlineFormat.formatNumberedLine(lineNumber: number, content: text))
         }
-        let complete = unseen.count <= revealCap && !clipped
+        let capped = unseen.count > revealCap
+        let complete = !capped && clipped.isEmpty
 
         let list =
             unseen.count > revealCap
@@ -69,8 +70,18 @@ enum SeenLinesGuard {
             message +=
                 "These lines are now marked as seen — re-issue the edit unchanged (or adjusted) with the same \(header) header."
         } else {
+            var reasons: [String] = []
+            if capped { reasons.append("only the first \(revealCap) of \(unseen.count) lines are shown") }
+            if !clipped.isEmpty {
+                let numbers = clipped.map(String.init).joined(separator: ", ")
+                reasons.append(
+                    clipped.count == 1
+                        ? "line \(numbers) is longer than \(revealMaxColumns) characters and shown cut"
+                        : "lines \(numbers) are longer than \(revealMaxColumns) characters and shown cut")
+            }
+            let spec = ReadSelector.format(LineSet(unseen).ranges)
             message +=
-                "These lines are NOT marked as seen (too many lines, or lines cut at \(revealMaxColumns) characters). Re-read the range you need with read_file (offset/limit), then re-issue the edit."
+                "None of these lines are marked as seen: \(reasons.joined(separator: "; ")). Read what you need with read_file(ranges: \"\(spec)\"), then re-issue the edit."
         }
         return Rejection(
             message: message,

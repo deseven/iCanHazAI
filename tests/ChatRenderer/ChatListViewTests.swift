@@ -299,6 +299,37 @@ extension AllAppTests {
             #expect(h.list.testBottomActionsVisible(of: "tall") == false)
         }
 
+        @Test("the last row's action bar stays hidden while the chat streams, and comes back once it settles")
+        func actionsHiddenOnStreamingTail() {
+            let h = Harness()
+            h.list.setMessages(ChatRendererFixtures.chat(6))
+            #expect(h.list.testActionsVisible(hovering: "a-5") == true)
+
+            h.list.context.isStreaming = true
+            #expect(h.list.testActionsVisible(hovering: "a-5") == false)
+            #expect(h.list.testActionsVisible(hovering: "a-3") == true)
+
+            h.list.context.isStreaming = false
+            #expect(h.list.testActionsVisible(hovering: "a-5") == true)
+        }
+
+        @Test("the bottom bar of a tall streaming tail row stays hidden too")
+        func bottomActionsHiddenOnStreamingTail() {
+            let h = Harness(height: 600)
+            var rows = ChatRendererFixtures.chat(10)
+            rows[9] = ChatRendererFixtures.message("tail", content: ChatRendererFixtures.streamingText)
+            h.list.setMessages(rows)
+            h.list.testScroll(toRow: 9)
+            h.list.testScroll(by: 500)
+            // The header is out of view, so the bottom bar is the one on screen.
+            #expect(h.list.testBottomActionsVisible(of: "tail") == true)
+            #expect(h.list.testActionsVisible(hovering: "tail") == true)
+
+            h.list.context.isStreaming = true
+            #expect(h.list.testBottomActionsVisible(of: "tail") == true)
+            #expect(h.list.testActionsVisible(hovering: "tail") == false)
+        }
+
         @Test("streaming adds the pending spinner to an empty assistant message and removes it again")
         func streamingChangesHeight() {
             let h = Harness()

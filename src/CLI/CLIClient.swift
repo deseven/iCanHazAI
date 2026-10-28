@@ -584,6 +584,23 @@ enum CLIClient {
             // Lines typed while streaming (no pending prompt) are dropped.
         }
 
+        /// Interprets stdin bytes according to the current input mode: whole
+        /// lines at the normal prompt, single keys at the approval prompt.
+        func handleInput(_ bytes: Data) {
+            inputBuffer.append(bytes)
+            if keyMode {
+                while !inputBuffer.isEmpty {
+                    handleKey(inputBuffer.removeFirst())
+                }
+            } else {
+                while let nl = inputBuffer.firstIndex(of: 0x0A) {
+                    let line = String(decoding: inputBuffer[..<nl], as: UTF8.self)
+                    inputBuffer.removeSubrange(...nl)
+                    handleLine(line)
+                }
+            }
+        }
+
         defer { setKeyMode(false) }
 
         loop: for await event in events {
@@ -646,18 +663,7 @@ enum CLIClient {
                     break loop
                 }
             case .input(let bytes):
-                inputBuffer.append(bytes)
-                if keyMode {
-                    while !inputBuffer.isEmpty {
-                        handleKey(inputBuffer.removeFirst())
-                    }
-                } else {
-                    while let nl = inputBuffer.firstIndex(of: 0x0A) {
-                        let line = String(decoding: inputBuffer[..<nl], as: UTF8.self)
-                        inputBuffer.removeSubrange(...nl)
-                        handleLine(line)
-                    }
-                }
+                handleInput(bytes)
             case .inputEOF:
                 // EOF (ctrl-D) — end the session.
                 if promptVisible { _ = writeStdout("\n") }

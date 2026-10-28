@@ -241,8 +241,9 @@ enum HashlinePatcher {
         }
     }
 
-    /// The `Updated:` block and the `set` event for the post-edit content,
-    /// which lives at `newKey`. The model knows of it what it knew before
+    /// The `Updated:` block (with the counts of added and removed lines, since
+    /// the preview does not print removals) and the `set` event for the
+    /// post-edit content, which lives at `newKey`. The model knows of it what it knew before
     /// (carried through the edit's line origins), every line it authored, and
     /// the rows of the preview it is about to read.
     private static func updated(
@@ -263,6 +264,11 @@ enum HashlinePatcher {
 
         var summary =
             "Updated: \(prepared.section.path) [\(newPath)#\(HashlineFormat.computeFileHash(text))]"
+        let counts = HashlineDiffPreview.changeCounts(
+            old: prepared.file.text, new: text, origins: prepared.result.origins)
+        if let stat = HashlineDiffPreview.changeSummary(added: counts.added, removed: counts.removed) {
+            summary += " " + stat
+        }
         if let preview { summary += "\n" + preview.text }
         return (summary, [.set(newKey, contentID: HashlineFormat.computeContentID(text), lines: lines)])
     }

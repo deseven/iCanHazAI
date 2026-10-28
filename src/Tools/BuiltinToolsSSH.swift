@@ -193,7 +193,7 @@ enum BuiltinToolsSSH {
         _ args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String
     ) async throws -> ToolOutput {
         let path = try BuiltinTools.requireString(args, "path")
-        let (offset, limit) = try BuiltinTools.readWindow(args)
+        let selector = try ReadSelector(arguments: args)
         let resolved = try workdir.resolve(path)
 
         // Stat the remote file first and refuse oversized files before
@@ -210,7 +210,7 @@ enum BuiltinToolsSSH {
         let r = try await run(ssh, script: script)
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
         return try BuiltinTools.formatFileContent(
-            r.stdout, path: path, offset: offset, limit: limit, chatFilename: chatFilename,
+            r.stdout, path: path, selector: selector, chatFilename: chatFilename,
             key: .ssh(host: ssh.host, resolved: resolved))
     }
 
@@ -701,8 +701,9 @@ enum BuiltinToolsSSH {
 
         // With `exec 2>&1` everything lands on stdout; stderr is empty unless
         // the redirect itself failed (ssh transport errors surface via
-        // `failure`). Strip ANSI color codes from the merged output.
-        var text = BuiltinTools.stripAnsi(r.stdoutString)
+        // `failure`). Strip ANSI color codes from the merged output, then fold
+        // repeated lines the same way the local shell does.
+        var text = BuiltinTools.collapseRepeats(BuiltinTools.stripAnsi(r.stdoutString))
         switch r.failure {
         case .hardTimeout(let t):
             if !r.stderrString.isEmpty { text += BuiltinTools.stripAnsi(r.stderrString) }

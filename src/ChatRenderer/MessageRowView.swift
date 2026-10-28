@@ -12,12 +12,17 @@ final class MessageRowView: FlippedView {
         let open: [Bool]
         let context: Int
         let isFirst: Bool
+        /// Whether the row is the chat's last one; the action bar is hidden while
+        /// that row is still streaming in.
+        let isLast: Bool
     }
 
     var onEvent: ((RowEvent) -> Void)?
     private(set) var signature: Signature?
     private var role: ChatRowModel.Role = .user
     private var cornerRadius: CGFloat = 10
+    /// False while this row is the tail of a streaming chat; see `ChatRowModel.allowsActions`.
+    private var actionsAllowed = true
 
     private let icon = NSImageView()
     private let title = NSTextField(labelWithString: "")
@@ -96,8 +101,8 @@ final class MessageRowView: FlippedView {
     }
 
     private func updateActionVisibility() {
-        headerActions.isHidden = !isHovered
-        bottomActions.isHidden = !(isHovered && showsBottomActions)
+        headerActions.isHidden = !(isHovered && actionsAllowed)
+        bottomActions.isHidden = !(isHovered && showsBottomActions && actionsAllowed)
         for bar in [headerActions, bottomActions] { window?.invalidateCursorRects(for: bar) }
     }
 
@@ -141,12 +146,12 @@ final class MessageRowView: FlippedView {
     }
 
     func configure(
-        _ row: RowState, context: ChatRowContext, isFirst: Bool, textWidth: CGFloat, open: [Bool], layout: RowLayout,
-        contextVersion: Int
+        _ row: RowState, context: ChatRowContext, isFirst: Bool, isLast: Bool, textWidth: CGFloat, open: [Bool],
+        layout: RowLayout, contextVersion: Int
     ) {
         let signature = Signature(
             row: row.uid, version: row.version, width: textWidth, scale: layout.theme.scale, open: open,
-            context: contextVersion, isFirst: isFirst)
+            context: contextVersion, isFirst: isFirst, isLast: isLast)
         guard signature != self.signature, let rendered = row.rendered else { return }
         // Only a view that already showed this very row can be continuing its text.
         let fadeIn = context.easesStreaming && self.signature?.row == row.uid && StreamingMotion.fades
@@ -155,6 +160,8 @@ final class MessageRowView: FlippedView {
         let m = row.model
         role = m.role
         cornerRadius = theme.scaled(10)
+        actionsAllowed = m.allowsActions(isLast: isLast, streaming: context.isStreaming)
+        updateActionVisibility()
         needsDisplay = true
 
         configureHeader(m, context: context, isFirst: isFirst, textWidth: textWidth, layout: layout)
@@ -304,3 +311,10 @@ final class MessageRowView: FlippedView {
         return v
     }
 }
+
+#if DEBUG
+    extension MessageRowView {
+        /// Whether either action bar is on screen right now.
+        var testActionsVisible: Bool { !headerActions.isHidden || !bottomActions.isHidden }
+    }
+#endif

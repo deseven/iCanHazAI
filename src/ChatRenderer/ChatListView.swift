@@ -475,7 +475,7 @@ final class ChatListView: NSView {
             let frame = NSRect(x: columnX, y: offsets[i], width: columnWidth, height: row.height)
             if view.frame != frame { view.frame = frame }
             view.configure(
-                row, context: context, isFirst: i == 0, textWidth: textWidth,
+                row, context: context, isFirst: i == 0, isLast: i == rows.count - 1, textWidth: textWidth,
                 open: row.rendered.map(policy.mask) ?? [], layout: layout, contextVersion: contextVersion)
             view.search = searchIndex.highlight(forRow: id)
             let headerBottom = offsets[i] + layout.top + layout.header
@@ -1054,6 +1054,12 @@ final class PassToken: @unchecked Sendable {
         }
 
         func testBottomActionsVisible(of id: String) -> Bool? { visibleViews[id]?.showsBottomActions }
+        /// Hovers a row and reports whether its action bar ends up shown.
+        func testActionsVisible(hovering id: String) -> Bool? {
+            hoveredID = id
+            applyHover()
+            return visibleViews[id]?.testActionsVisible
+        }
         func testToggle(_ key: String) { toggle(key) }
         func testCollapse(_ key: String) { collapse(key) }
         func testIsOpen(_ key: String) -> Bool? { collapsibleBlock(key).map { openPolicy.isOpen($0.value) } }

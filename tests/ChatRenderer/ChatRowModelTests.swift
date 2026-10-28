@@ -87,6 +87,19 @@ extension AllAppTests {
             #expect(!m.dependsOnStreaming)
         }
 
+        // MARK: Action bar
+
+        @Test("the action bar is hidden on the last row while the chat streams")
+        func actionsHiddenWhileStreaming() {
+            let m = ChatRendererFixtures.message("a", content: "hi")
+            #expect(m.allowsActions(isLast: true, streaming: false))
+            #expect(m.allowsActions(isLast: false, streaming: true))
+            #expect(!m.allowsActions(isLast: true, streaming: true))
+            #expect(
+                !ChatRendererFixtures.message("u", role: .user, content: "q").allowsActions(
+                    isLast: true, streaming: true))
+        }
+
         // MARK: Attachments
 
         @Test("document chips explain truncation and failures")

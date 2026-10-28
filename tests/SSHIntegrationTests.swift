@@ -129,13 +129,13 @@ extension AllAppTests {
             await Self.destroy(wd, remote)
         }
 
-        @Test("read_file honors offset/limit and errors on missing paths")
+        @Test("read_file honors ranges and errors on missing paths")
         func readFileRanges() async {
             let (wd, remote) = Self.makeContext()
             _ = await Self.call("write_file", Self.fs, ["path": "f.txt", "content": "a\nb\nc\nd\ne\n"], workdir: wd)
 
             let (text, isError) = await Self.call(
-                "read_file", Self.fs, ["path": "f.txt", "offset": 2, "limit": 2], workdir: wd)
+                "read_file", Self.fs, ["path": "f.txt", "ranges": "2+2"], workdir: wd)
             #expect(!isError)
             #expect(text.contains("2:b"))
             #expect(text.contains("3:c"))
@@ -284,7 +284,7 @@ extension AllAppTests {
             let write = await run("write_file", ["path": "a.txt", "content": content])
             #expect(write.fileViews == [.set(key("a.txt"), contentID: id, lines: LineSet(range: 1...3))])
 
-            let read = await run("read_file", ["path": "a.txt", "offset": 2, "limit": 1])
+            let read = await run("read_file", ["path": "a.txt", "ranges": "2-2"])
             #expect(read.fileViews == [.seen(key("a.txt"), contentID: id, lines: LineSet([2]))])
 
             let move = await run("mv", ["src": "a.txt", "dst": "b.txt"])

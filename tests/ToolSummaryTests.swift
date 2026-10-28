@@ -18,18 +18,17 @@ extension AllAppTests {
 
         // MARK: - Call summaries: internal tools
 
-        @Test("read_file: path is the bare primary value, offset/limit secondary")
+        @Test("read_file: path is the bare primary value, ranges secondary")
         func readFile() {
             #expect(
                 ToolSummary.callEntries(name: "read_file", arguments: json(["path": "src/main.swift"]))
                     == [ToolSummary.Entry(key: nil, value: "src/main.swift")])
             #expect(
                 ToolSummary.callEntries(
-                    name: "read_file", arguments: json(["path": "a.txt", "offset": 10, "limit": 50]))
+                    name: "read_file", arguments: json(["path": "a.txt", "ranges": "10-59"]))
                     == [
                         ToolSummary.Entry(key: nil, value: "a.txt"),
-                        ToolSummary.Entry(key: "offset", value: "10"),
-                        ToolSummary.Entry(key: "limit", value: "50"),
+                        ToolSummary.Entry(key: "ranges", value: "10-59"),
                     ])
         }
 
@@ -142,8 +141,8 @@ extension AllAppTests {
         @Test("callLine joins entries with · and key: prefixes")
         func callLine() {
             #expect(
-                ToolSummary.callLine(name: "read_file", arguments: json(["path": "a.txt", "offset": 10]))
-                    == "a.txt · offset: 10")
+                ToolSummary.callLine(name: "read_file", arguments: json(["path": "a.txt", "ranges": "10-"]))
+                    == "a.txt · ranges: 10-")
             #expect(ToolSummary.callLine(name: "mv", arguments: json(["src": "a", "dst": "b"])) == "a → b")
             #expect(ToolSummary.callLine(name: "cp", arguments: json(["src": "a", "dst": "b"])) == "a → b")
             #expect(ToolSummary.callLine(name: "pwd", arguments: "{}") == "")

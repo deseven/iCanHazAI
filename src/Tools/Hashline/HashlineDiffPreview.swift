@@ -9,10 +9,14 @@ import Foundation
 /// format from `DiffBuilder`.
 ///
 /// Mirrors the reference `buildCompactDiffPreview`: removed lines are not
-/// printed, and every row (added or context) carries its **post-edit** line
-/// number, so a follow-up edit can reuse the numbers directly. What counts as
-/// added comes from the applier's `origins`, so the preview, the line numbers
-/// the model is told and the lines recorded as authored always agree.
+/// printed (the model named them, echoing them would only cost context), and
+/// every row (added or context) carries its **post-edit** line number, so a
+/// follow-up edit can reuse the numbers directly. What counts as added comes
+/// from the applier's `origins`, so the preview, the line numbers the model is
+/// told and the lines recorded as authored always agree.
+///
+/// Unlike the reference, the removals are still reported as a count (see
+/// `changeSummary`): a wrong range would otherwise leave no trace in the result.
 enum HashlineDiffPreview {
 
     /// Maximum total lines in the preview before truncation.
@@ -87,6 +91,24 @@ enum HashlineDiffPreview {
         }
         if rows.isEmpty { return nil }
         return truncate(rows)
+    }
+
+    // MARK: - Change counts
+
+    /// How many lines an edit wrote and removed, from the applier's `origins`
+    /// (see `generate`): lines without an origin are the ones the patch wrote,
+    /// pre-edit lines no origin points at are gone.
+    static func changeCounts(old: String, new: String, origins: [Int?]) -> (added: Int, removed: Int) {
+        let oldCount = old.isEmpty ? 0 : HashlineFormat.splitAddressableFileLines(old).count
+        if new.isEmpty { return (0, oldCount) }
+        let added = origins.filter { $0 == nil }.count
+        return (added, max(0, oldCount - (origins.count - added)))
+    }
+
+    /// `(+3 -1)`, with a zero side left out; nil when nothing was added or removed.
+    static func changeSummary(added: Int, removed: Int) -> String? {
+        let parts = [added > 0 ? "+\(added)" : nil, removed > 0 ? "-\(removed)" : nil].compactMap { $0 }
+        return parts.isEmpty ? nil : "(\(parts.joined(separator: " ")))"
     }
 
     // MARK: - Truncation

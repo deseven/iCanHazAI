@@ -1143,6 +1143,14 @@ extension AllAppTests {
             #expect(stripped.content == "a\nb")
         }
 
+        @Test func stripPastedPrefixesDropsPartialReadNoticesWhenPasted() {
+            let content =
+                "[f#ABCD]\n(lines 1-2, 5-6 of 40)\n1:a\n2:b\n…\n5:e\n6:f\n[Range 90-99 is beyond end of file (40 lines total); skipped]"
+            let stripped = HashlineFormat.stripPastedPrefixes(content)
+            #expect(stripped.content == "a\nb\ne\nf")
+            #expect(stripped.stripped)
+        }
+
         @Test func stripPastedPrefixesKeepsEllipsisLineWithoutEvidence() {
             let content = "intro\n...\noutro"
             let stripped = HashlineFormat.stripPastedPrefixes(content)

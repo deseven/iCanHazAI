@@ -266,22 +266,131 @@ extension AllAppTests {
             #expect(r2.contains("and: neither: this"))
         }
 
-        @Test("read_file supports offset and limit")
-        func readOffsetLimit() async throws {
-            let tmp = try TestDir()
-            try tmp.write("offset.txt", content: "a\nb\nc\nd\ne\n")
-            let (r, rErr) = await Self.call(
-                "read_file", BuiltinTools.filesystemGroup, ["path": tmp.sub("offset.txt"), "offset": 2, "limit": 2])
-            #expect(!rErr)
-            #expect(r.contains("2:b"))
-            #expect(r.contains("3:c"))
-            #expect(!r.contains("4:d"))
+        /// A `read_file` of `a`..`e` (five lines) with the given `ranges`.
+        private static func readRanges(_ ranges: Any?, in tmp: TestDir) async throws -> (
+            output: String, isError: Bool, header: String
+        ) {
+            let content = "a\nb\nc\nd\ne\n"
+            let path = try tmp.write("ranges.txt", content: content)
+            var args: [String: Any] = ["path": path]
+            if let ranges { args["ranges"] = ranges }
+            let (r, err) = await Self.call("read_file", BuiltinTools.filesystemGroup, args)
             // The header hash comes from the full file, so a partial read can
             // still anchor an edit anywhere in the file.
-            let expectedTag = HashlineFormat.computeFileHash("a\nb\nc\nd\ne\n")
+            let header = HashlineFormat.formatHashlineHeader(
+                path: path, fileHash: HashlineFormat.computeFileHash(content))
+            return (r, err, header)
+        }
+
+        @Test("read_file reads A-B and A+C ranges and says which lines of how many it shows")
+        func readRangeForms() async throws {
+            let tmp = try TestDir()
+            for spec in ["2-3", "2+2", "L2-L3", "2..3", " 2-3 "] {
+                let (r, err, header) = try await Self.readRanges(spec, in: tmp)
+                #expect(!err, "\(spec): \(r)")
+                #expect(r == "\(header)\n(lines 2-3 of 5)\n2:b\n3:c", "\(spec): \(r)")
+            }
+        }
+
+        @Test("read_file reads from a line to the end")
+        func readOpenEnded() async throws {
+            let tmp = try TestDir()
+            for spec in ["4-", "4", "4.."] {
+                let (r, err, header) = try await Self.readRanges(spec, in: tmp)
+                #expect(!err, "\(spec): \(r)")
+                #expect(r == "\(header)\n(lines 4-5 of 5)\n4:d\n5:e", "\(spec): \(r)")
+            }
+        }
+
+        @Test("read_file separates disjoint ranges with an ellipsis row")
+        func readMultipleRanges() async throws {
+            let tmp = try TestDir()
+            let specs: [Any] = ["1-2,4-5", ["1-2", "4-5"], "4-5, 1-2", "1-2,,4+2"]
+            for ranges in specs {
+                let (r, err, header) = try await Self.readRanges(ranges, in: tmp)
+                #expect(!err, "\(ranges): \(r)")
+                #expect(r == "\(header)\n(lines 1-2, 4-5 of 5)\n1:a\n2:b\n…\n4:d\n5:e", "\(ranges): \(r)")
+            }
+        }
+
+        @Test("read_file merges overlapping and adjacent ranges; covering the file is a plain read")
+        func readMergesRanges() async throws {
+            let tmp = try TestDir()
+            let (partial, _, header) = try await Self.readRanges("3-4,1-3", in: tmp)
+            #expect(partial == "\(header)\n(lines 1-4 of 5)\n1:a\n2:b\n3:c\n4:d")
+            let specs: [Any?] = [nil, "", "  ", "1-", "1-5", "4-5,1-2,2-3", [String]()]
+            for spec in specs {
+                let (r, err, header) = try await Self.readRanges(spec, in: tmp)
+                #expect(!err)
+                #expect(r == "\(header)\n1:a\n2:b\n3:c\n4:d\n5:e", "\(String(describing: spec)): \(r)")
+            }
+        }
+
+        @Test("read_file clamps a range that overshoots and skips one that starts past the end")
+        func readRangesPastEnd() async throws {
+            let tmp = try TestDir()
+            let (clamped, _, header) = try await Self.readRanges("4-99", in: tmp)
+            #expect(clamped == "\(header)\n(lines 4-5 of 5)\n4:d\n5:e")
+
+            let (skipped, err, _) = try await Self.readRanges("1-1,9-12,20", in: tmp)
+            #expect(!err)
             #expect(
-                r.hasPrefix(
-                    "\(HashlineFormat.formatHashlineHeader(path: tmp.sub("offset.txt"), fileHash: expectedTag))\n"))
+                skipped
+                    == "\(header)\n(lines 1-1 of 5)\n1:a\n"
+                    + "[Range 9-12 is beyond end of file (5 lines total); skipped]\n"
+                    + "[Range 20 is beyond end of file (5 lines total); skipped]")
+
+            let (none, noneErr, _) = try await Self.readRanges("6-", in: tmp)
+            #expect(!noneErr)
+            #expect(none == "\(header)\n[Range 6 is beyond end of file (5 lines total); skipped]")
+        }
+
+        @Test("read_file caps one call at 2000 lines across all its ranges")
+        func readRangesCap() async throws {
+            let tmp = try TestDir()
+            let content = (1...3000).map { "l\($0)" }.joined(separator: "\n")
+            let path = try tmp.write("big.txt", content: content)
+            let (whole, _) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": path])
+            #expect(whole.contains("\n(lines 1-2000 of 3000)\n"))
+            #expect(whole.hasSuffix("\n2000:l2000\n... (truncated at 2000 lines)"))
+
+            let (multi, _) = await Self.call(
+                "read_file", BuiltinTools.filesystemGroup, ["path": path, "ranges": "1-1500,2000-2600"])
+            #expect(multi.contains("\n(lines 1-1500, 2000-2499 of 3000)\n"))
+            #expect(multi.contains("\n1500:l1500\n…\n2000:l2000\n"))
+            #expect(multi.hasSuffix("\n2499:l2499\n... (truncated at 2000 lines)"))
+
+            // Asking for exactly the cap is not truncation, but still a partial read.
+            let (exact, _) = await Self.call(
+                "read_file", BuiltinTools.filesystemGroup, ["path": path, "ranges": "101-2100"])
+            #expect(exact.contains("\n(lines 101-2100 of 3000)\n"))
+            #expect(!exact.contains("truncated"))
+        }
+
+        @Test("read_file rejects malformed ranges and the old offset/limit")
+        func readInvalidRanges() async throws {
+            let tmp = try TestDir()
+            let path = try tmp.write("a.txt", content: "a\nb\n")
+            let cases: [(args: [String: Any], mention: String)] = [
+                (["ranges": "0"], "1-indexed"),
+                (["ranges": "0-3"], "1-indexed"),
+                (["ranges": "5-2"], "ends before it starts"),
+                (["ranges": "2+0"], "must be >= 1"),
+                (["ranges": "abc"], "cannot parse"),
+                (["ranges": "1-2-3"], "cannot parse"),
+                (["ranges": "99999999999999999999"], "out of range"),
+                (["ranges": 7], "expected a string"),
+                (["ranges": [[1, 2]]], "expected a string"),
+                (["offset": 2], "use 'ranges'"),
+                (["limit": 1], "use 'ranges'"),
+            ]
+            for c in cases {
+                var args = c.args
+                args["path"] = path
+                let (r, err) = await Self.call("read_file", BuiltinTools.filesystemGroup, args)
+                #expect(err, "\(c.args) should fail")
+                #expect(r.contains(c.mention), "\(c.args): \(r)")
+            }
         }
 
         @Test("read_file emits a hashline header and unpadded 'N:' lines")
@@ -329,29 +438,6 @@ extension AllAppTests {
             #expect(!err, "read_file failed: \(r)")
             let tag = HashlineFormat.computeFileHash("")
             #expect(r == "\(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))\n(empty file)")
-        }
-
-        @Test("read_file past the end says so and still returns the header")
-        func readOffsetPastEnd() async throws {
-            let tmp = try TestDir()
-            let path = try tmp.write("short.txt", content: "a\nb\n")
-            let (r, err) = await Self.call(
-                "read_file", BuiltinTools.filesystemGroup, ["path": path, "offset": 3])
-            #expect(!err, "read_file failed: \(r)")
-            let tag = HashlineFormat.computeFileHash("a\nb\n")
-            #expect(
-                r
-                    == "\(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))\n(offset 3 is past the end of the file: 2 lines)"
-            )
-        }
-
-        @Test("read_file rejects a limit below 1")
-        func readInvalidLimit() async throws {
-            let tmp = try TestDir()
-            let path = try tmp.write("a.txt", content: "a\n")
-            let (r, err) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": path, "limit": 0])
-            #expect(err)
-            #expect(r.contains("limit"))
         }
 
         @Test("read_file shows CRLF files without carriage returns and keeps the LF tag")
@@ -1289,8 +1375,22 @@ extension AllAppTests {
                 "shell", BuiltinTools.shellGroup, ["command": "yes x | head -70000", "timeout": 15])
             #expect(!err)
             #expect(text.contains("[exit code: 0]"))
-            // Truncation marker should be present since output > 10000 chars
+            // 70000 identical lines collapse into a marker, so the output is now
+            // well under the truncation limit.
+            #expect(text.contains("x\n<previous line repeated 69999 additional times>"))
+            #expect(!text.contains("[truncated to"))
+        }
+
+        @Test("shell collapses repeats before truncating")
+        func shellCollapsesBeforeTruncation() async throws {
+            // Repetitive output that stays over the limit after collapsing, so
+            // both the repeat marker and the truncation marker are present.
+            let cmd = "for i in $(seq 1 2000); do echo \"a fairly long repeating line $i\"; done"
+            let (text, err) = await Self.call("shell", BuiltinTools.shellGroup, ["command": cmd, "timeout": 15])
+            #expect(!err)
+            #expect(!text.contains("a fairly long repeating line 1500"))
             #expect(text.contains("[truncated to 10000 chars]"))
+            #expect(text.contains("[exit code: 0]"))
         }
 
         @Test("shell truncates output to 10000 chars with head and tail")
@@ -1307,6 +1407,58 @@ extension AllAppTests {
             #expect(text.contains("line 20000"))
             // Exit code line is present after truncation
             #expect(text.contains("[exit code: 0]"))
+        }
+
+        // MARK: - Repeated line collapsing
+
+        @Test("collapseRepeats folds a run into a repeat marker")
+        func collapseRepeatsFolds() {
+            let input =
+                "something\nlong repeating string\nlong repeating string\nlong repeating string\nlong repeating string\nsomething"
+            let expected = "something\nlong repeating string\n<previous line repeated 3 additional times>\nsomething"
+            #expect(BuiltinTools.collapseRepeats(input) == expected)
+        }
+
+        @Test("collapseRepeats leaves short runs alone when the marker costs more")
+        func collapseRepeatsShortLines() {
+            // Seven "1" lines cost 13 chars; the marker alone costs 41.
+            let input = "something\n1\n1\n1\n1\n1\n1\nsomething else"
+            #expect(BuiltinTools.collapseRepeats(input) == input)
+        }
+
+        @Test("collapseRepeats folds only the profitable runs")
+        func collapseRepeatsMixed() {
+            let input = "a\n1\n1\n1\nlong long long long line\nlong long long long line\nlong long long long line\nb"
+            let expected = "a\n1\n1\n1\nlong long long long line\n<previous line repeated 2 additional times>\nb"
+            #expect(BuiltinTools.collapseRepeats(input) == expected)
+        }
+
+        @Test("collapseRepeats keeps trailing empty lines and no-op inputs intact")
+        func collapseRepeatsEdgeCases() {
+            // Fewer than three lines: nothing can pay off.
+            #expect(BuiltinTools.collapseRepeats("x\nx\nx") == "x\nx\nx")
+            // A trailing newline means a final empty line, which must survive.
+            #expect(BuiltinTools.collapseRepeats("a\n\n\n") == "a\n\n\n")
+            #expect(BuiltinTools.collapseRepeats("") == "")
+        }
+
+        @Test("shell collapses repeated output lines")
+        func shellCollapsesRepeats() async throws {
+            let cmd = "echo start; for i in $(seq 1 40); do echo \"repeating line\"; done; echo end"
+            let (text, err) = await Self.call("shell", BuiltinTools.shellGroup, ["command": cmd])
+            #expect(!err)
+            // The command's own trailing newline is kept, as it always was.
+            #expect(
+                text
+                    == "start\nrepeating line\n<previous line repeated 39 additional times>\nend\n\n[exit code: 0]")
+        }
+
+        @Test("shell keeps short repeated lines intact")
+        func shellKeepsShortRepeats() async throws {
+            let (text, err) = await Self.call(
+                "shell", BuiltinTools.shellGroup, ["command": "seq 1 5"])
+            #expect(!err)
+            #expect(text == "1\n2\n3\n4\n5\n\n[exit code: 0]")
         }
 
         @Test("shell does not truncate output under 10000 chars")
@@ -1620,12 +1772,12 @@ extension AllAppTests {
             #expect(text.contains("--- Page 1 ---"))
         }
 
-        @Test("read_file offset/limit slices extracted document text")
+        @Test("read_file ranges slice extracted document text")
         @MainActor
-        func readDocOffsetLimit() async throws {
+        func readDocRanges() async throws {
             let f = try DocFixtures()
             // The RTF has two lines: "Hello RTF" and "Second line of RTF text."
-            let (text, err) = await Self.call("read_file", Self.fs, ["path": f.rtfPath, "offset": 2, "limit": 1])
+            let (text, err) = await Self.call("read_file", Self.fs, ["path": f.rtfPath, "ranges": "2-2"])
             #expect(!err, "read_file failed: \(text)")
             #expect(text.contains("Second line of RTF text."))
             #expect(!text.contains("Hello RTF"))

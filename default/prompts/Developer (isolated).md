@@ -25,4 +25,4 @@ You do **not** have access to the `shell` tool, so you cannot execute commands, 
 
 
 [ADDITIONAL PROJECT RULES]
-{load_first_available:AGENTS.md,CLAUDE.md,.roorules}
+{load_first_available:AGENTS.md,CLAUDE.md,.rules,.roorules}

@@ -145,10 +145,11 @@ enum HashlineFormat {
         pattern: #"^\s*(?:…|\.\.\.)\s*$"#
     )
 
-    /// Regex for the plain notices `read_file` prints in place of or after rows.
+    /// Regex for the plain notices `read_file` prints around its rows: the
+    /// partial-read line, the cap, the empty file and skipped ranges.
     private static let readNoticeRegex = try! NSRegularExpression(
         pattern:
-            #"^\s*(?:\.\.\. \(truncated at \d+ lines\)|\(empty file\)|\(offset \d+ is past the end of the file: \d+ lines?\))\s*$"#
+            #"^\s*(?:\(lines \d+-\d+(?:,\s*\d+-\d+)*\s+of\s+\d+\)|\.\.\. \(truncated at \d+ lines\)|\(empty file\)|\[Range [\d-]+ is beyond end of file \(\d+ lines? total\); skipped\])\s*$"#
     )
 
     /// Whether a row is display-only metadata emitted by `read`, never source.

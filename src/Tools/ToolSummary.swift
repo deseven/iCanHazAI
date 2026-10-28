@@ -59,7 +59,7 @@ enum ToolSummary {
     }
 
     /// The collapsed argument summary as a single pre-joined line, e.g.
-    /// `src/main.swift · offset: 10`. This is what gets persisted on
+    /// `src/main.swift · ranges: 10-29`. This is what gets persisted on
     /// `ToolCall.summary`.
     static func callLine(name: String, arguments: String, requiredArgs: [String]? = nil) -> String {
         callEntries(name: name, arguments: arguments, requiredArgs: requiredArgs)
@@ -286,7 +286,7 @@ extension ToolSummary {
         // Built-in: Edit
         "edit_file": KnownToolSpec(primary: []),
         // Built-in: Filesystem
-        "read_file": KnownToolSpec(primary: ["path"], secondary: ["offset", "limit"]),
+        "read_file": KnownToolSpec(primary: ["path"], secondary: ["ranges"]),
         "write_file": KnownToolSpec(primary: ["path"]),
         "ls": KnownToolSpec(primary: ["path"], secondary: ["recursive", "include_hidden"]),
         "find_file": KnownToolSpec(

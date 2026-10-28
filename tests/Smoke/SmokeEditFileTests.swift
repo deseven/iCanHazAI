@@ -35,9 +35,9 @@ extension AllSmokeTests {
             (try? String(data: JSONSerialization.data(withJSONObject: object), encoding: .utf8)) ?? "{}"
         }
 
-        private static func readArgs(limit: Int? = nil) -> String {
+        private static func readArgs(throughLine: Int? = nil) -> String {
             var args: [String: Any] = ["path": "notes.txt"]
-            if let limit { args["limit"] = limit }
+            if let throughLine { args["ranges"] = "1-\(throughLine)" }
             return json(args)
         }
 
@@ -57,7 +57,7 @@ extension AllSmokeTests {
             try await SmokeFixture.run { fx in
                 let chat = try await fx.start(tools: .fileEditApproval, workingDirectory: space.path)
                 try await fx.mock.enqueue(
-                    .deepseek, .toolCall(name: "read_file", arguments: Self.readArgs(limit: 5), id: "call_read"))
+                    .deepseek, .toolCall(name: "read_file", arguments: Self.readArgs(throughLine: 5), id: "call_read"))
                 try await fx.mock.enqueue(
                     .deepseek,
                     .toolCall(name: "edit_file", arguments: Self.editArgs("PUT 2.=2:\n+TWO\n"), id: "call_edit"))
@@ -110,7 +110,7 @@ extension AllSmokeTests {
                 let chat = try await fx.start(tools: .fileEditApproval, workingDirectory: space.path)
                 let edit = Self.editArgs("PUT 7.=7:\n+SEVEN\n")
                 try await fx.mock.enqueue(
-                    .deepseek, .toolCall(name: "read_file", arguments: Self.readArgs(limit: 3), id: "call_read"))
+                    .deepseek, .toolCall(name: "read_file", arguments: Self.readArgs(throughLine: 3), id: "call_read"))
                 try await fx.mock.enqueue(.deepseek, .toolCall(name: "edit_file", arguments: edit, id: "call_first"))
                 try await fx.mock.enqueue(.deepseek, .toolCall(name: "edit_file", arguments: edit, id: "call_retry"))
                 try await fx.mock.enqueue(.deepseek, .text("Done"))
@@ -176,7 +176,7 @@ extension AllSmokeTests {
                 let chat = try await fx.start(tools: .fileEditApproval, workingDirectory: space.path)
                 try await fx.mock.enqueue(
                     .deepseek,
-                    .toolCall(name: "read_file", arguments: Self.readArgs(limit: 3), id: "call_read"),
+                    .toolCall(name: "read_file", arguments: Self.readArgs(throughLine: 3), id: "call_read"),
                     .toolCall(name: "edit_file", arguments: Self.editArgs("PUT 2.=2:\n+TWO\n"), id: "call_edit"))
                 try await fx.mock.enqueue(.deepseek, .text("Noted"))
                 await fx.send(chat, "go")

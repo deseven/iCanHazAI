@@ -342,9 +342,9 @@ enum BuiltinTools {
         BuiltinToolDef(
             name: "read_file",
             description:
-                "Read a file and return its contents in a format that you can process. Use this as a main tool for reading individual files. Supports plain text and any other textual formats, document binaries (docx, doc, odt, rtf, pdf and similar) and image files. Text files are returned as a '[path#TAG]' header followed by 'N:content' numbered lines (the empty line after a final newline is not a line and is not shown; an empty file returns the header and '(empty file)'): #TAG is a file-version hash — copy it verbatim into edit_file to prove the file hasn't changed. Only the lines shown can be edited with edit_file. The 'N:' prefix is display metadata, not file content — never include it in write_file content or edit_file body rows. Document binaries are returned as extracted plain text with no headers or line numbers and cannot be edited via edit_file.",
+                "Read a file and return its contents in a format that you can process. Use this as a main tool for reading individual files. Supports plain text and any other textual formats, document binaries (docx, doc, odt, rtf, pdf and similar) and image files. Text files are returned as a '[path#TAG]' header followed by 'N:content' numbered lines (the empty line after a final newline is not a line and is not shown; an empty file returns the header and '(empty file)'): #TAG is a file-version hash — copy it verbatim into edit_file to prove the file hasn't changed. A partial read adds a '(lines A-B of N)' line after the header; a '…' row marks the gap between disjoint ranges. Only the lines shown can be edited with edit_file. The 'N:' prefix is display metadata, not file content — never include it in write_file content or edit_file body rows. Document binaries are returned as extracted plain text with no headers or line numbers and cannot be edited via edit_file.",
             schema:
-                #"{"type":"object","properties":{"path":{"type":"string","description":"File path to read. \#(Workdir.pathDescription)"},"offset":{"type":"integer","description":"1-based starting line number. Defaults to 1."},"limit":{"type":"integer","description":"Maximum number of lines to read. Defaults to 2000."}},"required":["path"]}"#
+                #"{"type":"object","properties":{"path":{"type":"string","description":"File path to read. \#(Workdir.pathDescription)"},"ranges":{"type":"string","description":"Comma-separated 1-based line ranges: 'A-B' (inclusive), 'A+C' (C lines starting at A), 'N-' (line N to the end). E.g. '100-200', '500+30', '1-40,1220-1270'. Defaults to the whole file; at most 2000 lines per call."}},"required":["path"]}"#
         ),
         BuiltinToolDef(
             name: "write_file",
@@ -430,7 +430,7 @@ enum BuiltinTools {
                 - Touch only lines you have seen: displayed by read_file/find_text (a line cut at 300 characters does not count), written by you with write_file, or shown in an edit result. Ranges cover changed lines only, never widened over lines you keep. Non-adjacent changes: separate hunks.
                 - An edit that touches other lines of a file version you have seen is rejected with those lines' current content (up to 20 lines, each cut at 300 characters). When that content is shown in full, the lines now count as seen: re-issue the edit as is. When it is capped or cut, read that range with read_file first. A file version you never saw must be read first; nothing is revealed for it.
                 - Each edit changes '#TAG' and renumbers the file. Use the new '#TAG' and the post-edit numbers from the result's preview. Lines you had seen before the edit stay usable at their new numbers, as do the lines you wrote and the preview rows; read anything else again before editing it.
-                - The result includes a compact preview of the changed region: '+N:' for lines you added, ' N:' for context, post-edit numbers; removed lines are not shown. Verify it matches your intent.
+                - The result ends its 'Updated:' line with the counts '(+added -removed)' and includes a compact preview of the changed region: '+N:' for lines you added, ' N:' for context, post-edit numbers; removed lines are not shown, only counted. Verify the counts and the preview match your intent.
                 - If your replace body restates unchanged lines bordering the range, they are automatically dropped with a warning. Issue the payload as the final desired content for the selected range only.
                 - Pure addition: 'PUT <N:' / 'PUT >N:', never a widened 'PUT N.=M:'.
                 - Never start or end a range mid-expression or mid-block.
@@ -451,7 +451,7 @@ enum BuiltinTools {
                 *** End Patch
 
                 Result — new tag, post-edit numbers:
-                Updated: greet.swift [greet.swift#C3D4]
+                Updated: greet.swift [greet.swift#C3D4] (+1 -2)
                  1:func greet(name: String) {
                 +2:    return "Hi, " + name
                  3:}
@@ -481,7 +481,7 @@ enum BuiltinTools {
 
     private static let shellToolDefs: [BuiltinToolDef] = {
         let shellDesc =
-            "Execute a command in the user's login shell (\(shellPath) -l). Returns stdout, and stderr on non-zero exit. Runs in current directory. Only use if other available tools can't achieve the desired results at all or effectively enough."
+            "Execute a command in the user's login shell (\(shellPath) -l). Returns merged stdout and stderr in write order, then the exit code. Runs in current directory. Only use if other available tools can't achieve the desired results at all or effectively enough."
         let commandDesc = "The shell command to execute. Could be a full multiline script as well."
         return [
             BuiltinToolDef(
@@ -805,6 +805,36 @@ enum BuiltinTools {
         return ansiRegex.stringByReplacingMatches(in: s, range: range, withTemplate: "")
     }
 
+    /// Collapses runs of identical consecutive lines into
+    /// `<previous line repeated N additional times>`, which is what makes
+    /// repetitive output (progress logs, wide dumps) cheap for the model. A run
+    /// is only collapsed when the text it replaces is longer than the marker
+    /// standing in for it — for short lines like `1` the marker costs more than
+    /// it saves, so those runs are left alone.
+    static func collapseRepeats(_ text: String) -> String {
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        guard lines.count > 2 else { return text }
+        var out: [Substring] = []
+        out.reserveCapacity(lines.count)
+        var i = 0
+        while i < lines.count {
+            var j = i + 1
+            while j < lines.count, lines[j] == lines[i] { j += 1 }
+            // Each dropped line also frees the newline it sat on; the extra
+            // character of slack covers a run at the very end, where the last
+            // newline disappears too.
+            let marker = "<previous line repeated \(j - i - 1) additional times>"
+            if j - i > 1, (j - i - 1) * (lines[i].count + 1) > marker.count + 1 {
+                out.append(lines[i])
+                out.append(Substring(marker))
+            } else {
+                out.append(contentsOf: lines[i..<j])
+            }
+            i = j
+        }
+        return out.joined(separator: "\n")
+    }
+
     private static let maxShellOutput = 10000
     private static let shellOutputHead = 1000
     private static let shellOutputTail = 9000
@@ -1065,7 +1095,7 @@ enum BuiltinTools {
         _ args: [String: Any], workdir: Workdir, chatFilename: String
     ) throws -> ToolOutput {
         let path = try requireString(args, "path")
-        let (offset, limit) = try readWindow(args)
+        let selector = try ReadSelector(arguments: args)
         let resolved = try workdir.resolve(path)
 
         let fm = FileManager.default
@@ -1082,22 +1112,8 @@ enum BuiltinTools {
             throw BuiltinToolError("invalid argument 'path': could not read: \(path)")
         }
         return try formatFileContent(
-            data, path: path, offset: offset, limit: limit, chatFilename: chatFilename,
+            data, path: path, selector: selector, chatFilename: chatFilename,
             key: .local(resolved: resolved))
-    }
-
-    /// Validated `offset`/`limit` of a `read_file` call (shared with the SSH
-    /// implementation).
-    static func readWindow(_ args: [String: Any]) throws -> (offset: Int, limit: Int) {
-        let offset = optionalInt(args, "offset") ?? 1
-        let limit = optionalInt(args, "limit") ?? 2000
-        if offset < 1 {
-            throw BuiltinToolError("invalid argument 'offset': must be >= 1")
-        }
-        if limit < 1 {
-            throw BuiltinToolError("invalid argument 'limit': must be >= 1")
-        }
-        return (offset, limit)
     }
 
     /// Shared read_file formatting pipeline (classification, document/image
@@ -1110,7 +1126,7 @@ enum BuiltinTools {
     /// models and the fallback text on vision-incapable ones — exactly
     /// like user-attached images.
     static func formatFileContent(
-        _ data: Data, path: String, offset: Int, limit: Int, chatFilename: String, key: FileKey
+        _ data: Data, path: String, selector: ReadSelector, chatFilename: String, key: FileKey
     ) throws -> ToolOutput {
         let hint = DocumentTypeHint(filename: path)
         let kind = DocumentClassifier.classify(data: data, hint: hint)
@@ -1120,22 +1136,17 @@ enum BuiltinTools {
             guard let file = TextFile.decode(data) else {
                 throw BuiltinToolError("invalid argument 'path': file is not valid UTF-8: \(path)")
             }
-            return formatTextLines(file.text, path: path, offset: offset, limit: limit, key: key)
+            return formatTextLines(file.text, path: path, selector: selector, key: key)
 
         case .document(let format):
             switch DocumentExtractor.extract(data: data, format: format) {
             case .success(let extraction):
                 // Extracted text is not the file on disk — a hash tag would be
                 // meaningless and line numbers misleading, so return as-is.
-                let slice = sliceText(extraction.text, offset: offset, limit: limit)
-                if slice.total > 0, offset > slice.total {
-                    return ToolOutput(content: pastEndNotice(offset: offset, total: slice.total), isError: false)
-                }
-                var doc = slice.lines.joined(separator: "\n")
-                if slice.truncated {
-                    doc += "\n... (truncated at 2000 lines)"
-                }
-                return ToolOutput(content: doc, isError: false)
+                if extraction.text.isEmpty { return ToolOutput(content: "", isError: false) }
+                let lines = HashlineFormat.splitAddressableFileLines(extraction.text)
+                let rows = readRows(lines, selector.resolve(total: lines.count), numbered: false)
+                return ToolOutput(content: rows.joined(separator: "\n"), isError: false)
             case .unsupported(_, let reason):
                 return ToolOutput(content: "Could not extract \(path): \(reason)", isError: false)
             case .failed(let reason):
@@ -1172,58 +1183,51 @@ enum BuiltinTools {
         return ToolOutput(content: fallback, isError: false, image: image)
     }
 
-    /// Slices text into an offset/limit window over its addressable lines (the
-    /// phantom element after a final newline is not a line, so `"a\nb\n"` has 2).
-    /// `total` is the line count of the whole text (0 for empty text);
-    /// `truncated` tells whether more content follows beyond the hard 2000-line
-    /// cap.
-    private static func sliceText(_ text: String, offset: Int, limit: Int) -> (
-        lines: [String], total: Int, truncated: Bool
-    ) {
-        if text.isEmpty { return ([], 0, false) }
-        let lines = HashlineFormat.splitAddressableFileLines(text)
-
-        let hardLimit = 2000
-        let effectiveLimit = min(limit, hardLimit)
-        let startIdx = offset - 1
-        guard startIdx < lines.count else {
-            return ([], lines.count, false)
+    /// The body of a read: for a partial read a `(lines A-B of N)` line, then
+    /// the windows (`N:content` rows, or bare lines for extracted documents)
+    /// with a `…` row between disjoint ones, then the cap and skipped-range
+    /// notices. `lines` are the addressable lines (the phantom element after a
+    /// final newline is not one, so `"a\nb\n"` has 2).
+    private static func readRows(
+        _ lines: [String], _ resolution: ReadSelector.Resolution, numbered: Bool
+    ) -> [String] {
+        var rows: [String] = []
+        if !resolution.windows.isEmpty, resolution.windows != [1...lines.count] {
+            rows.append("(lines \(ReadSelector.format(resolution.windows)) of \(lines.count))")
         }
-        let endIdx = min(startIdx + effectiveLimit, lines.count)
-        return (Array(lines[startIdx..<endIdx]), lines.count, endIdx - startIdx == hardLimit && lines.count > endIdx)
-    }
-
-    private static func pastEndNotice(offset: Int, total: Int) -> String {
-        "(offset \(offset) is past the end of the file: \(total) \(total == 1 ? "line" : "lines"))"
+        for (index, window) in resolution.windows.enumerated() {
+            if index > 0 { rows.append("…") }
+            for number in window {
+                let line = lines[number - 1]
+                rows.append(numbered ? HashlineFormat.formatNumberedLine(lineNumber: number, content: line) : line)
+            }
+        }
+        if resolution.truncated { rows.append("... (truncated at \(ReadSelector.maxLines) lines)") }
+        return rows + resolution.notices
     }
 
     /// Formats text as hashline output: a `[path#TAG]` header (tag computed
     /// from the full file text, so partial reads still anchor edits to the
-    /// whole file) followed by unpadded `N:content` lines. The hash comes from
-    /// the full `text`, not the visible slice. An empty file and an offset past
-    /// the end still get the header (so the file can be edited) plus a notice.
+    /// whole file) followed by the rows of `readRows`. The hash comes from the
+    /// full `text`, not the visible lines. An empty file and ranges past the
+    /// end still get the header (so the file can be edited) plus a notice.
     /// The displayed line numbers are reported as a `seen` event for this
-    /// version of the file (none for an empty file or an offset past the end:
+    /// version of the file (none for an empty file or ranges past the end:
     /// the model got the tag but no lines).
     private static func formatTextLines(
-        _ text: String, path: String, offset: Int, limit: Int, key: FileKey
+        _ text: String, path: String, selector: ReadSelector, key: FileKey
     ) -> ToolOutput {
-        let slice = sliceText(text, offset: offset, limit: limit)
         let tag = HashlineFormat.computeFileHash(text)
         var out: [String] = [HashlineFormat.formatHashlineHeader(path: path, fileHash: tag)]
+        var shown = LineSet()
         if text.isEmpty {
-            out.append("(empty file)")
-        } else if offset > slice.total {
-            out.append(pastEndNotice(offset: offset, total: slice.total))
+            out.append(HashlineDiffPreview.emptyFileNotice)
         } else {
-            for (i, line) in slice.lines.enumerated() {
-                out.append(HashlineFormat.formatNumberedLine(lineNumber: offset + i, content: line))
-            }
-            if slice.truncated {
-                out.append("... (truncated at 2000 lines)")
-            }
+            let lines = HashlineFormat.splitAddressableFileLines(text)
+            let resolution = selector.resolve(total: lines.count)
+            out += readRows(lines, resolution, numbered: true)
+            shown = resolution.windows.reduce(LineSet()) { $0.union(LineSet(range: $1)) }
         }
-        let shown = slice.lines.isEmpty ? LineSet() : LineSet(range: offset...(offset + slice.lines.count - 1))
         return ToolOutput(
             content: out.joined(separator: "\n"), isError: false,
             fileViews: [.seen(key, contentID: HashlineFormat.computeContentID(text), lines: shown)])
@@ -1660,7 +1664,7 @@ enum BuiltinTools {
             timeout: timeout,
             outputMode: .merged
         )
-        let text = truncateOutput(stripAnsi(result.stdoutString))
+        let text = truncateOutput(collapseRepeats(stripAnsi(result.stdoutString)))
         if result.exitCode == -1, let timeout {
             return ToolOutput(content: "\(text)\n[exit code: timed out after \(Int(timeout))s]", isError: false)
         }

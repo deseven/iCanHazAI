@@ -432,7 +432,7 @@ extension AllAppTests {
             let tmp = try ViewTestDir()
             let content = (1...10).map { "line\($0)" }.joined(separator: "\n") + "\n"
             let file = try tmp.write("a.txt", content: content)
-            let result = await AllAppTests.runTool("read_file", Self.fs, ["path": file, "offset": 3, "limit": 2])
+            let result = await AllAppTests.runTool("read_file", Self.fs, ["path": file, "ranges": "3-4"])
             #expect(result.fileViews == [AllAppTests.seenEvent(file, content, AllAppTests.lines(3...4))])
         }
 
@@ -453,7 +453,7 @@ extension AllAppTests {
             let short = try tmp.write("short.txt", content: "a\nb\n")
             let emptyResult = await AllAppTests.runTool("read_file", Self.fs, ["path": empty])
             #expect(emptyResult.fileViews == [AllAppTests.seenEvent(empty, "", LineSet())])
-            let pastEnd = await AllAppTests.runTool("read_file", Self.fs, ["path": short, "offset": 5])
+            let pastEnd = await AllAppTests.runTool("read_file", Self.fs, ["path": short, "ranges": "5-"])
             #expect(pastEnd.fileViews == [AllAppTests.seenEvent(short, "a\nb\n", LineSet())])
         }
 
@@ -483,8 +483,8 @@ extension AllAppTests {
             let tmp = try ViewTestDir()
             let content = (1...10).map { "line\($0)" }.joined(separator: "\n") + "\n"
             let file = try tmp.write("a.txt", content: content)
-            let first = await AllAppTests.runTool("read_file", Self.fs, ["path": file, "limit": 2])
-            let second = await AllAppTests.runTool("read_file", Self.fs, ["path": file, "offset": 4, "limit": 2])
+            let first = await AllAppTests.runTool("read_file", Self.fs, ["path": file, "ranges": "1-2"])
+            let second = await AllAppTests.runTool("read_file", Self.fs, ["path": file, "ranges": "4-5"])
             let key = AllAppTests.key(file)
             #expect(
                 AllAppTests.fold([first, second]).view(for: key)
@@ -492,7 +492,7 @@ extension AllAppTests {
 
             let changed = "other\n" + content
             try tmp.write("a.txt", content: changed)
-            let third = await AllAppTests.runTool("read_file", Self.fs, ["path": file, "limit": 1])
+            let third = await AllAppTests.runTool("read_file", Self.fs, ["path": file, "ranges": "1-1"])
             #expect(
                 AllAppTests.fold([first, second, third]).view(for: key)
                     == FileView(contentID: AllAppTests.contentID(changed), lines: LineSet([1])))

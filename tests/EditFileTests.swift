@@ -112,10 +112,9 @@ extension AllAppTests {
         }
 
         @discardableResult
-        func read(_ path: String, offset: Int? = nil, limit: Int? = nil) async -> ToolResult {
+        func read(_ path: String, ranges: String? = nil) async -> ToolResult {
             var args: [String: Any] = ["path": path]
-            if let offset { args["offset"] = offset }
-            if let limit { args["limit"] = limit }
+            if let ranges { args["ranges"] = ranges }
             return await run("read_file", BuiltinTools.filesystemGroup, args)
         }
 
@@ -398,6 +397,56 @@ extension AllAppTests {
             // Neither '+' nor '-' rows for a pure cut.
             let rows = text.components(separatedBy: "\n")
             #expect(!rows.contains { $0.hasPrefix("+") || $0.hasPrefix("-") })
+        }
+
+        @Test("the Updated line counts what was added and removed, since removed lines are not shown")
+        func updatedLineCounts() async throws {
+            let tmp = try EditTestDir()
+            let content = Self.numbered(10)
+            let tag = HashlineFormat.computeFileHash(content)
+            let cases: [(ops: String, stat: String)] = [
+                ("PUT 3.=6:\n+X\n", "(+1 -4)"),
+                ("PUT 3.=3:\n+X\n", "(+1 -1)"),
+                ("PUT >3:\n+X\n+Y\n", "(+2)"),
+                ("CUT 3.=5\n", "(-3)"),
+                ("PUT 1.=10:\n+only\n", "(+1 -10)"),
+            ]
+            for c in cases {
+                let file = try tmp.write("a.txt", content: content)
+                let (text, err) = await AllAppTests.editCall(patch(file, c.ops, tag: tag))
+                #expect(!err, "edit_file failed: \(text)")
+                let header = try #require(text.components(separatedBy: "\n").first)
+                #expect(header.hasSuffix("] \(c.stat)"), "\(c.ops.debugDescription): \(header)")
+                // Counted, never printed.
+                #expect(!text.components(separatedBy: "\n").contains { $0.hasPrefix("-") })
+            }
+        }
+
+        private static func counts(_ old: String, _ ops: String) throws -> (added: Int, removed: Int) {
+            let tag = HashlineFormat.computeFileHash(old)
+            let patch = try HashlineEdit.parse("[a.txt#\(tag)]\n\(ops)")
+            let result = try HashlineEdit.applySection(patch.sections[0], fileContent: old)
+            return HashlineDiffPreview.changeCounts(old: old, new: result.text, origins: result.origins)
+        }
+
+        @Test("change counts of an emptied file, a filled file, an unterminated file and a bare move")
+        func changeCountsEdgeCases() throws {
+            let emptied = try Self.counts("a\nb\n", "CUT 1.=2\n")
+            #expect(emptied.added == 0 && emptied.removed == 2)
+            let filled = try Self.counts("", "PUT >$:\n+x\n+y\n")
+            #expect(filled.added == 2 && filled.removed == 0)
+            let appended = try Self.counts("a\nb", "PUT >$:\n+c\n")
+            #expect(appended.added == 1 && appended.removed == 0)
+            let moved = try Self.counts("a\nb\n", "MV b.txt\n")
+            #expect(moved.added == 0 && moved.removed == 0)
+        }
+
+        @Test("the change summary leaves out a zero side and is absent when nothing changed")
+        func changeSummaryFormat() {
+            #expect(HashlineDiffPreview.changeSummary(added: 1, removed: 4) == "(+1 -4)")
+            #expect(HashlineDiffPreview.changeSummary(added: 3, removed: 0) == "(+3)")
+            #expect(HashlineDiffPreview.changeSummary(added: 0, removed: 2) == "(-2)")
+            #expect(HashlineDiffPreview.changeSummary(added: 0, removed: 0) == nil)
         }
 
         @Test("non-contiguous hunks are separated by a blank row")
@@ -975,7 +1024,7 @@ extension AllAppTests {
             let file = try tmp.write("a.txt", content: content)
             let wd = Workdir(root: tmp.path, isolated: false)
             let history = ToolHistory(workdir: wd)
-            await history.read(file, offset: 1, limit: 3)
+            await history.read(file, ranges: "1-3")
             let input = patch(file, "PUT 8.=8:\n+X\n", tag: HashlineFormat.computeFileHash(content))
 
             let first = try await preflight(input, workdir: wd, views: history.views)
@@ -1120,7 +1169,7 @@ extension AllAppTests {
             let content = Self.lines(10)
             let file = try tmp.write("a.txt", content: content)
             let history = ToolHistory()
-            let readOut = await history.read(file, offset: 1, limit: 3)
+            let readOut = await history.read(file, ranges: "1-3")
             #expect(readOut.content.contains("[\(file)#"))
             let rej = await history.edit(file, "PUT 8.=8:\n+X\n", tag: Self.tag(content))
             #expect(rej.isError)
@@ -1204,7 +1253,7 @@ extension AllAppTests {
             let content = Self.lines(10)
             let file = try tmp.write("a.txt", content: content)
             let history = ToolHistory()
-            await history.read(file, offset: 1, limit: 3)
+            await history.read(file, ranges: "1-3")
             let result = await history.edit(file, "PUT 2.=2:\n+X\n", tag: Self.tag(content))
             #expect(!result.isError, "edit_file failed: \(result.content)")
             #expect(try tmp.read("a.txt") == "line1\nX\n" + (3...10).map { "line\($0)" }.joined(separator: "\n") + "\n")
@@ -1282,7 +1331,7 @@ extension AllAppTests {
             let content = Self.lines(10)
             let file = try tmp.write("a.txt", content: content)
             let history = ToolHistory()
-            await history.read(file, offset: 1, limit: 3)
+            await history.read(file, ranges: "1-3")
             let reloaded = try history.results.map { result -> ToolResult in
                 try JSONDecoder().decode(ToolResult.self, from: JSONEncoder().encode(result))
             }
@@ -1301,7 +1350,7 @@ extension AllAppTests {
             let content = Self.lines(10)
             let file = try tmp.write("a.txt", content: content)
             let history = ToolHistory()
-            await history.read(file, offset: 1, limit: 3)
+            await history.read(file, ranges: "1-3")
             let input = patch(file, "PUT 8.=8:\n+X\n", tag: Self.tag(content))
 
             let rej = await history.edit(input)
@@ -1323,7 +1372,7 @@ extension AllAppTests {
             let content = Self.lines(60)
             let file = try tmp.write("a.txt", content: content)
             let history = ToolHistory()
-            await history.read(file, offset: 1, limit: 3)
+            await history.read(file, ranges: "1-3")
             // 50 unseen lines (4-53): the message collapses the list into a range.
             let input = patch(file, "PUT 4.=53:\n+X\n", tag: Self.tag(content))
 
@@ -1335,7 +1384,11 @@ extension AllAppTests {
             #expect(rej.content.contains("4:line4"))
             #expect(rej.content.contains("23:line23"))
             #expect(!rej.content.contains("24:line24"))
-            #expect(rej.content.contains("NOT marked as seen"))
+            #expect(
+                rej.content.contains("None of these lines are marked as seen: only the first 20 of 50 lines are shown.")
+            )
+            #expect(rej.content.contains(#"read_file(ranges: "4-53")"#))
+            #expect(!rej.content.contains("characters"))
             #expect(rej.fileViews == nil)
 
             let retry = await history.edit(input)
@@ -1351,14 +1404,18 @@ extension AllAppTests {
             let content = "a\nb\n\(long)\nd\n"
             let file = try tmp.write("a.txt", content: content)
             let history = ToolHistory()
-            await history.read(file, offset: 1, limit: 2)
+            await history.read(file, ranges: "1-2")
             let input = patch(file, "PUT 3.=3:\n+X\n", tag: Self.tag(content))
 
             let rej = await history.edit(input)
             #expect(rej.isError)
             #expect(rej.content.contains(String(repeating: "x", count: 300) + "…"))
             #expect(!rej.content.contains(String(repeating: "x", count: 301)))
-            #expect(rej.content.contains("NOT marked as seen"))
+            #expect(
+                rej.content.contains(
+                    "None of these lines are marked as seen: line 3 is longer than 300 characters and shown cut."))
+            #expect(rej.content.contains(#"read_file(ranges: "3-3")"#))
+            #expect(!rej.content.contains("only the first"))
             #expect(rej.fileViews == nil)
 
             let retry = await history.edit(input)
@@ -1372,7 +1429,7 @@ extension AllAppTests {
             let content = Self.lines(10)
             let file = try tmp.write("a.txt", content: content)
             let history = ToolHistory()
-            await history.read(file, offset: 1, limit: 3)
+            await history.read(file, ranges: "1-3")
             let result = await history.edit(file, "PUT 999.=999:\n+X\n", tag: Self.tag(content))
             #expect(result.isError)
             #expect(result.content.contains("out of bounds"))
@@ -1387,8 +1444,8 @@ extension AllAppTests {
             let fileA = try tmp.write("a.txt", content: content)
             let fileB = try tmp.write("b.txt", content: content)
             let history = ToolHistory()
-            await history.read(fileA, offset: 1, limit: 2)
-            await history.read(fileB, offset: 1, limit: 2)
+            await history.read(fileA, ranges: "1-2")
+            await history.read(fileB, ranges: "1-2")
             let input = """
                 *** Begin Patch
                 [\(fileA)#\(Self.tag(content))]
@@ -1438,7 +1495,7 @@ extension AllAppTests {
             let content = Self.lines(60)
             let file = try tmp.write("a.txt", content: content)
             let history = ToolHistory()
-            await history.read(file, offset: 1, limit: 5)
+            await history.read(file, ranges: "1-5")
             let first = await history.edit(file, "PUT 5.=5:\n+X\n", tag: Self.tag(content))
             #expect(!first.isError, "seen-line edit failed: \(first.content)")
             let edited = try tmp.read("a.txt")
@@ -1457,15 +1514,15 @@ extension AllAppTests {
             let content = Self.lines(200)
             let file = try tmp.write("a.txt", content: content)
             let history = ToolHistory()
-            await history.read(file, offset: 1, limit: 60)
+            await history.read(file, ranges: "1-60")
             let cut = await history.edit(file, "CUT 50.=60\n", tag: Self.tag(content))
             #expect(!cut.isError, "cut failed: \(cut.content)")
             let edited = try tmp.read("a.txt")
             let newTag = Self.tag(edited)
 
             // The preview showed post-edit lines 48-51 (old 48, 49, 61, 62), so
-            // post-edit 52-60 (old 63-71) were never displayed even though the
-            // removed rows carried the numbers 50-60.
+            // post-edit 52-60 (old 63-71) were never displayed, however the old
+            // numbers 50-60 of the removed lines compare.
             let rej = await history.edit(file, "PUT 55.=55:\n+X\n", tag: newTag)
             #expect(rej.isError)
             #expect(rej.content.contains("never displayed"))
@@ -1479,7 +1536,7 @@ extension AllAppTests {
             let content = Self.lines(10)
             let file = try tmp.write("a.txt", content: content)
             let history = ToolHistory()
-            await history.read(file, offset: 1, limit: 3)
+            await history.read(file, ranges: "1-3")
             let result = await history.edit(file, "PUT 2.=2:\n+X\n+Y\n", tag: Self.tag(content))
             #expect(!result.isError, "edit failed: \(result.content)")
 
