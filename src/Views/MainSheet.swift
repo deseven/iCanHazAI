@@ -162,7 +162,12 @@ struct MainSheetContent: View {
                     store.recordWorkingDirectory(path)
                     store.setWorkingDirectory(path)
                     store.showWorkdirPicker = false
-                }
+                },
+                onPickNone: store.selectedRole?.workingDirectoryOptional == true
+                    ? {
+                        store.setNoWorkingDirectory()
+                        store.showWorkdirPicker = false
+                    } : nil
             )
 
         case .modelPicker:

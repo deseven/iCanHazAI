@@ -23,7 +23,7 @@ struct ChatInputFacts: Equatable {
     func actionEnabled(hasText: Bool, hasAttachments: Bool) -> Bool {
         if isStreaming { return true }
         if !hasValidRole || !hasModel { return false }
-        // Directory-relevant tools (Filesystem/Code) require a working
+        // Directory-relevant tools (Filesystem/Edit) require a working
         // directory before requests can be sent.
         if workdirRequired { return false }
         if hasAttachments || hasText || queuedCount > 0 { return true }

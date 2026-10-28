@@ -3,8 +3,6 @@ prompt = "Researcher"
 icon = "magnifyingglass"
 accent = "pink"
 
-mcps_override_allowed = true
-
 [features]
 with_attachments = true
 with_response_regen = true

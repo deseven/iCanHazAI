@@ -237,16 +237,26 @@ enum PromptVariables {
     /// `Current directory: {current_directory}`).
     ///
     /// - Empty string when the role selects no workdir-capable built-in group
-    ///   (Filesystem, Code, or Shell) — nothing consumes a directory, so the
+    ///   (Filesystem, Edit, or Shell) — nothing consumes a directory, so the
     ///   variable says nothing.
+    /// - An explanation (`noDirectoryNotice`) when the user picked "No
+    ///   Directory" for this chat.
     /// - `/` when directory isolation is enabled — the working directory is
     ///   the root of the model's world.
     /// - `~` when no directory is set.
     /// - `/some/path` otherwise.
-    static func currentDirectory(workdirCapable: Bool, isolated: Bool, directory: String?) -> String {
+    static func currentDirectory(
+        workdirCapable: Bool, isolated: Bool, directory: String?, noDirectory: Bool = false
+    ) -> String {
         guard workdirCapable else { return "" }
+        if noDirectory { return noDirectoryNotice }
         if isolated { return "/" }
         guard let directory, !directory.isEmpty else { return "~" }
         return directory
     }
+
+    /// The `{current_directory}` value for a chat whose user picked "No
+    /// Directory" (role with `working_directory_optional`).
+    static let noDirectoryNotice =
+        "None. The user didn't pick a working directory for this session, so all filesystem access is currently disabled: the file, edit and shell tools are not available."
 }

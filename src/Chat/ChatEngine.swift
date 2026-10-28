@@ -39,13 +39,13 @@ actor ChatEngine {
     private let store: ChatStore
     private let registry: ProviderRegistry
     private let catalog: ModelCatalog
-    /// Custom MCP servers loaded from disk (`~/iCanHazAI/MCPs/*.toml`). Built-in tool groups (Utils/Filesystem/Code/Shell)
+    /// Custom MCP servers loaded from disk (`~/iCanHazAI/MCPs/*.toml`). Built-in tool groups (Utils/Filesystem/Edit/Shell)
     /// are no longer MCP servers — they run in-process via
     /// [`BuiltinTools`](src/Tools/BuiltinTools.swift).
     private var customMcps: [MCPServer] = []
     /// The full server list shown to the UI: custom servers sorted by name.
     /// Built-in tool groups are not represented here (they're configured per
-    /// role via `[utils]`/`[filesystem]`/`[code]`/`[shell]` groups, not as
+    /// role via `[utils]`/`[filesystem]`/`[edit]`/`[shell]` groups, not as
     /// MCP server entries).
     private(set) var mcps: [MCPServer] = []
     /// Live MCP configuration status, mirrored from `MCPManager`'s status
@@ -1007,7 +1007,7 @@ actor ChatEngine {
         }
         // Seed the chat's active custom MCPs from the role. The selection is
         // stored per chat so it stays stable if the role is edited later, and
-        // can be changed per chat when the role allows MCP overrides.
+        // the user can freely change it per chat.
         if let roleMCPs = role?.config.mcps, !roleMCPs.isEmpty {
             chat.mcps = roleMCPs.map(\.mcp)
         }
@@ -1374,7 +1374,7 @@ actor ChatEngine {
 
     // MARK: - Role resolution
 
-    /// A resolved tool source: either a built-in group (Utils/Filesystem/Code/
+    /// A resolved tool source: either a built-in group (Utils/Filesystem/Edit/
     /// Shell, running in-process) or a custom MCP server (running as a
     /// subprocess). Carries the tool selection filter, the auto-allow set, and
     /// (for isolation-capable built-in groups) the role's directory-isolation
@@ -1448,18 +1448,10 @@ actor ChatEngine {
         return nil
     }
 
-    /// The system prompt content for a chat: the per-chat prompt override when
-    /// the role allows it, otherwise the role's prompt. Nil when the role has
-    /// no prompt or the referenced prompt can't be found.
+    /// The system prompt content for a chat: always the role's prompt. Nil
+    /// when the role has no prompt or the referenced prompt can't be found.
     private func systemPromptContent(for chat: Chat) -> String? {
-        guard let role = self.role(for: chat) else { return nil }
-        let promptName: String?
-        if role.promptOverrideAllowed, let override = chat.prompt {
-            promptName = override
-        } else {
-            promptName = role.promptName
-        }
-        guard let name = promptName else { return nil }
+        guard let name = self.role(for: chat)?.promptName else { return nil }
         return prompts.first(where: { $0.name == name })?.content
     }
 
@@ -1469,7 +1461,8 @@ actor ChatEngine {
     /// prompt or the referenced prompt can't be found. Substitution happens here
     /// — never at load time — so each request gets fresh values (e.g. the
     /// current date) and the raw prompt text stays available for editing.
-    private func systemMessage(for chat: Chat) -> ChatMessage? {
+    /// Internal (not private) so tests can inspect the substituted prompt.
+    func systemMessage(for chat: Chat) -> ChatMessage? {
         guard let promptContent = systemPromptContent(for: chat) else { return nil }
 
         let role = self.role(for: chat)
@@ -1480,6 +1473,7 @@ actor ChatEngine {
             ? PromptVariables.plainTextRendering()
             : PromptVariables.renderingCapabilities()
         let workdir = effectiveWorkingDirectory(for: chat)
+        let noDirectory = role?.isWithoutDirectory(chat) ?? false
         let values: [String: String] = [
             "output_rendering": outputRendering,
             "user": PromptVariables.currentUserName(),
@@ -1487,12 +1481,15 @@ actor ChatEngine {
             "current_directory": PromptVariables.currentDirectory(
                 workdirCapable: role?.hasWorkdirCapableMCP ?? false,
                 isolated: role?.hasDirectoryIsolation ?? false,
-                directory: workdir
+                directory: workdir,
+                noDirectory: noDirectory
             ),
         ]
         let cache = loadFirstAvailableCache
         let content = PromptVariables.substitute(text: promptContent, values: values) { args in
-            cache.resolve(args: args, baseDirectory: workdir)
+            // "No Directory" means no filesystem access at all, so a file
+            // must not be read from the home fallback either.
+            noDirectory ? "" : cache.resolve(args: args, baseDirectory: workdir)
         }
         return ChatMessage(role: .system, content: content)
     }
@@ -1500,12 +1497,17 @@ actor ChatEngine {
     /// Resolves the chat's tool sources: the role's enabled built-in groups
     /// (in-process) plus the chat's active custom MCP servers whose config
     /// exists. Custom MCP entries whose server doesn't exist (e.g. a deleted
-    /// config) are dropped.
+    /// config) are dropped. This is the single source of truth for what a chat
+    /// may call: advertising, the chat-info snapshot and approval all go
+    /// through it.
     private func resolvedToolSources(for chat: Chat) -> [ResolvedToolSource] {
         guard let role = self.role(for: chat) else { return [] }
         var sources: [ResolvedToolSource] = []
-        // Built-in groups: enabled when their `[group]` table is present.
+        let withoutDirectory = role.isWithoutDirectory(chat)
+        // Built-in groups: enabled when their `[group]` table is present. In a
+        // "No Directory" chat the groups that need a directory are left out.
         for group in role.enabledGroups {
+            if withoutDirectory, BuiltinTools.workdirCapableGroups.contains(group) { continue }
             let cfg = role.groupConfig(group) ?? RoleToolGroup()
             sources.append(
                 ResolvedToolSource(
@@ -1515,14 +1517,14 @@ actor ChatEngine {
                     autoAllow: Set(cfg.autoAllow ?? []),
                     autoAllowAll: cfg.autoAllowAll ?? false,
                     // Isolation is a role-level switch applied to the
-                    // isolation-capable groups (Filesystem/Code).
+                    // isolation-capable groups (Filesystem/Edit).
                     directoryIsolation: role.hasDirectoryIsolation
                         && BuiltinTools.isolationCapableGroups.contains(group),
                     shellWhitelist: Set(cfg.shellWhitelist ?? [])
                 ))
         }
         // Custom MCP servers: the chat's own selection (seeded from the role,
-        // possibly overridden per chat). Chats that predate the per-chat
+        // freely changeable per chat). Chats that predate the per-chat
         // selection (nil) fall back to the role's entries. Servers whose
         // config no longer exists are dropped; entries also present in the
         // role keep the role's tool selection and auto-allow rules, extra
@@ -1553,7 +1555,7 @@ actor ChatEngine {
     /// The effective working directory for a chat: the per-chat value (seeded
     /// from the role at creation or picked by the user — permanent either way),
     /// falling back to the role's working directory. Nil when neither is set.
-    /// Forwarded to built-in Filesystem/Code/Shell tools so relative paths
+    /// Forwarded to built-in Filesystem/Edit/Shell tools so relative paths
     /// resolve against it.
     private func effectiveWorkingDirectory(for chat: Chat) -> String? {
         if let dir = chat.workingDirectory, !dir.isEmpty { return dir }
@@ -1669,8 +1671,7 @@ actor ChatEngine {
         let committed = commitAttachments(pendingAttachments, for: baseChat, filename: filename)
 
         // Build the message list including the system prompt from the role's
-        // prompt (or the chat's per-chat prompt override when allowed), with
-        // variables substituted at request time. The request history is built
+        // prompt, with variables substituted at request time. The request history is built
         // from the active path (derived for forked chats, identity for linear).
         var messages: [ChatMessage] = []
         if let systemMsg = systemMessage(for: baseChat) {
@@ -1889,8 +1890,9 @@ actor ChatEngine {
         // Apply the CLI's working directory (the client process's cwd, or the
         // explicit --workdir value) — but only for roles that actually consume
         // one and don't already fix the directory themselves: a role's pre-set
-        // working directory is permanent and always wins. An explicitly-passed
-        // workdir that can't be applied triggers a warning.
+        // working directory is permanent and always wins, and so does a chat's
+        // permanent "No Directory" choice. An explicitly-passed workdir that
+        // can't be applied triggers a warning.
         if let workdir, !workdir.isEmpty {
             await ensureChatLoaded(filename: filename)
             if let idx = records.firstIndex(where: { $0.filename == filename }),
@@ -1903,6 +1905,12 @@ actor ChatEngine {
                             filename: filename,
                             .notice("--workdir has no effect: role \"\(chat.role ?? "?")\" fixes the working directory")
                         )
+                    }
+                } else if role?.isWithoutDirectory(chat) == true {
+                    if workdirExplicit {
+                        notifyOneShot(
+                            filename: filename,
+                            .notice("--workdir has no effect: this chat was started without a working directory"))
                     }
                 } else if role?.hasWorkdirCapableMCP == true {
                     chat.workingDirectory = workdir
@@ -2598,7 +2606,7 @@ actor ChatEngine {
         // non-text file, unseen anchor lines) is relayed to the model as an
         // immediate error instead of asking the user to approve a call that
         // can't succeed. SSH runs the same checks locally on fetched content.
-        if sourceName == BuiltinTools.codeGroup, toolName == "edit_file" {
+        if sourceName == BuiltinTools.editGroup, toolName == "edit_file" {
             let wd = Workdir(root: workdir, isolated: isolation, chatID: chatID)
             let store = records.first(where: { $0.filename == filename })?.snapshotStore
             if let ssh = wd.ssh {
@@ -3553,23 +3561,11 @@ actor ChatEngine {
     }
 
     /// Updates the per-chat custom MCP selection (names of active servers).
-    /// Only meaningful when the chat's role allows MCP overrides; the engine
-    /// stores the value regardless and resolution falls back to it.
     func setChatMCPs(filename: String, names: [String]) async {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         await ensureChatLoaded(filename: filename)
         guard var chat = records[idx].chat else { return }
         chat.mcps = names.isEmpty ? nil : names
-        saveChat(chat, filename: filename)
-        emit(.chatsChanged(records))
-    }
-
-    /// Updates the per-chat prompt override for a chat.
-    func setPrompt(filename: String, promptName: String?) async {
-        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
-        await ensureChatLoaded(filename: filename)
-        guard var chat = records[idx].chat else { return }
-        chat.prompt = promptName
         saveChat(chat, filename: filename)
         emit(.chatsChanged(records))
     }
@@ -3580,6 +3576,21 @@ actor ChatEngine {
         await ensureChatLoaded(filename: filename)
         guard var chat = records[idx].chat else { return }
         chat.workingDirectory = path
+        saveChat(chat, filename: filename)
+        emit(.chatsChanged(records))
+    }
+
+    /// Records the user's "No Directory" pick. Final, like a picked directory:
+    /// ignored unless the role makes the directory optional and the chat has
+    /// no directory yet, and never reverted afterwards.
+    func setNoWorkingDirectory(filename: String) async {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        await ensureChatLoaded(filename: filename)
+        guard var chat = records[idx].chat, let chatRole = self.role(for: chat) else { return }
+        guard chatRole.workingDirectoryOptional, chatRole.workingDirectory?.isEmpty ?? true,
+            chat.workingDirectory?.isEmpty ?? true
+        else { return }
+        chat.noWorkingDirectory = true
         saveChat(chat, filename: filename)
         emit(.chatsChanged(records))
     }

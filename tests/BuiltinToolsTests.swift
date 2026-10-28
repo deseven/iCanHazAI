@@ -4,7 +4,7 @@ import Testing
 
 @testable import iCanHazAI
 
-/// In-process tests for the built-in tool groups (Utils, Filesystem, Code,
+/// In-process tests for the built-in tool groups (Utils, Filesystem, Edit,
 /// Shell), ported from the former subprocess-based MCP integration tests.
 /// These run entirely in-process via [`BuiltinTools`](src/Tools/BuiltinTools.swift)
 /// — no subprocess spawning, no MCP stdio transport.
@@ -257,7 +257,7 @@ extension AllAppTests {
             #expect(!r.contains("1:1:"), "line-number prefix must have been stripped")
             // Genuine content without prefixes is untouched.
             let plain = "no prefix here\nand: neither: this\n"
-            let (w2, w2Err) = await Self.call(
+            let (_, w2Err) = await Self.call(
                 "write_file", BuiltinTools.filesystemGroup, ["path": path, "content": plain])
             #expect(!w2Err)
             let (r2, r2Err) = await Self.call("read_file", BuiltinTools.filesystemGroup, ["path": path])
@@ -403,6 +403,91 @@ extension AllAppTests {
             #expect(!err)
             #expect(!tmp.exists("src.txt"))
             #expect(tmp.exists("dst.txt"))
+        }
+
+        @Test("cp copies a file and keeps the original")
+        func cpCopiesFile() async throws {
+            let tmp = try TestDir()
+            try tmp.write("src.txt", content: "data")
+            let (text, err) = await Self.call(
+                "cp", BuiltinTools.filesystemGroup, ["src": tmp.sub("src.txt"), "dst": tmp.sub("dst.txt")])
+            #expect(!err)
+            #expect(text.contains("Copied"))
+            #expect(try tmp.read("src.txt") == "data")
+            #expect(try tmp.read("dst.txt") == "data")
+        }
+
+        @Test("cp copies a directory recursively without any flag")
+        func cpCopiesDirectory() async throws {
+            let tmp = try TestDir()
+            try tmp.write("proj/a.txt", content: "a")
+            try tmp.write("proj/deep/er/b.txt", content: "b")
+            let (_, err) = await Self.call(
+                "cp", BuiltinTools.filesystemGroup, ["src": tmp.sub("proj"), "dst": tmp.sub("proj-copy")])
+            #expect(!err)
+            #expect(try tmp.read("proj-copy/a.txt") == "a")
+            #expect(try tmp.read("proj-copy/deep/er/b.txt") == "b")
+            #expect(tmp.exists("proj/deep/er/b.txt"))
+        }
+
+        @Test("cp creates missing parent directories of the destination")
+        func cpCreatesParents() async throws {
+            let tmp = try TestDir()
+            try tmp.write("src.txt", content: "data")
+            let (_, err) = await Self.call(
+                "cp", BuiltinTools.filesystemGroup, ["src": tmp.sub("src.txt"), "dst": tmp.sub("a/b/c/dst.txt")])
+            #expect(!err)
+            #expect(try tmp.read("a/b/c/dst.txt") == "data")
+        }
+
+        @Test("cp refuses to overwrite an existing destination")
+        func cpRefusesOverwrite() async throws {
+            let tmp = try TestDir()
+            try tmp.write("src.txt", content: "new")
+            try tmp.write("dst.txt", content: "precious")
+            try tmp.write("somedir/x.txt", content: "x")
+            for dst in ["dst.txt", "somedir"] {
+                let (text, err) = await Self.call(
+                    "cp", BuiltinTools.filesystemGroup, ["src": tmp.sub("src.txt"), "dst": tmp.sub(dst)])
+                #expect(err, "expected an error for existing destination \(dst)")
+                #expect(text.contains("already exists"))
+            }
+            #expect(try tmp.read("dst.txt") == "precious")
+            #expect(!tmp.exists("somedir/src.txt"))
+        }
+
+        @Test("cp errors on a missing source")
+        func cpMissingSource() async throws {
+            let tmp = try TestDir()
+            let (text, err) = await Self.call(
+                "cp", BuiltinTools.filesystemGroup, ["src": tmp.sub("nope.txt"), "dst": tmp.sub("dst.txt")])
+            #expect(err)
+            #expect(text.contains("not found"))
+            #expect(!tmp.exists("dst.txt"))
+        }
+
+        @Test("cp refuses to copy a directory into itself")
+        func cpIntoItself() async throws {
+            let tmp = try TestDir()
+            try tmp.write("dir/a.txt", content: "a")
+            let (text, err) = await Self.call(
+                "cp", BuiltinTools.filesystemGroup, ["src": tmp.sub("dir"), "dst": tmp.sub("dir/inner/copy")])
+            #expect(err)
+            #expect(text.contains("into itself"))
+            #expect(!tmp.exists("dir/inner"))
+        }
+
+        @Test("cp copies a symlink as a link instead of following it")
+        func cpKeepsSymlinks() async throws {
+            let tmp = try TestDir()
+            try tmp.write("target.txt", content: "data")
+            try FileManager.default.createSymbolicLink(
+                atPath: tmp.sub("link"), withDestinationPath: tmp.sub("target.txt"))
+            let (_, err) = await Self.call(
+                "cp", BuiltinTools.filesystemGroup, ["src": tmp.sub("link"), "dst": tmp.sub("link-copy")])
+            #expect(!err)
+            let linkTarget = try FileManager.default.destinationOfSymbolicLink(atPath: tmp.sub("link-copy"))
+            #expect(linkTarget == tmp.sub("target.txt"))
         }
 
         @Test("rm deletes a file")
@@ -826,7 +911,6 @@ extension AllAppTests {
     @Suite("Builtin tools: directory isolation")
     struct BuiltinIsolationTests {
         private static let fs = BuiltinTools.filesystemGroup
-        private static let code = BuiltinTools.codeGroup
 
         /// TestDir paths carry this marker; any appearance in isolated tool
         /// output means the host layout leaked.
@@ -883,6 +967,19 @@ extension AllAppTests {
             }
         }
 
+        @Test("cp rejects sources and destinations outside the jail")
+        func cpEscapeRejected() async throws {
+            let tmp = try TestDir()
+            try tmp.write("a.txt", content: "x")
+            let wd = Workdir(root: tmp.path, isolated: true)
+            for (src, dst) in [("/a.txt", "../../outside.txt"), ("../../etc/hosts", "/b.txt")] {
+                let (text, err) = await Self.call("cp", Self.fs, ["src": src, "dst": dst], workdir: wd)
+                #expect(err)
+                #expect(text.contains("escapes the workdir"))
+            }
+            #expect(!tmp.exists("b.txt"))
+        }
+
         @Test("find_text shows real paths when not isolated")
         func findTextNonIsolated() async throws {
             let tmp = try TestDir()
@@ -931,6 +1028,10 @@ extension AllAppTests {
             collect("mkdir", await Self.call("mkdir", fs, ["path": "/newdir"], workdir: wd))
             collect("mv", await Self.call("mv", fs, ["src": "/a.txt", "dst": "/newdir/b.txt"], workdir: wd))
             collect("mv missing", await Self.call("mv", fs, ["src": "/missing.txt", "dst": "/x.txt"], workdir: wd))
+            collect("cp", await Self.call("cp", fs, ["src": "/newdir/b.txt", "dst": "/newdir/c.txt"], workdir: wd))
+            collect("cp missing", await Self.call("cp", fs, ["src": "/missing.txt", "dst": "/x.txt"], workdir: wd))
+            collect(
+                "cp existing", await Self.call("cp", fs, ["src": "/newdir/b.txt", "dst": "/newdir/c.txt"], workdir: wd))
             collect("rm missing", await Self.call("rm", fs, ["path": "/missing.txt"], workdir: wd))
             collect("rm non-empty dir", await Self.call("rm", fs, ["path": "/newdir"], workdir: wd))
             collect("stat", await Self.call("stat", fs, ["path": "/newdir/b.txt"], workdir: wd))

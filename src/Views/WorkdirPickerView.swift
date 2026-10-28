@@ -28,10 +28,15 @@ import SwiftUI
 /// [`PickerDialog`](src/Views/PickerDialog.swift:37). The selected directory
 /// is saved to the chat data (alongside the role and title), not to the app
 /// config.
+///
+/// When `onPickNone` is set (roles with `working_directory_optional`), a
+/// "No Directory" item is pinned at the bottom of the list; it is always
+/// visible, whatever the search text. Like a directory, the choice is final.
 struct WorkdirPickerView: View {
     @EnvironmentObject var store: AppViewModel
     let onCancel: () -> Void
     let onPick: (String) -> Void
+    var onPickNone: (() -> Void)? = nil
 
     @State private var query: String = ""
     @StateObject private var sshLister = WorkdirSSHLister()
@@ -72,6 +77,10 @@ struct WorkdirPickerView: View {
         }
     }
 
+    private var pinnedItems: [WorkdirItem] {
+        onPickNone == nil ? [] : [.noDirectory]
+    }
+
     private var initialSelection: WorkdirItem? {
         directories.first.map { .recent($0) }
     }
@@ -85,7 +94,7 @@ struct WorkdirPickerView: View {
             searchPlaceholder: "Type a path or host:/path",
             items: scrollItems,
             pinnedHeader: nil,
-            pinnedItems: [],
+            pinnedItems: pinnedItems,
             emptyTitle: "No recent directories",
             emptySubtitle: "Type a local path or host:/path above",
             width: 420,
@@ -96,9 +105,16 @@ struct WorkdirPickerView: View {
                         onRemove: { store.removeWorkingDirectory(item.path) }
                     ))
             },
-            onSelect: { onPick($0.path) },
+            onSelect: { item in
+                if case .noDirectory = item {
+                    onPickNone?()
+                } else {
+                    onPick(item.path)
+                }
+            },
             onCancel: onCancel,
-            initialSelection: initialSelection
+            initialSelection: initialSelection,
+            pinnedRequiresExplicitSelection: true
         )
         .onChange(of: query) { _, _ in
             switch parsedQuery {
@@ -125,7 +141,7 @@ private struct WorkdirRowContent: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: SSHSpec.isSSH(item.path) ? "network" : "folder")
+            Image(systemName: icon)
                 .font(.title3)
                 .foregroundStyle(.secondary)
                 .frame(width: 24)
@@ -152,7 +168,13 @@ private struct WorkdirRowContent: View {
         }
     }
 
+    private var icon: String {
+        if case .noDirectory = item { return "folder.badge.minus" }
+        return SSHSpec.isSSH(item.path) ? "network" : "folder"
+    }
+
     private var title: String {
+        if case .noDirectory = item { return "No Directory" }
         let dir = item.path
         if SSHSpec.isSSH(dir),
             case .success(let spec) = SSHSpec.parse(dir)
@@ -166,6 +188,7 @@ private struct WorkdirRowContent: View {
     }
 
     private var subtitle: String {
+        if case .noDirectory = item { return "File, edit and shell tools will be disabled for this chat" }
         let dir = item.path
         if SSHSpec.isSSH(dir) {
             if case .success(let spec) = SSHSpec.parse(dir), spec.path != nil {

@@ -35,7 +35,9 @@ struct ChatInfoSidebar: View {
                         Section("Working Directory") {
                             InfoCell(
                                 label: "Path",
-                                value: store.selectedChatWorkingDirectory.map(WorkdirItem.display) ?? "N/A",
+                                value: store.selectedChatWorkdirDeclined
+                                    ? "None"
+                                    : store.selectedChatWorkingDirectory.map(WorkdirItem.display) ?? "N/A",
                                 tag: store.selectedChatWorkdirIsolated ? "ISOLATED" : nil
                             )
                         }
@@ -119,7 +121,7 @@ struct ChatInfoSidebar: View {
 
     /// Everything that can change the tool list or its approval states: the
     /// chat itself, its role, its per-chat MCP selection and approval
-    /// overrides, the role definitions (a role edit may change defaults), the
+    /// overrides, whether it has no working directory, the role definitions (a role edit may change defaults), the
     /// MCP configs, and the MCP configuration pass counter (tools coming and
     /// going as servers are reconfigured).
     private func toolRefreshKey(for item: ChatRecord) -> ToolRefreshKey {
@@ -127,6 +129,7 @@ struct ChatInfoSidebar: View {
             filename: item.filename,
             role: item.chat?.role,
             chatMCPs: item.chat?.mcps ?? [],
+            noWorkingDirectory: item.chat?.noWorkingDirectory ?? false,
             autoAllow: item.chat?.autoAllow ?? [],
             autoDeny: item.chat?.autoDeny ?? [],
             roles: store.roles,
@@ -139,6 +142,7 @@ struct ChatInfoSidebar: View {
         let filename: String
         let role: String?
         let chatMCPs: [String]
+        let noWorkingDirectory: Bool
         let autoAllow: [String]
         let autoDeny: [String]
         let roles: [Role]

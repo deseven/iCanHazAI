@@ -2,7 +2,6 @@ description = "Unrestricted coding agent equipped with all essential tools for c
 prompt = "Developer"
 icon = "hammer"
 accent = "blue"
-mcps_override_allowed = true
 
 [features]
 with_attachments = true
@@ -15,7 +14,7 @@ auto_allow_all = true
 tools = ["read_file", "write_file"]
 auto_allow = ["read_file"]
 
-[code]
+[edit]
 
 [shell]
 tools = ["shell"]

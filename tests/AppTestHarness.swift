@@ -136,16 +136,17 @@ enum Fixtures {
         messages: [ChatMessage] = [],
         model: String? = nil,
         role: String? = nil,
-        prompt: String? = nil,
         workingDirectory: String? = nil,
+        noWorkingDirectory: Bool? = nil,
         mcps: [String]? = nil,
         title: String? = nil,
         archive: Bool? = nil,
         autoAllow: [String]? = nil
     ) -> Chat {
         Chat(
-            id: id, messages: messages, model: model, role: role, prompt: prompt,
-            workingDirectory: workingDirectory, mcps: mcps, title: title, archive: archive, autoAllow: autoAllow)
+            id: id, messages: messages, model: model, role: role,
+            workingDirectory: workingDirectory, noWorkingDirectory: noWorkingDirectory, mcps: mcps, title: title,
+            archive: archive, autoAllow: autoAllow)
     }
 
     /// Attaches fork branches to a message, making it a fork owner. The owner

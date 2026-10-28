@@ -6,7 +6,7 @@ import TOML
 
 /// In-process tools exposed only to the bundled **Configurator** role.
 ///
-/// Unlike the in-house MCP servers (Utils/Filesystem/Code/Shell), these tools
+/// Unlike the in-house MCP servers (Utils/Filesystem/Edit/Shell), these tools
 /// are not a subprocess — they run directly inside the app so they can validate
 /// config text via the same loading methods the app uses
 /// ([`TOMLDecoder`](src/Config/ConfigManager.swift) for MCP/role/app configs)

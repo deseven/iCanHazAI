@@ -283,7 +283,7 @@ extension ToolSummary {
     /// Per-tool argument importance for internal (built-in + configurator)
     /// tools. Tools with no meaningful arguments map to an empty primary list.
     fileprivate static let knownTools: [String: KnownToolSpec] = [
-        // Built-in: Code
+        // Built-in: Edit
         "edit_file": KnownToolSpec(primary: []),
         // Built-in: Filesystem
         "read_file": KnownToolSpec(primary: ["path"], secondary: ["offset", "limit"]),
@@ -361,7 +361,7 @@ extension ToolSummary {
 
     fileprivate static func customKnownSummary(name: String, obj: [String: Any]) -> [Entry]? {
         switch name {
-        case "mv":
+        case "mv", "cp":
             guard let src = obj["src"].flatMap(scalar), let dst = obj["dst"].flatMap(scalar) else { return nil }
             return [Entry(key: nil, value: "\(src) → \(dst)")]
         case "edit_file":
@@ -373,7 +373,7 @@ extension ToolSummary {
         }
     }
 
-    fileprivate static let customKnownTools: Set<String> = ["mv", "edit_file"]
+    fileprivate static let customKnownTools: Set<String> = ["mv", "cp", "edit_file"]
 
     /// Summary for an internal tool, or nil when the tool isn't known.
     fileprivate static func knownToolSummary(name: String, obj: [String: Any]) -> [Entry]? {

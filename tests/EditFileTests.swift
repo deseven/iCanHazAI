@@ -4,7 +4,7 @@ import Testing
 
 @testable import iCanHazAI
 
-/// In-process tests for the `edit_file` tool (Code group): hashline patch
+/// In-process tests for the `edit_file` tool (Edit group): hashline patch
 /// parsing, #TAG validation, line edits, REM/MV file ops, and the approval
 /// preflight/diff. See `BuiltinToolsTests.swift` for the shared helper pattern.
 ///
@@ -52,7 +52,7 @@ extension AllAppTests {
             (try? String(data: JSONSerialization.data(withJSONObject: ["input": input]), encoding: .utf8))
             ?? "{}"
         let result = await BuiltinTools.call(
-            name: "edit_file", arguments: arguments, callID: "test", group: BuiltinTools.codeGroup,
+            name: "edit_file", arguments: arguments, callID: "test", group: BuiltinTools.editGroup,
             workdir: workdir, chatFilename: "test.json")
         return (result.content, result.isError)
     }
@@ -768,18 +768,18 @@ extension AllAppTests {
 
     @Suite("edit_file: registry")
     struct EditFileRegistryTests {
-        @Test("edit_file is the only Code tool and dispatches to the Code group")
+        @Test("edit_file is the only Edit tool and dispatches to the Edit group")
         func registry() {
-            let defs = BuiltinTools.tools(for: BuiltinTools.codeGroup)
+            let defs = BuiltinTools.tools(for: BuiltinTools.editGroup)
             #expect(defs.count == 1)
             #expect(defs[0].name == "edit_file")
-            #expect(BuiltinTools.group(for: "edit_file") == "Code")
+            #expect(BuiltinTools.group(for: "edit_file") == "Edit")
             #expect(BuiltinTools.allToolNames.contains("edit_file"))
         }
 
         @Test("edit_file tool definition carries the hashline schema")
         func schema() throws {
-            let defs = BuiltinTools.tools(for: BuiltinTools.codeGroup)
+            let defs = BuiltinTools.tools(for: BuiltinTools.editGroup)
             let def = defs.first { $0.name == "edit_file" }
             let schema = try #require(def?.schema)
             #expect(schema.contains("\"input\""))
@@ -812,7 +812,7 @@ extension AllAppTests {
         ) async -> (text: String, isError: Bool) {
             let arguments = AllAppTests.argsJSON(["input": input])
             let result = await BuiltinTools.call(
-                name: "edit_file", arguments: arguments, callID: "test", group: BuiltinTools.codeGroup,
+                name: "edit_file", arguments: arguments, callID: "test", group: BuiltinTools.editGroup,
                 workdir: workdir, chatFilename: "test.json", snapshotStore: store)
             return (result.content, result.isError)
         }

@@ -2,7 +2,6 @@ description = "Directory-isolated coding agent equipped with all essential tools
 prompt = "Developer (isolated)"
 icon = "hammer.circle"
 accent = "indigo"
-mcps_override_allowed = true
 directory_isolation = true
 
 [features]
@@ -14,4 +13,4 @@ auto_allow_all = true
 [filesystem]
 auto_allow = ["ls", "read_file", "stat", "find_file", "find_text", "pwd"]
 
-[code]
+[edit]

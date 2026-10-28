@@ -54,7 +54,7 @@ struct MCPTool: Sendable, Equatable {
 /// discovered tool list per server, and exposes `callTool()` for the agent
 /// loop. Lives alongside `ChatEngine`.
 ///
-/// Built-in tool groups (Utils/Filesystem/Code/Shell) are no longer MCP
+/// Built-in tool groups (Utils/Filesystem/Edit/Shell) are no longer MCP
 /// servers — they run in-process via [`BuiltinTools`](src/Tools/BuiltinTools.swift)
 /// and are dispatched directly from `ChatEngine.executeToolCall`, bypassing
 /// this manager entirely.

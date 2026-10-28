@@ -48,11 +48,13 @@ extension AllAppTests {
                     == [ToolSummary.Entry(key: nil, value: "cd /tmp⏎ls -la")])
         }
 
-        @Test("mv renders src → dst")
+        @Test("mv and cp render src → dst")
         func customKnown() {
-            #expect(
-                ToolSummary.callEntries(name: "mv", arguments: json(["src": "a.txt", "dst": "b.txt"]))
-                    == [ToolSummary.Entry(key: nil, value: "a.txt → b.txt")])
+            for name in ["mv", "cp"] {
+                #expect(
+                    ToolSummary.callEntries(name: name, arguments: json(["src": "a.txt", "dst": "b.txt"]))
+                        == [ToolSummary.Entry(key: nil, value: "a.txt → b.txt")])
+            }
         }
 
         @Test("edit_file renders affected hashline paths as bare entries")
@@ -143,6 +145,7 @@ extension AllAppTests {
                 ToolSummary.callLine(name: "read_file", arguments: json(["path": "a.txt", "offset": 10]))
                     == "a.txt · offset: 10")
             #expect(ToolSummary.callLine(name: "mv", arguments: json(["src": "a", "dst": "b"])) == "a → b")
+            #expect(ToolSummary.callLine(name: "cp", arguments: json(["src": "a", "dst": "b"])) == "a → b")
             #expect(ToolSummary.callLine(name: "pwd", arguments: "{}") == "")
         }
 

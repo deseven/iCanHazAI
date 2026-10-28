@@ -75,8 +75,8 @@ extension AllAppTests {
                 messages: [Fixtures.message(role: .user, content: "ping")],
                 model: "openai:gpt-5",
                 role: "Developer",
-                prompt: "Developer",
                 workingDirectory: "~/projects/MyProject",
+                noWorkingDirectory: true,
                 mcps: ["Tavily", "googledocs"],
                 title: "My Chat"
             )
@@ -123,11 +123,36 @@ extension AllAppTests {
             #expect(chat.model == nil)
             #expect(chat.role == nil)
             #expect(chat.title == nil)
-            #expect(chat.prompt == nil)
             #expect(chat.workingDirectory == nil)
+            #expect(chat.noWorkingDirectory == nil)
             #expect(chat.mcps == nil)
             #expect(chat.autoAllow == nil)
             #expect(chat.messages.isEmpty)
+        }
+
+        @Test("Chat round-trips the no_working_directory choice")
+        func chatRoundTripsNoWorkingDirectory() throws {
+            let original = Chat(noWorkingDirectory: true)
+            let data = try JSONEncoder().encode(original)
+            #expect(String(data: data, encoding: .utf8)!.contains("\"no_working_directory\""))
+            let decoded = try JSONDecoder().decode(Chat.self, from: data)
+            #expect(decoded == original)
+            #expect(decoded.noWorkingDirectory == true)
+
+            let bad = """
+                {"id":"00000000-0000-0000-0000-000000000001","messages":[],"no_working_directory":"yes"}
+                """.data(using: .utf8)!
+            #expect(try JSONDecoder().decode(Chat.self, from: bad).noWorkingDirectory == nil)
+        }
+
+        @Test("Chat files carrying the removed per-chat prompt override still load")
+        func chatIgnoresRemovedPromptOverride() throws {
+            let json = """
+                {"id":"00000000-0000-0000-0000-000000000001","messages":[],"prompt":"Developer"}
+                """.data(using: .utf8)!
+            let chat = try JSONDecoder().decode(Chat.self, from: json)
+            #expect(chat.messages.isEmpty)
+            #expect(!String(data: try JSONEncoder().encode(chat), encoding: .utf8)!.contains("\"prompt\""))
         }
 
         @Test("Chat round-trips the per-chat auto_allow list")

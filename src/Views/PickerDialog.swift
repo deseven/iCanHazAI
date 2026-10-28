@@ -96,6 +96,11 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
     /// Shows a small spinner next to the search field (e.g. a server-side
     /// search is running).
     var isLoading: Bool = false
+    /// When true, pinned items are never picked implicitly: the search-driven
+    /// highlight and the ↵ fallback (nothing highlighted) only consider the
+    /// scrollable `items`. For pinned choices that can't be undone (the
+    /// workdir picker's "No Directory"), so a stray ↵ can't make them.
+    var pinnedRequiresExplicitSelection: Bool = false
 
     /// Currently highlighted item (driven by both keyboard and hover).
     @State private var selection: Item?
@@ -119,6 +124,10 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
 
     /// Combined ordered list used for keyboard navigation.
     private var allItems: [Item] { items + pinnedItems }
+
+    /// Items eligible for implicit highlighting/picking (see
+    /// `pinnedRequiresExplicitSelection`).
+    private var implicitItems: [Item] { pinnedRequiresExplicitSelection ? items : allItems }
 
     private var footerHint: String {
         if multiSelect != nil { return "↑↓ navigate · ⇧↵ toggle · ↵ apply" }
@@ -270,7 +279,7 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
         .onChange(of: searchText) { _, _ in
             isKeyboardSelection = true
             hoverEnabled = false
-            selection = allItems.first
+            selection = implicitItems.first
         }
         .onAppear {
             isKeyboardSelection = true
@@ -427,7 +436,7 @@ struct PickerDialog<Item: Identifiable & Hashable>: View {
         let all = allItems
         if let sel = selection, all.contains(sel) {
             onSelect(sel)
-        } else if let first = all.first {
+        } else if let first = implicitItems.first {
             onSelect(first)
         }
     }

@@ -9,7 +9,7 @@ import ProcessExit
 // MARK: - Workdir
 
 /// Per-chat working directory context for builtin tool execution. Carries the
-/// resolved root path and isolation flag so Filesystem/Code tools resolve paths
+/// resolved root path and isolation flag so Filesystem/Edit tools resolve paths
 /// correctly. When `isolated` is true, absolute paths are treated as relative
 /// to the root (chroot-like) and path escapes are rejected.
 ///
@@ -244,19 +244,21 @@ enum BuiltinTools {
 
     static let utilsGroup = "Utils"
     static let filesystemGroup = "Filesystem"
-    static let codeGroup = "Code"
+    static let editGroup = "Edit"
     static let shellGroup = "Shell"
     static let webGroup = "Web"
 
-    static let allGroups: Set<String> = [utilsGroup, filesystemGroup, codeGroup, shellGroup, webGroup]
-    static let groupOrder: [String] = [utilsGroup, filesystemGroup, codeGroup, shellGroup, webGroup]
-    static let workdirCapableGroups: Set<String> = [filesystemGroup, codeGroup, shellGroup]
-    static let isolationCapableGroups: Set<String> = [filesystemGroup, codeGroup]
+    static let allGroups: Set<String> = [utilsGroup, filesystemGroup, editGroup, shellGroup, webGroup]
+    static let groupOrder: [String] = [utilsGroup, filesystemGroup, editGroup, shellGroup, webGroup]
+    /// Groups whose tools need a working directory. A chat without one (the
+    /// user picked "No Directory") doesn't get any of them.
+    static let workdirCapableGroups: Set<String> = [filesystemGroup, editGroup, shellGroup]
+    static let isolationCapableGroups: Set<String> = [filesystemGroup, editGroup]
     /// Groups whose tools operate on files and therefore require a working
     /// directory (pre-set by the role or picked once per chat by the user).
     /// Shell is excluded — it defaults to the user's home when no directory
     /// is set.
-    static let directoryRelevantGroups: Set<String> = [filesystemGroup, codeGroup]
+    static let directoryRelevantGroups: Set<String> = [filesystemGroup, editGroup]
 
     /// Tools that only make sense against the local machine (macOS
     /// automation) and are not advertised when the chat's working directory
@@ -365,6 +367,13 @@ enum BuiltinTools {
                 #"{"type":"object","properties":{"src":{"type":"string","description":"Source path. \#(Workdir.pathDescription)"},"dst":{"type":"string","description":"Destination path. \#(Workdir.pathDescription)"}},"required":["src","dst"]}"#
         ),
         BuiltinToolDef(
+            name: "cp",
+            description:
+                "Copy a file or directory. A directory is copied recursively with all its contents. 'dst' is the full path of the new copy (not the directory to copy into) and must not exist yet; missing parent directories are created.",
+            schema:
+                #"{"type":"object","properties":{"src":{"type":"string","description":"Source path. \#(Workdir.pathDescription)"},"dst":{"type":"string","description":"Destination path of the new copy. \#(Workdir.pathDescription)"}},"required":["src","dst"]}"#
+        ),
+        BuiltinToolDef(
             name: "rm",
             description:
                 "Delete a file or directory. For directories, recursive must be true unless the directory is empty.",
@@ -384,7 +393,7 @@ enum BuiltinTools {
             schema: #"{"type":"object","properties":{},"required":[]}"#),
     ]
 
-    private static let codeToolDefs: [BuiltinToolDef] = [
+    private static let editToolDefs: [BuiltinToolDef] = [
         BuiltinToolDef(
             name: "edit_file",
             description:
@@ -474,7 +483,7 @@ enum BuiltinTools {
         switch group {
         case utilsGroup: return utilsToolDefs
         case filesystemGroup: return filesystemToolDefs
-        case codeGroup: return codeToolDefs
+        case editGroup: return editToolDefs
         case shellGroup: return shellToolDefs
         case webGroup: return BuiltinToolsWeb.toolDefs
         default: return []
@@ -557,8 +566,8 @@ enum BuiltinTools {
                 return try await BuiltinToolsSSH.filesystem(
                     name: name, args: args, workdir: workdir, ssh: ssh, chatFilename: chatFilename,
                     snapshotStore: snapshotStore)
-            case (codeGroup, _):
-                return try await BuiltinToolsSSH.code(
+            case (editGroup, _):
+                return try await BuiltinToolsSSH.edit(
                     name: name, args: args, workdir: workdir, ssh: ssh, chatFilename: chatFilename,
                     snapshotStore: snapshotStore)
             case (shellGroup, "shell"):
@@ -590,11 +599,12 @@ enum BuiltinTools {
             return try await findText(args, workdir: workdir, snapshotStore: snapshotStore)
         case (filesystemGroup, "mkdir"): return try mkdir(args, workdir: workdir)
         case (filesystemGroup, "mv"): return try mv(args, workdir: workdir)
+        case (filesystemGroup, "cp"): return try cp(args, workdir: workdir)
         case (filesystemGroup, "rm"): return try rm(args, workdir: workdir)
         case (filesystemGroup, "stat"): return try await stat(args, workdir: workdir)
         case (filesystemGroup, "pwd"): return pwd(workdir)
-        // Code
-        case (codeGroup, "edit_file"): return try editFile(args, workdir: workdir, snapshotStore: snapshotStore)
+        // Edit
+        case (editGroup, "edit_file"): return try editFile(args, workdir: workdir, snapshotStore: snapshotStore)
         // Shell
         case (shellGroup, "shell"): return try await shell(args, workdir: workdir)
         case (shellGroup, "applescript"): return try await applescript(args)
@@ -1831,6 +1841,34 @@ enum BuiltinTools {
         let resolvedDst = try workdir.resolve(dst)
         try FileManager.default.moveItem(atPath: resolvedSrc, toPath: resolvedDst)
         return ToolOutput(content: "Moved \(src) to \(dst)", isError: false)
+    }
+
+    /// Copies a file, or a whole directory tree when `src` is a directory.
+    /// `dst` is the new path itself (never "copy into"), must not exist, and
+    /// gets its parents created. Symlinks are copied as links, not followed.
+    private static func cp(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
+        let src = try requireString(args, "src")
+        let dst = try requireString(args, "dst")
+        let resolvedSrc = try workdir.resolve(src)
+        let resolvedDst = try workdir.resolve(dst)
+
+        let fm = FileManager.default
+        guard let srcAttrs = try? fm.attributesOfItem(atPath: resolvedSrc) else {
+            throw BuiltinToolError("invalid argument 'src': not found: \(src)")
+        }
+        if (try? fm.attributesOfItem(atPath: resolvedDst)) != nil {
+            throw BuiltinToolError("invalid argument 'dst': already exists: \(dst)")
+        }
+        if srcAttrs[.type] as? FileAttributeType == .typeDirectory {
+            let prefix = resolvedSrc.hasSuffix("/") ? resolvedSrc : resolvedSrc + "/"
+            if resolvedDst.hasPrefix(prefix) {
+                throw BuiltinToolError("invalid argument 'dst': cannot copy a directory into itself")
+            }
+        }
+        try fm.createDirectory(
+            atPath: (resolvedDst as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try fm.copyItem(atPath: resolvedSrc, toPath: resolvedDst)
+        return ToolOutput(content: "Copied \(src) to \(dst)", isError: false)
     }
 
     private static func rm(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {

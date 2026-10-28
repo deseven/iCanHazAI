@@ -2,7 +2,6 @@ description = "Generic role for basic chats. No specialized prompt or tools."
 prompt = "Assistant"
 icon = "sparkles"
 accent = "purple"
-mcps_override_allowed = true
 
 [features]
 with_attachments = true

@@ -51,15 +51,20 @@ enum ConfigValidation {
     ///   counts as existing when its config file is on disk, even if that
     ///   config failed to decode (the broken config reports its own error).
     /// - `working_directory` requires at least one workdir-capable built-in
-    ///   group (Filesystem, Code, or Shell). Without one, the directory
+    ///   group (Filesystem, Edit, or Shell). Without one, the directory
     ///   setting is meaningless because nothing consumes it.
-    /// - `directory_isolation` (top level) isolates the Filesystem and Code
+    /// - `working_directory_optional = true` lets the user pick "No Directory".
+    ///   It contradicts a pre-set `working_directory`, and it needs a
+    ///   directory-relevant group (Filesystem or Edit): only those make the
+    ///   directory picker appear, so with Shell alone the flag would do
+    ///   nothing.
+    /// - `directory_isolation` (top level) isolates the Filesystem and Edit
     ///   groups to the working directory. It requires at least one of them to
     ///   be enabled — otherwise there is nothing to isolate. Isolation always
     ///   needs a directory to isolate to, but it doesn't have to come from
-    ///   the role: Filesystem/Code can't run without a directory, so when
+    ///   the role: Filesystem/Edit can't run without a directory, so when
     ///   `working_directory` is omitted the user is forced to pick one per
-    ///   chat.
+    ///   chat (or, with `working_directory_optional`, to pick none).
     /// - `directory_isolation` combined with the Shell group is an error:
     ///   Shell commands are not directory-isolated, so the model could escape
     ///   the confinement and the isolation promise would be void.
@@ -93,7 +98,7 @@ enum ConfigValidation {
             switch group {
             case BuiltinTools.utilsGroup: return config.utils != nil
             case BuiltinTools.filesystemGroup: return config.filesystem != nil
-            case BuiltinTools.codeGroup: return config.code != nil
+            case BuiltinTools.editGroup: return config.edit != nil
             case BuiltinTools.shellGroup: return config.shell != nil
             case BuiltinTools.webGroup: return config.web != nil
             default: return false
@@ -107,12 +112,30 @@ enum ConfigValidation {
         if config.workingDirectory?.isEmpty == false && !hasWorkdirCapableGroup {
             throw ConfigValidationError(
                 "role config sets working_directory "
-                    + "but selects no workdir-capable built-in group (Filesystem, Code, or Shell)"
+                    + "but selects no workdir-capable built-in group (Filesystem, Edit, or Shell)"
             )
         }
 
+        if config.workingDirectoryOptional == true {
+            if config.workingDirectory?.isEmpty == false {
+                throw ConfigValidationError(
+                    "role config sets working_directory_optional but also pre-sets working_directory; "
+                        + "a fixed directory can't be optional"
+                )
+            }
+            let hasDirectoryRelevantGroup = enabledGroups.contains {
+                BuiltinTools.directoryRelevantGroups.contains($0)
+            }
+            if !hasDirectoryRelevantGroup {
+                throw ConfigValidationError(
+                    "role config sets working_directory_optional "
+                        + "but selects no directory-relevant built-in group (Filesystem or Edit)"
+                )
+            }
+        }
+
         if config.directoryIsolation == true {
-            // Isolation applies to Filesystem and Code; with neither enabled
+            // Isolation applies to Filesystem and Edit; with neither enabled
             // there is nothing to isolate, so the setting is meaningless.
             let hasIsolationCapableGroup = enabledGroups.contains {
                 BuiltinTools.isolationCapableGroups.contains($0)
@@ -120,7 +143,7 @@ enum ConfigValidation {
             if !hasIsolationCapableGroup {
                 throw ConfigValidationError(
                     "role config enables directory_isolation "
-                        + "but selects no isolation-capable built-in group (Filesystem or Code)"
+                        + "but selects no isolation-capable built-in group (Filesystem or Edit)"
                 )
             }
             if config.shell != nil {

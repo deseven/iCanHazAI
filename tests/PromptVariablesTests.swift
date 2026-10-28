@@ -202,6 +202,24 @@ extension AllAppTests {
                     == "/some/path")
         }
 
+        @Test("currentDirectory explains that file access is disabled when the user picked no directory")
+        func currentDirectoryNoDirectoryPicked() {
+            for isolated in [false, true] {
+                let text = PromptVariables.currentDirectory(
+                    workdirCapable: true, isolated: isolated, directory: nil, noDirectory: true)
+                #expect(text == PromptVariables.noDirectoryNotice)
+                #expect(text.contains("didn't pick a working directory"))
+                #expect(text.contains("all filesystem access is currently disabled"))
+            }
+        }
+
+        @Test("currentDirectory stays empty for roles without a workdir-capable group, even with the flag")
+        func currentDirectoryNoDirectoryWithoutGroup() {
+            let text = PromptVariables.currentDirectory(
+                workdirCapable: false, isolated: false, directory: nil, noDirectory: true)
+            #expect(text == "")
+        }
+
         @Test("current_directory is a known variable")
         func currentDirectoryKnown() {
             #expect(PromptVariables.unknownVariables(in: "dir: {current_directory}").isEmpty)

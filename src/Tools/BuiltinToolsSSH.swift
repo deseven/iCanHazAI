@@ -3,7 +3,7 @@
 
 import Foundation
 
-/// SSH-backed implementations of the Filesystem, Code, and Shell builtin
+/// SSH-backed implementations of the Filesystem, Edit, and Shell builtin
 /// tools, used when the chat's working directory is an scp-style `host:/path`
 /// spec
 /// (see [`Workdir`](src/Tools/BuiltinTools.swift:11) and
@@ -17,7 +17,7 @@ import Foundation
 /// exiting non-zero, mirroring the local tools' error messages.
 enum BuiltinToolsSSH {
 
-    /// Per-call ceiling for filesystem/code operations. The shell tool has
+    /// Per-call ceiling for filesystem/edit operations. The shell tool has
     /// its own timeout policy (explicit timeout, or an idle watchdog).
     private static let fileOpTimeout: TimeInterval = 30
 
@@ -147,6 +147,7 @@ enum BuiltinToolsSSH {
         case "find_text": return try await findText(args, workdir: workdir, ssh: ssh)
         case "mkdir": return try await mkdir(args, workdir: workdir, ssh: ssh)
         case "mv": return try await mv(args, workdir: workdir, ssh: ssh)
+        case "cp": return try await cp(args, workdir: workdir, ssh: ssh)
         case "rm": return try await rm(args, workdir: workdir, ssh: ssh)
         case "stat": return try await stat(args, workdir: workdir, ssh: ssh)
         case "pwd": return try await pwd(workdir: workdir, ssh: ssh)
@@ -155,14 +156,14 @@ enum BuiltinToolsSSH {
         }
     }
 
-    static func code(
+    static func edit(
         name: String, args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String,
         snapshotStore: SnapshotStore? = nil
     ) async throws -> ToolOutput {
         switch name {
         case "edit_file": return try await editFile(args, workdir: workdir, ssh: ssh, snapshotStore: snapshotStore)
         default:
-            throw BuiltinToolError("Unknown tool \"\(name)\" in group \"Code\".")
+            throw BuiltinToolError("Unknown tool \"\(name)\" in group \"Edit\".")
         }
     }
 
@@ -605,6 +606,38 @@ enum BuiltinToolsSSH {
         return ToolOutput(content: "Moved \(src) to \(dst)", isError: false)
     }
 
+    /// Remote counterpart of the local `cp`: same semantics (`dst` is the new
+    /// path, must not exist, parents created, directories copied recursively,
+    /// symlinks copied as links). `cp -RP` is the portable POSIX spelling.
+    private static func cp(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
+        let src = try BuiltinTools.requireString(args, "src")
+        let dst = try BuiltinTools.requireString(args, "dst")
+        let resolvedSrc = try workdir.resolve(src)
+        let resolvedDst = try workdir.resolve(dst)
+
+        // Only a real directory can't be copied into itself; whether the
+        // source is one is known only remotely, so the check lives in the script.
+        let srcPrefix = resolvedSrc.hasSuffix("/") ? resolvedSrc : resolvedSrc + "/"
+        let intoItselfCheck =
+            resolvedDst.hasPrefix(srcPrefix)
+            ? "if [ -d \(qp(resolvedSrc)) ] && [ ! -L \(qp(resolvedSrc)) ]; then printf 'cannot copy a directory into itself\\n' >&2; exit 1; fi"
+            : ":"
+        let script = """
+            if [ ! -e \(qp(resolvedSrc)) ] && [ ! -L \(qp(resolvedSrc)) ]; then printf 'not found: %s\\n' \(q(src)) >&2; exit 1; fi
+            if [ -e \(qp(resolvedDst)) ] || [ -L \(qp(resolvedDst)) ]; then printf 'already exists: %s\\n' \(q(dst)) >&2; exit 1; fi
+            \(intoItselfCheck)
+            mkdir -p \(qp(posixDirname(resolvedDst))) && cp -RP \(qp(resolvedSrc)) \(qp(resolvedDst))
+            """
+        let r = try await run(ssh, script: script)
+        try requireSuccess(
+            r,
+            scrubbing: [
+                (resolvedSrc, workdir.displayPath(forResolved: resolvedSrc)),
+                (resolvedDst, workdir.displayPath(forResolved: resolvedDst)),
+            ])
+        return ToolOutput(content: "Copied \(src) to \(dst)", isError: false)
+    }
+
     private static func rm(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
         let path = try BuiltinTools.requireString(args, "path")
         let recursive = BuiltinTools.optionalBool(args, "recursive") ?? false
@@ -799,7 +832,7 @@ enum BuiltinToolsSSH {
                     DiffBuilder.unifiedDiff(old: old, new: result.text, oldPath: section.path, newPath: section.path))
             }
         }
-        var joined = diffs.filter { !$0.isEmpty }.joined(separator: "\n")
+        let joined = diffs.filter { !$0.isEmpty }.joined(separator: "\n")
         // Warnings (bare rows auto-piped, empty-PUT auto-cut, boundary-echo
         // repairs) are surfaced in the tool result only — duplicating them in
         // the approval diff would show them twice.

@@ -40,7 +40,7 @@ extension AllAppTests {
     struct SSHIntegrationTests {
         private static let host = SSHIntegrationSupport.host
         private static let fs = BuiltinTools.filesystemGroup
-        private static let code = BuiltinTools.codeGroup
+        private static let edit = BuiltinTools.editGroup
         private static let sh = BuiltinTools.shellGroup
 
         /// Sockets go to a throwaway local directory, not the real app cache.
@@ -231,6 +231,41 @@ extension AllAppTests {
             await Self.destroy(wd, remote)
         }
 
+        @Test("cp copies files and directories, refusing to overwrite or copy into itself")
+        func cpCopies() async {
+            let (wd, remote) = Self.makeContext()
+            _ = await Self.call("write_file", Self.fs, ["path": "a.txt", "content": "data"], workdir: wd)
+            _ = await Self.call("write_file", Self.fs, ["path": "dir/sub/n.txt", "content": "nested"], workdir: wd)
+
+            let (cpText, cpErr) = await Self.call("cp", Self.fs, ["src": "a.txt", "dst": "new/b.txt"], workdir: wd)
+            #expect(!cpErr, "cp failed: \(cpText)")
+            #expect(cpText.contains("Copied a.txt to new/b.txt"))
+            let (copied, _) = await Self.call("read_file", Self.fs, ["path": "new/b.txt"], workdir: wd)
+            #expect(copied.contains("data"))
+            let (original, _) = await Self.call("read_file", Self.fs, ["path": "a.txt"], workdir: wd)
+            #expect(original.contains("data"))
+
+            // A directory is copied with its whole tree.
+            let (dirText, dirErr) = await Self.call("cp", Self.fs, ["src": "dir", "dst": "dir2"], workdir: wd)
+            #expect(!dirErr, "cp failed: \(dirText)")
+            let (nested, _) = await Self.call("read_file", Self.fs, ["path": "dir2/sub/n.txt"], workdir: wd)
+            #expect(nested.contains("nested"))
+
+            let (exists, existsErr) = await Self.call("cp", Self.fs, ["src": "a.txt", "dst": "dir2"], workdir: wd)
+            #expect(existsErr)
+            #expect(exists.contains("already exists"))
+
+            let (missing, missingErr) = await Self.call("cp", Self.fs, ["src": "nope.txt", "dst": "x"], workdir: wd)
+            #expect(missingErr)
+            #expect(missing.contains("not found"))
+
+            let (itself, itselfErr) = await Self.call("cp", Self.fs, ["src": "dir", "dst": "dir/copy"], workdir: wd)
+            #expect(itselfErr)
+            #expect(itself.contains("into itself"))
+
+            await Self.destroy(wd, remote)
+        }
+
         @Test("find_file matches globs and find_text greps contents")
         func findTools() async {
             let (wd, remote) = Self.makeContext()
@@ -263,7 +298,7 @@ extension AllAppTests {
             #expect(tag.count == 4)
 
             let input = "*** Begin Patch\n[a.txt#\(tag)]\nPUT 1.=1:\n+ONE\n*** End Patch"
-            let (edit, editErr) = await Self.call("edit_file", Self.code, ["input": input], workdir: wd)
+            let (edit, editErr) = await Self.call("edit_file", Self.edit, ["input": input], workdir: wd)
             #expect(!editErr, "edit_file failed: \(edit)")
             #expect(edit.contains("Updated: a.txt [a.txt#"))
 
@@ -286,13 +321,13 @@ extension AllAppTests {
 
             // MV: move a.txt to renamed.txt (no edits).
             let mvInput = "*** Begin Patch\n[a.txt#\(tagA)]\nMV renamed.txt\n*** End Patch"
-            let (mv, mvErr) = await Self.call("edit_file", Self.code, ["input": mvInput], workdir: wd)
+            let (mv, mvErr) = await Self.call("edit_file", Self.edit, ["input": mvInput], workdir: wd)
             #expect(!mvErr, "edit_file failed: \(mv)")
             #expect(mv.contains("Updated: a.txt [renamed.txt#"))
 
             // REM: delete b.txt after hash validation.
             let remInput = "*** Begin Patch\n[b.txt#\(tagB)]\nREM\n*** End Patch"
-            let (rm, rmErr) = await Self.call("edit_file", Self.code, ["input": remInput], workdir: wd)
+            let (rm, rmErr) = await Self.call("edit_file", Self.edit, ["input": remInput], workdir: wd)
             #expect(!rmErr, "edit_file failed: \(rm)")
             #expect(rm.contains("Deleted: b.txt"))
 

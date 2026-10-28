@@ -14,9 +14,7 @@ extension AllAppTests {
             let toml = """
                 description = "A special developer role."
                 prompt = "Developer"
-                prompt_override_allowed = false
                 working_directory = "~/projects/MyProject"
-                mcps_override_allowed = true
                 directory_isolation = true
 
                 [utils]
@@ -26,6 +24,9 @@ extension AllAppTests {
                 [filesystem]
                 auto_allow = ["ls", "read_file", "stat"]
 
+                [edit]
+                tools = ["edit_file"]
+
                 [[mcps]]
                 mcp = "Tavily"
                 tools = ["tavily_search", "tavily_extract"]
@@ -34,13 +35,12 @@ extension AllAppTests {
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             #expect(config.description == "A special developer role.")
             #expect(config.prompt == "Developer")
-            #expect(config.promptOverrideAllowed == false)
             #expect(config.workingDirectory == "~/projects/MyProject")
-            #expect(config.mcpsOverrideAllowed == true)
-            #expect(Role(name: "Developer", config: config).mcpsOverrideAllowed == true)
             // Built-in groups
             #expect(config.utils?.autoAllowAll == true)
             #expect(config.filesystem?.autoAllow == ["ls", "read_file", "stat"])
+            #expect(config.edit?.tools == ["edit_file"])
+            #expect(Role(name: "Developer", config: config).enabledGroups == ["Utils", "Filesystem", "Edit"])
             #expect(config.directoryIsolation == true)
             // Custom MCPs
             let mcps = try #require(config.mcps)
@@ -69,6 +69,24 @@ extension AllAppTests {
             #expect(config.prompt == "Developer")
         }
 
+        @Test("role files still carrying the removed override keys keep loading")
+        func toleratesRemovedOverrideKeys() throws {
+            let toml = """
+                prompt = "Developer"
+                prompt_override_allowed = true
+                mcps_override_allowed = true
+                """
+            let config = try ConfigValidation.decodeRole(Data(toml.utf8))
+            #expect(config.prompt == "Developer")
+        }
+
+        @Test("the removed [code] group is no longer recognized (renamed to [edit])")
+        func codeGroupRenamedToEdit() throws {
+            let config = try ConfigValidation.decodeRole(Data("prompt = \"Developer\"\n\n[code]\n".utf8))
+            #expect(config.edit == nil)
+            #expect(Role(name: "Developer", config: config).enabledGroups.isEmpty)
+        }
+
         @Test("RoleConfig applies defaults for omitted optional fields")
         func decodesMinimalConfig() throws {
             let toml = """
@@ -77,8 +95,7 @@ extension AllAppTests {
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
             let role = Role(name: "Assistant", config: config)
             #expect(role.description == "No description.")
-            #expect(role.promptOverrideAllowed == false)
-            #expect(role.mcpsOverrideAllowed == false)
+            #expect(!role.workingDirectoryOptional)
             #expect(role.mcpCount == 0)
             // No icon set → falls back to the generic default.
             #expect(role.icon == Role.defaultIcon)
@@ -123,9 +140,9 @@ extension AllAppTests {
             #expect(role.hasWorkdirCapableMCP)
         }
 
-        @Test("Role.hasWorkdirCapableMCP is true for Code and Shell groups")
-        func hasWorkdirCapableMCPCodeShell() throws {
-            for group in ["code", "shell"] {
+        @Test("Role.hasWorkdirCapableMCP is true for Edit and Shell groups")
+        func hasWorkdirCapableMCPEditShell() throws {
+            for group in ["edit", "shell"] {
                 let toml = """
                     prompt = "Developer"
 
@@ -250,7 +267,7 @@ extension AllAppTests {
             #expect(config.workingDirectory == "~/projects")
         }
 
-        // MARK: - Validation: directory_isolation requires Filesystem or Code
+        // MARK: - Validation: directory_isolation requires Filesystem or Edit
 
         @Test("Role validation rejects directory_isolation without an isolation-capable group")
         func validationRejectsIsolationWithoutCapableGroup() throws {
@@ -286,7 +303,7 @@ extension AllAppTests {
 
         @Test("Role validation accepts directory_isolation without working_directory (user picks per chat)")
         func validationAcceptsIsolationWithoutWorkdir() throws {
-            // Filesystem/Code always require a directory, so the user is
+            // Filesystem/Edit always require a directory, so the user is
             // asked to pick one when the role doesn't pre-set it — isolation
             // without working_directory is fine.
             let toml = """
@@ -300,13 +317,13 @@ extension AllAppTests {
             #expect(config.directoryIsolation == true)
         }
 
-        @Test("Role validation accepts directory_isolation with Code and without working_directory")
-        func validationAcceptsIsolationOnCodeWithoutWorkdir() throws {
+        @Test("Role validation accepts directory_isolation with Edit and without working_directory")
+        func validationAcceptsIsolationOnEditWithoutWorkdir() throws {
             let toml = """
                 prompt = "Developer"
                 directory_isolation = true
 
-                [code]
+                [edit]
                 """
             let data = Data(toml.utf8)
             let config = try ConfigValidation.decodeRole(data)
@@ -317,7 +334,7 @@ extension AllAppTests {
 
         @Test("Role validation rejects directory_isolation when Shell is enabled")
         func validationRejectsIsolationWithShell() throws {
-            for group in ["filesystem", "code"] {
+            for group in ["filesystem", "edit"] {
                 let toml = """
                     prompt = "Developer"
                     directory_isolation = true
@@ -522,7 +539,7 @@ extension AllAppTests {
 
         @Test("roleNeedsWorkdirPick is true with directory-relevant tools and no pre-set dir")
         func roleNeedsWorkdirPickTrue() throws {
-            for group in ["filesystem", "code"] {
+            for group in ["filesystem", "edit"] {
                 let toml = """
                     prompt = "Developer"
 
@@ -573,9 +590,9 @@ extension AllAppTests {
 
         // MARK: - hasDirectoryRelevantTools
 
-        @Test("Role.hasDirectoryRelevantTools is true for Filesystem and Code")
+        @Test("Role.hasDirectoryRelevantTools is true for Filesystem and Edit")
         func hasDirectoryRelevantToolsTrue() throws {
-            for group in ["filesystem", "code"] {
+            for group in ["filesystem", "edit"] {
                 let toml = """
                     prompt = "Developer"
 
@@ -603,9 +620,9 @@ extension AllAppTests {
 
         // MARK: - Role picker feature badges (bindsToDirectory / hasShellTools / hasWebTools)
 
-        @Test("Role.bindsToDirectory is true for workdir-capable groups (Filesystem, Code, Shell)")
+        @Test("Role.bindsToDirectory is true for workdir-capable groups (Filesystem, Edit, Shell)")
         func bindsToDirectoryTrue() throws {
-            for group in ["filesystem", "code", "shell"] {
+            for group in ["filesystem", "edit", "shell"] {
                 let toml = """
                     prompt = "Developer"
 
@@ -832,6 +849,109 @@ extension AllAppTests {
         @Test("workdirIcon is folder for a non-isolated directory")
         func workdirIconPlain() {
             #expect(AppViewModel.workdirIcon(directory: "/tmp/proj", isolated: false) == "folder")
+        }
+
+        @Test("workdirIcon is folder.badge.minus once the user picked no directory")
+        func workdirIconNoDirectoryPicked() {
+            #expect(
+                AppViewModel.workdirIcon(directory: nil, isolated: false, noDirectory: true) == "folder.badge.minus")
+            #expect(AppViewModel.workdirIcon(directory: nil, isolated: true, noDirectory: true) == "folder.badge.minus")
+        }
+
+        // MARK: - working_directory_optional
+
+        /// A Filesystem role whose directory is optional.
+        private func optionalRole(extra: String = "") throws -> Role {
+            let toml = """
+                prompt = "Health Companion"
+                working_directory_optional = true
+                \(extra)
+
+                [filesystem]
+                """
+            let config = try ConfigValidation.decodeRole(Data(toml.utf8))
+            return Role(name: "Health Companion", config: config)
+        }
+
+        @Test("working_directory_optional decodes and defaults to false")
+        func optionalDirectoryDecodes() throws {
+            #expect(try optionalRole().workingDirectoryOptional)
+            #expect(try !pickerRole().workingDirectoryOptional)
+        }
+
+        @Test("Role validation rejects working_directory_optional together with a pre-set working_directory")
+        func validationRejectsOptionalWithPresetDirectory() throws {
+            #expect(throws: ConfigValidationError.self) {
+                try optionalRole(extra: "working_directory = \"~/projects\"")
+            }
+        }
+
+        @Test("Role validation rejects working_directory_optional without Filesystem or Edit")
+        func validationRejectsOptionalWithoutDirectoryRelevantGroup() throws {
+            for group in ["shell", "utils", "web"] {
+                let toml = """
+                    prompt = "Developer"
+                    working_directory_optional = true
+
+                    [\(group)]
+                    """
+                let data = Data(toml.utf8)
+                #expect(throws: ConfigValidationError.self, "expected rejection for [\(group)]-only role") {
+                    try ConfigValidation.decodeRole(data)
+                }
+            }
+        }
+
+        @Test("Role validation accepts working_directory_optional with Edit, and with isolation")
+        func validationAcceptsOptionalDirectory() throws {
+            let toml = """
+                prompt = "Developer"
+                working_directory_optional = true
+                directory_isolation = true
+
+                [edit]
+                """
+            let config = try ConfigValidation.decodeRole(Data(toml.utf8))
+            #expect(config.workingDirectoryOptional == true)
+        }
+
+        @Test("false working_directory_optional is accepted anywhere")
+        func validationIgnoresDisabledOptionalDirectory() throws {
+            let toml = """
+                prompt = "Developer"
+                working_directory_optional = false
+                working_directory = "~/projects"
+
+                [filesystem]
+                """
+            _ = try ConfigValidation.decodeRole(Data(toml.utf8))
+        }
+
+        @Test("Role.isWithoutDirectory needs the chat's choice, an optional role and no directory")
+        func isWithoutDirectoryRules() throws {
+            let optional = try optionalRole()
+            let required = try pickerRole()
+
+            #expect(optional.isWithoutDirectory(Chat(noWorkingDirectory: true)))
+            // Nothing chosen yet.
+            #expect(!optional.isWithoutDirectory(Chat()))
+            #expect(!optional.isWithoutDirectory(Chat(noWorkingDirectory: false)))
+            // A directory always wins over a stale flag.
+            #expect(!optional.isWithoutDirectory(Chat(workingDirectory: "/tmp/proj", noWorkingDirectory: true)))
+            // The flag is only honored while the role still allows it.
+            #expect(!required.isWithoutDirectory(Chat(noWorkingDirectory: true)))
+        }
+
+        @Test("roleNeedsWorkdirPick stays true for optional roles (the choice is made up front)")
+        func roleNeedsWorkdirPickForOptionalRole() throws {
+            #expect(AppViewModel.roleNeedsWorkdirPick(try optionalRole()))
+        }
+
+        @Test("workdirPickerEnabled is false once the user picked no directory (final)")
+        func pickerDisabledAfterNoDirectory() throws {
+            let role = try optionalRole()
+            #expect(AppViewModel.workdirPickerEnabled(role: role, chatWorkingDirectory: nil, noDirectory: false))
+            #expect(!AppViewModel.workdirPickerEnabled(role: role, chatWorkingDirectory: nil, noDirectory: true))
         }
 
         // MARK: - [features] table

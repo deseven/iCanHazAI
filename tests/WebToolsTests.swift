@@ -539,7 +539,7 @@ extension AllAppTests {
 
         @Test("directory_isolation with only the web group is a validation error")
         func webOnlyIsolationRejected() throws {
-            // Isolation is role-level but only Filesystem/Code consume it;
+            // Isolation is role-level but only Filesystem/Edit consume it;
             // a web-only role has nothing to isolate.
             let toml = """
                 prompt = "Assistant"

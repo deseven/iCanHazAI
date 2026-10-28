@@ -242,20 +242,21 @@ struct Chat: Codable, Identifiable, Equatable {
     var reasoning: String?
     /// Selected role name.
     var role: String?
-    /// Per-chat prompt override (name of a prompt file, without extension).
-    /// Only honored when the role's `prompt_override_allowed` is true.
-    var prompt: String?
     /// The chat's working directory: seeded from the role's
     /// `working_directory` at creation, or picked by the user (picker or CLI)
     /// when the role doesn't pre-set one. Permanent once set — a directory
     /// swap mid-chat confuses the model, so a different directory requires a
     /// new chat.
     var workingDirectory: String?
+    /// Set when the user picked "No Directory" in the directory picker of a
+    /// role with `working_directory_optional`. Permanent like a picked
+    /// directory. Only honored while the role still allows it (see
+    /// `Role.isWithoutDirectory(_:)`).
+    var noWorkingDirectory: Bool?
     /// Names of the custom MCP servers active for this chat. Seeded from the
     /// role's `[[mcps]]` entries when the chat is created (or the role is
-    /// assigned); editable per chat only when the role's
-    /// `mcps_override_allowed` is true. Nil for chats that predate the field —
-    /// they use the role's MCP selection.
+    /// assigned) and freely editable per chat by the user. Nil for chats that
+    /// predate the field — they use the role's MCP selection.
     var mcps: [String]?
     /// Optional user-defined display title. When nil the UI derives a title
     /// from the first user message (or "New chat").
@@ -281,16 +282,16 @@ struct Chat: Codable, Identifiable, Equatable {
     var outputRendering: ChatOutputRendering?
     init(
         id: UUID = UUID(), messages: [ChatMessage] = [], model: String? = nil, role: String? = nil,
-        prompt: String? = nil, workingDirectory: String? = nil, mcps: [String]? = nil, title: String? = nil,
-        archive: Bool? = nil, autoAllow: [String]? = nil, autoDeny: [String]? = nil,
+        workingDirectory: String? = nil, noWorkingDirectory: Bool? = nil, mcps: [String]? = nil,
+        title: String? = nil, archive: Bool? = nil, autoAllow: [String]? = nil, autoDeny: [String]? = nil,
         outputRendering: ChatOutputRendering? = nil
     ) {
         self.id = id
         self.messages = messages
         self.model = model
         self.role = role
-        self.prompt = prompt
         self.workingDirectory = workingDirectory
+        self.noWorkingDirectory = noWorkingDirectory
         self.mcps = mcps
         self.title = title
         self.archive = archive
@@ -300,7 +301,8 @@ struct Chat: Codable, Identifiable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, messages, model, reasoning, role, prompt, workingDirectory, mcps, title, archive
+        case id, messages, model, reasoning, role, workingDirectory, mcps, title, archive
+        case noWorkingDirectory = "no_working_directory"
         case autoAllow = "auto_allow"
         case autoDeny = "auto_deny"
         case outputRendering = "output_rendering"
@@ -318,8 +320,8 @@ struct Chat: Codable, Identifiable, Equatable {
         model = try? c.decode(String.self, forKey: .model)
         reasoning = try? c.decode(String.self, forKey: .reasoning)
         role = try? c.decode(String.self, forKey: .role)
-        prompt = try? c.decode(String.self, forKey: .prompt)
         workingDirectory = try? c.decode(String.self, forKey: .workingDirectory)
+        noWorkingDirectory = try? c.decode(Bool.self, forKey: .noWorkingDirectory)
         mcps = try? c.decode([String].self, forKey: .mcps)
         title = try? c.decode(String.self, forKey: .title)
         archive = try? c.decode(Bool.self, forKey: .archive)
@@ -1383,8 +1385,7 @@ struct MCPConfigurationState: Sendable, Equatable {
 // MARK: - Prompt
 
 /// A prompt file (`~/iCanHazAI/prompts/<name>.md`). The system prompt sent to
-/// the model is the content of the prompt referenced by the chat's role (or
-/// the chat's per-chat prompt override when allowed).
+/// the model is the content of the prompt referenced by the chat's role.
 struct Prompt: Identifiable, Equatable, Hashable {
     var id: String { name }
     let name: String
@@ -1397,7 +1398,7 @@ struct Prompt: Identifiable, Equatable, Hashable {
 // MARK: - Role config (TOML)
 
 /// One custom MCP entry within a role config. Built-in tool groups
-/// (Utils/Filesystem/Code/Shell) are described as top-level TOML groups
+/// (Utils/Filesystem/Edit/Shell) are described as top-level TOML groups
 /// (`[utils]`, `[filesystem]`, …) and decoded into `RoleConfig` directly;
 /// only custom MCP servers use `[[mcps]]` array-of-tables entries.
 struct RoleMCP: Codable, Equatable, Hashable, Sendable {
@@ -1418,7 +1419,7 @@ struct RoleMCP: Codable, Equatable, Hashable, Sendable {
 }
 
 /// Configuration for a single built-in tool group (`[utils]`, `[filesystem]`,
-/// `[code]`, `[shell]`). An empty group (just `[utils]` with no keys) enables
+/// `[edit]`, `[shell]`). An empty group (just `[utils]` with no keys) enables
 /// the group with all defaults: all tools allowed, none auto-approved.
 struct RoleToolGroup: Codable, Equatable, Hashable, Sendable {
     /// Tool selection from this group. Empty/nil means all available tools.
@@ -1466,13 +1467,16 @@ struct RoleFeatures: Codable, Equatable, Hashable, Sendable {
 struct RoleConfig: Codable, Equatable, Hashable {
     var description: String?
     var prompt: String?
-    var promptOverrideAllowed: Bool?
     var workingDirectory: String?
+    /// When true, the directory picker of a new chat offers a "No Directory"
+    /// item. Choosing it is final for the chat and removes every tool that
+    /// needs a directory (Filesystem, Edit, Shell). Defaults to false.
+    var workingDirectoryOptional: Bool?
     /// `provider:model-id` preselected for new chats with this role. Takes
     /// precedence over `[general].default_model`; when it doesn't resolve to
     /// an existing model the new chat starts with "No model".
     var preferredModel: String?
-    /// When true, Filesystem and Code tools run isolated to the working
+    /// When true, Filesystem and Edit tools run isolated to the working
     /// directory (chroot-like). A role-level switch: either the whole role is
     /// isolated or it isn't — partial isolation would be escapable.
     var directoryIsolation: Bool?
@@ -1481,15 +1485,13 @@ struct RoleConfig: Codable, Equatable, Hashable {
     /// defaults. Nil means the group is disabled.
     var utils: RoleToolGroup?
     var filesystem: RoleToolGroup?
-    var code: RoleToolGroup?
+    var edit: RoleToolGroup?
     var shell: RoleToolGroup?
     var web: RoleToolGroup?
-    /// Custom MCP servers selected by this role.
+    /// Custom MCP servers pre-selected by this role. They only seed a new
+    /// chat's active MCPs: the user can always add more or remove these via
+    /// the chat toolbar picker.
     var mcps: [RoleMCP]?
-    /// When true, chats with this role may add/remove custom MCP servers via
-    /// the chat toolbar picker. Defaults to false: the chat simply uses the
-    /// role's MCP selection.
-    var mcpsOverrideAllowed: Bool?
     /// SF Symbol name used to badge this role's chats in the sidebar and the
     /// role picker. Nil → falls back to `Role.defaultIcon`.
     var icon: String?
@@ -1504,17 +1506,16 @@ struct RoleConfig: Codable, Equatable, Hashable {
     enum CodingKeys: String, CodingKey {
         case description
         case prompt
-        case promptOverrideAllowed = "prompt_override_allowed"
         case workingDirectory = "working_directory"
+        case workingDirectoryOptional = "working_directory_optional"
         case preferredModel = "preferred_model"
         case directoryIsolation = "directory_isolation"
         case utils
         case filesystem
-        case code
+        case edit
         case shell
         case web
         case mcps
-        case mcpsOverrideAllowed = "mcps_override_allowed"
         case icon
         case accent
         case features
@@ -1540,10 +1541,10 @@ struct Role: Identifiable, Equatable, Hashable {
     var isBuiltin: Bool { EnvironmentManager.protectedBundleNames.contains(name) }
     var description: String { config.description ?? "No description." }
     var promptName: String? { config.prompt }
-    var promptOverrideAllowed: Bool { config.promptOverrideAllowed ?? false }
-
-    var mcpsOverrideAllowed: Bool { config.mcpsOverrideAllowed ?? false }
     var workingDirectory: String? { config.workingDirectory }
+    /// Whether the user may pick "No Directory" for a chat with this role
+    /// (`working_directory_optional`).
+    var workingDirectoryOptional: Bool { config.workingDirectoryOptional ?? false }
     /// SF Symbol for this role, falling back to `defaultIcon`.
     var icon: String { config.icon ?? Role.defaultIcon }
 
@@ -1554,7 +1555,7 @@ struct Role: Identifiable, Equatable, Hashable {
             switch group {
             case BuiltinTools.utilsGroup: return config.utils != nil
             case BuiltinTools.filesystemGroup: return config.filesystem != nil
-            case BuiltinTools.codeGroup: return config.code != nil
+            case BuiltinTools.editGroup: return config.edit != nil
             case BuiltinTools.shellGroup: return config.shell != nil
             case BuiltinTools.webGroup: return config.web != nil
             default: return false
@@ -1568,7 +1569,7 @@ struct Role: Identifiable, Equatable, Hashable {
         switch group {
         case BuiltinTools.utilsGroup: return config.utils
         case BuiltinTools.filesystemGroup: return config.filesystem
-        case BuiltinTools.codeGroup: return config.code
+        case BuiltinTools.editGroup: return config.edit
         case BuiltinTools.shellGroup: return config.shell
         case BuiltinTools.webGroup: return config.web
         default: return nil
@@ -1576,12 +1577,12 @@ struct Role: Identifiable, Equatable, Hashable {
     }
 
     /// Number of custom MCP servers selected by this role. Built-in tool
-    /// groups (Utils/Filesystem/Code/Shell) are not MCP servers and are not
+    /// groups (Utils/Filesystem/Edit/Shell) are not MCP servers and are not
     /// counted. Used by the chat header indicator.
     var mcpCount: Int { config.mcps?.count ?? 0 }
 
     /// Whether this role selects at least one workdir-capable built-in group
-    /// (Filesystem, Code, or Shell) — i.e. anything that consumes a working
+    /// (Filesystem, Edit, or Shell) — i.e. anything that consumes a working
     /// directory at all. Drives the `current_directory` prompt variable and
     /// whether the CLI applies its working directory to chats.
     var hasWorkdirCapableMCP: Bool {
@@ -1589,7 +1590,7 @@ struct Role: Identifiable, Equatable, Hashable {
     }
 
     /// Whether this role selects at least one directory-relevant built-in
-    /// group (Filesystem or Code) — tools that operate on files and therefore
+    /// group (Filesystem or Edit) — tools that operate on files and therefore
     /// need a working directory. When the role doesn't pre-set one, the user
     /// must pick a directory once per chat (permanent). Shell is excluded:
     /// without a directory it simply defaults to the user's home.
@@ -1597,7 +1598,22 @@ struct Role: Identifiable, Equatable, Hashable {
         enabledGroups.contains { BuiltinTools.directoryRelevantGroups.contains($0) }
     }
 
-    /// Whether this role enables `directory_isolation`: Filesystem and Code
+    /// Whether `chat` is in the "No Directory" state: the user picked it for
+    /// this chat and the role still allows it (optional directory, none
+    /// pre-set). A chat that already has a directory is never in this state.
+    /// The choice is stored on the chat but honored only through this check,
+    /// so a later role edit that makes the directory mandatory again simply
+    /// turns the chat back into one that needs a directory pick.
+    func isWithoutDirectory(_ chat: Chat) -> Bool {
+        isWithoutDirectory(noWorkingDirectory: chat.noWorkingDirectory, chatWorkingDirectory: chat.workingDirectory)
+    }
+
+    func isWithoutDirectory(noWorkingDirectory: Bool?, chatWorkingDirectory: String?) -> Bool {
+        guard noWorkingDirectory == true, workingDirectoryOptional else { return false }
+        return (workingDirectory?.isEmpty ?? true) && (chatWorkingDirectory?.isEmpty ?? true)
+    }
+
+    /// Whether this role enables `directory_isolation`: Filesystem and Edit
     /// tools run confined to the working directory. When true, a working
     /// directory is required for the chat: either pre-set by the role or
     /// picked by the user. Drives the red "No directory" placeholder and the
@@ -1605,7 +1621,7 @@ struct Role: Identifiable, Equatable, Hashable {
     var hasDirectoryIsolation: Bool { config.directoryIsolation ?? false }
 
     /// Whether this role binds to a working directory: it selects at least one
-    /// workdir-capable tool group (Filesystem, Code, or Shell). Drives the
+    /// workdir-capable tool group (Filesystem, Edit, or Shell). Drives the
     /// folder badge in the role picker. A pre-set `working_directory` without
     /// such a group is a validation error, so the badge is purely tool-based.
     var bindsToDirectory: Bool { hasWorkdirCapableMCP }

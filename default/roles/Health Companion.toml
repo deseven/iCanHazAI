@@ -2,7 +2,7 @@ description = "Friendly health guide: helps you prepare for a doctor's visit, un
 prompt = "Health Companion"
 icon = "stethoscope"
 accent = "mint"
-mcps_override_allowed = true
+working_directory_optional = true
 directory_isolation = true
 
 [features]
@@ -13,7 +13,7 @@ tools = ["calc"]
 auto_allow_all = true
 
 [filesystem]
-tools = ["ls", "find_file", "read_file", "write_file", "mkdir", "mv", "rm"]
+tools = ["ls", "find_file", "read_file", "write_file", "mkdir", "mv", "cp", "rm"]
 auto_allow = ["ls", "find_file", "read_file"]
 
 [web]

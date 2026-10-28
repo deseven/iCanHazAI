@@ -1,7 +1,6 @@
 description = "A role for editing ICanHazAI configuration. Simply state what you need and the agent will configure the app for you."
 prompt = "Configurator"
 icon = "gearshape"
-mcps_override_allowed = true
 
 [features]
 with_attachments = true

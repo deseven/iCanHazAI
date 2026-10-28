@@ -70,18 +70,18 @@ Plain Markdown; the whole content is the system prompt. No special fields. `writ
 ### Variables
 Prompts support `{variable}` placeholders substituted at request time (the raw text is stored unsubstituted, so each request gets fresh values). Known variables:
 
-- `{output_rendering}` — the rendering capabilities of the surface the chat lives on. For GUI-created chats: the native chat renderer's features (Markdown, GFM tables/strikethrough/task lists, fenced code blocks with syntax highlighting and a copy button — the model is told to put a language marker after the opening fence, 16 grammars are used (Kotlin and C# markers are colored via the Java grammar, C++ via C, TypeScript via JavaScript), SQL, MATLAB, Perl, R, Visual Basic, Fortran and Pascal get basic keyword/string/comment coloring from a built-in tokenizer only when named by the marker, and unlabeled blocks are auto-detected among the 16 grammars; no HTML, math or diagrams). For CLI-created chats: a plain-text-only notice (terminal output, no markup). This is sticky per chat — whichever surface created the chat decides. Include this so the model knows what it can use.
-- `{user}` — the current system user name (the last path component of the home directory, e.g. `alice`).
-- `{date}` — the current date as `Thu Jun 16 2026`.
-- `{current_directory}` — the chat's effective working directory as a bare path (e.g. `/some/path`), with no descriptive prefix. Substitutes to an empty string when the role selects no workdir-capable built-in group (Filesystem, Code, or Shell); to `/` when directory isolation is enabled; and to `~` when no directory is set. The prompt is responsible for adding any label, e.g. `Current directory: {current_directory}`.
-- `{load_first_available:file1,file2,...}` — the contents of the first readable text file from the comma-separated list, checked in order. Relative paths resolve against the chat's working directory (or the user's home when no working directory is set); absolute paths are used as-is. The substitution is the winning path as written in parentheses followed by the file contents, e.g. `(AGENTS.md)` + newline + the file's text. Substitutes to an empty string when none of the files exists, is readable, or is valid UTF-8 text. The picked file is cached at runtime and re-read when its modification time changes; if a higher-priority file from the list appears, it takes over on the next request. Typical use: project instructions, e.g. `{load_first_available:AGENTS.md,CLAUDE.md,.roorules}` (this is what the bundled Developer prompt does).
+- `\{output_rendering}` — the rendering capabilities of the surface the chat lives on. For GUI-created chats: the native chat renderer's features (Markdown, GFM tables/strikethrough/task lists, fenced code blocks with syntax highlighting and a copy button — the model is told to put a language marker after the opening fence, 16 grammars are used (Kotlin and C# markers are colored via the Java grammar, C++ via C, TypeScript via JavaScript), SQL, MATLAB, Perl, R, Visual Basic, Fortran and Pascal get basic keyword/string/comment coloring from a built-in tokenizer only when named by the marker, and unlabeled blocks are auto-detected among the 16 grammars; no HTML, math or diagrams). For CLI-created chats: a plain-text-only notice (terminal output, no markup). This is sticky per chat — whichever surface created the chat decides. Include this so the model knows what it can use.
+- `\{user}` — the current system user name (the last path component of the home directory, e.g. `alice`).
+- `\{date}` — the current date as `Thu Jun 16 2026`.
+- `\{current_directory}` — the chat's effective working directory as a bare path (e.g. `/some/path`), with no descriptive prefix. Substitutes to an empty string when the role selects no workdir-capable built-in group (Filesystem, Edit, or Shell); to a short explanation that the user didn't pick a working directory for this session and all filesystem access is disabled when the chat's user chose "No Directory" (see `working_directory_optional`); to `/` when directory isolation is enabled; and to `~` when no directory is set. The prompt is responsible for adding any label, e.g. `Current directory: \{current_directory}`.
+- `\{load_first_available:file1,file2,...}` — the contents of the first readable text file from the comma-separated list, checked in order. Relative paths resolve against the chat's working directory (or the user's home when no working directory is set); absolute paths are used as-is. Substitutes to an empty string in chats where the user chose "No Directory" (no file is read at all). The substitution is the winning path as written in parentheses followed by the file contents, e.g. `(AGENTS.md)` + newline + the file's text. Substitutes to an empty string when none of the files exists, is readable, or is valid UTF-8 text. The picked file is cached at runtime and re-read when its modification time changes; if a higher-priority file from the list appears, it takes over on the next request. Typical use: project instructions, e.g. `\{load_first_available:AGENTS.md,CLAUDE.md,.roorules}` (this is what the bundled Developer prompt does).
 
 Only `{identifier}`-shaped references are variables — braces around non-identifier content (e.g. JSON objects like `{"a": 1}`) pass through untouched, so code blocks need no escaping. To emit a literal `{name}` that would otherwise look like a variable, escape it as `\{name}`. Unknown variables (an unescaped `{name}` that isn't one of the known ones) are a validation error: the prompt is disabled and surfaced in the configuration-errors sheet, and `write_prompt` rejects it before writing.
 
 ## Roles
 Bundles a prompt, working directory, and tools. Tools come from two sources:
 
-1. **Built-in tool groups** — `[utils]`, `[filesystem]`, `[code]`, `[shell]`, `[web]`. These run in-process (no subprocess). A group is enabled simply by mentioning it; an empty group (e.g. `[utils]` with no keys) enables all its tools with defaults. Each group accepts:
+1. **Built-in tool groups** — `[utils]`, `[filesystem]`, `[edit]`, `[shell]`, `[web]`. These run in-process (no subprocess). A group is enabled simply by mentioning it; an empty group (e.g. `[utils]` with no keys) enables all its tools with defaults. Each group accepts:
    - `tools` — allowlist (empty/missing = all).
   - `auto_allow` — tools to auto-approve (empty/missing = none).
   - `auto_allow_all = true` — auto-approve everything.
@@ -89,7 +89,7 @@ Bundles a prompt, working directory, and tools. Tools come from two sources:
 
 2. **Custom MCP servers** — `[[mcps]]` array-of-tables entries, each with `mcp = "<name>"` (matching a configured MCP server), plus `tools`/`auto_allow`/`auto_allow_all`.
 
-The role's MCP selection seeds every new chat's active MCPs (stored per chat). With `mcps_override_allowed = true` the user can add/remove MCP servers per chat via the toolbar picker (entries also present in the role keep the role's `tools`/`auto_allow` rules; extra per-chat additions get all tools with no auto-allow). MCP configs deleted later are silently dropped from chats. The toolbar MCP control is hidden entirely when no MCP servers are configured.
+The role's MCP selection is only a pre-selection: it seeds every new chat's active MCPs (stored per chat), and the user can always add more MCP servers or remove the pre-selected ones per chat via the toolbar picker (entries also present in the role keep the role's `tools`/`auto_allow` rules; extra per-chat additions get all tools with no auto-allow). MCP configs deleted later are silently dropped from chats. The toolbar MCP control is hidden entirely when no MCP servers are configured. The role's prompt is always the one in its `prompt` key — the user can't pick a different prompt per chat.
 
 Separate from role config: when approving a tool call, the user can pick "Allow for this chat", which stores the tool's namespaced name in the chat file's own optional `auto_allow` list. That list appends to the role's auto-allow rules but applies only to that single chat; it lives in the chat data (not in any config file) and currently can't be edited or undone from the UI.
 
@@ -97,7 +97,8 @@ Separate from role config: when approving a tool call, the user can pick "Allow 
 A chat's working directory is permanent, like its role: it is set exactly once — either pre-set by the role (`working_directory`) or picked by the user when the chat is created — and can never be changed afterwards (a mid-chat swap would confuse the model; a different directory requires a new chat).
 
 - `working_directory` — pre-set directory applied to every new chat.
-- `directory_isolation` — isolate Filesystem/Code to the working directory. It requires at least one of Filesystem/Code tool group to be enabled, and combining it with the `[shell]` group is a validation error — shell tools are not directory-isolated, so the model could escape the confinement.
+- `working_directory_optional` (default false) — when true, the directory picker also offers a pinned "No Directory" item. Choosing it is final for that chat (like picking a directory) and removes every tool that needs a directory (all of Filesystem, Edit and Shell) from the chat; the `\{current_directory}` prompt variable then explains that the user didn't pick a directory so all filesystem access is disabled, and `\{load_first_available:...}` reads nothing. Good for roles where a directory is a convenience (notes, documents) but the user may just want a quick question answered. Writing the prompt, remember the model may have no file tools at all.
+- `directory_isolation` — isolate Filesystem/Edit to the working directory. It requires at least one of Filesystem/Edit tool group to be enabled, and combining it with the `[shell]` group is a validation error — shell tools are not directory-isolated, so the model could escape the confinement.
 
 ### Feature flags (`[features]`)
 An optional table gating UI capabilities per role. All keys are optional; an omitted key means the feature is off. A missing `[features]` table entirely leaves every feature off — the role behaves as a plain chat with no attachments, no regen, no trees. Omit the table (or the key) when the feature is not needed.
@@ -108,36 +109,38 @@ An optional table gating UI capabilities per role. All keys are optional; an omi
 
 **Validation errors** (the role fails to load and surfaces a config error):
 1. Referencing a prompt or MCP server that doesn't exist (`prompt`, or a `[[mcps]]` entry with no matching config on disk). A broken-but-present config still counts as existing — it surfaces its own error instead.
-2. Setting `working_directory` without selecting at least one workdir-capable group (Filesystem, Code, or Shell). Nothing would consume the directory, so the setting is meaningless.
-3. Setting `directory_isolation = true` without selecting at least one isolation-capable group (Filesystem or Code). Nothing would be isolated, so the setting is meaningless. Isolation always needs a directory to isolate to — but it doesn't have to come from the role: when `working_directory` is omitted, the user is forced to pick one (Filesystem/Code can't run without a directory), so `directory_isolation` without `working_directory` is valid.
+2. Setting `working_directory` without selecting at least one workdir-capable group (Filesystem, Edit, or Shell). Nothing would consume the directory, so the setting is meaningless.
+3. Setting `directory_isolation = true` without selecting at least one isolation-capable group (Filesystem or Edit). Nothing would be isolated, so the setting is meaningless. Isolation always needs a directory to isolate to — but it doesn't have to come from the role: when `working_directory` is omitted, the user is forced to pick one (or, with `working_directory_optional`, to pick none), so `directory_isolation` without `working_directory` is valid.
 4. Setting `directory_isolation = true` while also selecting the `[shell]` group. Shell tools are not directory-isolated, so the model could escape the confinement — remove either the isolation or the Shell group.
 5. Setting `with_chat_trees = true` without `with_response_regen = true`. Chat trees only exist via regeneration, so both must be enabled together.
+6. Setting `working_directory_optional = true` together with a pre-set `working_directory`. A fixed directory can't be optional.
+7. Setting `working_directory_optional = true` without Filesystem or Edit. Only those make the directory picker appear (Shell alone defaults to the user's home), so the flag would do nothing.
 
 When fixing a role that errored on a missing reference, first check whether the entity was simply renamed: `list_prompts`/`list_mcps` and look for a similarly named or same-purpose entry, then point the role at it. If nothing relevant exists, ask the user what to do — recreate the missing entity, change the role to reference something else or remove the reference (in case of MCPs). Don't silently drop the reference.
 
 **Toolbar behavior**:
 - `working_directory` set → directory shown, fixed (picker disabled).
-- `working_directory` not set, role selects Filesystem and/or Code → "No directory" shown in red and sending is blocked until the user picks a directory (the picker is auto-presented when the chat is created). The pick is permanent.
-- `working_directory` not set, no Filesystem/Code (e.g. Shell-only or no built-in groups) → control hidden; Shell simply runs in the user's home.
+- `working_directory` not set, role selects Filesystem and/or Edit → "No directory" shown in red and sending is blocked until the user picks a directory (the picker is auto-presented when the chat is created). The pick is permanent.
+- Same, with `working_directory_optional = true` → the picker additionally has a pinned "No Directory" item. Picking it unblocks sending, shows a grey "No directory" tag, and is permanent too: the chat has no Filesystem, Edit or Shell tools for its whole life.
+- `working_directory` not set, no Filesystem/Edit (e.g. Shell-only or no built-in groups) → control hidden; Shell simply runs in the user's home.
 
-**CLI behavior**: for roles with a workdir-capable group and no pre-set `working_directory`, a chat driven via the command line gets the CLI process's working directory (or the explicit `--workdir` value) as its directory — so command-line runs operate on the directory the user invoked them from. A role-pinned `working_directory` always wins over the CLI value (an explicit `--workdir` then triggers a warning).
+**CLI behavior**: for roles with a workdir-capable group and no pre-set `working_directory`, a chat driven via the command line gets the CLI process's working directory (or the explicit `--workdir` value) as its directory — so command-line runs operate on the directory the user invoked them from (this also holds for `working_directory_optional` roles; the CLI has no way to pick "No Directory"). A role-pinned `working_directory` always wins over the CLI value (an explicit `--workdir` then triggers a warning), and so does a chat's permanent "No Directory" choice.
 
 ### SSH working directories
 A working directory may be remote (SSH), written in scp form as `host:/absolute/path` — e.g. `nas:/home/user/project` or `user@host:/var/www`. A bare `host:` (no path) means the remote home directory. The path must be absolute — home-relative forms like `host:dir` are rejected. The `host` part is anything `ssh` accepts (a `Host` alias from `~/.ssh/config` or `user@host`); all authorization must be pre-configured by the user so `ssh host` works without prompts (BatchMode is used — no interactive auth is possible). SSH specs are valid everywhere a working directory is: the role's `working_directory`, and the per-chat picker (stored in `[general].working_directories` like any other entry). In the picker, typing an scp-style spec browses the remote over a temporary SSH connection: results are filtered to subdirectories of the typed path, and the connection is torn down when the picker closes.
 
 ```toml
 description = "Web research role with search and note-taking tools."  # shown in picker when creating a new chat
-prompt = "Assistant"                        # required, name of the prompt to use
-prompt_override_allowed = false             # optional, default false, let user pick a different prompt per chat
-working_directory = "~/research"            # optional, default empty, ~ is expanded internally; when omitted and Filesystem/Code is enabled, the user picks the directory once per chat (permanent)
+prompt = "Assistant"                        # required, name of the prompt to use (always used as is, the user can't swap it per chat)
+working_directory = "~/research"            # optional, default empty, ~ is expanded internally; when omitted and Filesystem/Edit is enabled, the user picks the directory once per chat (permanent)
+# working_directory_optional = true         # optional, default false, adds a "No Directory" item to the directory picker (final per chat, removes all Filesystem/Edit/Shell tools); can't be combined with working_directory
 preferred_model = "anthropic:claude-sonnet-5-5"  # optional, `provider:model-id`; preselected for new chats with this role, overriding [general].default_model. If the model doesn't exist (provider/key removed, model delisted) new chats start with "No model" — it does NOT fall back to the default model
-mcps_override_allowed = true                # optional, default false, if we allow user to change the active MCP servers per chat
 icon = "magnifyingglass"                    # SF Symbol; optional, defaults to "brain"
 # Accent alias: red, orange, yellow, green, blue, purple, pink, teal, indigo,
 # mint, cyan, brown, gray. Omit/unknown = macOS accent color. Adaptive to light/dark.
 accent = "purple"
 
-directory_isolation = true                  # optional, default false, confine Filesystem/Code to the working directory
+directory_isolation = true                  # optional, default false, confine Filesystem/Edit to the working directory
 
 [utils]
 auto_allow_all = true
@@ -145,9 +148,9 @@ auto_allow_all = true
 [filesystem]
 auto_allow = ["ls", "read_file", "stat"]
 
-[code]
+[edit]
 
-[[mcps]]
+[[mcps]]                                    # pre-selected MCPs; the user can add/remove MCPs per chat anyway
 mcp = "Tavily"
 tools = ["tavily_search", "tavily_extract"]
 auto_allow = ["tavily_search"]
@@ -223,8 +226,8 @@ Canonical workflows. Adapt as needed, but keep the shape: **gather what's missin
 ## Built-in tool groups
 The app ships with five built-in tool groups, always available (no MCP needed) and enabled in roles via their `[group]` table:
 - **Utils** (`[utils]`) — small utilities: `calc`, `datetime`, `uuid`, `hash`, `base64_encode`, `base64_decode`, `sleep`, `rand`.
-- **Filesystem** (`[filesystem]`) — file operations: `ls`, `read_file`, `write_file`, `find_file`, `find_text`, `mkdir`, `mv`, `rm`, `stat`, `pwd`. `read_file` extracts text from document binaries (docx, doc, odt, rtf, rtfd, wordml, webarchive, pdf — including OCR fallback for scanned PDF pages) via the bundled document extraction engine; plain text (html, json, xml, source, proprietary-but-textual) passes through raw. Image files are processed (resized/re-encoded) and returned as image data with a classification+OCR text fallback — on vision-capable models the model sees the image directly, on vision-incapable ones it gets the classification and OCR text. Switching a chat between vision-capable and vision-incapable models automatically substitutes the right representation at request time.
-- **Code** (`[code]`) — code-aware tools: `edit_file` edits existing text files via the hashline patch language (line-number + `#TAG` anchors taken from `read_file`/`find_text` output, with `PUT`/`CUT`/`REM`/`MV` operations).
+- **Filesystem** (`[filesystem]`) — file operations: `ls`, `read_file`, `write_file`, `find_file`, `find_text`, `mkdir`, `mv`, `cp`, `rm`, `stat`, `pwd`. `cp` takes just `src` and `dst`: a directory is copied recursively, `dst` is the new path itself (never "copy into"), must not exist yet and gets its parent directories created. `read_file` extracts text from document binaries (docx, doc, odt, rtf, rtfd, wordml, webarchive, pdf — including OCR fallback for scanned PDF pages) via the bundled document extraction engine; plain text (html, json, xml, source, proprietary-but-textual) passes through raw. Image files are processed (resized/re-encoded) and returned as image data with a classification+OCR text fallback — on vision-capable models the model sees the image directly, on vision-incapable ones it gets the classification and OCR text. Switching a chat between vision-capable and vision-incapable models automatically substitutes the right representation at request time.
+- **Edit** (`[edit]`) — file editing tools: `edit_file` edits existing text files via the hashline patch language (line-number + `#TAG` anchors taken from `read_file`/`find_text` output, with `PUT`/`CUT`/`REM`/`MV` operations).
 - **Shell** (`[shell]`) — shell execution: `shell`, `applescript`.
 - **Web** (`[web]`) — web access: `web_search`, `web_extract`, `web_fetch`. `web_fetch` (raw curl-like download, 256KB text cap) always works; `web_search` and `web_extract` share one unified interface regardless of provider and are always advertised to the model when the group is enabled — without a configured provider (and its token, set in Preferences > Web Search) a call returns an error telling the model they're unavailable, that it should stop and tell the user if the task depends on them, and that the user needs to set up a provider. The group needs no working directory.
   The Shell group supports a `shell_whitelist` key: a list of command names (e.g. `["ls", "cat", "grep"]`) that are allowed to run without user confirmation when the `shell` tool would otherwise require it. A command is auto-approved only when every command in it (across pipes, `&&`, `||`, and `;`) is in the whitelist. Commands with complex constructs (command substitution, subshells, loops, heredocs, etc.) always require confirmation — when in doubt, the user is asked.

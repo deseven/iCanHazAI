@@ -3,8 +3,8 @@
 
 import Foundation
 
-/// One row in the working-directory picker. All cases carry the path/spec
-/// that gets picked when the row is selected; the cases only differ in how
+/// One row in the working-directory picker. The directory cases carry the
+/// path/spec that gets picked when the row is selected and only differ in how
 /// the row is rendered (recent rows get a remove button).
 enum WorkdirItem: Identifiable, Hashable {
     /// A previously picked directory (from the MRU list in the app config).
@@ -12,12 +12,17 @@ enum WorkdirItem: Identifiable, Hashable {
     /// A directory from browsing: the typed directory itself or one of its
     /// subdirectories (local or remote).
     case directory(String)
+    /// The pinned "No Directory" choice, offered only for roles with
+    /// `working_directory_optional`. Carries no path.
+    case noDirectory
 
     var id: Self { self }
 
+    /// The picked path/spec; empty for `.noDirectory`.
     var path: String {
         switch self {
         case .recent(let p), .directory(let p): return p
+        case .noDirectory: return ""
         }
     }
 

@@ -103,7 +103,7 @@ struct CLIRequestParams: Sendable, Equatable {
     var temporary = false
     /// Working directory for the chat (the CLI process's cwd unless -w was
     /// given). Only applied when the chat's role selects a workdir-capable
-    /// built-in group (Filesystem/Code/Shell).
+    /// built-in group (Filesystem/Edit/Shell).
     var workdir: String?
     /// True when the workdir came from an explicit -w/--workdir flag rather
     /// than the implicit cwd default — drives the "role ignores it" warning.
