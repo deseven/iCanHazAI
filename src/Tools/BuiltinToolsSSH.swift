@@ -225,7 +225,7 @@ enum BuiltinToolsSSH {
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
         return try BuiltinTools.formatFileContent(
             r.stdout, path: path, offset: offset, limit: limit, chatFilename: chatFilename,
-            resolvedPath: resolved, snapshotStore: snapshotStore)
+            resolvedPath: resolved, key: .ssh(host: ssh.host, resolved: resolved), snapshotStore: snapshotStore)
     }
 
     private static func writeFile(
@@ -256,7 +256,9 @@ enum BuiltinToolsSSH {
         var result =
             "Wrote \(data.count) bytes to \(path)\n\(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))"
         if strippedPrefixes { result += "\n\(HashlineFormat.strippedPastedPrefixesNote)" }
-        return ToolOutput(content: result, isError: false)
+        return ToolOutput(
+            content: result, isError: false,
+            fileViews: [BuiltinTools.writtenFileView(.ssh(host: ssh.host, resolved: resolved), text: text)])
     }
 
     /// Edits a remote text file with a hashline patch. Hash computation and
@@ -601,14 +603,27 @@ enum BuiltinToolsSSH {
         let dst = try BuiltinTools.requireString(args, "dst")
         let resolvedSrc = try workdir.resolve(src)
         let resolvedDst = try workdir.resolve(dst)
-        let r = try await run(ssh, script: "mv \(qp(resolvedSrc)) \(qp(resolvedDst))")
+        // Like the local tool (and `cp`), never merge into or overwrite an
+        // existing destination: plain `mv` would move the source *into* an
+        // existing directory and silently replace an existing file.
+        let script = """
+            if [ -e \(qp(resolvedDst)) ] || [ -L \(qp(resolvedDst)) ]; then printf 'already exists: %s\\n' \(q(dst)) >&2; exit 1; fi
+            mv \(qp(resolvedSrc)) \(qp(resolvedDst))
+            """
+        let r = try await run(ssh, script: script)
         try requireSuccess(
             r,
             scrubbing: [
                 (resolvedSrc, workdir.displayPath(forResolved: resolvedSrc)),
                 (resolvedDst, workdir.displayPath(forResolved: resolvedDst)),
             ])
-        return ToolOutput(content: "Moved \(src) to \(dst)", isError: false)
+        return ToolOutput(
+            content: "Moved \(src) to \(dst)", isError: false,
+            fileViews: [
+                .move(
+                    from: .ssh(host: ssh.host, resolved: resolvedSrc),
+                    to: .ssh(host: ssh.host, resolved: resolvedDst))
+            ])
     }
 
     /// Remote counterpart of the local `cp`: same semantics (`dst` is the new
@@ -666,7 +681,8 @@ enum BuiltinToolsSSH {
             """
         let r = try await run(ssh, script: script)
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
-        return ToolOutput(content: "Deleted \(path)", isError: false)
+        return ToolOutput(
+            content: "Deleted \(path)", isError: false, fileViews: [.drop(.ssh(host: ssh.host, resolved: resolved))])
     }
 
     private static func stat(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {

@@ -231,6 +231,67 @@ extension AllAppTests {
             await Self.destroy(wd, remote)
         }
 
+        @Test("mv refuses an existing destination instead of overwriting it or moving into it")
+        func mvRefusesExistingDestination() async {
+            let (wd, remote) = Self.makeContext()
+            _ = await Self.call("write_file", Self.fs, ["path": "a.txt", "content": "aaa"], workdir: wd)
+            _ = await Self.call("write_file", Self.fs, ["path": "b.txt", "content": "bbb"], workdir: wd)
+            _ = await Self.call("mkdir", Self.fs, ["path": "d"], workdir: wd)
+
+            let (overwrite, overwriteErr) = await Self.call(
+                "mv", Self.fs, ["src": "a.txt", "dst": "b.txt"], workdir: wd)
+            #expect(overwriteErr)
+            #expect(overwrite.contains("already exists"))
+            let (b, _) = await Self.call("read_file", Self.fs, ["path": "b.txt"], workdir: wd)
+            #expect(b.contains("bbb"))
+
+            let (into, intoErr) = await Self.call("mv", Self.fs, ["src": "a.txt", "dst": "d"], workdir: wd)
+            #expect(intoErr)
+            #expect(into.contains("already exists"))
+            let (listing, _) = await Self.call("ls", Self.fs, ["path": "d"], workdir: wd)
+            #expect(listing.isEmpty)
+
+            await Self.destroy(wd, remote)
+        }
+
+        @Test("file tools record events under SSH keys")
+        func fileViewEvents() async {
+            let (wd, remote) = Self.makeContext()
+            func key(_ name: String) -> FileKey { .ssh(host: Self.host, resolved: "\(remote)/\(name)") }
+            func run(_ name: String, _ args: [String: Any]) async -> ToolResult {
+                let arguments =
+                    (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
+                return await BuiltinTools.call(
+                    name: name, arguments: arguments, callID: "test", group: Self.fs, workdir: wd,
+                    chatFilename: "test.json")
+            }
+            let content = "a\nb\nc\n"
+            let id = HashlineFormat.computeContentID(content)
+
+            let write = await run("write_file", ["path": "a.txt", "content": content])
+            #expect(write.fileViews == [.set(key("a.txt"), contentID: id, lines: LineSet(range: 1...3))])
+
+            let read = await run("read_file", ["path": "a.txt", "offset": 2, "limit": 1])
+            #expect(read.fileViews == [.seen(key("a.txt"), contentID: id, lines: LineSet([2]))])
+
+            let move = await run("mv", ["src": "a.txt", "dst": "b.txt"])
+            #expect(move.fileViews == [.move(from: key("a.txt"), to: key("b.txt"))])
+            let state = FileViewState.fold(
+                [write, read, move].map { Fixtures.message(role: .tool, content: "", toolResults: [$0]) })
+            #expect(state.view(for: key("a.txt")) == nil)
+            #expect(state.view(for: key("b.txt"))?.contentID == id)
+
+            let remove = await run("rm", ["path": "b.txt"])
+            #expect(remove.fileViews == [.drop(key("b.txt"))])
+
+            _ = await run("write_file", ["path": "x.txt", "content": "x"])
+            let copy = await run("cp", ["src": "x.txt", "dst": "c.txt"])
+            #expect(!copy.isError, "cp failed: \(copy.content)")
+            #expect(copy.fileViews == nil)
+
+            await Self.destroy(wd, remote)
+        }
+
         @Test("cp copies files and directories, refusing to overwrite or copy into itself")
         func cpCopies() async {
             let (wd, remote) = Self.makeContext()

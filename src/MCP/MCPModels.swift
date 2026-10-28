@@ -293,16 +293,23 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
     /// live here (no attachment file on disk); the request builders and the
     /// renderer read them from the chat data. Nil for all other results.
     var image: ToolResultImage?
+    /// What the file tools recorded about the files this call showed, wrote,
+    /// moved or deleted (see [`FileViewState`](src/Tools/Hashline/FileViews.swift)).
+    /// Persisted with the chat so the state survives a restart; never sent to
+    /// a provider. Nil when the call recorded nothing.
+    var fileViews: [FileViewEvent]?
 
     enum CodingKeys: String, CodingKey {
         case callID, content, isError, isStreaming, isDenied, isCancelled
         case summary = "tool_call_result_summary"
         case image
+        case fileViews = "file_views"
     }
 
     init(
         callID: String, content: String, isError: Bool, isStreaming: Bool = false, isDenied: Bool = false,
-        isCancelled: Bool = false, summary: ToolSummary.Status? = nil, image: ToolResultImage? = nil
+        isCancelled: Bool = false, summary: ToolSummary.Status? = nil, image: ToolResultImage? = nil,
+        fileViews: [FileViewEvent]? = nil
     ) {
         self.callID = callID
         self.content = content
@@ -312,6 +319,7 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
         self.isCancelled = isCancelled
         self.summary = summary
         self.image = image
+        self.fileViews = fileViews
     }
 
     init(from decoder: Decoder) throws {
@@ -327,6 +335,7 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
         isCancelled = (try? c.decode(Bool.self, forKey: .isCancelled)) ?? false
         summary = try? c.decode(ToolSummary.Status.self, forKey: .summary)
         image = try? c.decode(ToolResultImage.self, forKey: .image)
+        fileViews = try? c.decode([FileViewEvent].self, forKey: .fileViews)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -339,6 +348,7 @@ struct ToolResult: Codable, Identifiable, Equatable, Sendable {
         try c.encode(isCancelled, forKey: .isCancelled)
         try c.encodeIfPresent(summary, forKey: .summary)
         try c.encodeIfPresent(image, forKey: .image)
+        try c.encodeIfPresent(fileViews, forKey: .fileViews)
     }
 }
 

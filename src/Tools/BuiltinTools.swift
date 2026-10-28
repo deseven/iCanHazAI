@@ -211,11 +211,17 @@ struct ToolOutput {
     /// renderer decodes them from the chat data. `fallback` carries the classification+OCR text used
     /// in place of the image on vision-incapable models.
     var image: ProcessedToolImage?
+    /// What the call showed, wrote, moved or deleted, copied onto the
+    /// `ToolResult` (see [`FileViewState`](src/Tools/Hashline/FileViews.swift)).
+    var fileViews: [FileViewEvent]
 
-    init(content: String, isError: Bool, image: ProcessedToolImage? = nil) {
+    init(
+        content: String, isError: Bool, image: ProcessedToolImage? = nil, fileViews: [FileViewEvent] = []
+    ) {
         self.content = content
         self.isError = isError
         self.image = image
+        self.fileViews = fileViews
     }
 }
 
@@ -540,6 +546,7 @@ enum BuiltinTools {
                 result.image = ToolResultImage(
                     data: image.data.base64EncodedString(), mimeType: image.mimeType, fallback: image.fallback)
             }
+            if !output.fileViews.isEmpty { result.fileViews = output.fileViews }
             return result
         } catch let err as BuiltinToolError {
             return ToolResult(callID: callID, content: "Error: \(err.description)", isError: true)
@@ -1068,7 +1075,7 @@ enum BuiltinTools {
         }
         return try formatFileContent(
             data, path: path, offset: offset, limit: limit, chatFilename: chatFilename,
-            resolvedPath: resolved, snapshotStore: snapshotStore)
+            resolvedPath: resolved, key: .local(resolved: resolved), snapshotStore: snapshotStore)
     }
 
     /// Validated `offset`/`limit` of a `read_file` call (shared with the SSH
@@ -1096,7 +1103,7 @@ enum BuiltinTools {
     /// like user-attached images.
     static func formatFileContent(
         _ data: Data, path: String, offset: Int, limit: Int, chatFilename: String, resolvedPath: String,
-        snapshotStore: SnapshotStore?
+        key: FileKey, snapshotStore: SnapshotStore?
     ) throws -> ToolOutput {
         let hint = DocumentTypeHint(filename: path)
         let kind = DocumentClassifier.classify(data: data, hint: hint)
@@ -1107,7 +1114,7 @@ enum BuiltinTools {
                 throw BuiltinToolError("invalid argument 'path': file is not valid UTF-8: \(path)")
             }
             return formatTextLines(
-                file.text, path: path, offset: offset, limit: limit, resolvedPath: resolvedPath,
+                file.text, path: path, offset: offset, limit: limit, resolvedPath: resolvedPath, key: key,
                 snapshotStore: snapshotStore)
 
         case .document(let format):
@@ -1190,11 +1197,14 @@ enum BuiltinTools {
     /// whole file) followed by unpadded `N:content` lines. The hash comes from
     /// the full `text`, not the visible slice. An empty file and an offset past
     /// the end still get the header (so the file can be edited) plus a notice.
-    /// When a snapshot store is present, the read is recorded live with the
-    /// displayed line numbers so the seen-lines guard knows what the model
-    /// actually saw.
+    /// The displayed line numbers are reported as a `seen` event for this
+    /// version of the file (none for an empty file or an offset past the end:
+    /// the model got the tag but no lines). When a snapshot store is present,
+    /// the read is also recorded live so the seen-lines guard knows what the
+    /// model actually saw.
     private static func formatTextLines(
-        _ text: String, path: String, offset: Int, limit: Int, resolvedPath: String, snapshotStore: SnapshotStore?
+        _ text: String, path: String, offset: Int, limit: Int, resolvedPath: String, key: FileKey,
+        snapshotStore: SnapshotStore?
     ) -> ToolOutput {
         let slice = sliceText(text, offset: offset, limit: limit)
         let tag = HashlineFormat.computeFileHash(text)
@@ -1217,7 +1227,10 @@ enum BuiltinTools {
                 out.append("... (truncated at 2000 lines)")
             }
         }
-        return ToolOutput(content: out.joined(separator: "\n"), isError: false)
+        let shown = slice.lines.isEmpty ? LineSet() : LineSet(range: offset...(offset + slice.lines.count - 1))
+        return ToolOutput(
+            content: out.joined(separator: "\n"), isError: false,
+            fileViews: [.seen(key, contentID: HashlineFormat.computeContentID(text), lines: shown)])
     }
 
     static func imageMimeType(for data: Data) -> String? {
@@ -1268,7 +1281,17 @@ enum BuiltinTools {
         var result =
             "Wrote \(data.count) bytes to \(path)\n\(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))"
         if strippedPrefixes { result += "\n\(HashlineFormat.strippedPastedPrefixesNote)" }
-        return ToolOutput(content: result, isError: false)
+        return ToolOutput(
+            content: result, isError: false, fileViews: [writtenFileView(.local(resolved: resolved), text: text)])
+    }
+
+    /// A write replaced the whole file, so the model knows every line of it
+    /// (an empty file has none). Shared with the SSH implementation.
+    static func writtenFileView(_ key: FileKey, text: String) -> FileViewEvent {
+        let lineCount = text.isEmpty ? 0 : HashlineFormat.splitAddressableFileLines(text).count
+        return .set(
+            key, contentID: HashlineFormat.computeContentID(text),
+            lines: lineCount == 0 ? LineSet() : LineSet(range: 1...lineCount))
     }
 
     /// Edits existing text files with a hashline patch. The #TAG in each
@@ -1773,6 +1796,7 @@ enum BuiltinTools {
         var outBytes = 0
         var hitResultCap = false
         var hitByteCap = false
+        var fileViews: [FileViewEvent] = []
 
         fileLoop: for (file, display) in files {
             guard let data = fm.contents(atPath: file), isText(data),
@@ -1839,8 +1863,12 @@ enum BuiltinTools {
                     if !clipped.clipped { seen.insert(i + 1) }
                 }
             }
-            if headerEmitted, let snapshotStore {
-                snapshotStore.record(path: canonicalPath(file), hash: tag, text: text, seenLines: seen)
+            if headerEmitted {
+                snapshotStore?.record(path: canonicalPath(file), hash: tag, text: text, seenLines: seen)
+                fileViews.append(
+                    .seen(
+                        .local(resolved: file), contentID: HashlineFormat.computeContentID(text),
+                        lines: LineSet(seen)))
             }
             if capped { break fileLoop }
         }
@@ -1851,7 +1879,7 @@ enum BuiltinTools {
         } else if hitByteCap {
             result += "\n... (truncated, output size limit)"
         }
-        return ToolOutput(content: result, isError: false)
+        return ToolOutput(content: result, isError: false, fileViews: fileViews)
     }
 
     private static func mkdir(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
@@ -1867,7 +1895,9 @@ enum BuiltinTools {
         let resolvedSrc = try workdir.resolve(src)
         let resolvedDst = try workdir.resolve(dst)
         try FileManager.default.moveItem(atPath: resolvedSrc, toPath: resolvedDst)
-        return ToolOutput(content: "Moved \(src) to \(dst)", isError: false)
+        return ToolOutput(
+            content: "Moved \(src) to \(dst)", isError: false,
+            fileViews: [.move(from: .local(resolved: resolvedSrc), to: .local(resolved: resolvedDst))])
     }
 
     /// Copies a file, or a whole directory tree when `src` is a directory.
@@ -1917,7 +1947,8 @@ enum BuiltinTools {
             }
         }
         try fm.removeItem(atPath: resolved)
-        return ToolOutput(content: "Deleted \(path)", isError: false)
+        return ToolOutput(
+            content: "Deleted \(path)", isError: false, fileViews: [.drop(.local(resolved: resolved))])
     }
 
     private static func stat(_ args: [String: Any], workdir: Workdir) async throws -> ToolOutput {
