@@ -25,10 +25,12 @@ extension SmokeFixture {
     static let systemLine = "system: \(systemPrompt)"
 
     /// Provider, role and chat for the common case: one provider added, one role installed, one chat open.
-    func start(_ sp: SmokeProvider = .deepseek, tools: SmokeRoleTools = .none) async throws -> String {
+    func start(
+        _ sp: SmokeProvider = .deepseek, tools: SmokeRoleTools = .none, workingDirectory: String? = nil
+    ) async throws -> String {
         try await addProvider(sp)
         try await installRole(tools: tools)
-        return await newChat(sp)
+        return await newChat(sp, workingDirectory: workingDirectory)
     }
 }
 

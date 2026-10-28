@@ -309,11 +309,12 @@ extension AllAppTests {
             let tag = HashlineFormat.computeFileHash("one\ntwo\nthree\n")
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=2:\n+TWO\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
-            // Deleted and added lines with correct line numbers, plus context.
-            #expect(text.contains("-2:two"))
+            // The added line and its context, in post-edit numbers; the removed line is not echoed.
             #expect(text.contains("+2:TWO"))
             #expect(text.contains(" 1:one"))
             #expect(text.contains(" 3:three"))
+            #expect(!text.contains(":two"))
+            #expect(!text.components(separatedBy: "\n").contains { $0.hasPrefix("-") })
         }
 
         @Test("context lines carry post-edit numbers after an insert")
@@ -350,27 +351,27 @@ extension AllAppTests {
             #expect(!err, "edit_file failed: \(text)")
             // Each preview follows its own Updated: header (attribution).
             let updated1 = text.range(of: "Updated: \(file1)")
-            let preview1 = text.range(of: "-1:a")
+            let preview1 = text.range(of: "+1:A")
             let updated2 = text.range(of: "Updated: \(file2)")
-            let preview2 = text.range(of: "-2:y")
+            let preview2 = text.range(of: "+2:Y")
             #expect(updated1 != nil && preview1 != nil && preview1!.lowerBound > updated1!.lowerBound)
             #expect(updated2 != nil && preview2 != nil && preview2!.lowerBound > updated2!.lowerBound)
             #expect(updated2!.lowerBound > preview1!.lowerBound)
         }
 
-        @Test("multi-line replace shows all deletions and additions")
+        @Test("multi-line replace shows the added lines only")
         func multiLineReplace() async throws {
             let tmp = try EditTestDir()
             let file = try tmp.write("a.txt", content: "a\nb\nc\nd\ne\n")
             let tag = HashlineFormat.computeFileHash("a\nb\nc\nd\ne\n")
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=4:\n+X\n+Y\n+Z\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
-            #expect(text.contains("-2:b"))
-            #expect(text.contains("-3:c"))
-            #expect(text.contains("-4:d"))
+            #expect(text.contains(" 1:a"))
             #expect(text.contains("+2:X"))
             #expect(text.contains("+3:Y"))
             #expect(text.contains("+4:Z"))
+            #expect(text.contains(" 5:e"))
+            #expect(!text.components(separatedBy: "\n").contains { $0.hasPrefix("-") })
         }
 
         @Test("insert produces additions only")
@@ -386,18 +387,17 @@ extension AllAppTests {
             #expect(!hasDelete)
         }
 
-        @Test("CUT produces deletions only")
+        @Test("CUT shows the lines around the cut in post-edit numbers")
         func cutOnlyDeletions() async throws {
             let tmp = try EditTestDir()
             let file = try tmp.write("a.txt", content: "a\nb\nc\nd\ne\n")
             let tag = HashlineFormat.computeFileHash("a\nb\nc\nd\ne\n")
             let (text, err) = await AllAppTests.editCall(patch(file, "CUT 2.=4\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
-            #expect(text.contains("-2:b"))
-            #expect(text.contains("-4:d"))
-            // No '+' lines for a pure cut.
-            let hasAdd = text.components(separatedBy: "\n").contains { $0.hasPrefix("+") }
-            #expect(!hasAdd)
+            #expect(text.hasSuffix("\n 1:a\n 2:e"))
+            // Neither '+' nor '-' rows for a pure cut.
+            let rows = text.components(separatedBy: "\n")
+            #expect(!rows.contains { $0.hasPrefix("+") || $0.hasPrefix("-") })
         }
 
         @Test("non-contiguous hunks are separated by a blank row")
@@ -416,9 +416,9 @@ extension AllAppTests {
                 """
             let (text, err) = await AllAppTests.editCall(input)
             #expect(!err, "edit_file failed: \(text)")
-            #expect(text.contains("-2:line2"))
-            #expect(text.contains("-9:line9"))
-            #expect(text.contains("\n\n"))
+            #expect(text.contains("+2:TWO"))
+            #expect(text.contains("+9:NINE"))
+            #expect(text.contains(" 4:line4\n\n 7:line7"))
         }
 
         @Test("large edit is truncated with a marker")
@@ -458,23 +458,97 @@ extension AllAppTests {
             #expect(!text.contains("\u{FFFD}"))
         }
 
-        @Test("the preview reports the post-edit lines it printed, not the removed ones")
+        /// The preview of applying `ops` to `old`, built from the applier's own origins.
+        private static func preview(_ old: String, _ ops: String) throws -> HashlineDiffPreview.Preview? {
+            let tag = HashlineFormat.computeFileHash(old)
+            let patch = try HashlineEdit.parse("[a.txt#\(tag)]\n\(ops)")
+            let result = try HashlineEdit.applySection(patch.sections[0], fileContent: old)
+            return HashlineDiffPreview.generate(old: old, new: result.text, origins: result.origins)
+        }
+
+        private static func numbered(_ count: Int) -> String {
+            (1...count).map { "line\($0)" }.joined(separator: "\n") + "\n"
+        }
+
+        @Test("the preview reports the post-edit lines it printed")
         func shownLines() throws {
-            let old = (1...10).map { "line\($0)" }.joined(separator: "\n") + "\n"
-            let new = old.replacingOccurrences(of: "line5\n", with: "X\nY\n")
-            let preview = try #require(HashlineDiffPreview.generate(old: old, new: new))
-            #expect(preview.text.contains("-5:line5"))
-            // Context 3-4, added 5-6, context 7-8; the `-5:` row has no post-edit line.
+            let preview = try #require(try Self.preview(Self.numbered(10), "PUT 5.=5:\n+X\n+Y\n"))
+            #expect(
+                preview.text == " 3:line3\n 4:line4\n+5:X\n+6:Y\n 7:line6\n 8:line7")
             #expect(preview.shownLines == LineSet(range: 3...8))
+        }
+
+        @Test("a cut in the middle shows both sides as contiguous post-edit rows")
+        func cutInTheMiddle() throws {
+            let preview = try #require(try Self.preview(Self.numbered(10), "CUT 5.=6\n"))
+            #expect(preview.text == " 3:line3\n 4:line4\n 5:line7\n 6:line8")
+            #expect(preview.shownLines == LineSet(range: 3...6))
+        }
+
+        @Test("a cut at the head or at the tail still shows the neighbours")
+        func cutAtTheEdges() throws {
+            let head = try #require(try Self.preview(Self.numbered(5), "CUT 1.=2\n"))
+            #expect(head.text == " 1:line3\n 2:line4")
+            let tail = try #require(try Self.preview(Self.numbered(5), "CUT 4.=5\n"))
+            #expect(tail.text == " 2:line2\n 3:line3")
+            #expect(tail.shownLines == LineSet(range: 2...3))
+        }
+
+        @Test("removing every line says the file is empty")
+        func cutEverything() throws {
+            let preview = try #require(try Self.preview("a\nb\nc\n", "CUT 1.=3\n"))
+            #expect(preview.text == HashlineDiffPreview.emptyFileNotice)
+            #expect(preview.shownLines.isEmpty)
+        }
+
+        @Test("filling an empty file shows the new lines")
+        func fillEmptyFile() throws {
+            let preview = try #require(try Self.preview("", "PUT >$:\n+x\n+y\n"))
+            #expect(preview.text == "+1:x\n+2:y")
+            #expect(preview.shownLines == LineSet(range: 1...2))
+        }
+
+        @Test("unchanged content has no preview")
+        func unchangedHasNoPreview() {
+            let text = "a\nb\n"
+            #expect(HashlineDiffPreview.generate(old: text, new: text, origins: [1, 2]) == nil)
+        }
+
+        @Test("an origins list that does not describe the new text yields no preview")
+        func mismatchedOrigins() {
+            #expect(HashlineDiffPreview.generate(old: "a\n", new: "b\nc\n", origins: [nil]) == nil)
+        }
+
+        @Test("a move without edits has no preview")
+        func moveHasNoPreview() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "a\nb\n")
+            let tag = HashlineFormat.computeFileHash("a\nb\n")
+            let (text, err) = await AllAppTests.editCall(patch(file, "MV \(tmp.sub("b.txt"))\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(text.hasPrefix("Updated: \(file) ["))
+            #expect(!text.contains("\n"))
         }
 
         @Test("rows cut by the truncation caps are not reported as shown")
         func shownLinesAfterTruncation() throws {
-            let new = (1...400).map { "line\($0)" }.joined(separator: "\n") + "\n"
-            let preview = try #require(HashlineDiffPreview.generate(old: "line1\n", new: new))
+            let new = Self.numbered(400)
+            let origins: [Int?] = [1] + [Int?](repeating: nil, count: 399)
+            let preview = try #require(HashlineDiffPreview.generate(old: "line1\n", new: new, origins: origins))
             #expect(preview.text.hasSuffix("... (diff preview truncated)"))
             #expect(preview.shownLines == LineSet(range: 1...HashlineDiffPreview.maxLines))
             #expect(!preview.text.contains("\n201:") && !preview.text.contains("+201:"))
+        }
+
+        @Test("a truncation that lands on a hunk separator does not leave it dangling")
+        func truncationDropsTheSeparator() throws {
+            // 197 inserted lines + 2 context rows fill the first hunk up to row 199,
+            // so the blank separator would be the 200th and last kept row.
+            let body = (1...197).map { "+n\($0)" }.joined(separator: "\n")
+            let preview = try #require(
+                try Self.preview(Self.numbered(300), "PUT <1:\n\(body)\nPUT 250.=250:\n+X\n"))
+            #expect(preview.text.hasSuffix(" 199:line2\n... (diff preview truncated)"))
+            #expect(preview.shownLines == LineSet(range: 1...199))
         }
 
         @Test("REM has no preview")

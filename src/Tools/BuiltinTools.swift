@@ -342,14 +342,14 @@ enum BuiltinTools {
         BuiltinToolDef(
             name: "read_file",
             description:
-                "Read a file and return its contents in a format that you can process. Use this as a main tool for reading individual files. Supports plain text and any other textual formats, document binaries (docx, doc, odt, rtf, pdf and similar) and image files. Text files are returned as a '[path#TAG]' header followed by 'N:content' numbered lines: #TAG is a file-version hash — copy it verbatim into edit_file to prove the file hasn't changed. The 'N:' prefix is display metadata, not file content — never include it in write_file content or edit_file body rows. Document binaries are returned as extracted plain text with no headers or line numbers and cannot be edited via edit_file.",
+                "Read a file and return its contents in a format that you can process. Use this as a main tool for reading individual files. Supports plain text and any other textual formats, document binaries (docx, doc, odt, rtf, pdf and similar) and image files. Text files are returned as a '[path#TAG]' header followed by 'N:content' numbered lines (the empty line after a final newline is not a line and is not shown; an empty file returns the header and '(empty file)'): #TAG is a file-version hash — copy it verbatim into edit_file to prove the file hasn't changed. Only the lines shown can be edited with edit_file. The 'N:' prefix is display metadata, not file content — never include it in write_file content or edit_file body rows. Document binaries are returned as extracted plain text with no headers or line numbers and cannot be edited via edit_file.",
             schema:
                 #"{"type":"object","properties":{"path":{"type":"string","description":"File path to read. \#(Workdir.pathDescription)"},"offset":{"type":"integer","description":"1-based starting line number. Defaults to 1."},"limit":{"type":"integer","description":"Maximum number of lines to read. Defaults to 2000."}},"required":["path"]}"#
         ),
         BuiltinToolDef(
             name: "write_file",
             description:
-                "Write text content to a file (creates or overwrites). Parent directories are created as needed. ALWAYS provide the COMPLETE intended content of the file — partial updates or placeholders like '// rest unchanged' are forbidden. Pasted read_file output (headers and line numbers) is automatically stripped. The result includes the '[path#TAG]' file-version hash — copy it verbatim into edit_file to edit the file without re-reading. For targeted edits to existing files, use edit_file instead.",
+                "Write text content to a file (creates or overwrites). Parent directories are created as needed. ALWAYS provide the COMPLETE intended content of the file — partial updates or placeholders like '// rest unchanged' are forbidden. Pasted read_file output (a '[path#TAG]' header or consecutive 'N:' line-number prefixes) is automatically stripped, and the result says so. The result includes the '[path#TAG]' file-version hash — copy it verbatim into edit_file to edit the file without re-reading. For targeted edits to existing files, use edit_file instead.",
             schema:
                 #"{"type":"object","properties":{"path":{"type":"string","description":"File path to write. \#(Workdir.pathDescription)"},"content":{"type":"string","description":"The complete text content to write, without line numbers or truncation."}},"required":["path","content"]}"#
         ),
@@ -363,7 +363,7 @@ enum BuiltinTools {
         BuiltinToolDef(
             name: "find_text",
             description:
-                "Search file contents with a regular expression across a directory tree. Returns a '[path#TAG]' header per file followed by 'N:content' for each matching line (context lines use '-' separators, groups are split by '--'), sorted deterministically; lines longer than 300 characters are truncated. #TAG is the file-version hash — copy it verbatim into edit_file. Binary files are skipped.",
+                "Search file contents with a regular expression across a directory tree. Returns a '[path#TAG]' header per file followed by 'N:content' for each matching line (context lines use '-' separators, groups are split by '--'), sorted deterministically; lines longer than 300 characters are truncated — read those with read_file before editing them. #TAG is the file-version hash — copy it verbatim into edit_file. Binary files are skipped.",
             schema:
                 #"{"type":"object","properties":{"path":{"type":"string","description":"\#(Workdir.searchRootDescription)"},"regex":{"type":"string","description":"Regular expression to search for in file contents. The full regex syntax is supported (\\d \\w \\s, quantifiers, alternation, groups, anchors); in some environments it is POSIX ERE (grep -E: alternation, groups, + ? {n,m} quantifiers, but no \\d \\w \\s shorthands — use [[:digit:]] etc.). Invalid patterns are reported as errors."},"file_pattern":{"type":"string","description":"Optional glob to filter files by name, e.g. '*.swift'. Same glob syntax as find_file."},"case_insensitive":{"type":"boolean","description":"Match without regard to case. Default false."},"include_hidden":{"type":"boolean","description":"Also search hidden files and directories (names starting with '.'). Default false."},"exclude_paths":{"type":"array","items":{"type":"string"},"description":"\#(Workdir.excludePathsDescription)"},"max_results":{"type":"integer","description":"Maximum number of matching lines to return (1-1000), applied after sorting so truncation is deterministic. Default 200."},"context":{"type":"integer","description":"Lines of context before and after each match (0-25), grep-style. Default 0."}},"required":["regex"]}"#
         ),
@@ -413,24 +413,24 @@ enum BuiltinTools {
                 """
                 Edit existing text files with the hashline patch format: name original lines or gaps, then give the new content. ':' operations take '+TEXT' body rows; CUT/REM/MV take none.
 
-                Section header: '[path#TAG]' — TAG is the 4-hex file-version hash printed by read_file and find_text; copy it verbatim, it is REQUIRED per section. If the file changed since you read it, the edit is rejected with a re-read instruction. New files or non-text files (PDF, docx, images, binaries): use write_file. edit_file edits existing UTF-8 text files only.
+                Section header: '[path#TAG]' — TAG is the 4-hex file-version hash printed by read_file, find_text, write_file and edit_file results; copy it verbatim, it is REQUIRED per section. If the file changed since you read it, the edit is rejected with a re-read instruction. New files or non-text files (PDF, docx, images, binaries): use write_file. edit_file edits existing UTF-8 text files only.
 
                 Operations (per section):
                 'PUT N.=M:' — replace original inclusive lines N-M with the following '+TEXT' body rows.
-                'PUT <N:' / 'PUT >N:' — insert body rows before/after line N; '<1' is the file head, '>$' is the file tail.
+                'PUT <N:' / 'PUT >N:' — insert body rows before/after line N; '<1' is the file head, '>$' is the file tail (also how you fill an empty file).
                 'CUT N.=M' — delete original inclusive lines N-M (no body).
                 'REM' — delete the section file.
                 'MV DEST' — move/rename the file (quote paths with spaces); edits above apply to the source first, final content goes to DEST. DEST must not already exist (MV refuses to overwrite), and must differ from the source.
-                'PUT >$:' — Append body rows at file tail.
-                Multiple sections targeting the same file are merged into one batch so their original line anchors apply together; conflicting tags are rejected up front.
+                An operation header ends at its ':' — body rows go on the following lines, text after the ':' is an error. Block operations ('PUT 5*:') and registers ('@name') are not supported.
+                Multiple sections targeting the same file are merged into one batch so their original line anchors apply together; conflicting tags are rejected up front. Ranges of different hunks must not overlap: one hunk per range, its body is the final content. All sections are validated before the first one is written.
                 Body rows: only below ':' operations. Every row starts with '+': '+TEXT' is a literal line (leading whitespace preserved), a bare '+' is a blank line. NEVER use '-' rows, bare rows, or context rows — the range deletes, the body is the final content. A literal leading '-' or '+': write '+- item' or '++ item'. To keep a line, leave it out of every range.
 
                 Rules:
-                - Numbers and '#TAG' come from the latest read_file/find_text 'LINE:TEXT'; numbers are original, never shifted by your own edits.
-                - Each edit renumbers and changes '#TAG' — take the next numbers from the edit response or a fresh read_file. The tag in the result reflects the post-edit file state; re-read to get fresh line numbers before the next edit.
-                - Touch only displayed lines; ranges cover changed lines only, never widened over lines you keep. Non-adjacent changes: separate hunks.
-                - Edits targeting lines not shown in your read_file or find_text output are rejected with the actual content at those lines. Re-read the missing range if needed.
-                - A compact diff of the changed region is included in the result — verify it matches your intent.
+                - Numbers and '#TAG' come from the latest read_file/find_text 'LINE:TEXT' or edit result; within one patch numbers are original, never shifted by its own hunks.
+                - Touch only lines you have seen: displayed by read_file/find_text (a line cut at 300 characters does not count), written by you with write_file, or shown in an edit result. Ranges cover changed lines only, never widened over lines you keep. Non-adjacent changes: separate hunks.
+                - An edit that touches other lines of a file version you have seen is rejected with those lines' current content (up to 20 lines, each cut at 300 characters). When that content is shown in full, the lines now count as seen: re-issue the edit as is. When it is capped or cut, read that range with read_file first. A file version you never saw must be read first; nothing is revealed for it.
+                - Each edit changes '#TAG' and renumbers the file. Use the new '#TAG' and the post-edit numbers from the result's preview. Lines you had seen before the edit stay usable at their new numbers, as do the lines you wrote and the preview rows; read anything else again before editing it.
+                - The result includes a compact preview of the changed region: '+N:' for lines you added, ' N:' for context, post-edit numbers; removed lines are not shown. Verify it matches your intent.
                 - If your replace body restates unchanged lines bordering the range, they are automatically dropped with a warning. Issue the payload as the final desired content for the selected range only.
                 - Pure addition: 'PUT <N:' / 'PUT >N:', never a widened 'PUT N.=M:'.
                 - Never start or end a range mid-expression or mid-block.
@@ -450,6 +450,12 @@ enum BuiltinTools {
                 +    return "Hi, " + name
                 *** End Patch
 
+                Result — new tag, post-edit numbers:
+                Updated: greet.swift [greet.swift#C3D4]
+                 1:func greet(name: String) {
+                +2:    return "Hi, " + name
+                 3:}
+
                 Markdown — file receives '- task' after line 2:
                 [PLAN.md#A1B2]
                 PUT >2:
@@ -461,9 +467,10 @@ enum BuiltinTools {
                 - WRONG: range sized to the post-edit content ('PUT 1.=2:' for a one-line change). RIGHT: 'PUT 1.=1:' — body length is irrelevant.
                 - WRONG: '-' rows or bare context lines. RIGHT: only '+' rows; the range deletes, the body is the final content.
                 - WRONG: pure insertion as a widened 'PUT 2.=4:' retyping keepers. RIGHT: 'PUT >2:' — touch nothing you keep.
+                - WRONG: body on the header line ('PUT 2.=2: new text'). RIGHT: 'PUT 2.=2:' then '+new text' on the next line.
 
                 Critical rules:
-                1. RE-GROUND AFTER EVERY EDIT: edits renumber and change '#TAG'; take next numbers from the edit response or a fresh read. Stale tag or surprise: STOP and re-read.
+                1. RE-GROUND AFTER EVERY EDIT: edits renumber and change '#TAG'; take the new tag and numbers from the edit result (lines you had seen keep working at their new numbers, re-read anything else). Stale tag or surprise: STOP and re-read.
                 2. RANGES TIGHT: changed lines only.
                 3. BODY IS FINAL CONTENT: every row starts '+'; Markdown bullet is '+- item', not '- item'.
                 """,

@@ -138,6 +138,9 @@ enum SmokeRoleTools {
     case calcApproval
     /// `calc` and `sleep`, auto-approved.
     case utilsAutoAllow
+    /// `read_file` auto-approved, `edit_file` asks first. Chat trees are on, so a regenerated turn stays
+    /// in the chat as another branch.
+    case fileEditApproval
 }
 
 struct SmokeTimeout: Error, CustomStringConvertible {
@@ -229,6 +232,20 @@ final class SmokeFixture: @unchecked Sendable {
         case .calcAutoAllow: toml += "\n[utils]\ntools = [\"calc\"]\nauto_allow_all = true\n"
         case .calcApproval: toml += "\n[utils]\ntools = [\"calc\"]\n"
         case .utilsAutoAllow: toml += "\n[utils]\ntools = [\"calc\", \"sleep\"]\nauto_allow_all = true\n"
+        case .fileEditApproval:
+            toml += """
+
+                [filesystem]
+                tools = ["read_file"]
+                auto_allow = ["read_file"]
+
+                [edit]
+
+                [features]
+                with_response_regen = true
+                with_chat_trees = true
+
+                """
         }
         try toml.write(
             to: temp.env.rolesURL.appendingPathComponent("\(name).toml"), atomically: true, encoding: .utf8)
@@ -238,9 +255,12 @@ final class SmokeFixture: @unchecked Sendable {
 
     /// A new chat on the provider's model (or on `model` of it), selected like the GUI does when the user
     /// opens it (which also keeps its content loaded after the stream ends).
-    func newChat(_ sp: SmokeProvider, model: String? = nil, role: String = "SmokePlain") async -> String {
+    func newChat(
+        _ sp: SmokeProvider, model: String? = nil, role: String = "SmokePlain", workingDirectory: String? = nil
+    ) async -> String {
         let modelString = model.map { "\(sp.provider.rawValue):\($0)" } ?? sp.modelString
-        let filename = await engine.createNewChat(role: role, model: modelString)
+        let filename = await engine.createNewChat(
+            role: role, workingDirectory: workingDirectory, model: modelString)
         await engine.selectChat(filename: filename)
         chats.append(filename)
         return filename

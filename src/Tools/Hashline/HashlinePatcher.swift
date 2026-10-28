@@ -249,7 +249,8 @@ enum HashlinePatcher {
         _ prepared: PreparedSection, newPath: String, newKey: FileKey
     ) -> (summary: String, events: [FileViewEvent]) {
         let text = prepared.result.text
-        let preview = HashlineDiffPreview.generate(old: prepared.file.text, new: text)
+        let preview = HashlineDiffPreview.generate(
+            old: prepared.file.text, new: text, origins: prepared.result.origins)
 
         var lines = LineSet()
         if !text.isEmpty {
