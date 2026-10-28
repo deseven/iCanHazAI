@@ -28,6 +28,7 @@ enum HashlineFormat {
     static let beginPatch = "*** Begin Patch"
     static let endPatch = "*** End Patch"
     static let abortMarker = "*** Abort"
+    static let patchAbortedMessage = "Patch aborted (`\(abortMarker)`); nothing was applied."
 
     /// Number of hex characters in a content-derived file-hash tag.
     static let fileHashLength = 4

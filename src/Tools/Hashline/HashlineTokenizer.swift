@@ -20,6 +20,7 @@ enum Token: Equatable {
     case blank(lineNum: Int)
     case envelopeBegin(lineNum: Int)
     case envelopeEnd(lineNum: Int)
+    case abort(lineNum: Int)
     case header(lineNum: Int, path: String, fileHash: String?)
     case opBlock(lineNum: Int, target: BlockTarget, hadColon: Bool)
     case payloadLiteral(lineNum: Int, text: String)
@@ -118,7 +119,7 @@ final class HashlineTokenizer {
         if line.isEmpty { return .blank(lineNum: lineNum) }
         if markerLineEquals(line, HashlineFormat.beginPatch) { return .envelopeBegin(lineNum: lineNum) }
         if markerLineEquals(line, HashlineFormat.endPatch) { return .envelopeEnd(lineNum: lineNum) }
-        if markerLineEquals(line, HashlineFormat.abortMarker) { return .envelopeEnd(lineNum: lineNum) }
+        if markerLineEquals(line, HashlineFormat.abortMarker) { return .abort(lineNum: lineNum) }
 
         if line.hasPrefix(HashlineFormat.filePrefix) {
             if let header = tryParseHeader(line) {
@@ -197,11 +198,29 @@ final class HashlineTokenizer {
         let hadColon: Bool
     }
 
-    static func tryParseHunkHeader(_ line: String) -> ParsedHunkHeader? {
+    /// A valid hunk locator plus whatever follows it on the line.
+    struct HunkHeaderPrefix {
+        let target: BlockTarget
+        let hadColon: Bool
+        let trailing: String
+    }
+
+    static func scanHunkHeaderPrefix(_ line: String) -> HunkHeaderPrefix? {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return nil }
         guard let scan = scanHunkAnchor(trimmed, start: trimmed.startIndex) else { return nil }
-        return ParsedHunkHeader(target: scan.target, hadColon: scan.hadColon)
+        return HunkHeaderPrefix(
+            target: scan.target,
+            hadColon: scan.hadColon,
+            trailing: String(trimmed[scan.nextIndex...])
+        )
+    }
+
+    /// A header must end right after its locator (and optional `:`); any
+    /// trailing text means the line is not a header.
+    static func tryParseHunkHeader(_ line: String) -> ParsedHunkHeader? {
+        guard let prefix = scanHunkHeaderPrefix(line), prefix.trailing.isEmpty else { return nil }
+        return ParsedHunkHeader(target: prefix.target, hadColon: prefix.hadColon)
     }
 
     static func isHunkHeaderText(_ text: String) -> Bool {

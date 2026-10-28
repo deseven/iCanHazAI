@@ -206,6 +206,27 @@ extension AllAppTests {
             #expect(token == .envelopeEnd(lineNum: 1))
         }
 
+        @Test func abortIsNotEnvelopeEnd() {
+            let token = HashlineTokenizer.tokenize("*** Abort", lineNum: 1)
+            #expect(token == .abort(lineNum: 1))
+        }
+
+        @Test func hunkHeaderWithTrailingTextIsRaw() {
+            #expect(
+                HashlineTokenizer.tokenize("PUT 3.=3: foo", lineNum: 1) == .raw(lineNum: 1, text: "PUT 3.=3: foo"))
+            #expect(HashlineTokenizer.tokenize("CUT 3.=5 @fn", lineNum: 1) == .raw(lineNum: 1, text: "CUT 3.=5 @fn"))
+            #expect(HashlineTokenizer.tokenize("PUT 5*:", lineNum: 1) == .raw(lineNum: 1, text: "PUT 5*:"))
+        }
+
+        @Test func hunkHeaderTolerantOfSurroundingWhitespace() {
+            let token = HashlineTokenizer.tokenize("  PUT 3.=3:  ", lineNum: 1)
+            if case .opBlock(_, .replace(let range), true) = token {
+                #expect(range.start.line == 3 && range.end.line == 3)
+            } else {
+                Issue.record("expected opBlock, got \(token)")
+            }
+        }
+
         @Test func headerWithHash() {
             let token = HashlineTokenizer.tokenize("[src/app.swift#A1B2]", lineNum: 1)
             #expect(token == .header(lineNum: 1, path: "src/app.swift", fileHash: "A1B2"))
@@ -1053,6 +1074,259 @@ extension AllAppTests {
             let patch = try HashlineEdit.parse(input)
             let result = try HashlineEdit.applySection(patch.sections[0], fileContent: fileContent)
             #expect(result.text == "A\nb\n")
+        }
+    }
+
+    // MARK: - Strict parsing
+
+    @Suite struct HashlineStrictParsingTests {
+
+        private static func failure(_ body: () throws -> Void) -> String? {
+            do {
+                try body()
+                return nil
+            } catch {
+                return error.localizedDescription
+            }
+        }
+
+        private static func parseFailure(_ diff: String) -> String? {
+            failure { _ = try HashlineParser.parsePatch(diff) }
+        }
+
+        private static func patchFailure(_ input: String) -> String? {
+            failure { _ = try HashlineEdit.parse(input) }
+        }
+
+        // MARK: Hunk headers
+
+        @Test func textAfterColonIsRejected() {
+            let message = Self.parseFailure("PUT 3.=3: foo")
+            #expect(message?.contains("text after `:`") == true, "\(message ?? "parsed")")
+        }
+
+        @Test func textAfterColonInsideHunkIsRejected() {
+            let message = Self.parseFailure("PUT 1.=1:\n+a\nPUT 3.=3: foo")
+            #expect(message?.contains("line 3") == true, "\(message ?? "parsed")")
+            #expect(message?.contains("text after `:`") == true)
+        }
+
+        @Test func textAfterColonIsNeverAnImplicitCut() {
+            // Used to parse as an empty body and delete line 3.
+            #expect(Self.parseFailure("PUT 3.=3: foo") != nil)
+            #expect(Self.parseFailure("CUT 3.=3: foo") != nil)
+        }
+
+        @Test func trailingTextWithoutColonIsRejected() {
+            let message = Self.parseFailure("PUT 5 items")
+            #expect(message?.contains("unexpected text `items`") == true, "\(message ?? "parsed")")
+        }
+
+        @Test func blockAndRegisterSyntaxIsRejected() {
+            for diff in ["PUT 5*:", "CUT 5.=9 @fn", "PUT >20 @fn", "PUT >5*:", "CUT 5*"] {
+                let message = Self.parseFailure(diff)
+                #expect(message?.contains("not supported") == true, "\(diff): \(message ?? "parsed")")
+            }
+        }
+
+        @Test func starAfterColonIsBodyTextNotBlockSyntax() {
+            let message = Self.parseFailure("PUT 3.=3: *bold*")
+            #expect(message?.contains("text after `:`") == true, "\(message ?? "parsed")")
+        }
+
+        @Test func literalBodyRowThatLooksLikeHeaderWithTextStillInserts() throws {
+            let result = try HashlineParser.parsePatch("PUT 1.=1:\n+PUT 3.=3: foo")
+            guard case .insert(_, let text, _, _, _) = result.edits[0] else {
+                Issue.record("expected insert")
+                return
+            }
+            #expect(text == "PUT 3.=3: foo")
+        }
+
+        @Test func firstPendingErrorWins() {
+            let message = Self.parseFailure("PUT <3:\nPUT <5:\n+x\nPUT >7:")
+            #expect(message?.contains("line 1") == true, "\(message ?? "parsed")")
+        }
+
+        // MARK: Section headers
+
+        @Test func malformedHeaderMidPatchIsRejected() {
+            let input = "[a.txt#ABCD]\nPUT 1.=1:\n+x\n[b.txt#12G4]\nPUT 1.=1:\n+y"
+            let message = Self.patchFailure(input)
+            #expect(message?.contains("Input header must be") == true, "\(message ?? "parsed")")
+            #expect(message?.contains("[b.txt#12G4]") == true)
+        }
+
+        @Test func shortAndLongTagsAreRejected() {
+            for header in ["[a.txt#ABC]", "[a.txt#ABCDE]", "[a.txt#ABCD:42]"] {
+                let message = Self.patchFailure("\(header)\nPUT 1.=1:\n+x")
+                #expect(message?.contains("Input header must be") == true, "\(header): \(message ?? "parsed")")
+            }
+        }
+
+        @Test func opsBeforeFirstHeaderAreRejected() {
+            let message = Self.patchFailure("PUT 1.=1:\n+x\n[a.txt#ABCD]\nPUT 1.=1:\n+y")
+            #expect(message?.contains("must begin with") == true, "\(message ?? "parsed")")
+            #expect(message?.contains("PUT 1.=1:") == true)
+        }
+
+        @Test func proseBeforeFirstHeaderIsRejected() {
+            let message = Self.patchFailure("Here is the patch:\n[a.txt#ABCD]\nPUT 1.=1:\n+y")
+            #expect(message?.contains("must begin with") == true, "\(message ?? "parsed")")
+        }
+
+        @Test func foreignSentinelBeforeFirstHeaderGetsFocusedError() {
+            let message = Self.patchFailure("*** Update File: a.txt\nPUT 1.=1:\n+y")
+            #expect(message?.contains("apply_patch sentinel") == true, "\(message ?? "parsed")")
+        }
+
+        @Test func blankLinesAndEnvelopeBeforeFirstHeaderAreFine() throws {
+            let patch = try HashlineEdit.parse("\n\n*** Begin Patch\n\n[a.txt#ABCD]\nCUT 1.=1\n*** End Patch")
+            #expect(patch.sections.count == 1)
+        }
+
+        @Test func abortIsAnErrorNotAnEnd() {
+            let input = "[a.txt#ABCD]\nPUT 1.=1:\n+x\n*** Abort"
+            let message = Self.patchFailure(input)
+            #expect(message?.contains("aborted") == true, "\(message ?? "parsed")")
+            #expect(Self.parseFailure("PUT 1.=1:\n+x\n*** Abort")?.contains("aborted") == true)
+        }
+
+        @Test func contentAfterEndPatchIsIgnored() throws {
+            let patch = try HashlineEdit.parse("[a.txt#ABCD]\nCUT 1.=1\n*** End Patch\nnoise")
+            #expect(patch.sections.count == 1)
+        }
+
+        @Test func allEmptySectionsReportNoOperations() {
+            let message = Self.patchFailure("[a.txt#ABCD]\n\n[b.txt#ABCD]\n")
+            #expect(message?.contains("no operations") == true, "\(message ?? "parsed")")
+            #expect(message?.contains("must begin with") == false)
+        }
+
+        @Test func emptySectionAmongOthersIsIgnored() throws {
+            let patch = try HashlineEdit.parse("[a.txt#ABCD]\n[b.txt#ABCD]\nCUT 1.=1")
+            #expect(patch.sections.map(\.path) == ["b.txt"])
+        }
+
+        @Test func parseErrorsNameTheSection() {
+            let input = "[a.txt#ABCD]\nCUT 1.=1\n[b.txt#ABCD]\nPUT 1.=1:\n+x\nPUT 3.=3: foo"
+            let message = Self.patchFailure(input)
+            #expect(message?.hasPrefix("[b.txt] line 3:") == true, "\(message ?? "parsed")")
+        }
+
+        @Test func parseErrorsAreEditErrors() {
+            #expect(throws: HashlineEditError.self) {
+                _ = try HashlineEdit.parse("[a.txt#ABCD]\nPUT 3.=3: foo")
+            }
+        }
+
+        // MARK: Same-path merge
+
+        @Test func samePathSectionsMergeBeforeParsing() throws {
+            let input = "[a.txt#ABCD]\nPUT 1.=1:\n+x\n[b.txt#ABCD]\nCUT 1.=1\n[a.txt#ABCD]\nCUT 5.=5"
+            let patch = try HashlineEdit.parse(input)
+            #expect(patch.sections.map(\.path) == ["a.txt", "b.txt"])
+            #expect(patch.sections[0].edits.count == 3)
+        }
+
+        @Test func samePathSectionsWithOverlappingRangesAreRejected() {
+            let input = "[a.txt#ABCD]\nPUT 2.=4:\n+x\n[a.txt#ABCD]\nPUT 3.=5:\n+y"
+            let message = Self.patchFailure(input)
+            #expect(message?.contains("already targeted") == true, "\(message ?? "parsed")")
+            #expect(message?.hasPrefix("[a.txt]") == true)
+        }
+
+        @Test func samePathSectionsWithConflictingTagsAreRejected() {
+            let message = Self.patchFailure("[a.txt#AAAA]\nCUT 1.=1\n[a.txt#BBBB]\nCUT 3.=3")
+            #expect(message?.contains("Conflicting") == true, "\(message ?? "parsed")")
+        }
+
+        @Test func samePathSectionTakesTheTagFromWhicheverHasOne() throws {
+            let patch = try HashlineEdit.parse("[a.txt]\nCUT 1.=1\n[a.txt#ABCD]\nCUT 3.=3")
+            #expect(patch.sections.count == 1)
+            #expect(patch.sections[0].fileHash == "ABCD")
+        }
+
+        @Test func samePathRemWithLineOpsIsRejected() {
+            #expect(Self.patchFailure("[a.txt#ABCD]\nREM\n[a.txt#ABCD]\nCUT 1.=1") != nil)
+            #expect(Self.patchFailure("[a.txt#ABCD]\nCUT 1.=1\n[a.txt#ABCD]\nREM") != nil)
+        }
+
+        @Test func samePathTwoFileOpsAreRejected() {
+            let message = Self.patchFailure("[a.txt#ABCD]\nREM\n[a.txt#ABCD]\nREM")
+            #expect(message?.contains("only one file-level op") == true, "\(message ?? "parsed")")
+        }
+
+        // MARK: Overlapping ranges
+
+        @Test func partiallyOverlappingRangesAreRejected() {
+            let message = Self.parseFailure("PUT 2.=4:\n+x\nPUT 3.=5:\n+y")
+            #expect(
+                message
+                    == "line 3: anchor line 3 is already targeted by another hunk on line 1. Issue ONE hunk per range; the body is only the final content.",
+                "\(message ?? "parsed")")
+        }
+
+        @Test func cutOverlappingPutIsRejected() {
+            #expect(Self.parseFailure("PUT 2.=4:\n+x\nCUT 4.=6") != nil)
+        }
+
+        @Test func rangeContainedInAnotherIsRejected() {
+            #expect(Self.parseFailure("PUT 2.=6:\n+x\nCUT 3.=4") != nil)
+            #expect(Self.parseFailure("CUT 3.=4\nPUT 2.=6:\n+x") != nil)
+        }
+
+        @Test func repeatedIdenticalRangeIsCoalescedToTheLastHunk() throws {
+            let result = try HashlineParser.parsePatch("PUT 2.=3:\n+first\nPUT 2.=3:\n+second")
+            let texts = result.edits.compactMap { edit -> String? in
+                if case .insert(_, let text, _, _, _) = edit { return text }
+                return nil
+            }
+            #expect(texts == ["second"])
+            #expect(result.edits.count == 3)
+            #expect(result.warnings.contains(where: { $0.contains("Coalesced") }))
+        }
+
+        @Test func repeatedRangeAppliesTheLastBody() throws {
+            let result = try HashlineParser.parsePatch("PUT 2.=3:\n+first\nCUT 2.=3")
+            let applied = try HashlineApplier.applyEdits("a\nb\nc\nd", edits: result.edits)
+            #expect(applied.text == "a\nd")
+        }
+
+        @Test func adjacentRangesAreFine() throws {
+            let result = try HashlineParser.parsePatch("PUT 2.=3:\n+x\nPUT 4.=5:\n+y")
+            #expect(result.edits.count == 6)
+            #expect(result.warnings.isEmpty)
+        }
+
+        @Test func insertAnchoredAtDeletedLineIsFine() throws {
+            let result = try HashlineParser.parsePatch("PUT >5:\n+x\nCUT 5.=5")
+            #expect(result.edits.count == 2)
+            #expect(result.warnings.isEmpty)
+        }
+
+        @Test func overlapIsCheckedWhenTheLaterHunkSharesOneLine() {
+            let message = Self.parseFailure("CUT 1.=2\nCUT 2.=3")
+            #expect(message?.contains("anchor line 2") == true, "\(message ?? "parsed")")
+        }
+
+        // MARK: Small items
+
+        @Test func cutWithColonWarns() throws {
+            let result = try HashlineParser.parsePatch("CUT 2.=3:")
+            #expect(result.edits.count == 2)
+            #expect(result.warnings.contains(where: { $0.contains("trailing `:`") }))
+        }
+
+        @Test func cutWithoutColonDoesNotWarn() throws {
+            let result = try HashlineParser.parsePatch("CUT 2.=3")
+            #expect(result.warnings.isEmpty)
+        }
+
+        @Test func indentedCommentBeforeHunkIsSkipped() throws {
+            let result = try HashlineParser.parsePatch("  # drop the old call\nCUT 2.=2")
+            #expect(result.edits.count == 1)
+            #expect(result.warnings.isEmpty)
         }
     }
 }

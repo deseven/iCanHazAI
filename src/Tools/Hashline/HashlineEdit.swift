@@ -29,110 +29,140 @@ enum HashlineEditError: Error, LocalizedError {
 /// file hashes, and apply edits.
 enum HashlineEdit {
 
+    /// One `[path#TAG]` header and the raw body lines under it.
+    private struct RawSection {
+        let path: String
+        var fileHash: String?
+        var lines: [String]
+    }
+
     /// Parse a full hashline patch input (envelope + sections) into a
-    /// `ParsedPatch` with one `HashlineSection` per `[path#TAG]` header.
+    /// `ParsedPatch` with one `HashlineSection` per distinct path. Sections
+    /// naming the same path are merged at text level before parsing, so all
+    /// per-section validation (file ops, overlapping ranges) sees the whole
+    /// batch.
     static func parse(_ input: String) throws -> ParsedPatch {
-        let lines = HashlineTokenizer.splitHashlineLines(input)
+        let raw = try splitRawSections(HashlineTokenizer.splitHashlineLines(input))
 
         var sections: [HashlineSection] = []
-        var currentHeader: (path: String, fileHash: String?)?
-        var currentLines: [String] = []
-
-        func flush() throws {
-            guard let header = currentHeader else { return }
-            let hasOps = currentLines.contains { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-            guard hasOps else {
-                currentLines = []
-                return
+        for section in try mergeSamePath(raw) {
+            let result: HashlineParser.ParseResult
+            do {
+                result = try HashlineParser.parsePatch(section.lines.joined(separator: "\n"))
+            } catch let error as HashlineParseError {
+                throw HashlineEditError.parseError("[\(section.path)] \(error.localizedDescription)")
             }
-            let diff = currentLines.joined(separator: "\n")
-            let result = try HashlineParser.parsePatch(diff)
             sections.append(
                 HashlineSection(
-                    path: header.path,
-                    fileHash: header.fileHash,
+                    path: section.path,
+                    fileHash: section.fileHash,
                     edits: result.edits,
                     fileOp: result.fileOp,
                     warnings: result.warnings
                 ))
-            currentLines = []
         }
-
-        for line in lines {
-            let token = HashlineTokenizer.tokenize(line)
-            if case .envelopeEnd = token { break }
-            if case .envelopeBegin = token { continue }
-
-            if line.hasPrefix(HashlineFormat.filePrefix) {
-                if let header = HashlineTokenizer.tryParseHeader(line) {
-                    try flush()
-                    currentHeader = (path: header.path, fileHash: header.fileHash)
-                    currentLines = []
-                    continue
-                }
-            }
-            currentLines.append(line)
-        }
-        try flush()
-
-        guard !sections.isEmpty else {
-            throw HashlineEditError.parseError(
-                "Input must begin with `\(HashlineFormat.filePrefix)PATH\(HashlineFormat.fileHashSep)HASH\(HashlineFormat.fileSuffix)` on the first non-blank line. Example: `\(HashlineFormat.filePrefix)src/foo.ts\(HashlineFormat.fileHashSep)1A2B\(HashlineFormat.fileSuffix)` then edit ops."
-            )
-        }
-
-        return ParsedPatch(sections: try mergeSamePathSections(sections))
+        return ParsedPatch(sections: sections)
     }
 
-    /// Collapse sections targeting the same path into a single section with
-    /// concatenated ops. Anchors authored against the same file snapshot must
-    /// apply as one batch; otherwise the first sub-edit shifts line numbers
-    /// out from under the second's anchors (or advances the #TAG), so the
-    /// later section fails the stale-tag check after the first already landed
-    /// — a half-applied, non-atomic edit. Path order is preserved by first
-    /// occurrence, mirroring the reference implementation.
-    private static func mergeSamePathSections(_ sections: [HashlineSection]) throws -> [HashlineSection] {
-        var merged: [HashlineSection] = []
+    private static func headerExample() -> String {
+        "`\(HashlineFormat.filePrefix)src/foo.ts\(HashlineFormat.fileHashSep)1A2B\(HashlineFormat.fileSuffix)`"
+    }
+
+    private static func preview(_ line: String) -> String {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        return trimmed.count > 120 ? String(trimmed.prefix(120)) + "…" : trimmed
+    }
+
+    /// Split the patch into header-led sections. Anything but blank lines and
+    /// the envelope before the first header is an error, and so is any line
+    /// that looks like a header but isn't one — silently treating it as body
+    /// text would route the following ops to the wrong file. Sections without
+    /// ops are dropped.
+    private static func splitRawSections(_ lines: [String]) throws -> [RawSection] {
+        var sections: [RawSection] = []
+        var current: RawSection?
+        var sawHeader = false
+
+        func flush() {
+            guard let section = current else { return }
+            current = nil
+            if section.lines.contains(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) {
+                sections.append(section)
+            }
+        }
+
+        loop: for line in lines {
+            switch HashlineTokenizer.tokenize(line) {
+            case .envelopeEnd: break loop
+            case .envelopeBegin: continue loop
+            case .abort: throw HashlineEditError.parseError(HashlineFormat.patchAbortedMessage)
+            default: break
+            }
+
+            if line.hasPrefix(HashlineFormat.filePrefix) {
+                guard let header = HashlineTokenizer.tryParseHeader(line) else {
+                    throw HashlineEditError.parseError(
+                        "Input header must be `\(HashlineFormat.filePrefix)PATH\(HashlineFormat.fileHashSep)TAG\(HashlineFormat.fileSuffix)` with a \(HashlineFormat.fileHashLength)-hex tag; got `\(preview(line))`."
+                    )
+                }
+                flush()
+                current = RawSection(path: header.path, fileHash: header.fileHash, lines: [])
+                sawHeader = true
+                continue
+            }
+
+            if current == nil {
+                if line.trimmingCharacters(in: .whitespaces).isEmpty { continue }
+                if let foreign = HashlineParser.detectForeignPatchSyntax(line) {
+                    throw HashlineEditError.parseError(foreign)
+                }
+                throw missingHeaderError(got: line)
+            }
+            current?.lines.append(line)
+        }
+        flush()
+
+        guard sawHeader else { throw missingHeaderError(got: nil) }
+        guard !sections.isEmpty else {
+            throw HashlineEditError.parseError(
+                "The patch has no operations: every header is empty. Add `\(HashlineFormat.putKeyword)`/`\(HashlineFormat.cutKeyword)`/`\(HashlineFormat.remKeyword)`/`\(HashlineFormat.moveKeyword)` ops under a header."
+            )
+        }
+        return sections
+    }
+
+    private static func missingHeaderError(got line: String?) -> HashlineEditError {
+        let found = line.map { " Got: `\(preview($0))`." } ?? ""
+        return .parseError(
+            "Input must begin with `\(HashlineFormat.filePrefix)PATH\(HashlineFormat.fileHashSep)HASH\(HashlineFormat.fileSuffix)` on the first non-blank line.\(found) Example: \(headerExample()) then edit ops."
+        )
+    }
+
+    /// Collapse sections targeting the same path into one with concatenated
+    /// bodies. Anchors authored against the same file snapshot must apply as
+    /// one batch; otherwise the first sub-edit shifts line numbers out from
+    /// under the second's anchors (or advances the #TAG), so the later section
+    /// fails the stale-tag check after the first already landed — a
+    /// half-applied, non-atomic edit. Order is preserved by first occurrence.
+    private static func mergeSamePath(_ sections: [RawSection]) throws -> [RawSection] {
+        var merged: [RawSection] = []
         var indexByPath: [String: Int] = [:]
 
         for section in sections {
-            if let existingIndex = indexByPath[section.path] {
-                let existing = merged[existingIndex]
-                if let existingHash = existing.fileHash, let sectionHash = section.fileHash,
-                    existingHash != sectionHash
-                {
-                    throw HashlineEditError.parseError(
-                        "Conflicting hashline snapshot tags for \(section.path): #\(existingHash) and #\(sectionHash). Re-read the file and retry with one current header."
-                    )
-                }
-                // Two file-level ops for the same file (e.g. `REM` in both
-                // sections) are contradictory; a single section would reject
-                // them at parse time, so the merge must too.
-                if existing.fileOp != nil, section.fileOp != nil {
-                    throw HashlineEditError.parseError(
-                        "only one file-level op (`REM` or `MV`) per section. Merge them under one header."
-                    )
-                }
-                // `REM` alongside line edits is invalid (parser enforces this
-                // per section); merging sections with edits under one header
-                // must keep that guarantee.
-                if case .rem = existing.fileOp ?? section.fileOp, !existing.edits.isEmpty || !section.edits.isEmpty {
-                    throw HashlineEditError.parseError(
-                        "`REM` deletes the whole file and cannot be combined with line ops."
-                    )
-                }
-                let fileHash = existing.fileHash ?? section.fileHash
-                merged[existingIndex] = HashlineSection(
-                    path: existing.path,
-                    fileHash: fileHash,
-                    edits: existing.edits + section.edits,
-                    fileOp: existing.fileOp ?? section.fileOp,
-                    warnings: existing.warnings + section.warnings
-                )
-            } else {
+            guard let index = indexByPath[section.path] else {
                 indexByPath[section.path] = merged.count
                 merged.append(section)
+                continue
             }
+            if let existingHash = merged[index].fileHash, let sectionHash = section.fileHash,
+                existingHash != sectionHash
+            {
+                throw HashlineEditError.parseError(
+                    "Conflicting hashline snapshot tags for \(section.path): #\(existingHash) and #\(sectionHash). Re-read the file and retry with one current header."
+                )
+            }
+            merged[index].fileHash = merged[index].fileHash ?? section.fileHash
+            merged[index].lines += section.lines
         }
         return merged
     }

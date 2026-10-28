@@ -47,6 +47,10 @@ final class HashlineParser {
     private static let emptyInsert = "insert `PUT` header requires body rows."
     private static let readMetadataIgnoredWarning =
         "Ignored copied read-output elision row(s). Re-read elided ranges before editing them."
+    private static let repeatedHunkCoalescedWarning =
+        "Coalesced a repeated hunk over the same range; only the last one was kept."
+    private static let unsupportedHeaderSyntax =
+        "Block ops (`N*`) and registers (`@name`) are not supported by this tool. Use `PUT N.=M:` / `CUT N.=M` / `PUT <N:` / `PUT >N:`."
 
     // MARK: - State
 
@@ -92,6 +96,8 @@ final class HashlineParser {
             consumePendingSkippableComments()
             terminated = true
             return
+        case .abort:
+            throw HashlineParseError.message(HashlineFormat.patchAbortedMessage)
         case .header:
             consumePendingSkippableComments()
             flushPending()
@@ -130,6 +136,7 @@ final class HashlineParser {
         flushPending()
         if let err = pendingError { throw err }
         try validateFileOp()
+        try normalizeOverlappingRanges()
         return ParseResult(edits: edits, fileOp: fileOp, warnings: warnings)
     }
 
@@ -160,7 +167,11 @@ final class HashlineParser {
     }
 
     private func isSkippableCommentLine(_ line: String) -> Bool {
-        line.hasPrefix("#")
+        line.drop(while: { $0 == " " || $0 == "\t" }).hasPrefix("#")
+    }
+
+    private func recordPendingError(_ error: Error) {
+        if pendingError == nil { pendingError = error }
     }
 
     private func handleOpBlock(target: BlockTarget, lineNum: Int, hadColon: Bool) throws {
@@ -169,6 +180,7 @@ final class HashlineParser {
         }
         if case .cut(let range) = target {
             try validateRange(range, lineNum: lineNum, op: "cut")
+            if hadColon { addWarning(Self.cutColonIgnoredWarning) }
         }
         switch target {
         case .rem:
@@ -205,6 +217,44 @@ final class HashlineParser {
         guard case .rem = fileOp else { return }
         if !edits.isEmpty {
             throw HashlineParseError.message("`REM` deletes the whole file and cannot be combined with line ops.")
+        }
+    }
+
+    /// Rejects hunks that delete lines another hunk already deletes: their
+    /// bodies would materialize into garbage. A hunk repeated over exactly the
+    /// same lines is coalesced to its last occurrence. Edits are grouped into
+    /// hunks by the line of the header that produced them.
+    private func normalizeOverlappingRanges() throws {
+        var hunkOrder: [Int] = []
+        var deletedLines: [Int: Set<Int>] = [:]
+        for edit in edits {
+            guard case .delete(let anchor, let lineNum, _) = edit else { continue }
+            if deletedLines[lineNum] == nil { hunkOrder.append(lineNum) }
+            deletedLines[lineNum, default: []].insert(anchor.line)
+        }
+
+        var ownerByLine: [Int: Int] = [:]
+        var dropped: Set<Int> = []
+        for lineNum in hunkOrder {
+            guard let lines = deletedLines[lineNum] else { continue }
+            let sorted = lines.sorted()
+            guard let firstOverlap = sorted.first(where: { ownerByLine[$0] != nil }) else {
+                for line in sorted { ownerByLine[line] = lineNum }
+                continue
+            }
+            let previous = ownerByLine[firstOverlap]!
+            if deletedLines[previous] == lines {
+                dropped.insert(previous)
+                for line in sorted { ownerByLine[line] = lineNum }
+                addWarning(Self.repeatedHunkCoalescedWarning)
+                continue
+            }
+            throw HashlineParseError.message(
+                "line \(lineNum): anchor line \(firstOverlap) is already targeted by another hunk on line \(previous). Issue ONE hunk per range; the body is only the final content."
+            )
+        }
+        if !dropped.isEmpty {
+            edits.removeAll { dropped.contains($0.sourceLineNum) }
         }
     }
 
@@ -267,6 +317,9 @@ final class HashlineParser {
         if let contamination = detectApplyPatchContamination(text) {
             throw HashlineParseError.message("line \(lineNum): \(contamination)")
         }
+        if let prefix = HashlineTokenizer.scanHunkHeaderPrefix(text), !prefix.trailing.isEmpty {
+            throw HashlineParseError.message("line \(lineNum): \(Self.trailingTextMessage(text, prefix))")
+        }
         if fileOp != nil {
             throw HashlineParseError.message("line \(lineNum): \(Self.moveTakesNoBody)")
         }
@@ -326,6 +379,19 @@ final class HashlineParser {
         throw HashlineParseError.message(
             "line \(lineNum): payload line has no preceding hunk header. Use `PUT N.=M:`, `CUT N.=M`, or `PUT <N:`/`PUT >N:` above the body. Got \(text)."
         )
+    }
+
+    private static func trailingTextMessage(_ text: String, _ prefix: HashlineTokenizer.HunkHeaderPrefix) -> String {
+        let header = text.trimmingCharacters(in: .whitespaces)
+        if !prefix.hadColon, prefix.trailing.hasPrefix("*") || prefix.trailing.hasPrefix("@") {
+            return unsupportedHeaderSyntax
+        }
+        if prefix.hadColon {
+            return
+                "Hunk header `\(header)` has text after `:`. Put body rows on the following lines, each starting with `+`."
+        }
+        return
+            "Hunk header `\(header)` has unexpected text `\(prefix.trailing)` after the locator. A header is only `PUT N.=M:`, `CUT N.=M`, `PUT <N:` or `PUT >N:`; body rows go on the following lines, each starting with `+`."
     }
 
     private func handleBlank(_ text: String, lineNum: Int) {
@@ -416,7 +482,9 @@ final class HashlineParser {
 
     // MARK: - Contamination detection
 
-    private func detectApplyPatchContamination(_ text: String) -> String? {
+    /// Sentinels of other patch formats; they are not valid anywhere in a
+    /// hashline patch.
+    static func detectForeignPatchSyntax(_ text: String) -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return nil }
 
@@ -438,6 +506,14 @@ final class HashlineParser {
             return
                 "`@@`-bracketed hunk header `\(preview)` is not valid in hashline. Drop the `@@ ... @@` brackets and write a header such as `PUT N.=M:`."
         }
+        return nil
+    }
+
+    private func detectApplyPatchContamination(_ text: String) -> String? {
+        if let foreign = Self.detectForeignPatchSyntax(text) { return foreign }
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+
         if trimmed.range(of: #"^[1-9]\d*\s*$"#, options: .regularExpression) != nil {
             return
                 "hunk headers need a verb and both endpoints. Use `PUT \(trimmed).=\(trimmed):` to replace, or `CUT \(trimmed).=\(trimmed)` to delete."
@@ -490,7 +566,7 @@ final class HashlineParser {
         do {
             try resolveMinusRows(&payloads)
         } catch {
-            pendingError = error
+            recordPendingError(error)
             return
         }
         stripBarePrefixesIfUniform(&payloads)
@@ -501,7 +577,7 @@ final class HashlineParser {
         case .replace(let range):
             if payloads.isEmpty {
                 if !hadColon {
-                    pendingError = HashlineParseError.message("line \(lineNum): \(Self.colonlessSpanPut)")
+                    recordPendingError(HashlineParseError.message("line \(lineNum): \(Self.colonlessSpanPut)"))
                     return
                 }
                 pushDeleteRange(range, lineNum: lineNum)
@@ -518,7 +594,7 @@ final class HashlineParser {
         case .insertBefore(let anchor):
             let cursor: Cursor = .beforeAnchor(anchor)
             if payloads.isEmpty {
-                pendingError = HashlineParseError.message("line \(lineNum): \(Self.emptyInsert)")
+                recordPendingError(HashlineParseError.message("line \(lineNum): \(Self.emptyInsert)"))
                 return
             }
             emitPayloadRows(cursor: cursor, payloads: payloads, lineNum: lineNum)
@@ -526,7 +602,7 @@ final class HashlineParser {
         case .insertAfter(let anchor):
             let cursor: Cursor = .afterAnchor(anchor)
             if payloads.isEmpty {
-                pendingError = HashlineParseError.message("line \(lineNum): \(Self.emptyInsert)")
+                recordPendingError(HashlineParseError.message("line \(lineNum): \(Self.emptyInsert)"))
                 return
             }
             emitPayloadRows(cursor: cursor, payloads: payloads, lineNum: lineNum)
@@ -534,7 +610,7 @@ final class HashlineParser {
         case .bof:
             let cursor: Cursor = .bof
             if payloads.isEmpty {
-                pendingError = HashlineParseError.message("line \(lineNum): \(Self.emptyInsert)")
+                recordPendingError(HashlineParseError.message("line \(lineNum): \(Self.emptyInsert)"))
                 return
             }
             emitPayloadRows(cursor: cursor, payloads: payloads, lineNum: lineNum)
@@ -542,7 +618,7 @@ final class HashlineParser {
         case .eof:
             let cursor: Cursor = .eof
             if payloads.isEmpty {
-                pendingError = HashlineParseError.message("line \(lineNum): \(Self.emptyInsert)")
+                recordPendingError(HashlineParseError.message("line \(lineNum): \(Self.emptyInsert)"))
                 return
             }
             emitPayloadRows(cursor: cursor, payloads: payloads, lineNum: lineNum)
