@@ -524,8 +524,10 @@ extension AllAppTests {
                 steps.append(position - previous)
                 previous = position
             }
-            // Starts gently (a plain exponential would cover ~30% in the first frame), then speeds up.
-            #expect(steps[0] < 8)
+            // Starts gently (less than half of what a plain exponential with the same rate covers in
+            // the first frame), then speeds up.
+            let exponentialFirstStep = 100 * (1 - exp(-2 / smooth / 60))
+            #expect(steps[0] < exponentialFirstStep / 2)
             #expect(steps[2] > steps[0])
             #expect(abs(position - 100) < 0.5)
         }

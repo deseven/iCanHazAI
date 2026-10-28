@@ -92,8 +92,7 @@ struct RenderedMessage: @unchecked Sendable {
                         body: LazyBody {
                             [
                                 .text(
-                                    MarkdownRenderer.plain(
-                                        thinking, theme: theme, mono: false, color: .secondaryLabelColor))
+                                    MarkdownRenderer.plain(thinking, theme: theme, color: .secondaryLabelColor))
                             ]
                         })))
         }

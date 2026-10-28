@@ -893,7 +893,7 @@ extension AllAppTests {
             #expect(try tmp.read("a.txt") == content)
             // Nothing was merged into seenLines, so retrying without a re-read
             // is rejected again.
-            let (retry, retryErr) = await Self.editWithStore(patch(file, "PUT 8.=8:\n+X\n", tag: tag), store: store)
+            let (_, retryErr) = await Self.editWithStore(patch(file, "PUT 8.=8:\n+X\n", tag: tag), store: store)
             #expect(retryErr)
             #expect(try tmp.read("a.txt") == content)
         }
@@ -913,7 +913,7 @@ extension AllAppTests {
             #expect(rej.contains("4-53"))
             #expect(rej.contains("never displayed"))
             // Retry is still rejected — nothing was revealed or merged.
-            let (retry, retryErr) = await Self.editWithStore(patch(file, "PUT 4.=53:\n+X\n", tag: tag), store: store)
+            let (_, retryErr) = await Self.editWithStore(patch(file, "PUT 4.=53:\n+X\n", tag: tag), store: store)
             #expect(retryErr)
             #expect(try tmp.read("a.txt") == content)
         }

@@ -100,7 +100,7 @@ enum DiffBuilder {
                 diffs.append(unifiedDiff(old: old, new: result.text, oldPath: section.path, newPath: section.path))
             }
         }
-        var joined = diffs.filter { !$0.isEmpty }.joined(separator: "\n")
+        let joined = diffs.filter { !$0.isEmpty }.joined(separator: "\n")
         // Warnings (bare rows auto-piped, empty-PUT auto-cut, boundary-echo
         // repairs) are surfaced in the tool result only — duplicating them in
         // the approval diff would show them twice.

@@ -163,13 +163,15 @@ extension AllAppTests {
             #expect(builds == 1)
         }
 
-        @Test("thinking is plain secondary text, not markdown")
+        @Test("thinking is plain monospaced secondary text, not markdown")
         func thinkingBody() throws {
             let m = ChatRendererFixtures.message("m", thinking: "**not bold** and `not code`")
             let text = try #require(texts(body(m)).first)
             #expect(text.string.string == "**not bold** and `not code`")
             #expect(
                 text.string.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == .secondaryLabelColor)
+            let font = text.string.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
+            #expect(font?.isFixedPitch == true)
         }
 
         @Test("the thinking spinner shows only while nothing else has arrived")

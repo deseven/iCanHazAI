@@ -480,7 +480,7 @@ final class HashlineParser {
     // MARK: - Flush pending
 
     private func flushPending() {
-        guard var p = pending else { return }
+        guard let p = pending else { return }
         let target = p.target
         let lineNum = p.lineNum
         var payloads = p.payloads
