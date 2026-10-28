@@ -60,12 +60,10 @@ struct ApplyResult {
     let text: String
     let firstChangedLine: Int?
     let warnings: [String]
-
-    init(text: String, firstChangedLine: Int?, warnings: [String] = []) {
-        self.text = text
-        self.firstChangedLine = firstChangedLine
-        self.warnings = warnings
-    }
+    /// One entry per post-edit addressable line (`splitAddressableFileLines`):
+    /// the 1-indexed pre-edit line it is, unchanged, or nil for a line the
+    /// patch inserted or replaced. An empty result is a single nil.
+    let origins: [Int?]
 }
 
 /// One per `[path#TAG]` header in a patch.
@@ -76,12 +74,14 @@ struct HashlineSection {
     let fileOp: FileOp?
     let warnings: [String]
 
-    /// The 1-indexed file lines this section's edits anchor to: every
+    /// The 1-indexed lines of `text` this section's edits anchor to: every
     /// `beforeAnchor`/`afterAnchor` insert cursor and every delete anchor.
     /// Deduplicated — a `PUT N.=N:` replacement emits both an insert and a
-    /// delete on `N`. Used by the seen-lines guard to reject edits targeting
-    /// lines the model never displayed.
-    var anchorLines: [Int] {
+    /// delete on `N`. The phantom line after a final newline is never reported:
+    /// the model cannot have seen it. Used by the seen-lines guard to reject
+    /// edits targeting lines the model never displayed.
+    func anchorLines(in text: String) -> [Int] {
+        let phantom = HashlineFormat.phantomLineNumber(in: HashlineFormat.splitLines(text))
         var lines: [Int] = []
         var seen = Set<Int>()
         for edit in edits {
@@ -94,7 +94,7 @@ struct HashlineSection {
                 }
             case .delete(let a, _, _): line = a.line
             }
-            if let line, seen.insert(line).inserted { lines.append(line) }
+            if let line, line != phantom, seen.insert(line).inserted { lines.append(line) }
         }
         return lines
     }

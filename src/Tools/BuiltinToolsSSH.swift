@@ -310,7 +310,7 @@ enum BuiltinToolsSSH {
                 canonical: canonical,
                 tag: section.fileHash,
                 currentContent: currentContent,
-                anchorLines: section.anchorLines,
+                anchorLines: section.anchorLines(in: currentContent),
                 strictReject: true
             ) {
                 throw BuiltinToolError(rejection)
@@ -821,7 +821,7 @@ enum BuiltinToolsSSH {
                 canonical: BuiltinTools.canonicalPath(resolved),
                 tag: section.fileHash,
                 currentContent: old,
-                anchorLines: section.anchorLines,
+                anchorLines: section.anchorLines(in: old),
                 strictReject: true
             ) {
                 throw BuiltinToolError(rejection)

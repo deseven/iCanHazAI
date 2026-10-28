@@ -6,75 +6,111 @@ import Foundation
 /// Pure function that splices a parsed list of edits into file text.
 /// No I/O, no session state — the caller provides the file content and
 /// the edits, and gets back the post-edit text.
+///
+/// Terminology: `text.components(separatedBy: "\n")` yields one element per
+/// line plus, for newline-terminated text, a trailing `""` — the *phantom*
+/// line. It is not content, so edits never delete it, line numbers shown to
+/// the model never include it, and inserts anchored on it land at EOF.
 enum HashlineApplier {
 
     /// Apply a parsed list of edits to a text body. Pure function — no I/O.
     ///
-    /// Returns the post-edit text and the first changed line number (1-indexed).
-    /// Throws if an anchor is out of bounds.
+    /// Returns the post-edit text, the first changed line number (1-indexed)
+    /// and, for every post-edit line, the pre-edit line it came from.
+    /// Throws if an anchor is out of bounds or a repair is ambiguous.
     static func applyEdits(_ text: String, edits: [Edit]) throws -> ApplyResult {
+        let fileLines = HashlineFormat.splitLines(text)
+        let phantom = HashlineFormat.phantomLineNumber(in: fileLines)
+        let addressableCount = fileLines.count - (phantom == nil ? 0 : 1)
+
         if edits.isEmpty {
-            return ApplyResult(text: text, firstChangedLine: nil)
+            return ApplyResult(
+                text: text, firstChangedLine: nil, warnings: [],
+                origins: (1...addressableCount).map { Optional($0) })
         }
 
-        let fileLines = text.components(separatedBy: "\n")
-
-        let dropped = dropTrailingPhantomDeletes(edits, fileLines: fileLines)
-        try validateLineBounds(dropped, fileLines: fileLines)
+        let dropped = dropPhantomDeletes(edits, phantom: phantom)
+        try validateLineBounds(dropped, fileLines: fileLines, addressableCount: addressableCount, text: text)
+        let anchored = redirectEOFAnchors(dropped, fileLines: fileLines, phantom: phantom)
 
         // Repair replacement boundary echoes before materializing: a replace
         // body that restates unchanged lines bordering the range would silently
-        // duplicate them in the output.
-        let repaired = HashlineRepair.repairReplacementBoundaries(dropped, fileLines: fileLines)
+        // duplicate them in the output. Repairs only see addressable lines.
+        let repaired = try HashlineRepair.repairReplacementBoundaries(
+            anchored, fileLines: Array(fileLines.prefix(addressableCount)))
 
         let result = materializeEdits(originalLines: fileLines, edits: repaired.edits)
         return ApplyResult(
             text: result.text,
             firstChangedLine: result.firstChangedLine,
-            warnings: result.warnings + repaired.warnings
+            warnings: repaired.warnings,
+            origins: result.origins
         )
     }
 
     // MARK: - Validation
 
-    /// Reject anchors outside file bounds.
-    private static func validateLineBounds(_ edits: [Edit], fileLines: [String]) throws {
+    /// Reject anchors outside file bounds. The phantom line is in bounds (it
+    /// is a legal EOF anchor) but is not counted in the reported line total.
+    private static func validateLineBounds(
+        _ edits: [Edit], fileLines: [String], addressableCount: Int, text: String
+    ) throws {
         let maxLine = fileLines.count
+        let lineTotal = text.isEmpty ? 0 : addressableCount
+        let noun = lineTotal == 1 ? "line" : "lines"
+        func check(_ anchor: Anchor) throws {
+            if anchor.line < 1 || anchor.line > maxLine {
+                throw HashlineParseError.message(
+                    "Anchor line \(anchor.line) is out of bounds (file has \(lineTotal) \(noun)).")
+            }
+        }
         for edit in edits {
             switch edit {
             case .insert(let cursor, _, _, _, _):
                 switch cursor {
-                case .beforeAnchor(let anchor), .afterAnchor(let anchor):
-                    if anchor.line < 1 || anchor.line > maxLine {
-                        throw HashlineParseError.message(
-                            "Anchor line \(anchor.line) is out of bounds (file has \(maxLine) lines).")
-                    }
-                case .bof, .eof:
-                    break
+                case .beforeAnchor(let anchor), .afterAnchor(let anchor): try check(anchor)
+                case .bof, .eof: break
                 }
             case .delete(let anchor, _, _):
-                if anchor.line < 1 || anchor.line > maxLine {
-                    throw HashlineParseError.message(
-                        "Anchor line \(anchor.line) is out of bounds (file has \(maxLine) lines).")
-                }
+                try check(anchor)
             }
         }
     }
 
-    // MARK: - Phantom delete dropping
+    // MARK: - Phantom line handling
 
-    /// Ignore delete of trailing empty line from final newline — it's not
-    /// a real line, just an artifact of splitting on `\n`.
-    private static func dropTrailingPhantomDeletes(_ edits: [Edit], fileLines: [String]) -> [Edit] {
-        // If the file ends with a newline, the split produces a trailing "".
-        // A delete of that phantom line is a no-op; drop it silently.
-        guard fileLines.last == "" else { return edits }
-        let phantomLine = fileLines.count
+    /// Deleting the phantom line would only strip the file's final newline, so
+    /// such deletes are dropped: an inclusive range ending at EOF then deletes
+    /// through the last real line and keeps the newline.
+    private static func dropPhantomDeletes(_ edits: [Edit], phantom: Int?) -> [Edit] {
+        guard let phantom else { return edits }
         return edits.filter { edit in
             if case .delete(let anchor, _, _) = edit {
-                return anchor.line != phantomLine
+                return anchor.line != phantom
             }
             return true
+        }
+    }
+
+    /// Plain inserts (before/after) anchored on the file's trailing empty
+    /// element — the phantom line, or the lone line of an empty file — are EOF
+    /// inserts. Replacement inserts are left alone: they belong to a range
+    /// that ends on the phantom line, whose delete was already dropped, so
+    /// they land before it.
+    private static func redirectEOFAnchors(_ edits: [Edit], fileLines: [String], phantom: Int?) -> [Edit] {
+        let eofSlot = phantom ?? (fileLines == [""] ? 1 : nil)
+        guard let eofSlot else { return edits }
+        return edits.map { edit in
+            guard case .insert(let cursor, let text, let lineNum, let index, let mode) = edit, mode == nil else {
+                return edit
+            }
+            switch cursor {
+            case .beforeAnchor(let anchor), .afterAnchor(let anchor):
+                guard anchor.line == eofSlot else { return edit }
+                return .insert(cursor: .eof, text: text, lineNum: lineNum, index: index, mode: nil)
+            case .bof, .eof:
+                return edit
+            }
         }
     }
 
@@ -85,11 +121,40 @@ enum HashlineApplier {
         let idx: Int
     }
 
+    /// File lines with, in lockstep, the pre-edit line each one came from.
+    private struct LineBuffer {
+        private(set) var lines: [String]
+        private(set) var origins: [Int?]
+
+        init(_ lines: [String]) {
+            self.lines = lines
+            self.origins = lines.indices.map { Optional($0 + 1) }
+        }
+
+        mutating func splice(_ range: Range<Int>, with newLines: [String], origins newOrigins: [Int?]) {
+            lines.replaceSubrange(range, with: newLines)
+            origins.replaceSubrange(range, with: newOrigins)
+        }
+
+        /// Inserts brand-new lines (no origin) before `index`, optionally
+        /// replacing `replacing` existing elements there.
+        mutating func insert(_ newLines: [String], at index: Int, replacing: Int = 0) {
+            splice(
+                index..<(index + replacing), with: newLines,
+                origins: Array(repeating: nil, count: newLines.count))
+        }
+    }
+
     /// Splice edits into original lines, applying bottom-up so earlier
     /// indices stay valid.
-    private static func materializeEdits(originalLines: [String], edits: [Edit]) -> ApplyResult {
-        var fileLines = originalLines
+    private static func materializeEdits(
+        originalLines: [String], edits: [Edit]
+    ) -> (text: String, firstChangedLine: Int?, origins: [Int?]) {
+        var buffer = LineBuffer(originalLines)
         var firstChangedLine: Int?
+        func trackFirstChanged(_ line: Int) {
+            if firstChangedLine == nil || line < firstChangedLine! { firstChangedLine = line }
+        }
 
         // Partition edits into bof, eof, and anchor-targeted buckets.
         var bofLines: [String] = []
@@ -129,14 +194,11 @@ enum HashlineApplier {
         }
 
         // Apply per-line buckets bottom-up (highest line first).
-        let sortedLines = byLine.keys.sorted(by: >)
-        for line in sortedLines {
+        for line in byLine.keys.sorted(by: >) {
             guard var bucket = byLine[line] else { continue }
             bucket.sort { $0.idx < $1.idx }
-            byLine[line] = bucket
 
             let idx = line - 1
-            let currentLine = idx < fileLines.count ? fileLines[idx] : ""
             var beforeInsertLines: [String] = []
             var afterInsertLines: [String] = []
             var replacementLines: [String] = []
@@ -164,54 +226,49 @@ enum HashlineApplier {
                 continue
             }
 
-            let replacement =
-                deleteLine
-                ? beforeInsertLines + replacementLines + afterInsertLines
-                : beforeInsertLines + replacementLines + [currentLine] + afterInsertLines
-
-            if idx < fileLines.count {
-                fileLines.replaceSubrange(idx...idx, with: replacement)
-            } else {
-                fileLines.append(contentsOf: replacement)
+            let leadingCount = beforeInsertLines.count + replacementLines.count
+            var newLines = beforeInsertLines + replacementLines
+            var newOrigins = [Int?](repeating: nil, count: leadingCount)
+            if !deleteLine {
+                newLines.append(buffer.lines[idx])
+                newOrigins.append(buffer.origins[idx])
             }
+            newLines += afterInsertLines
+            newOrigins += [Int?](repeating: nil, count: afterInsertLines.count)
 
-            if firstChangedLine == nil || line < firstChangedLine! {
-                firstChangedLine = line
-            }
+            buffer.splice(idx..<(idx + 1), with: newLines, origins: newOrigins)
+            trackFirstChanged(line)
         }
 
-        // Apply bof inserts.
+        // An untouched empty file is a placeholder: BOF/EOF inserts replace its
+        // lone `""` element instead of landing beside it.
+        func isUntouchedEmptyFile() -> Bool {
+            originalLines == [""] && buffer.origins == [1]
+        }
+
         if !bofLines.isEmpty {
-            if fileLines.count == 1 && fileLines[0] == "" {
-                fileLines = bofLines
-            } else {
-                fileLines.insert(contentsOf: bofLines, at: 0)
-            }
-            if firstChangedLine == nil || 1 < firstChangedLine! {
-                firstChangedLine = 1
-            }
+            buffer.insert(bofLines, at: 0, replacing: isUntouchedEmptyFile() ? 1 : 0)
+            trackFirstChanged(1)
         }
 
-        // Apply eof inserts.
         if !eofLines.isEmpty {
-            if fileLines.count == 1 && fileLines[0] == "" {
-                fileLines = eofLines
-                if firstChangedLine == nil || 1 < firstChangedLine! {
-                    firstChangedLine = 1
-                }
+            if isUntouchedEmptyFile() {
+                buffer.insert(eofLines, at: 0, replacing: 1)
+                trackFirstChanged(1)
             } else {
-                let eofLine = fileLines.count + 1
-                fileLines.append(contentsOf: eofLines)
-                if firstChangedLine == nil || eofLine < firstChangedLine! {
-                    firstChangedLine = eofLine
-                }
+                // Land before the phantom line, which stays last whenever the
+                // original text ended in a newline.
+                let hasPhantom = HashlineFormat.phantomLineNumber(in: originalLines) != nil
+                let at = buffer.lines.count - (hasPhantom ? 1 : 0)
+                buffer.insert(eofLines, at: at)
+                trackFirstChanged(at + 1)
             }
         }
 
-        return ApplyResult(
-            text: fileLines.joined(separator: "\n"),
-            firstChangedLine: firstChangedLine,
-            warnings: []
-        )
+        let text = buffer.lines.joined(separator: "\n")
+        var origins = buffer.origins
+        if HashlineFormat.phantomLineNumber(in: buffer.lines) != nil { origins.removeLast() }
+        if text.isEmpty { origins = [nil] }
+        return (text, firstChangedLine, origins)
     }
 }

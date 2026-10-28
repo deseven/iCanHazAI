@@ -86,7 +86,7 @@ enum DiffBuilder {
                 canonical: BuiltinTools.canonicalPath(resolved),
                 tag: section.fileHash,
                 currentContent: old,
-                anchorLines: section.anchorLines,
+                anchorLines: section.anchorLines(in: old),
                 strictReject: true
             ) {
                 return .error(message: rejection)

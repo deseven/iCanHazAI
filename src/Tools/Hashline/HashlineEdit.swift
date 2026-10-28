@@ -199,7 +199,8 @@ enum HashlineEdit {
         return ApplyResult(
             text: result.text,
             firstChangedLine: result.firstChangedLine,
-            warnings: warnings
+            warnings: warnings,
+            origins: result.origins
         )
     }
 }

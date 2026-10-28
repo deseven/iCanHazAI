@@ -131,9 +131,47 @@ extension AllAppTests {
             let tag = HashlineFormat.computeFileHash("a\nb\n")
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT >$:\n+tail\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
-            // Appending at eof keeps the phantom trailing empty line from the
-            // final newline, so the tail lands after a blank separator line.
-            #expect(try tmp.read("a.txt") == "a\nb\n\ntail")
+            // The tail lands before the final newline, which is kept.
+            #expect(try tmp.read("a.txt") == "a\nb\ntail\n")
+        }
+
+        @Test("insert at tail of files without a final newline, empty files and lone newlines")
+        func insertAtTailShapes() async throws {
+            let cases: [(content: String, expected: String)] = [
+                ("a\nb", "a\nb\ntail"),
+                ("", "tail"),
+                ("\n", "\ntail\n"),
+            ]
+            for (i, c) in cases.enumerated() {
+                let tmp = try EditTestDir()
+                let file = try tmp.write("t\(i).txt", content: c.content)
+                let tag = HashlineFormat.computeFileHash(c.content)
+                let (text, err) = await AllAppTests.editCall(patch(file, "PUT >$:\n+tail\n", tag: tag))
+                #expect(!err, "edit_file failed for \(c.content.debugDescription): \(text)")
+                #expect(try tmp.read("t\(i).txt") == c.expected, "\(c.content.debugDescription)")
+            }
+        }
+
+        @Test("inserts anchored on the line after the last one are EOF inserts")
+        func insertAnchoredOnPhantomLine() async throws {
+            for op in ["PUT >3:", "PUT <3:"] {
+                let tmp = try EditTestDir()
+                let file = try tmp.write("a.txt", content: "a\nb\n")
+                let tag = HashlineFormat.computeFileHash("a\nb\n")
+                let (text, err) = await AllAppTests.editCall(patch(file, "\(op)\n+x\n", tag: tag))
+                #expect(!err, "\(op) failed: \(text)")
+                #expect(try tmp.read("a.txt") == "a\nb\nx\n", "\(op)")
+            }
+        }
+
+        @Test("a range ending on the line after the last one keeps the final newline")
+        func rangeEndingOnPhantomLine() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "a\nb\n")
+            let tag = HashlineFormat.computeFileHash("a\nb\n")
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=3:\n+X\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "a\nX\n")
         }
 
         @Test("cut a range")
@@ -526,16 +564,14 @@ extension AllAppTests {
             #expect(text.contains("out of bounds"))
         }
 
-        @Test("out-of-bounds error reports the real line count including trailing empty line")
+        @Test("out-of-bounds error reports the line count the model sees, without the phantom line")
         func outOfBoundsLineCount() async throws {
             let tmp = try EditTestDir()
-            // The applier splits "a\nb\nc\n" to ["a","b","c",""] and its
-            // bounds error reports that count (4), trailing empty element included.
             let file = try tmp.write("a.txt", content: "a\nb\nc\n")
             let tag = HashlineFormat.computeFileHash("a\nb\nc\n")
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT 5.=5:\n+X\n", tag: tag))
             #expect(err)
-            #expect(text.contains("file has 4 lines"))
+            #expect(text.contains("file has 3 lines"))
         }
 
         @Test("missing file is rejected")
@@ -1339,10 +1375,10 @@ extension AllAppTests {
             let content = "a\nb\nc\nd\ne\nf\n"
             let file = try tmp.write("a.txt", content: content)
             let tag = HashlineFormat.computeFileHash(content)
-            // Replace line 3; the body restates lines 1-2 just above the range.
-            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 3.=3:\n+a\n+b\n+X\n", tag: tag))
+            // Replace lines 3-4; the body restates lines 1-2 just above the range.
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 3.=4:\n+a\n+b\n+X\n+Y\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
-            #expect(try tmp.read("a.txt") == "a\nb\nX\nd\ne\nf\n")
+            #expect(try tmp.read("a.txt") == "a\nb\nX\nY\ne\nf\n")
             #expect(text.contains("dropped 2 leading payload line(s)"))
             #expect(text.contains("just above the range"))
         }
@@ -1353,12 +1389,118 @@ extension AllAppTests {
             let content = "a\nb\nc\nd\n"
             let file = try tmp.write("a.txt", content: content)
             let tag = HashlineFormat.computeFileHash(content)
-            // Replace line 2; the body restates line 3 just below the range.
-            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=2:\n+X\n+c\n", tag: tag))
+            // Replace lines 1-2; the body restates line 3 just below the range.
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 1.=2:\n+X\n+Y\n+c\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
-            #expect(try tmp.read("a.txt") == "a\nX\nc\nd\n")
+            #expect(try tmp.read("a.txt") == "X\nY\nc\nd\n")
             #expect(text.contains("dropped 1 trailing payload line(s)"))
             #expect(text.contains("just below the range"))
+        }
+
+        @Test("one-sided echo on a single-line range is not repaired")
+        func singleLineOneSidedEchoLeftAlone() async throws {
+            let tmp = try EditTestDir()
+            let content = "a\nb\nc\nd\ne\nf\ng\n"
+            let file = try tmp.write("a.txt", content: content)
+            let tag = HashlineFormat.computeFileHash(content)
+            // The body ends with a copy of line 6, but a duplicated neighbouring
+            // statement may well be intended, so it is applied as written.
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 5.=5:\n+E\n+f\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "a\nb\nc\nd\nE\nf\nf\ng\n")
+            #expect(!text.contains("Auto-repaired"))
+        }
+
+        @Test("one-sided echo too short for the widened range is rejected, not repaired")
+        func shiftedRangeEchoRejected() async throws {
+            let tmp = try EditTestDir()
+            let content = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\n"
+            let file = try tmp.write("a.txt", content: content)
+            let tag = HashlineFormat.computeFileHash(content)
+            // Meant lines 6-8, but the range names 5-7: the trailing `l8` echo would
+            // be dropped and `l5` silently deleted. Reject instead.
+            let (text, err) = await AllAppTests.editCall(
+                patch(file, "PUT 5.=7:\n+L6\n+L7\n+l8\n", tag: tag))
+            #expect(err)
+            #expect(text.contains("`PUT 5.=7:` rejected"))
+            #expect(text.contains("too short"))
+            #expect(try tmp.read("a.txt") == content)
+        }
+
+        @Test("one-sided echo with a payload long enough for the widened range is repaired")
+        func widenedRangeEchoRepaired() async throws {
+            let tmp = try EditTestDir()
+            let content = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\n"
+            let file = try tmp.write("a.txt", content: content)
+            let tag = HashlineFormat.computeFileHash(content)
+            let (text, err) = await AllAppTests.editCall(
+                patch(file, "PUT 5.=7:\n+A\n+B\n+C\n+l8\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "l1\nl2\nl3\nl4\nA\nB\nC\nl8\nl9\n")
+            #expect(text.contains("dropped 1 trailing payload line(s)"))
+        }
+
+        @Test("two-sided echo that shifts the delimiter balance is not repaired")
+        func imbalancedTwoSidedEchoLeftAlone() async throws {
+            let tmp = try EditTestDir()
+            let content = "foo(\nx\ny\nbar\nz\n"
+            let file = try tmp.write("a.txt", content: content)
+            let tag = HashlineFormat.computeFileHash(content)
+            // Dropping `foo(` would leave the payload's own `w(` unmatched.
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=3:\n+foo(\n+w(\n+bar\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "foo(\nfoo(\nw(\nbar\nbar\nz\n")
+            #expect(!text.contains("Auto-repaired"))
+        }
+
+        @Test("two-sided echo of balanced delimiters is repaired")
+        func balancedTwoSidedEchoRepaired() async throws {
+            let tmp = try EditTestDir()
+            let content = "f(\nx\ny\n)\nz\n"
+            let file = try tmp.write("a.txt", content: content)
+            let tag = HashlineFormat.computeFileHash(content)
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=3:\n+f(\n+w\n+)\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "f(\nw\n)\nz\n")
+            #expect(text.contains("dropped 1 leading and 1 trailing payload line(s)"))
+        }
+
+        @Test("duplicated trailing closer that explains the imbalance is dropped")
+        func duplicateSuffixRepaired() async throws {
+            let tmp = try EditTestDir()
+            let content = "foo(\n  a,\n  b,\n)\ntail\n"
+            let file = try tmp.write("a.txt", content: content)
+            let tag = HashlineFormat.computeFileHash(content)
+            let (text, err) = await AllAppTests.editCall(
+                patch(file, "PUT 2.=3:\n+  a2,\n+  b2,\n+)\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "foo(\n  a2,\n  b2,\n)\ntail\n")
+            #expect(text.contains("delimiter-balance mismatch"))
+            #expect(text.contains("dropped 1 duplicated trailing payload line(s)"))
+        }
+
+        @Test("duplicated leading opener that explains the imbalance is dropped")
+        func duplicatePrefixRepaired() async throws {
+            let tmp = try EditTestDir()
+            let content = "x\nfoo(\n  a,\n)\n"
+            let file = try tmp.write("a.txt", content: content)
+            let tag = HashlineFormat.computeFileHash(content)
+            let (text, err) = await AllAppTests.editCall(
+                patch(file, "PUT 3.=4:\n+foo(\n+  a2,\n+)\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "x\nfoo(\n  a2,\n)\n")
+            #expect(text.contains("dropped 1 duplicated leading payload line(s)"))
+        }
+
+        @Test("echo repair works on a CRLF file and keeps its endings")
+        func crlfEchoRepaired() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "a\r\nb\r\nc\r\nd\r\ne\r\n")
+            let tag = HashlineFormat.computeFileHash("a\nb\nc\nd\ne\n")
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=3:\n+a\n+X\n+d\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "a\r\nX\r\nd\r\ne\r\n")
+            #expect(text.contains("dropped 1 leading and 1 trailing payload line(s)"))
         }
 
         @Test("whole-payload echo is left alone as intentional")

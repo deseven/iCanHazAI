@@ -1329,7 +1329,7 @@ enum BuiltinTools {
                 canonical: canonical,
                 tag: section.fileHash,
                 currentContent: currentContent,
-                anchorLines: section.anchorLines,
+                anchorLines: section.anchorLines(in: currentContent),
                 strictReject: true
             ) {
                 throw BuiltinToolError(rejection)

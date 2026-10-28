@@ -636,6 +636,271 @@ extension AllAppTests {
         }
     }
 
+    // MARK: - Applier: phantom line and line origins
+
+    @Suite struct HashlineApplierLinesTests {
+
+        private static func apply(_ text: String, _ diff: String) throws -> ApplyResult {
+            try HashlineApplier.applyEdits(text, edits: HashlineParser.parsePatch(diff).edits)
+        }
+
+        // MARK: EOF and the phantom line
+
+        @Test func eofInsertLandsBeforeTheFinalNewline() throws {
+            let result = try Self.apply("a\nb\n", "PUT >$:\n+tail")
+            #expect(result.text == "a\nb\ntail\n")
+            #expect(result.firstChangedLine == 3)
+        }
+
+        @Test func eofInsertWithoutFinalNewline() throws {
+            #expect(try Self.apply("a\nb", "PUT >$:\n+tail").text == "a\nb\ntail")
+        }
+
+        @Test func eofInsertOnEmptyFileReplacesThePlaceholder() throws {
+            let result = try Self.apply("", "PUT >$:\n+tail")
+            #expect(result.text == "tail")
+            #expect(result.firstChangedLine == 1)
+        }
+
+        @Test func eofInsertOnLoneNewline() throws {
+            #expect(try Self.apply("\n", "PUT >$:\n+tail").text == "\ntail\n")
+        }
+
+        @Test func insertsAnchoredOnThePhantomLineAreEOFInserts() throws {
+            #expect(try Self.apply("a\nb\n", "PUT >3:\n+x").text == "a\nb\nx\n")
+            #expect(try Self.apply("a\nb\n", "PUT <3:\n+x").text == "a\nb\nx\n")
+        }
+
+        @Test func phantomAnchoredAndExplicitEOFInsertsKeepPatchOrder() throws {
+            let result = try Self.apply("x\ny\n", "PUT >$:\n+a\nPUT <3:\n+b")
+            #expect(result.text == "x\ny\na\nb\n")
+        }
+
+        @Test func insertsAnchoredOnTheEmptyFilesOnlyLineAreEOFInserts() throws {
+            #expect(try Self.apply("", "PUT <1:\n+x").text == "x")
+            #expect(try Self.apply("", "PUT >1:\n+x").text == "x")
+        }
+
+        @Test func rangeEndingOnThePhantomLineKeepsTheFinalNewline() throws {
+            #expect(try Self.apply("a\nb\n", "PUT 2.=3:\n+X").text == "a\nX\n")
+            #expect(try Self.apply("a\nb\n", "CUT 2.=3").text == "a\n")
+        }
+
+        @Test func replacingOnlyThePhantomLineAppendsBeforeTheFinalNewline() throws {
+            #expect(try Self.apply("a\nb\n", "PUT 3.=3:\n+X").text == "a\nb\nX\n")
+        }
+
+        @Test func replacingTheEmptyFilesOnlyLine() throws {
+            #expect(try Self.apply("", "PUT 1.=1:\n+x").text == "x")
+        }
+
+        @Test func cuttingEveryLineThenAppendingKeepsTheFinalNewline() throws {
+            #expect(try Self.apply("a\n", "CUT 1.=1\nPUT >$:\n+x").text == "x\n")
+        }
+
+        @Test func boundsErrorCountsAddressableLines() {
+            let cases: [(text: String, diff: String, expected: String)] = [
+                ("a\nb\nc\n", "CUT 5.=5", "file has 3 lines"),
+                ("a", "CUT 2.=2", "file has 1 line)"),
+                ("", "CUT 3.=3", "file has 0 lines"),
+            ]
+            for c in cases {
+                do {
+                    _ = try Self.apply(c.text, c.diff)
+                    Issue.record("expected a bounds error for \(c.text.debugDescription)")
+                } catch {
+                    #expect(error.localizedDescription.contains(c.expected), "\(error.localizedDescription)")
+                }
+            }
+        }
+
+        // MARK: Guard anchors
+
+        @Test func anchorLinesExcludeThePhantomLine() throws {
+            let section = try HashlineEdit.parse("[f#ABCD]\nCUT 1.=3\n").sections[0]
+            #expect(section.anchorLines(in: "a\nb\n") == [1, 2])
+            #expect(section.anchorLines(in: "a\nb\nc") == [1, 2, 3])
+        }
+
+        // MARK: Origins
+
+        @Test func originsOfAPureInsert() throws {
+            let result = try Self.apply("a\nb\nc\n", "PUT >1:\n+x")
+            #expect(result.text == "a\nx\nb\nc\n")
+            #expect(result.origins == [1, nil, 2, 3])
+        }
+
+        @Test func originsOfAPureCut() throws {
+            let result = try Self.apply("a\nb\nc\n", "CUT 2.=2")
+            #expect(result.text == "a\nc\n")
+            #expect(result.origins == [1, 3])
+        }
+
+        @Test func originsOfAReplace() throws {
+            let result = try Self.apply("a\nb\nc\n", "PUT 2.=2:\n+B1\n+B2")
+            #expect(result.text == "a\nB1\nB2\nc\n")
+            #expect(result.origins == [1, nil, nil, 3])
+        }
+
+        @Test func originsOfBofAndEofInserts() throws {
+            let result = try Self.apply("a\nb\n", "PUT <1:\n+h\nPUT >$:\n+t")
+            #expect(result.text == "h\na\nb\nt\n")
+            #expect(result.origins == [nil, 1, 2, nil])
+        }
+
+        @Test func originsOfSeveralHunks() throws {
+            let result = try Self.apply("a\nb\nc\nd\ne\nf\n", "PUT 2.=3:\n+X\nCUT 5.=5\nPUT >6:\n+Z")
+            #expect(result.text == "a\nX\nd\nf\nZ\n")
+            #expect(result.origins == [1, nil, 4, 6, nil])
+        }
+
+        @Test func originsSkipPayloadLinesDroppedByARepair() throws {
+            let result = try Self.apply("a\nb\nc\nd\ne\n", "PUT 2.=3:\n+a\n+X\n+d")
+            #expect(result.text == "a\nX\nd\ne\n")
+            #expect(result.origins == [1, nil, 4, 5])
+            #expect(result.warnings.count == 1)
+        }
+
+        @Test func originsWithoutEditsAreTheIdentity() throws {
+            #expect(try HashlineApplier.applyEdits("a\nb\n", edits: []).origins == [1, 2])
+            #expect(try HashlineApplier.applyEdits("a\nb", edits: []).origins == [1, 2])
+        }
+
+        @Test func emptyResultHasASingleNilOrigin() throws {
+            #expect(try Self.apply("a\n", "CUT 1.=1").origins == [nil])
+            #expect(try Self.apply("a", "CUT 1.=1").origins == [nil])
+        }
+
+        @Test func originsCountMatchesAddressableLines() throws {
+            let cases: [(text: String, diff: String)] = [
+                ("a\nb\nc\n", "PUT >$:\n+x"),
+                ("a\nb\nc", "PUT >$:\n+x"),
+                ("a\nb\nc\n", "PUT <1:\n+x\nCUT 3.=3"),
+                ("", "PUT >$:\n+x\n+y"),
+                ("\n", "PUT >$:\n+x"),
+                ("a\nb", "PUT 2.=2:\n+"),
+                ("a\nb\n", "PUT 2.=3:\n+X\n+Y"),
+                ("a\nb\nc\nd\n", "CUT 1.=2\nPUT >4:\n+z"),
+            ]
+            for c in cases {
+                let result = try Self.apply(c.text, c.diff)
+                let addressable = HashlineFormat.splitAddressableFileLines(result.text)
+                #expect(
+                    result.origins.count == addressable.count,
+                    "\(c.text.debugDescription) + \(c.diff.debugDescription) -> \(result.text.debugDescription)")
+            }
+        }
+    }
+
+    // MARK: - Replacement boundary repair
+
+    @Suite struct HashlineRepairTests {
+
+        private static func apply(_ text: String, _ diff: String) throws -> ApplyResult {
+            try HashlineApplier.applyEdits(text, edits: HashlineParser.parsePatch(diff).edits)
+        }
+
+        private static func rejection(_ text: String, _ diff: String) -> String? {
+            do {
+                _ = try apply(text, diff)
+                return nil
+            } catch {
+                return error.localizedDescription
+            }
+        }
+
+        @Test func shiftedRangeIsRejectedWithTheReferenceMessage() {
+            let text = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\n"
+            let message = Self.rejection(text, "PUT 5.=7:\n+L6\n+L7\n+l8")
+            #expect(message?.contains("`PUT 5.=7:` rejected") == true)
+            #expect(message?.contains("ends by restating the 1 line(s) just below the range") == true)
+        }
+
+        @Test func leadingShiftedRangeIsRejected() {
+            let text = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n"
+            let message = Self.rejection(text, "PUT 4.=6:\n+l3\n+L4\n+L5")
+            #expect(message?.contains("opens by restating the 1 line(s) just above the range") == true)
+        }
+
+        @Test func oneSidedEchoNeedsMultiLineRange() throws {
+            let result = try Self.apply("a\nb\nc\nd\n", "PUT 2.=2:\n+X\n+c")
+            #expect(result.text == "a\nX\nc\nc\nd\n")
+            #expect(result.warnings.isEmpty)
+        }
+
+        @Test func oneSidedEchoThatIsNotBalanceNeutralIsLeftAlone() throws {
+            // The payload is balanced against its range, but the echoed `}` is
+            // structure of its own (it closes the payload's `{`), not a restated keeper.
+            let result = try Self.apply("f\na\nb\n}\nz\n", "PUT 2.=3:\n+A {\n+}")
+            #expect(result.text == "f\nA {\n}\n}\nz\n")
+            #expect(result.warnings.isEmpty)
+        }
+
+        @Test func duplicatedCloserThatExplainsTheImbalanceIsDropped() throws {
+            let result = try Self.apply("f {\n  a\n  b\n}\nz\n", "PUT 2.=3:\n+  A\n+  B\n+}")
+            #expect(result.text == "f {\n  A\n  B\n}\nz\n")
+            #expect(result.warnings.count == 1)
+            #expect(result.warnings[0].contains("delimiter-balance mismatch"))
+        }
+
+        @Test func wholePayloadEchoIsLeftAlone() throws {
+            let result = try Self.apply("a\nb\nc\n", "PUT 2.=2:\n+a\n+c")
+            #expect(result.text == "a\na\nc\nc\n")
+            #expect(result.warnings.isEmpty)
+        }
+
+        @Test func blankBoundaryLinesAreNotEchoes() throws {
+            let result = try Self.apply("a\n\nb\nc\n\nd\n", "PUT 3.=4:\n+\n+X\n+Y\n+")
+            #expect(result.text == "a\n\n\nX\nY\n\n\nd\n")
+            #expect(result.warnings.isEmpty)
+        }
+    }
+
+    // MARK: - Delimiter balance
+
+    @Suite struct DelimiterBalanceTests {
+
+        private func balance(_ lines: [String]) -> DelimiterBalance {
+            DelimiterBalance(counting: lines)
+        }
+
+        @Test func countsEachDelimiterKind() {
+            #expect(balance(["foo(a[1]) {"]) == DelimiterBalance(paren: 0, bracket: 0, brace: 1))
+            #expect(balance(["}", "])"]) == DelimiterBalance(paren: -1, bracket: -1, brace: -1))
+            #expect(balance(["x = 1"]).isZero)
+        }
+
+        @Test func skipsLineComments() {
+            #expect(balance(["x // ) } ]"]).isZero)
+        }
+
+        @Test func skipsStringLiterals() {
+            #expect(balance([#"print("}")"#, "call('(')"]).isZero)
+            #expect(balance([#"s = "a\"}" + {"#]) == DelimiterBalance(paren: 0, bracket: 0, brace: 1))
+        }
+
+        @Test func blockCommentsSpanLines() {
+            #expect(balance(["/* {", "} */ {"]) == DelimiterBalance(paren: 0, bracket: 0, brace: 1))
+        }
+
+        @Test func templateLiteralsSpanLines() {
+            #expect(balance(["`a {", "b }` }"]) == DelimiterBalance(paren: 0, bracket: 0, brace: -1))
+        }
+
+        @Test func plainQuotesDoNotSpanLines() {
+            #expect(balance(["\"abc {", "}"]) == DelimiterBalance(paren: 0, bracket: 0, brace: -1))
+        }
+
+        @Test func arithmetic() {
+            let a = DelimiterBalance(paren: 2, bracket: 0, brace: -1)
+            let b = DelimiterBalance(paren: 1, bracket: 1, brace: -1)
+            #expect(a - b == DelimiterBalance(paren: 1, bracket: -1, brace: 0))
+            #expect(a + b == DelimiterBalance(paren: 3, bracket: 1, brace: -2))
+            #expect(a.negated == DelimiterBalance(paren: -2, bracket: 0, brace: 1))
+            #expect((a - a).isZero)
+        }
+    }
+
     // MARK: - HashlineEdit (end-to-end)
 
     @Suite struct HashlineEditTests {
@@ -760,7 +1025,7 @@ extension AllAppTests {
                 """
             let patch = try HashlineEdit.parse(input)
             let result = try HashlineEdit.applySection(patch.sections[0], fileContent: fileContent)
-            #expect(result.text == "line1\nline2\n\nnew last line")
+            #expect(result.text == "line1\nline2\nnew last line\n")
         }
 
         @Test func cutRange() throws {

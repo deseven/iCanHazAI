@@ -89,13 +89,21 @@ enum HashlineFormat {
         line.hasSuffix("\r") ? String(line.dropLast()) : line
     }
 
+    /// 1-indexed position of the phantom element a terminal newline leaves at
+    /// the end of `splitLines` output; nil when the text does not end in a
+    /// newline. `""` has no phantom: its single `""` element is the one line of
+    /// an empty file.
+    static func phantomLineNumber(in lines: [String]) -> Int? {
+        lines.count > 1 && lines.last == "" ? lines.count : nil
+    }
+
     /// Split LF-normalized file text into lines hashline anchors can address.
     /// A terminal newline terminates the preceding line; it is not content, so
     /// the phantom empty element after it is dropped. `""` still yields one
     /// empty line — callers treat an empty file separately.
     static func splitAddressableFileLines(_ text: String) -> [String] {
         var lines = splitLines(text)
-        if lines.count > 1 && lines.last == "" {
+        if phantomLineNumber(in: lines) != nil {
             lines.removeLast()
         }
         return lines
