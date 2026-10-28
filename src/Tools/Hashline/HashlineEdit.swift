@@ -20,7 +20,7 @@ enum HashlineEditError: Error, LocalizedError {
         case .applyError(let msg):
             return msg
         case .noop(let path):
-            return "No changes to \(path)."
+            return "Edits to \(path) resulted in no changes."
         }
     }
 }

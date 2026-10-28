@@ -722,6 +722,13 @@ extension AllAppTests {
             #expect(section.anchorLines(in: "a\nb\nc") == [1, 2, 3])
         }
 
+        @Test func anchorLinesExcludeTheLoneLineOfAnEmptyFile() throws {
+            let section = try HashlineEdit.parse("[f#ABCD]\nPUT 1.=1:\n+x\n").sections[0]
+            #expect(section.anchorLines(in: "") == [])
+            // A file holding just a newline has a real, empty first line.
+            #expect(section.anchorLines(in: "\n") == [1])
+        }
+
         // MARK: Origins
 
         @Test func originsOfAPureInsert() throws {

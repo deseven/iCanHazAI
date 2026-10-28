@@ -51,14 +51,27 @@ extension AllAppTests {
             BuiltinToolsSSH.manager = SSHManager(cacheDir: "/tmp/ichai-test-socks")
         }
 
-        private static func call(_ name: String, _ group: String, _ args: [String: Any], workdir: Workdir) async -> (
-            text: String, isError: Bool
-        ) {
-            let arguments = (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
-            let result = await BuiltinTools.call(
-                name: name, arguments: arguments, callID: "test", group: group, workdir: workdir,
-                chatFilename: "test.json")
+        private static func call(
+            _ name: String, _ group: String, _ args: [String: Any], workdir: Workdir,
+            views: FileViewState = FileViewState()
+        ) async -> (text: String, isError: Bool) {
+            let result = await callResult(name, group, args, workdir: workdir, views: views)
             return (result.content, result.isError)
+        }
+
+        private static func callResult(
+            _ name: String, _ group: String, _ args: [String: Any], workdir: Workdir,
+            views: FileViewState = FileViewState()
+        ) async -> ToolResult {
+            let arguments = (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
+            return await BuiltinTools.call(
+                name: name, arguments: arguments, callID: "test", group: group, workdir: workdir,
+                chatFilename: "test.json", context: ToolContext(views: views))
+        }
+
+        /// What the model knows after these results (their file view events).
+        private static func views(_ results: ToolResult...) -> FileViewState {
+            FileViewState.fold(results.map { Fixtures.message(role: .tool, content: "", toolResults: [$0]) })
         }
 
         /// One chat identity for the whole suite: all tests share a single
@@ -351,15 +364,23 @@ extension AllAppTests {
             let (wd, remote) = Self.makeContext()
             _ = await Self.call("write_file", Self.fs, ["path": "a.txt", "content": "one\ntwo\n"], workdir: wd)
 
-            let (read, readErr) = await Self.call("read_file", Self.fs, ["path": "a.txt"], workdir: wd)
-            #expect(!readErr)
+            let readResult = await Self.callResult("read_file", Self.fs, ["path": "a.txt"], workdir: wd)
+            #expect(!readResult.isError)
+            let read = readResult.content
             // Extract the tag from the read_file header for a valid edit.
             let headerLine = read.split(separator: "\n").first { $0.hasPrefix("[") } ?? ""
             let tag = headerLine.split(separator: "#").last?.dropLast() ?? ""
             #expect(tag.count == 4)
 
             let input = "*** Begin Patch\n[a.txt#\(tag)]\nPUT 1.=1:\n+ONE\n*** End Patch"
-            let (edit, editErr) = await Self.call("edit_file", Self.edit, ["input": input], workdir: wd)
+
+            // Without having displayed the file the edit is refused, remotely too.
+            let (blind, blindErr) = await Self.call("edit_file", Self.edit, ["input": input], workdir: wd)
+            #expect(blindErr)
+            #expect(blind.contains("never displayed"))
+
+            let (edit, editErr) = await Self.call(
+                "edit_file", Self.edit, ["input": input], workdir: wd, views: Self.views(readResult))
             #expect(!editErr, "edit_file failed: \(edit)")
             #expect(edit.contains("Updated: a.txt [a.txt#"))
 
@@ -374,21 +395,26 @@ extension AllAppTests {
         @Test("edit_file REM and MV work over SSH")
         func editFileOpsSSH() async {
             let (wd, remote) = Self.makeContext()
-            _ = await Self.call("write_file", Self.fs, ["path": "a.txt", "content": "x\ny\n"], workdir: wd)
-            _ = await Self.call("write_file", Self.fs, ["path": "b.txt", "content": "x\ny\n"], workdir: wd)
+            let writeA = await Self.callResult(
+                "write_file", Self.fs, ["path": "a.txt", "content": "x\ny\n"], workdir: wd)
+            let writeB = await Self.callResult(
+                "write_file", Self.fs, ["path": "b.txt", "content": "x\ny\n"], workdir: wd)
+            let views = Self.views(writeA, writeB)
 
             let tagA = HashlineFormat.computeFileHash("x\ny\n")
             let tagB = HashlineFormat.computeFileHash("x\ny\n")
 
             // MV: move a.txt to renamed.txt (no edits).
             let mvInput = "*** Begin Patch\n[a.txt#\(tagA)]\nMV renamed.txt\n*** End Patch"
-            let (mv, mvErr) = await Self.call("edit_file", Self.edit, ["input": mvInput], workdir: wd)
+            let (mv, mvErr) = await Self.call(
+                "edit_file", Self.edit, ["input": mvInput], workdir: wd, views: views)
             #expect(!mvErr, "edit_file failed: \(mv)")
             #expect(mv.contains("Updated: a.txt [renamed.txt#"))
 
             // REM: delete b.txt after hash validation.
             let remInput = "*** Begin Patch\n[b.txt#\(tagB)]\nREM\n*** End Patch"
-            let (rm, rmErr) = await Self.call("edit_file", Self.edit, ["input": remInput], workdir: wd)
+            let (rm, rmErr) = await Self.call(
+                "edit_file", Self.edit, ["input": remInput], workdir: wd, views: views)
             #expect(!rmErr, "edit_file failed: \(rm)")
             #expect(rm.contains("Deleted: b.txt"))
 
@@ -399,6 +425,42 @@ extension AllAppTests {
             let (gone, goneErr) = await Self.call("read_file", Self.fs, ["path": "b.txt"], workdir: wd)
             #expect(goneErr)
             #expect(gone.contains("not found"))
+
+            await Self.destroy(wd, remote)
+        }
+
+        @Test("edit_file refuses an MV onto an existing remote file, in the preflight and at execution")
+        func editFileMoveOntoExistingSSH() async throws {
+            let (wd, remote) = Self.makeContext()
+            let writeA = await Self.callResult(
+                "write_file", Self.fs, ["path": "a.txt", "content": "x\ny\n"], workdir: wd)
+            let writeB = await Self.callResult(
+                "write_file", Self.fs, ["path": "b.txt", "content": "z\n"], workdir: wd)
+            let views = Self.views(writeA, writeB)
+            let tag = HashlineFormat.computeFileHash("x\ny\n")
+            let input = "*** Begin Patch\n[a.txt#\(tag)]\nMV b.txt\n*** End Patch"
+
+            let preflight = try await HashlinePatcher.preflight(
+                arguments: String(
+                    data: JSONSerialization.data(withJSONObject: ["input": input]), encoding: .utf8) ?? "{}",
+                workdir: wd, views: views)
+            guard case .error(let message, _) = preflight else {
+                Issue.record("expected .error, got \(preflight)")
+                await Self.destroy(wd, remote)
+                return
+            }
+            #expect(message.contains("MV destination already exists"))
+
+            let (text, err) = await Self.call("edit_file", Self.edit, ["input": input], workdir: wd, views: views)
+            #expect(err)
+            #expect(text.contains("MV destination already exists"))
+
+            let (a, aErr) = await Self.call("read_file", Self.fs, ["path": "a.txt"], workdir: wd)
+            #expect(!aErr)
+            #expect(a.contains("1:x"))
+            let (b, bErr) = await Self.call("read_file", Self.fs, ["path": "b.txt"], workdir: wd)
+            #expect(!bErr)
+            #expect(b.contains("1:z"))
 
             await Self.destroy(wd, remote)
         }

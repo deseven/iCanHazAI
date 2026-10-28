@@ -4,8 +4,10 @@
 import Differ
 import Foundation
 
-/// Builds unified-diff text for `write_file` tool calls so the chat renderer
-/// can show a colorized diff instead of raw JSON arguments.
+/// Builds unified-diff text for `write_file` tool calls (and, via
+/// [`HashlinePatcher`](src/Tools/Hashline/HashlinePatcher.swift), `edit_file`
+/// ones) so the chat renderer can show a colorized diff instead of raw JSON
+/// arguments.
 ///
 /// The diff is computed against the file's current on-disk content (the "before"
 /// state) and the content the tool call would write (the "after" state).
@@ -27,84 +29,6 @@ enum DiffBuilder {
         let resolved = (try? workdir.resolve(path)) ?? path
         let old = readFileAsString(resolved) ?? ""
         return unifiedDiff(old: old, new: content, oldPath: path, newPath: path)
-    }
-
-    /// Outcome of the `edit_file` preflight: either the unified diffs for the
-    /// patch's sections, or an error message to relay to the model (instead of
-    /// asking the user for approval).
-    enum EditFilePreflight {
-        case ok(diff: String?)
-        case error(message: String)
-    }
-
-    /// Preflights an `edit_file` tool call without writing anything: parses
-    /// the patch, validates each section's #TAG against the current file
-    /// content, applies the edits in memory, and produces unified diffs for
-    /// the approval UI. Any parse/hash/apply failure becomes `.error` so the
-    /// caller can relay it to the model instead of prompting the user.
-    static func preflightEditFile(
-        arguments: String, workdir: Workdir, snapshotStore: SnapshotStore? = nil
-    ) -> EditFilePreflight {
-        guard let args = parseArgs(arguments), let input = args["input"] as? String else {
-            return .error(message: "Invalid arguments: expected an 'input' string.")
-        }
-        let patch: ParsedPatch
-        do {
-            patch = try HashlineEdit.parse(input)
-        } catch {
-            return .error(message: error.localizedDescription)
-        }
-        var diffs: [String] = []
-        for section in patch.sections {
-            let resolved: String
-            do {
-                resolved = try workdir.resolve(section.path)
-            } catch {
-                return .error(message: error.localizedDescription)
-            }
-            guard let data = FileManager.default.contents(atPath: resolved) else {
-                return .error(message: "invalid argument 'input': file not found: \(section.path)")
-            }
-            guard let old = TextFile.decode(data)?.text else {
-                return .error(
-                    message:
-                        "File \(section.path) is not a text file and cannot be edited with edit_file. Use write_file to replace it entirely."
-                )
-            }
-            let result: ApplyResult
-            do {
-                result = try HashlineEdit.applySection(section, fileContent: old)
-            } catch {
-                return .error(message: error.localizedDescription)
-            }
-            // Seen-lines guard: surface approval-time errors before execution
-            // so the model sees the rejection in the tool result (via the
-            // immediate-error path) instead of after user approval.
-            if let rejection = SnapshotStore.seenLinesRejection(
-                snapshotStore,
-                displayPath: workdir.displayPath(forResolved: resolved),
-                canonical: BuiltinTools.canonicalPath(resolved),
-                tag: section.fileHash,
-                currentContent: old,
-                anchorLines: section.anchorLines(in: old),
-                strictReject: true
-            ) {
-                return .error(message: rejection)
-            }
-            switch section.fileOp {
-            case .rem:
-                diffs.append(unifiedDiff(old: old, new: "", oldPath: section.path, newPath: nil))
-            case .move(let dest):
-                diffs.append(unifiedDiff(old: old, new: result.text, oldPath: section.path, newPath: dest))
-            case nil:
-                diffs.append(unifiedDiff(old: old, new: result.text, oldPath: section.path, newPath: section.path))
-            }
-        }
-        let joined = diffs.filter { !$0.isEmpty }.joined(separator: "\n")
-        // Warnings (bare rows auto-piped, empty-PUT auto-cut, boundary-echo
-        // repairs) are surfaced in the tool result only — duplicating them in
-        // the approval diff would show them twice.
-        return .ok(diff: joined.isEmpty ? nil : joined)
     }
 
     // MARK: - Unified diff generation

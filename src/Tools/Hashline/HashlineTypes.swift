@@ -78,9 +78,11 @@ struct HashlineSection {
     /// `beforeAnchor`/`afterAnchor` insert cursor and every delete anchor.
     /// Deduplicated — a `PUT N.=N:` replacement emits both an insert and a
     /// delete on `N`. The phantom line after a final newline is never reported:
-    /// the model cannot have seen it. Used by the seen-lines guard to reject
-    /// edits targeting lines the model never displayed.
+    /// the model cannot have seen it. Neither is the lone placeholder line of an
+    /// empty file, which has no content to display. Used by the seen-lines guard
+    /// to reject edits targeting lines the model never displayed.
     func anchorLines(in text: String) -> [Int] {
+        if text.isEmpty { return [] }
         let phantom = HashlineFormat.phantomLineNumber(in: HashlineFormat.splitLines(text))
         var lines: [Int] = []
         var seen = Set<Int>()

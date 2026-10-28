@@ -46,15 +46,94 @@ extension AllAppTests {
     }
 
     /// Calls the local `edit_file` builtin with a hashline patch and returns
-    /// `(text, isError)`.
-    private static func editCall(_ input: String, workdir: Workdir = .none) async -> (text: String, isError: Bool) {
+    /// `(text, isError)`. Unless `views` says otherwise, the model is taken to
+    /// have read every file the patch names in full, so the seen-lines guard
+    /// stays out of the way of tests about everything else.
+    private static func editCall(
+        _ input: String, workdir: Workdir = .none, views: FileViewState? = nil
+    ) async -> (text: String, isError: Bool) {
         let arguments =
             (try? String(data: JSONSerialization.data(withJSONObject: ["input": input]), encoding: .utf8))
             ?? "{}"
         let result = await BuiltinTools.call(
             name: "edit_file", arguments: arguments, callID: "test", group: BuiltinTools.editGroup,
-            workdir: workdir, chatFilename: "test.json")
+            workdir: workdir, chatFilename: "test.json",
+            context: ToolContext(views: views ?? fullyViewed(input, workdir: workdir)))
         return (result.content, result.isError)
+    }
+
+    /// The state after reading, in full, every existing text file the patch
+    /// names.
+    private static func fullyViewed(_ input: String, workdir: Workdir) -> FileViewState {
+        var state = FileViewState()
+        guard let patch = try? HashlineEdit.parse(input) else { return state }
+        for section in patch.sections {
+            guard let resolved = try? workdir.resolve(section.path),
+                let data = FileManager.default.contents(atPath: resolved),
+                let file = TextFile.decode(data)
+            else { continue }
+            let count = file.text.isEmpty ? 0 : HashlineFormat.splitAddressableFileLines(file.text).count
+            state.apply(
+                .seen(
+                    .local(resolved: resolved), contentID: HashlineFormat.computeContentID(file.text),
+                    lines: count == 0 ? LineSet() : LineSet(range: 1...count)))
+        }
+        return state
+    }
+
+    /// A conversation as the file tools see it: every call runs through
+    /// `BuiltinTools.call` with the views folded from the results so far, and
+    /// its result joins the history like it would join the chat.
+    private final class ToolHistory {
+        private(set) var results: [ToolResult] = []
+        let workdir: Workdir
+
+        init(workdir: Workdir = .none) {
+            self.workdir = workdir
+        }
+
+        var views: FileViewState {
+            FileViewState.fold(results.map { Fixtures.message(role: .tool, content: "", toolResults: [$0]) })
+        }
+
+        @discardableResult
+        func run(_ name: String, _ group: String, _ args: [String: Any]) async -> ToolResult {
+            let result = await BuiltinTools.call(
+                name: name, arguments: AllAppTests.argsJSON(args), callID: "call-\(results.count)", group: group,
+                workdir: workdir, chatFilename: "test.json", context: ToolContext(views: views))
+            results.append(result)
+            return result
+        }
+
+        /// Adds events as if an earlier tool call had recorded them.
+        func inject(_ events: [FileViewEvent]) {
+            results.append(
+                ToolResult(callID: "call-\(results.count)", content: "", isError: false, fileViews: events))
+        }
+
+        @discardableResult
+        func read(_ path: String, offset: Int? = nil, limit: Int? = nil) async -> ToolResult {
+            var args: [String: Any] = ["path": path]
+            if let offset { args["offset"] = offset }
+            if let limit { args["limit"] = limit }
+            return await run("read_file", BuiltinTools.filesystemGroup, args)
+        }
+
+        @discardableResult
+        func write(_ path: String, _ content: String) async -> ToolResult {
+            await run("write_file", BuiltinTools.filesystemGroup, ["path": path, "content": content])
+        }
+
+        @discardableResult
+        func edit(_ input: String) async -> ToolResult {
+            await run("edit_file", BuiltinTools.editGroup, ["input": input])
+        }
+
+        /// `edit_file` for a patch built from one section.
+        @discardableResult
+        func edit(_ path: String, _ body: String, tag: String) async -> ToolResult {
+            await edit(AllAppTests.patch(path, body, tag: tag))
+        }
     }
 
     /// Builds a hashline patch input for one section.
@@ -379,6 +458,25 @@ extension AllAppTests {
             #expect(!text.contains("\u{FFFD}"))
         }
 
+        @Test("the preview reports the post-edit lines it printed, not the removed ones")
+        func shownLines() throws {
+            let old = (1...10).map { "line\($0)" }.joined(separator: "\n") + "\n"
+            let new = old.replacingOccurrences(of: "line5\n", with: "X\nY\n")
+            let preview = try #require(HashlineDiffPreview.generate(old: old, new: new))
+            #expect(preview.text.contains("-5:line5"))
+            // Context 3-4, added 5-6, context 7-8; the `-5:` row has no post-edit line.
+            #expect(preview.shownLines == LineSet(range: 3...8))
+        }
+
+        @Test("rows cut by the truncation caps are not reported as shown")
+        func shownLinesAfterTruncation() throws {
+            let new = (1...400).map { "line\($0)" }.joined(separator: "\n") + "\n"
+            let preview = try #require(HashlineDiffPreview.generate(old: "line1\n", new: new))
+            #expect(preview.text.hasSuffix("... (diff preview truncated)"))
+            #expect(preview.shownLines == LineSet(range: 1...HashlineDiffPreview.maxLines))
+            #expect(!preview.text.contains("\n201:") && !preview.text.contains("+201:"))
+        }
+
         @Test("REM has no preview")
         func remHasNoPreview() async throws {
             let tmp = try EditTestDir()
@@ -391,14 +489,14 @@ extension AllAppTests {
             #expect(!text.contains("+1:"))
         }
 
-        @Test("no-op has no preview")
+        @Test("no-op is an error without a preview")
         func noopHasNoPreview() async throws {
             let tmp = try EditTestDir()
             let file = try tmp.write("a.txt", content: "a\nb\n")
             let tag = HashlineFormat.computeFileHash("a\nb\n")
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT 1.=1:\n+a\n", tag: tag))
-            #expect(!err)
-            #expect(text.contains("No changes to \(file)."))
+            #expect(err)
+            #expect(text.contains("Edits to \(file) resulted in no changes."))
             #expect(!text.contains("-1:"))
             #expect(!text.contains("+1:"))
         }
@@ -681,15 +779,15 @@ extension AllAppTests {
             #expect(text.contains("apply_patch sentinel"))
         }
 
-        @Test("noop body produces an informational message")
+        @Test("a noop body is an error")
         func noop() async throws {
             let tmp = try EditTestDir()
             let file = try tmp.write("a.txt", content: "a\nb\n")
             let tag = HashlineFormat.computeFileHash("a\nb\n")
             // Body identical to the targeted line.
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT 1.=1:\n+a\n", tag: tag))
-            #expect(!err)
-            #expect(text.contains("No changes to \(file)."))
+            #expect(err)
+            #expect(text.contains("resulted in no changes"))
             #expect(try tmp.read("a.txt") == "a\nb\n")
         }
 
@@ -715,14 +813,21 @@ extension AllAppTests {
             AllAppTests.argsJSON(["input": input])
         }
 
+        private func preflight(
+            _ input: String, workdir: Workdir, views: FileViewState? = nil
+        ) async throws -> HashlinePatcher.Preflight {
+            try await HashlinePatcher.preflight(
+                arguments: argsJSON(input), workdir: workdir,
+                views: views ?? AllAppTests.fullyViewed(input, workdir: workdir))
+        }
+
         @Test("preflight ok produces a unified diff")
         func preflightOk() async throws {
             let tmp = try EditTestDir()
             _ = try tmp.write("a.txt", content: "one\ntwo\nthree\n")
             let tag = HashlineFormat.computeFileHash("one\ntwo\nthree\n")
             let input = "*** Begin Patch\n[\(tmp.sub("a.txt"))#\(tag)]\nPUT 2.=2:\n+TWO\n*** End Patch"
-            let wd = Workdir(root: tmp.path, isolated: false)
-            let result = DiffBuilder.preflightEditFile(arguments: argsJSON(input), workdir: wd)
+            let result = try await preflight(input, workdir: Workdir(root: tmp.path, isolated: false))
             guard case .ok(let diff) = result else {
                 Issue.record("expected .ok, got \(result)")
                 return
@@ -736,9 +841,9 @@ extension AllAppTests {
 
         @Test("preflight relays parse errors")
         func preflightParseError() async throws {
-            let wd = Workdir(root: NSTemporaryDirectory(), isolated: false)
-            let result = DiffBuilder.preflightEditFile(arguments: argsJSON("not a patch"), workdir: wd)
-            guard case .error(let message) = result else {
+            let result = try await preflight(
+                "not a patch", workdir: Workdir(root: NSTemporaryDirectory(), isolated: false))
+            guard case .error(let message, _) = result else {
                 Issue.record("expected .error, got \(result)")
                 return
             }
@@ -750,9 +855,8 @@ extension AllAppTests {
             let tmp = try EditTestDir()
             _ = try tmp.write("a.txt", content: "one\ntwo\n")
             let input = "*** Begin Patch\n[\(tmp.sub("a.txt"))#0000]\nPUT 1.=1:\n+X\n*** End Patch"
-            let wd = Workdir(root: tmp.path, isolated: false)
-            let result = DiffBuilder.preflightEditFile(arguments: argsJSON(input), workdir: wd)
-            guard case .error(let message) = result else {
+            let result = try await preflight(input, workdir: Workdir(root: tmp.path, isolated: false))
+            guard case .error(let message, _) = result else {
                 Issue.record("expected .error, got \(result)")
                 return
             }
@@ -765,8 +869,7 @@ extension AllAppTests {
             _ = try tmp.write("a.txt", content: "one\ntwo\n")
             let tag = HashlineFormat.computeFileHash("one\ntwo\n")
             let input = "*** Begin Patch\n[\(tmp.sub("a.txt"))#\(tag)]\nPUT 1.=1:\nX\n*** End Patch"
-            let wd = Workdir(root: tmp.path, isolated: false)
-            let result = DiffBuilder.preflightEditFile(arguments: argsJSON(input), workdir: wd)
+            let result = try await preflight(input, workdir: Workdir(root: tmp.path, isolated: false))
             guard case .ok(let diff) = result else {
                 Issue.record("expected .ok, got \(result)")
                 return
@@ -781,13 +884,85 @@ extension AllAppTests {
         }
 
         @Test("preflight handles invalid arguments JSON")
-        func preflightInvalidArgs() {
-            let result = DiffBuilder.preflightEditFile(arguments: "not json", workdir: .none)
-            guard case .error(let message) = result else {
+        func preflightInvalidArgs() async throws {
+            let result = try await HashlinePatcher.preflight(
+                arguments: "not json", workdir: .none, views: FileViewState())
+            guard case .error(let message, _) = result else {
                 Issue.record("expected .error, got \(result)")
                 return
             }
             #expect(message.contains("Invalid arguments"))
+        }
+
+        @Test("preflight enforces the seen-lines guard and carries the reveal events")
+        func preflightGuard() async throws {
+            let tmp = try EditTestDir()
+            let content = (1...10).map { "line\($0)" }.joined(separator: "\n") + "\n"
+            let file = try tmp.write("a.txt", content: content)
+            let wd = Workdir(root: tmp.path, isolated: false)
+            let history = ToolHistory(workdir: wd)
+            await history.read(file, offset: 1, limit: 3)
+            let input = patch(file, "PUT 8.=8:\n+X\n", tag: HashlineFormat.computeFileHash(content))
+
+            let first = try await preflight(input, workdir: wd, views: history.views)
+            guard case .error(let message, let events) = first else {
+                Issue.record("expected .error, got \(first)")
+                return
+            }
+            #expect(message.contains("8:line8"))
+            #expect(events.count == 1)
+            #expect(events.first?.kind == .seen)
+
+            // The events make the same patch pass.
+            var views = history.views
+            for event in events { views.apply(event) }
+            guard case .ok = try await preflight(input, workdir: wd, views: views) else {
+                Issue.record("the retry must pass once the revealed lines are folded in")
+                return
+            }
+            #expect(try tmp.read("a.txt") == content)
+        }
+
+        @Test("a preflight without any view cannot be skipped by a later execution")
+        func executionRechecksTheGuard() async throws {
+            let tmp = try EditTestDir()
+            let content = "a\nb\nc\n"
+            let file = try tmp.write("a.txt", content: content)
+            let input = patch(file, "PUT 2.=2:\n+B\n", tag: HashlineFormat.computeFileHash(content))
+            // Straight to execution with no views, as if the preflight had
+            // been skipped.
+            let (text, err) = await AllAppTests.editCall(input, views: FileViewState())
+            #expect(err)
+            #expect(text.contains("never displayed"))
+            #expect(try tmp.read("a.txt") == content)
+        }
+
+        @Test("an MV destination that exists is caught in the preflight")
+        func preflightMoveDestinationExists() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "source\n")
+            _ = try tmp.write("b.txt", content: "other\n")
+            let tag = HashlineFormat.computeFileHash("source\n")
+            let input = "*** Begin Patch\n[\(file)#\(tag)]\nMV \(tmp.sub("b.txt"))\n*** End Patch"
+            let result = try await preflight(input, workdir: .none)
+            guard case .error(let message, _) = result else {
+                Issue.record("expected .error, got \(result)")
+                return
+            }
+            #expect(message.contains("MV destination already exists"))
+        }
+
+        @Test("a noop is an error in the preflight too")
+        func preflightNoop() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "a\nb\n")
+            let input = patch(file, "PUT 1.=1:\n+a\n", tag: HashlineFormat.computeFileHash("a\nb\n"))
+            let result = try await preflight(input, workdir: .none)
+            guard case .error(let message, _) = result else {
+                Issue.record("expected .error, got \(result)")
+                return
+            }
+            #expect(message.contains("resulted in no changes"))
         }
     }
 
@@ -859,61 +1034,27 @@ extension AllAppTests {
 
     @Suite("edit_file: seen-lines guard")
     struct EditFileSeenLinesTests {
-        /// Runs `read_file` (with a store) over the given line window, returns
-        /// the content.
-        private static func read(
-            _ relative: String, tmp: EditTestDir, store: SnapshotStore, offset: Int? = nil, limit: Int? = nil
-        ) async -> String {
-            let file = tmp.sub(relative)
-            var args: [String: Any] = ["path": file]
-            if let offset { args["offset"] = offset }
-            if let limit { args["limit"] = limit }
-            let result = await BuiltinTools.call(
-                name: "read_file", arguments: AllAppTests.argsJSON(args), callID: "test",
-                group: BuiltinTools.filesystemGroup, workdir: .none, chatFilename: "test.json", snapshotStore: store)
-            return result.content
+        private static func lines(_ count: Int) -> String {
+            (1...count).map { "line\($0)" }.joined(separator: "\n") + "\n"
         }
 
-        /// A helper to run edit_file with a store.
-        private static func editWithStore(
-            _ input: String, workdir: Workdir = .none, store: SnapshotStore
-        ) async -> (text: String, isError: Bool) {
-            let arguments = AllAppTests.argsJSON(["input": input])
-            let result = await BuiltinTools.call(
-                name: "edit_file", arguments: arguments, callID: "test", group: BuiltinTools.editGroup,
-                workdir: workdir, chatFilename: "test.json", snapshotStore: store)
-            return (result.content, result.isError)
-        }
-
-        /// A helper to run write_file with a store.
-        private static func writeWithStore(
-            _ path: String, _ content: String, workdir: Workdir = .none, store: SnapshotStore
-        ) async -> (text: String, isError: Bool) {
-            let arguments = AllAppTests.argsJSON(["path": path, "content": content])
-            let result = await BuiltinTools.call(
-                name: "write_file", arguments: arguments, callID: "test", group: BuiltinTools.filesystemGroup,
-                workdir: workdir, chatFilename: "test.json", snapshotStore: store)
-            return (result.content, result.isError)
-        }
+        private static func tag(_ text: String) -> String { HashlineFormat.computeFileHash(text) }
 
         @Test("partial read then editing an unseen line is rejected")
         func partialReadUnseenLine() async throws {
             let tmp = try EditTestDir()
-            // 10 lines; read only lines 1-3.
-            let content = (1...10).map { "line\($0)" }.joined(separator: "\n") + "\n"
+            let content = Self.lines(10)
             let file = try tmp.write("a.txt", content: content)
-            let store = SnapshotStore()
-            let readOut = await Self.read("a.txt", tmp: tmp, store: store, offset: 1, limit: 3)
-            #expect(readOut.contains("[\(file)#"))
-            // Edit line 8 (never displayed).
-            let tag = HashlineFormat.computeFileHash(content)
-            let (text, err) = await Self.editWithStore(patch(file, "PUT 8.=8:\n+X\n", tag: tag), store: store)
-            #expect(err)
-            #expect(text.contains("8"))
-            #expect(text.contains("never displayed"))
+            let history = ToolHistory()
+            let readOut = await history.read(file, offset: 1, limit: 3)
+            #expect(readOut.content.contains("[\(file)#"))
+            let rej = await history.edit(file, "PUT 8.=8:\n+X\n", tag: Self.tag(content))
+            #expect(rej.isError)
+            #expect(rej.content.contains("never displayed"))
             // The insert and delete of a `PUT 8.=8:` replacement both anchor to
             // line 8; the guard reports each anchor line once.
-            #expect(!text.contains("8, 8"))
+            #expect(rej.content.contains("lines 8 of"))
+            #expect(!rej.content.contains("8, 8"))
             #expect(try tmp.read("a.txt") == content)
         }
 
@@ -921,12 +1062,22 @@ extension AllAppTests {
         func emptyFileReadThenAppend() async throws {
             let tmp = try EditTestDir()
             let file = try tmp.write("a.txt", content: "")
-            let store = SnapshotStore()
-            let readOut = await Self.read("a.txt", tmp: tmp, store: store)
-            #expect(readOut.hasSuffix("(empty file)"))
-            let tag = HashlineFormat.computeFileHash("")
-            let (text, err) = await Self.editWithStore(patch(file, "PUT >$:\n+first\n", tag: tag), store: store)
-            #expect(!err, "edit_file failed: \(text)")
+            let history = ToolHistory()
+            let readOut = await history.read(file)
+            #expect(readOut.content.hasSuffix("(empty file)"))
+            let result = await history.edit(file, "PUT >$:\n+first\n", tag: Self.tag(""))
+            #expect(!result.isError, "edit_file failed: \(result.content)")
+            #expect(try tmp.read("a.txt") == "first")
+        }
+
+        @Test("an empty file has no lines to have seen: its lone line is not an anchor")
+        func emptyFileLoneLine() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "")
+            let history = ToolHistory()
+            await history.read(file)
+            let result = await history.edit(file, "PUT 1.=1:\n+first\n", tag: Self.tag(""))
+            #expect(!result.isError, "edit_file failed: \(result.content)")
             #expect(try tmp.read("a.txt") == "first")
         }
 
@@ -934,30 +1085,41 @@ extension AllAppTests {
         func findTextRecordsPrintedLines() async throws {
             let tmp = try EditTestDir()
             let long = "needle " + String(repeating: "x", count: 500)
-            let content = "\(long)\nneedle two\nneedle three\nother\n"
-            let file = try tmp.write("a.txt", content: content)
-            let store = SnapshotStore()
-            let result = await BuiltinTools.call(
-                name: "find_text",
-                arguments: AllAppTests.argsJSON(["path": file, "regex": "needle", "max_results": 2]),
-                callID: "test", group: BuiltinTools.filesystemGroup, workdir: .none, chatFilename: "test.json",
-                snapshotStore: store)
+            let file = try tmp.write("a.txt", content: "\(long)\nneedle two\nneedle three\nother\n")
+            let history = ToolHistory()
+            let result = await history.run(
+                "find_text", BuiltinTools.filesystemGroup, ["path": file, "regex": "needle", "max_results": 2])
             #expect(!result.isError, "find_text failed: \(result.content)")
             // Line 1 was column-clipped and line 3 cut by max_results.
-            let snapshot = try #require(store.head(path: BuiltinTools.canonicalPath(file)))
-            #expect(snapshot.seenLines == [2])
+            #expect(history.views.view(for: .local(resolved: file))?.lines == LineSet([2]))
+        }
+
+        @Test("find_text hits are editable, other lines are not")
+        func findTextRecordsSeenLines() async throws {
+            let tmp = try EditTestDir()
+            let content = Self.lines(10)
+            let file = try tmp.write("a.txt", content: content)
+            let history = ToolHistory(workdir: Workdir(root: tmp.path, isolated: false))
+            let found = await history.run(
+                "find_text", BuiltinTools.filesystemGroup, ["regex": "line5", "path": tmp.path])
+            #expect(!found.isError)
+            #expect(found.content.contains("[\(file)#"))
+            let rej = await history.edit(file, "PUT 8.=8:\n+X\n", tag: Self.tag(content))
+            #expect(rej.isError)
+            #expect(rej.content.contains("never displayed"))
+            let ok = await history.edit(file, "PUT 5.=5:\n+Y\n", tag: Self.tag(content))
+            #expect(!ok.isError, "matched-line edit failed: \(ok.content)")
         }
 
         @Test("full read then editing any line succeeds")
         func fullReadEditsAnyLine() async throws {
             let tmp = try EditTestDir()
-            let content = (1...10).map { "line\($0)" }.joined(separator: "\n") + "\n"
+            let content = Self.lines(10)
             let file = try tmp.write("a.txt", content: content)
-            let store = SnapshotStore()
-            _ = await Self.read("a.txt", tmp: tmp, store: store)
-            let tag = HashlineFormat.computeFileHash(content)
-            let (text, err) = await Self.editWithStore(patch(file, "PUT 8.=8:\n+X\n", tag: tag), store: store)
-            #expect(!err, "edit_file failed: \(text)")
+            let history = ToolHistory()
+            await history.read(file)
+            let result = await history.edit(file, "PUT 8.=8:\n+X\n", tag: Self.tag(content))
+            #expect(!result.isError, "edit_file failed: \(result.content)")
             #expect(
                 try tmp.read("a.txt") == (1...7).map { "line\($0)" }.joined(separator: "\n") + "\nX\nline9\nline10\n")
         }
@@ -965,388 +1127,539 @@ extension AllAppTests {
         @Test("partial read then editing a seen line succeeds")
         func partialReadSeenLine() async throws {
             let tmp = try EditTestDir()
-            let content = (1...10).map { "line\($0)" }.joined(separator: "\n") + "\n"
+            let content = Self.lines(10)
             let file = try tmp.write("a.txt", content: content)
-            let store = SnapshotStore()
-            _ = await Self.read("a.txt", tmp: tmp, store: store, offset: 1, limit: 3)
-            let tag = HashlineFormat.computeFileHash(content)
-            let (text, err) = await Self.editWithStore(patch(file, "PUT 2.=2:\n+X\n", tag: tag), store: store)
-            #expect(!err, "edit_file failed: \(text)")
+            let history = ToolHistory()
+            await history.read(file, offset: 1, limit: 3)
+            let result = await history.edit(file, "PUT 2.=2:\n+X\n", tag: Self.tag(content))
+            #expect(!result.isError, "edit_file failed: \(result.content)")
             #expect(try tmp.read("a.txt") == "line1\nX\n" + (3...10).map { "line\($0)" }.joined(separator: "\n") + "\n")
         }
 
-        @Test("rejection is metadata-only: no content revealed, retry needs a re-read")
-        func rejectionOmitsContentRetryRejected() async throws {
+        // MARK: Strictness
+
+        @Test("a file that was never displayed is rejected without revealing content")
+        func neverDisplayedFile() async throws {
             let tmp = try EditTestDir()
-            let content = (1...10).map { "line\($0)" }.joined(separator: "\n") + "\n"
+            let content = Self.lines(10)
             let file = try tmp.write("a.txt", content: content)
-            let store = SnapshotStore()
-            _ = await Self.read("a.txt", tmp: tmp, store: store, offset: 1, limit: 3)
-            let tag = HashlineFormat.computeFileHash(content)
-            let (rej, err) = await Self.editWithStore(patch(file, "PUT 8.=8:\n+X\n", tag: tag), store: store)
-            #expect(err)
-            // The rejection must not reveal actual file content — the model has
-            // to re-read the lines itself.
-            #expect(!rej.contains("Actual file content"))
-            #expect(!rej.contains("8:line8"))
-            #expect(try tmp.read("a.txt") == content)
-            // Nothing was merged into seenLines, so retrying without a re-read
-            // is rejected again.
-            let (_, retryErr) = await Self.editWithStore(patch(file, "PUT 8.=8:\n+X\n", tag: tag), store: store)
-            #expect(retryErr)
+            let history = ToolHistory()
+            // A valid tag, but no read ever produced it.
+            let input = patch(file, "PUT 8.=8:\n+X\n", tag: Self.tag(content))
+            let rej = await history.edit(input)
+            #expect(rej.isError)
+            #expect(rej.content.contains("never displayed"))
+            #expect(!rej.content.contains("line8"))
+            #expect(rej.fileViews == nil)
+            // Retrying without a read is rejected again, still without content.
+            let retry = await history.edit(input)
+            #expect(retry.isError)
+            #expect(!retry.content.contains("line8"))
             #expect(try tmp.read("a.txt") == content)
         }
 
-        @Test("large unseen range is reported compactly, retry still rejected")
-        func largeUnseenRangeCompacted() async throws {
+        @Test("a view of another version of the file is rejected without revealing content")
+        func otherVersionOfTheFile() async throws {
             let tmp = try EditTestDir()
-            // 60 lines; read lines 1-3. Edit 50 unseen lines (4-53) — the
-            // message collapses the list into a range instead of 50 numbers.
-            let content = (1...60).map { "line\($0)" }.joined(separator: "\n") + "\n"
+            let content = Self.lines(10)
             let file = try tmp.write("a.txt", content: content)
-            let store = SnapshotStore()
-            _ = await Self.read("a.txt", tmp: tmp, store: store, offset: 1, limit: 3)
-            let tag = HashlineFormat.computeFileHash(content)
-            let (rej, err) = await Self.editWithStore(patch(file, "PUT 4.=53:\n+X\n", tag: tag), store: store)
+            var views = FileViewState()
+            views.apply(.seen(.local(resolved: file), contentID: "0000000000000000", lines: LineSet(range: 1...10)))
+            let (text, err) = await AllAppTests.editCall(
+                patch(file, "PUT 8.=8:\n+X\n", tag: Self.tag(content)), views: views)
             #expect(err)
-            #expect(rej.contains("4-53"))
-            #expect(rej.contains("never displayed"))
-            // Retry is still rejected — nothing was revealed or merged.
-            let (_, retryErr) = await Self.editWithStore(patch(file, "PUT 4.=53:\n+X\n", tag: tag), store: store)
-            #expect(retryErr)
+            #expect(text.contains("never displayed"))
+            #expect(!text.contains("line8"))
             #expect(try tmp.read("a.txt") == content)
         }
 
-        @Test("no snapshot means the guard is skipped")
-        func noSnapshotSkipsGuard() async throws {
+        @Test("a view left by a read on an abandoned branch does not count")
+        func abandonedBranch() async throws {
             let tmp = try EditTestDir()
-            let content = (1...10).map { "line\($0)" }.joined(separator: "\n") + "\n"
+            let content = Self.lines(10)
             let file = try tmp.write("a.txt", content: content)
-            let tag = HashlineFormat.computeFileHash(content)
-            // No store passed → no seen-lines check, edit applies as before.
-            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 8.=8:\n+X\n", tag: tag))
+            let history = ToolHistory()
+            let read = await history.read(file)
+            let input = patch(file, "PUT 8.=8:\n+X\n", tag: Self.tag(content))
+
+            let user = Fixtures.message(role: .user, content: "q")
+            let call = Fixtures.message(
+                role: .assistant, content: "",
+                toolCalls: [ToolCall(id: read.callID, name: "read_file", arguments: "{}")])
+            let result = Fixtures.message(role: .tool, content: "", toolResults: [read])
+            var chat = Fixtures.chat(messages: [user, call, result])
+            let forked = chat.forkRegenerating(call.id, adding: Fixtures.message(role: .assistant, content: "again"))
+            #expect(forked)
+
+            let (text, err) = await AllAppTests.editCall(input, views: FileViewState.fold(chat.activeMessages))
+            #expect(err)
+            #expect(text.contains("never displayed"))
+            #expect(try tmp.read("a.txt") == content)
+
+            let switched = chat.switchActiveBranch(parentID: user.id, to: call.id)
+            #expect(switched)
+            let (okText, okErr) = await AllAppTests.editCall(input, views: FileViewState.fold(chat.activeMessages))
+            #expect(!okErr, "edit_file failed: \(okText)")
+        }
+
+        @Test("views survive a save and reload of the chat")
+        func viewsSurviveReload() async throws {
+            let tmp = try EditTestDir()
+            let content = Self.lines(10)
+            let file = try tmp.write("a.txt", content: content)
+            let history = ToolHistory()
+            await history.read(file, offset: 1, limit: 3)
+            let reloaded = try history.results.map { result -> ToolResult in
+                try JSONDecoder().decode(ToolResult.self, from: JSONEncoder().encode(result))
+            }
+            let views = FileViewState.fold(
+                reloaded.map { Fixtures.message(role: .tool, content: "", toolResults: [$0]) })
+            let input = patch(file, "PUT 2.=2:\n+X\n", tag: Self.tag(content))
+            let (text, err) = await AllAppTests.editCall(input, views: views)
             #expect(!err, "edit_file failed: \(text)")
-            #expect(
-                try tmp.read("a.txt") == (1...7).map { "line\($0)" }.joined(separator: "\n") + "\nX\nline9\nline10\n")
         }
 
-        @Test("MV relocates the snapshot so the destination is editable")
-        func mvRelocatesSnapshot() async throws {
+        // MARK: Reveal on reject
+
+        @Test("up to 20 unseen lines are revealed and count as seen: the same edit goes through")
+        func revealThenRetry() async throws {
             let tmp = try EditTestDir()
-            let content = (1...10).map { "line\($0)" }.joined(separator: "\n") + "\n"
+            let content = Self.lines(10)
             let file = try tmp.write("a.txt", content: content)
-            let store = SnapshotStore()
-            _ = await Self.read("a.txt", tmp: tmp, store: store)
-            let tag = HashlineFormat.computeFileHash(content)
-            let dest = tmp.sub("renamed.txt")
-            let mvInput = """
-                *** Begin Patch
-                [\(file)#\(tag)]
-                MV \(dest)
-                *** End Patch
-                """
-            let (mvText, mvErr) = await Self.editWithStore(mvInput, store: store)
-            #expect(!mvErr, "MV failed: \(mvText)")
-            // Editing the destination with the new tag succeeds (history was
-            // relocated; the whole file is seen).
-            let newContent = try tmp.read("renamed.txt")
-            let newTag = HashlineFormat.computeFileHash(newContent)
-            let (text, err) = await Self.editWithStore(patch(dest, "PUT 5.=5:\n+Y\n", tag: newTag), store: store)
-            #expect(!err, "edit after MV failed: \(text)")
-            #expect(try tmp.read("renamed.txt").contains("\nY\n"))
-        }
+            let history = ToolHistory()
+            await history.read(file, offset: 1, limit: 3)
+            let input = patch(file, "PUT 8.=8:\n+X\n", tag: Self.tag(content))
 
-        @Test("REM invalidates the snapshot")
-        func remInvalidates() async throws {
-            let tmp = try EditTestDir()
-            let content = "a\nb\nc\n"
-            let file = try tmp.write("a.txt", content: content)
-            let store = SnapshotStore()
-            _ = await Self.read("a.txt", tmp: tmp, store: store)
-            let tag = HashlineFormat.computeFileHash(content)
-            let (remText, remErr) = await Self.editWithStore(patch(file, "REM\n", tag: tag), store: store)
-            #expect(!remErr, "REM failed: \(remText)")
-            #expect(!tmp.exists("a.txt"))
-            #expect(store.head(path: BuiltinTools.canonicalPath(file)) == nil)
-        }
+            let rej = await history.edit(input)
+            #expect(rej.isError)
+            #expect(rej.content.contains("8:line8"))
+            #expect(rej.content.contains("marked as seen"))
+            #expect(rej.fileViews?.count == 1)
+            #expect(rej.fileViews?.first?.kind == .seen)
+            #expect(try tmp.read("a.txt") == content)
 
-        @Test("find_text records seen lines: matched editable, unmatched rejected")
-        func findTextRecordsSeenLines() async throws {
-            let tmp = try EditTestDir()
-            let content = (1...10).map { "line\($0)" }.joined(separator: "\n") + "\n"
-            let file = try tmp.write("a.txt", content: content)
-            let store = SnapshotStore()
-            let args = AllAppTests.argsJSON(["regex": "line5", "path": tmp.path])
-            let result = await BuiltinTools.call(
-                name: "find_text", arguments: args, callID: "test", group: BuiltinTools.filesystemGroup,
-                workdir: Workdir(root: tmp.path, isolated: false), chatFilename: "test.json", snapshotStore: store)
-            #expect(!result.isError)
-            #expect(result.content.contains("[\(file)#"))
-            let tag = HashlineFormat.computeFileHash(content)
-            // Editing a non-matched line is rejected (never displayed).
-            let (rej, rejErr) = await Self.editWithStore(
-                patch(file, "PUT 8.=8:\n+X\n", tag: tag), workdir: Workdir(root: tmp.path, isolated: false),
-                store: store)
-            #expect(rejErr)
-            #expect(rej.contains("8"))
-            #expect(rej.contains("never displayed"))
-            // Editing a matched line succeeds.
-            let (okText, okErr) = await Self.editWithStore(
-                patch(file, "PUT 5.=5:\n+Y\n", tag: tag), workdir: Workdir(root: tmp.path, isolated: false),
-                store: store)
-            #expect(!okErr, "matched-line edit failed: \(okText)")
-        }
-
-        @Test("rebuild from history restores the seen-lines guard")
-        func rebuildFromHistory() async throws {
-            let tmp = try EditTestDir()
-            let content = (1...10).map { "line\($0)" }.joined(separator: "\n") + "\n"
-            let file = try tmp.write("a.txt", content: content)
-            // Build a chat history: assistant issued a read_file, then a
-            // tool-role message carries its result.
-            let tag = HashlineFormat.computeFileHash(content)
-            let readOutput = """
-                [\(file)#\(tag)]
-                1:line1
-                2:line2
-                3:line3
-                """
-            let calls = [ToolCall(id: "call_1", name: "read_file", arguments: "{}")]
-            let results = [ToolResult(callID: "call_1", content: readOutput, isError: false)]
-            let messages: [ChatMessage] = [
-                ChatMessage(role: .assistant, content: "", toolCalls: calls),
-                ChatMessage(role: .tool, content: "", toolResults: results),
-            ]
-            let store = BuiltinTools.rebuildSnapshots(
-                from: messages, workdir: Workdir(root: tmp.path, isolated: false))
-            // Editing line 2 (seen) succeeds; line 8 (unseen) is rejected.
-            let (okText, okErr) = await Self.editWithStore(
-                patch(file, "PUT 2.=2:\n+X\n", tag: tag), workdir: Workdir(root: tmp.path, isolated: false),
-                store: store)
-            #expect(!okErr, "seen-line edit failed: \(okText)")
-            // Rewrite the file back for the second edit.
-            _ = try tmp.write("a.txt", content: content)
-            let (rej, rejErr) = await Self.editWithStore(
-                patch(file, "PUT 8.=8:\n+X\n", tag: tag), workdir: Workdir(root: tmp.path, isolated: false),
-                store: store)
-            #expect(rejErr)
-            #expect(rej.contains("8"))
-            #expect(rej.contains("never displayed"))
-        }
-
-        @Test("a successful edit must not mark never-displayed lines as seen (live path)")
-        func liveEditDoesNotRevealUnseenLines() async throws {
-            let tmp = try EditTestDir()
-            // 60 lines; the model read only lines 1-5.
-            let content = (1...60).map { "line\($0)" }.joined(separator: "\n") + "\n"
-            let file = try tmp.write("a.txt", content: content)
-            let store = SnapshotStore()
-            _ = await Self.read("a.txt", tmp: tmp, store: store, offset: 1, limit: 5)
-            let tag = HashlineFormat.computeFileHash(content)
-
-            // Editing a seen line succeeds.
-            let (okText, okErr) = await Self.editWithStore(patch(file, "PUT 5.=5:\n+X\n", tag: tag), store: store)
-            #expect(!okErr, "seen-line edit failed: \(okText)")
-            let newContent = try tmp.read("a.txt")
-            let newTag = HashlineFormat.computeFileHash(newContent)
-
-            // Line 30 was never displayed; the successful edit must not have
-            // revealed it (the model only saw line 5 and the edit's diff
-            // preview around it). Retrying it without a re-read is rejected.
-            let (rej, rejErr) = await Self.editWithStore(patch(file, "PUT 30.=30:\n+Y\n", tag: newTag), store: store)
-            #expect(rejErr, "editing line 30 after a successful edit to line 5 must still be rejected: \(rej)")
-            #expect(rej.contains("30"))
-            #expect(rej.contains("never displayed"))
-            // The file is untouched by the rejected edit.
-            #expect(try tmp.read("a.txt") == newContent)
-        }
-
-        @Test("rebuild from history keeps never-displayed lines unseen after a successful edit")
-        func rebuildKeepsUnseenLinesAfterEdit() async throws {
-            let tmp = try EditTestDir()
-            let content = (1...60).map { "line\($0)" }.joined(separator: "\n") + "\n"
-            let file = try tmp.write("a.txt", content: content)
-            // History: a partial read (lines 1-5), then a successful edit of
-            // line 5 whose result carries the diff preview (post-edit rows
-            // around the change — but never line 30).
-            let tag = HashlineFormat.computeFileHash(content)
-            let newContent =
-                (1...4).map { "line\($0)" }.joined(separator: "\n") + "\nX\n"
-                + (6...60).map { "line\($0)" }.joined(
-                    separator: "\n") + "\n"
-            let newTag = HashlineFormat.computeFileHash(newContent)
-            // The on-disk file must match the post-edit state the history
-            // records (line 5 replaced by "X").
-            _ = try tmp.write("a.txt", content: newContent)
-            let readOutput =
-                """
-                [\(file)#\(tag)]
-                1:line1
-                2:line2
-                3:line3
-                4:line4
-                5:line5
-                """
-            // The edit result mirrors what the live tool returns: the
-            // `Updated:` line (with the absolute file path) plus the compact
-            // diff preview around the change.
-            let editOutput =
-                """
-                Updated: \(file) [\(file)#\(newTag)]
-                 5:X
-                -5:line5
-                +5:X
-                 6:line6
-                """
-            let readCalls = [ToolCall(id: "call_1", name: "read_file", arguments: "{}")]
-            let readResults = [ToolResult(callID: "call_1", content: readOutput, isError: false)]
-            let editCalls = [ToolCall(id: "call_2", name: "edit_file", arguments: "{}")]
-            let editResults = [ToolResult(callID: "call_2", content: editOutput, isError: false)]
-            let messages: [ChatMessage] = [
-                ChatMessage(role: .assistant, content: "", toolCalls: readCalls),
-                ChatMessage(role: .tool, content: "", toolResults: readResults),
-                ChatMessage(role: .assistant, content: "", toolCalls: editCalls),
-                ChatMessage(role: .tool, content: "", toolResults: editResults),
-            ]
-            let store = BuiltinTools.rebuildSnapshots(
-                from: messages, workdir: Workdir(root: tmp.path, isolated: false))
-            // Line 5 (seen, both before and after the edit) is editable.
-            let (okText, okErr) = await Self.editWithStore(
-                patch(file, "PUT 5.=5:\n+Z\n", tag: newTag), workdir: Workdir(root: tmp.path, isolated: false),
-                store: store)
-            #expect(!okErr, "post-edit seen-line edit failed: \(okText)")
-            // The first edit changed the file, so the tag advanced again; use
-            // the post-edit content's tag for the second edit.
-            let afterEditContent = try tmp.read("a.txt")
-            let afterEditTag = HashlineFormat.computeFileHash(afterEditContent)
-            // Line 30 was never displayed — the replayed edit must not have
-            // marked it seen.
-            let (rej, rejErr) = await Self.editWithStore(
-                patch(file, "PUT 30.=30:\n+Y\n", tag: afterEditTag), workdir: Workdir(root: tmp.path, isolated: false),
-                store: store)
-            #expect(rejErr, "line 30 must stay unseen after a replayed edit: \(rej)")
-            #expect(rej.contains("30"))
-            #expect(rej.contains("never displayed"))
-        }
-
-        @Test("edit records only previously-seen and preview lines: unseen lines stay unseen")
-        func editRecordsOnlySeenAndPreviewLines() async throws {
-            let tmp = try EditTestDir()
-            // 20 lines; read only lines 1-2.
-            let content = (1...20).map { "line\($0)" }.joined(separator: "\n") + "\n"
-            let file = try tmp.write("a.txt", content: content)
-            let store = SnapshotStore()
-            _ = await Self.read("a.txt", tmp: tmp, store: store, offset: 1, limit: 2)
-            let tag = HashlineFormat.computeFileHash(content)
-            // Edit line 2 (seen). The store must carry forward the previously
-            // seen lines (1-2) plus the edit's diff preview rows.
-            let (e1, e1err) = await Self.editWithStore(patch(file, "PUT 2.=2:\n+X\n", tag: tag), store: store)
-            #expect(!e1err, "first edit failed: \(e1)")
-            let newContent = try tmp.read("a.txt")
-            let newTag = HashlineFormat.computeFileHash(newContent)
-            // Line 8 was never displayed (not in the partial read, and not in
-            // the diff preview around line 2) — it must stay rejected.
-            let (rej, rejErr) = await Self.editWithStore(patch(file, "PUT 8.=8:\n+Y\n", tag: newTag), store: store)
-            #expect(rejErr, "line 8 must stay unseen after editing line 2: \(rej)")
-            #expect(rej.contains("8"))
-            #expect(rej.contains("never displayed"))
-            // But line 2 (previously seen) is still editable with the new tag.
-            let (e2, e2err) = await Self.editWithStore(patch(file, "PUT 2.=2:\n+Z\n", tag: newTag), store: store)
-            #expect(!e2err, "second edit of a seen line failed: \(e2)")
-        }
-
-        @Test("write_file returns the #TAG and records all lines as seen")
-        func writeFileReturnsTagAndRecordsAllLinesSeen() async throws {
-            let tmp = try EditTestDir()
-            let file = tmp.sub("a.txt")
-            let content = (1...10).map { "line\($0)" }.joined(separator: "\n") + "\n"
-            let store = SnapshotStore()
-            // write_file writes the whole file — no partial-read gap — and the
-            // result carries the freshly minted #TAG.
-            let (w, wErr) = await Self.writeWithStore(file, content, store: store)
-            #expect(!wErr, "write_file failed: \(w)")
-            let expectedTag = HashlineFormat.computeFileHash(content)
-            let header = HashlineFormat.formatHashlineHeader(path: file, fileHash: expectedTag)
-            #expect(w.contains(header), "write_file must return the #TAG: \(w)")
-            // The tag from the write_file result edits immediately — no re-read.
-            let (text, err) = await Self.editWithStore(patch(file, "PUT 8.=8:\n+X\n", tag: expectedTag), store: store)
-            #expect(!err, "edit after write_file failed: \(text)")
+            let retry = await history.edit(input)
+            #expect(!retry.isError, "the retry must pass: \(retry.content)")
             #expect(try tmp.read("a.txt").contains("\nX\n"))
         }
 
-        @Test("write_file replay from history records all lines as seen")
-        func writeFileReplayFromHistory() async throws {
+        @Test("more than 20 unseen lines: a partial reveal, nothing recorded, the retry is still rejected")
+        func largeUnseenRange() async throws {
             let tmp = try EditTestDir()
-            let file = tmp.sub("a.txt")
-            let content = (1...10).map { "line\($0)" }.joined(separator: "\n") + "\n"
-            // The file must exist on disk for edit_file to apply; the write is
-            // replayed from the call arguments (all lines seen).
-            _ = try tmp.write("a.txt", content: content)
-            // Build a chat history: assistant issued a write_file with the
-            // full content, then a tool-role message carries the result.
-            let args = AllAppTests.argsJSON(["path": file, "content": content])
-            let calls = [ToolCall(id: "call_1", name: "write_file", arguments: args)]
-            let results = [ToolResult(callID: "call_1", content: "Wrote 0 bytes to a.txt", isError: false)]
-            let messages: [ChatMessage] = [
-                ChatMessage(role: .assistant, content: "", toolCalls: calls),
-                ChatMessage(role: .tool, content: "", toolResults: results),
-            ]
-            let store = BuiltinTools.rebuildSnapshots(
-                from: messages, workdir: Workdir(root: tmp.path, isolated: false))
-            let tag = HashlineFormat.computeFileHash(content)
-            let (text, err) = await Self.editWithStore(
-                patch(file, "PUT 8.=8:\n+X\n", tag: tag), workdir: Workdir(root: tmp.path, isolated: false),
-                store: store)
-            #expect(!err, "edit after replayed write_file failed: \(text)")
-        }
-
-        @Test("strict reject: editing an untracked tag is rejected")
-        func strictRejectUntrackedTag() async throws {
-            let tmp = try EditTestDir()
-            let content = (1...10).map { "line\($0)" }.joined(separator: "\n") + "\n"
+            let content = Self.lines(60)
             let file = try tmp.write("a.txt", content: content)
-            let store = SnapshotStore()
-            // A valid tag, but no read ever minted it — the guard must reject
-            // instead of silently skipping.
-            let tag = HashlineFormat.computeFileHash(content)
-            let (rej, err) = await Self.editWithStore(patch(file, "PUT 8.=8:\n+X\n", tag: tag), store: store)
-            #expect(err)
-            #expect(rej.contains("never displayed"))
+            let history = ToolHistory()
+            await history.read(file, offset: 1, limit: 3)
+            // 50 unseen lines (4-53): the message collapses the list into a range.
+            let input = patch(file, "PUT 4.=53:\n+X\n", tag: Self.tag(content))
+
+            let rej = await history.edit(input)
+            #expect(rej.isError)
+            #expect(rej.content.contains("4-53 (50 lines)"))
+            #expect(rej.content.contains("never displayed"))
+            // Only the first 20 are shown.
+            #expect(rej.content.contains("4:line4"))
+            #expect(rej.content.contains("23:line23"))
+            #expect(!rej.content.contains("24:line24"))
+            #expect(rej.content.contains("NOT marked as seen"))
+            #expect(rej.fileViews == nil)
+
+            let retry = await history.edit(input)
+            #expect(retry.isError)
+            #expect(retry.fileViews == nil)
             #expect(try tmp.read("a.txt") == content)
         }
 
-        @Test("relocate replaces the destination's stale history")
-        func relocateReplacesDestinationHistory() async throws {
+        @Test("a line cut at 300 characters is not a complete reveal")
+        func clippedReveal() async throws {
             let tmp = try EditTestDir()
-            let store = SnapshotStore()
-            // Destination already has a stale snapshot (e.g. from an earlier
-            // read of a different file that was then removed).
-            let dest = tmp.sub("dest.txt")
-            let staleContent = "stale\n"
-            let staleTag = HashlineFormat.computeFileHash(staleContent)
-            store.record(path: BuiltinTools.canonicalPath(dest), text: staleContent, seenLines: Set(1...1))
-            // Source: read, then MV onto the destination.
-            let srcContent = (1...5).map { "line\($0)" }.joined(separator: "\n") + "\n"
-            let file = try tmp.write("src.txt", content: srcContent)
-            _ = await Self.read("src.txt", tmp: tmp, store: store)
-            let srcTag = HashlineFormat.computeFileHash(srcContent)
-            let mvInput = """
+            let long = String(repeating: "x", count: 400)
+            let content = "a\nb\n\(long)\nd\n"
+            let file = try tmp.write("a.txt", content: content)
+            let history = ToolHistory()
+            await history.read(file, offset: 1, limit: 2)
+            let input = patch(file, "PUT 3.=3:\n+X\n", tag: Self.tag(content))
+
+            let rej = await history.edit(input)
+            #expect(rej.isError)
+            #expect(rej.content.contains(String(repeating: "x", count: 300) + "…"))
+            #expect(!rej.content.contains(String(repeating: "x", count: 301)))
+            #expect(rej.content.contains("NOT marked as seen"))
+            #expect(rej.fileViews == nil)
+
+            let retry = await history.edit(input)
+            #expect(retry.isError)
+            #expect(try tmp.read("a.txt") == content)
+        }
+
+        @Test("an anchor beyond the file is a bounds error, not a guard rejection")
+        func outOfRangeAnchor() async throws {
+            let tmp = try EditTestDir()
+            let content = Self.lines(10)
+            let file = try tmp.write("a.txt", content: content)
+            let history = ToolHistory()
+            await history.read(file, offset: 1, limit: 3)
+            let result = await history.edit(file, "PUT 999.=999:\n+X\n", tag: Self.tag(content))
+            #expect(result.isError)
+            #expect(result.content.contains("out of bounds"))
+            #expect(!result.content.contains("never displayed"))
+            #expect(result.fileViews == nil)
+        }
+
+        @Test("a multi-file patch gets every reveal in one error, and one retry lands both")
+        func multiFileReveal() async throws {
+            let tmp = try EditTestDir()
+            let content = Self.lines(10)
+            let fileA = try tmp.write("a.txt", content: content)
+            let fileB = try tmp.write("b.txt", content: content)
+            let history = ToolHistory()
+            await history.read(fileA, offset: 1, limit: 2)
+            await history.read(fileB, offset: 1, limit: 2)
+            let input = """
                 *** Begin Patch
-                [\(file)#\(srcTag)]
+                [\(fileA)#\(Self.tag(content))]
+                PUT 5.=5:
+                +A
+                [\(fileB)#\(Self.tag(content))]
+                PUT 7.=7:
+                +B
+                *** End Patch
+                """
+
+            let rej = await history.edit(input)
+            #expect(rej.isError)
+            #expect(rej.content.contains("5:line5"))
+            #expect(rej.content.contains("7:line7"))
+            #expect(rej.fileViews?.count == 2)
+            #expect(try tmp.read("a.txt") == content)
+            #expect(try tmp.read("b.txt") == content)
+
+            let retry = await history.edit(input)
+            #expect(!retry.isError, "the retry must pass: \(retry.content)")
+            #expect(try tmp.read("a.txt").contains("\nA\n"))
+            #expect(try tmp.read("b.txt").contains("\nB\n"))
+        }
+
+        // MARK: What an edit teaches the guard
+
+        @Test("lines seen before an edit stay seen at their new numbers")
+        func carryOver() async throws {
+            let tmp = try EditTestDir()
+            let content = Self.lines(100)
+            let file = try tmp.write("a.txt", content: content)
+            let history = ToolHistory()
+            await history.read(file)
+            // One line becomes four: old line 80 is line 83 afterwards.
+            let first = await history.edit(file, "PUT 5.=5:\n+a\n+b\n+c\n+d\n", tag: Self.tag(content))
+            #expect(!first.isError, "first edit failed: \(first.content)")
+            let edited = try tmp.read("a.txt")
+            let second = await history.edit(file, "PUT 83.=83:\n+X\n", tag: Self.tag(edited))
+            #expect(!second.isError, "second edit failed: \(second.content)")
+            #expect(try tmp.read("a.txt").contains("\nX\nline81\n"))
+        }
+
+        @Test("a partial read stays partial after an edit")
+        func partialStaysPartial() async throws {
+            let tmp = try EditTestDir()
+            let content = Self.lines(60)
+            let file = try tmp.write("a.txt", content: content)
+            let history = ToolHistory()
+            await history.read(file, offset: 1, limit: 5)
+            let first = await history.edit(file, "PUT 5.=5:\n+X\n", tag: Self.tag(content))
+            #expect(!first.isError, "seen-line edit failed: \(first.content)")
+            let edited = try tmp.read("a.txt")
+
+            // Line 30 was never displayed; neither the read nor the edit's
+            // preview showed it.
+            let rej = await history.edit(file, "PUT 30.=30:\n+Y\n", tag: Self.tag(edited))
+            #expect(rej.isError, "editing line 30 must be rejected: \(rej.content)")
+            #expect(rej.content.contains("never displayed"))
+            #expect(try tmp.read("a.txt") == edited)
+        }
+
+        @Test("removed lines do not leak their old numbers into the post-edit view")
+        func removedLinesDoNotLeak() async throws {
+            let tmp = try EditTestDir()
+            let content = Self.lines(200)
+            let file = try tmp.write("a.txt", content: content)
+            let history = ToolHistory()
+            await history.read(file, offset: 1, limit: 60)
+            let cut = await history.edit(file, "CUT 50.=60\n", tag: Self.tag(content))
+            #expect(!cut.isError, "cut failed: \(cut.content)")
+            let edited = try tmp.read("a.txt")
+            let newTag = Self.tag(edited)
+
+            // The preview showed post-edit lines 48-51 (old 48, 49, 61, 62), so
+            // post-edit 52-60 (old 63-71) were never displayed even though the
+            // removed rows carried the numbers 50-60.
+            let rej = await history.edit(file, "PUT 55.=55:\n+X\n", tag: newTag)
+            #expect(rej.isError)
+            #expect(rej.content.contains("never displayed"))
+            let ok = await history.edit(file, "PUT 51.=51:\n+X\n", tag: newTag)
+            #expect(!ok.isError, "a line of the preview must be editable: \(ok.content)")
+        }
+
+        @Test("an edit records a set event: carried-over lines, authored lines, preview rows")
+        func editRecordsSetEvent() async throws {
+            let tmp = try EditTestDir()
+            let content = Self.lines(10)
+            let file = try tmp.write("a.txt", content: content)
+            let history = ToolHistory()
+            await history.read(file, offset: 1, limit: 3)
+            let result = await history.edit(file, "PUT 2.=2:\n+X\n+Y\n", tag: Self.tag(content))
+            #expect(!result.isError, "edit failed: \(result.content)")
+
+            let events = try #require(result.fileViews)
+            #expect(events.count == 1)
+            let event = try #require(events.first)
+            #expect(event.kind == .set)
+            #expect(event.key == .local(resolved: file))
+            #expect(event.contentID == HashlineFormat.computeContentID(try tmp.read("a.txt")))
+            // Seen 1-3 → 1, (2 replaced), 3→4; authored 2-3; preview rows 1-5.
+            #expect(event.lines == LineSet(range: 1...5))
+        }
+
+        @Test("MV: the destination is editable with the new tag, the source view is gone")
+        func mvMovesTheView() async throws {
+            let tmp = try EditTestDir()
+            let content = Self.lines(10)
+            let file = try tmp.write("a.txt", content: content)
+            let dest = tmp.sub("renamed.txt")
+            let history = ToolHistory()
+            await history.read(file)
+            let mv = await history.edit("*** Begin Patch\n[\(file)#\(Self.tag(content))]\nMV \(dest)\n*** End Patch")
+            #expect(!mv.isError, "MV failed: \(mv.content)")
+            #expect(history.views.view(for: .local(resolved: file)) == nil)
+            #expect(history.views.view(for: .local(resolved: dest)) != nil)
+
+            let newTag = Self.tag(try tmp.read("renamed.txt"))
+            let result = await history.edit(dest, "PUT 5.=5:\n+Y\n", tag: newTag)
+            #expect(!result.isError, "edit after MV failed: \(result.content)")
+            #expect(try tmp.read("renamed.txt").contains("\nY\n"))
+        }
+
+        @Test("MV replaces whatever the model knew about the destination path")
+        func mvReplacesDestinationView() async throws {
+            let tmp = try EditTestDir()
+            let content = Self.lines(5)
+            let file = try tmp.write("src.txt", content: content)
+            let dest = tmp.sub("dest.txt")
+            let history = ToolHistory()
+            // The model once saw another file at the destination, since removed.
+            history.inject([.seen(.local(resolved: dest), contentID: "STALE", lines: LineSet(range: 1...9))])
+            await history.read(file)
+            let mv = await history.edit("*** Begin Patch\n[\(file)#\(Self.tag(content))]\nMV \(dest)\n*** End Patch")
+            #expect(!mv.isError, "MV failed: \(mv.content)")
+            let view = try #require(history.views.view(for: .local(resolved: dest)))
+            #expect(view.contentID == HashlineFormat.computeContentID(content))
+            #expect(view.lines == LineSet(range: 1...5))
+        }
+
+        @Test("REM drops the view")
+        func remDropsTheView() async throws {
+            let tmp = try EditTestDir()
+            let content = "a\nb\nc\n"
+            let file = try tmp.write("a.txt", content: content)
+            let history = ToolHistory()
+            await history.read(file)
+            let rem = await history.edit(file, "REM\n", tag: Self.tag(content))
+            #expect(!rem.isError, "REM failed: \(rem.content)")
+            #expect(!tmp.exists("a.txt"))
+            #expect(history.views.view(for: .local(resolved: file)) == nil)
+        }
+
+        @Test("write_file's tag edits any line without a read")
+        func writeThenEdit() async throws {
+            let tmp = try EditTestDir()
+            let file = tmp.sub("a.txt")
+            let content = Self.lines(10)
+            let history = ToolHistory()
+            let written = await history.write(file, content)
+            #expect(!written.isError, "write_file failed: \(written.content)")
+            let header = HashlineFormat.formatHashlineHeader(path: file, fileHash: Self.tag(content))
+            #expect(written.content.contains(header), "write_file must return the #TAG: \(written.content)")
+            let result = await history.edit(file, "PUT 8.=8:\n+X\n", tag: Self.tag(content))
+            #expect(!result.isError, "edit after write_file failed: \(result.content)")
+            #expect(try tmp.read("a.txt").contains("\nX\n"))
+        }
+
+        @Test("a write with pasted line prefixes: the tag and view describe what was written")
+        func writeWithStrippedPrefixes() async throws {
+            let tmp = try EditTestDir()
+            let file = tmp.sub("a.txt")
+            let history = ToolHistory()
+            let written = await history.write(file, "[\(file)#ABCD]\n1:x\n2:y")
+            #expect(!written.isError, "write_file failed: \(written.content)")
+            #expect(try tmp.read("a.txt") == "x\ny")
+            let result = await history.edit(file, "PUT 1.=1:\n+X\n", tag: Self.tag("x\ny"))
+            #expect(!result.isError, "edit after write_file failed: \(result.content)")
+            #expect(try tmp.read("a.txt") == "X\ny")
+        }
+    }
+
+    // MARK: - edit_file: pipeline
+
+    @Suite("edit_file: pipeline")
+    struct EditFilePipelineTests {
+        @Test("a stale tag in a later section leaves every file untouched")
+        func staleTagLeavesEverythingUntouched() async throws {
+            let tmp = try EditTestDir()
+            let fileA = try tmp.write("a.txt", content: "a\nb\n")
+            let fileB = try tmp.write("b.txt", content: "x\ny\n")
+            let input = """
+                *** Begin Patch
+                [\(fileA)#\(HashlineFormat.computeFileHash("a\nb\n"))]
+                PUT 1.=1:
+                +A
+                [\(fileB)#0000]
+                PUT 1.=1:
+                +X
+                *** End Patch
+                """
+            let (text, err) = await AllAppTests.editCall(input)
+            #expect(err)
+            #expect(text.contains("has changed since you last read it"))
+            #expect(try tmp.read("a.txt") == "a\nb\n")
+            #expect(try tmp.read("b.txt") == "x\ny\n")
+        }
+
+        @Test("a noop section fails the whole patch")
+        func noopSectionFailsThePatch() async throws {
+            let tmp = try EditTestDir()
+            let fileA = try tmp.write("a.txt", content: "a\nb\n")
+            let fileB = try tmp.write("b.txt", content: "x\ny\n")
+            let input = """
+                *** Begin Patch
+                [\(fileA)#\(HashlineFormat.computeFileHash("a\nb\n"))]
+                PUT 1.=1:
+                +A
+                [\(fileB)#\(HashlineFormat.computeFileHash("x\ny\n"))]
+                PUT 1.=1:
+                +x
+                *** End Patch
+                """
+            let (text, err) = await AllAppTests.editCall(input)
+            #expect(err)
+            #expect(text.contains("Edits to \(fileB) resulted in no changes."))
+            #expect(try tmp.read("a.txt") == "a\nb\n")
+        }
+
+        @Test("two spellings of one file are rejected, not applied one after the other")
+        func twoSpellingsOfOneFile() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "a\nb\nc\n")
+            let tag = HashlineFormat.computeFileHash("a\nb\nc\n")
+            let input = """
+                *** Begin Patch
+                [\(file)#\(tag)]
+                PUT 1.=1:
+                +A
+                [\(tmp.path)/./a.txt#\(tag)]
+                PUT 3.=3:
+                +C
+                *** End Patch
+                """
+            let (text, err) = await AllAppTests.editCall(input)
+            #expect(err)
+            #expect(text.contains("resolve to the same file"))
+            #expect(try tmp.read("a.txt") == "a\nb\nc\n")
+        }
+
+        @Test("a symlink and its target are one file")
+        func symlinkAndTarget() async throws {
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: "a\nb\nc\n")
+            let link = tmp.sub("link.txt")
+            try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: file)
+            let tag = HashlineFormat.computeFileHash("a\nb\nc\n")
+            let input = """
+                *** Begin Patch
+                [\(file)#\(tag)]
+                PUT 1.=1:
+                +A
+                [\(link)#\(tag)]
+                PUT 3.=3:
+                +C
+                *** End Patch
+                """
+            let (text, err) = await AllAppTests.editCall(input)
+            #expect(err)
+            #expect(text.contains("resolve to the same file"))
+            #expect(try tmp.read("a.txt") == "a\nb\nc\n")
+        }
+
+        @Test("two sections cannot move to the same destination")
+        func sameDestinationTwice() async throws {
+            let tmp = try EditTestDir()
+            let fileA = try tmp.write("a.txt", content: "a\n")
+            let fileB = try tmp.write("b.txt", content: "b\n")
+            let dest = tmp.sub("dest.txt")
+            let input = """
+                *** Begin Patch
+                [\(fileA)#\(HashlineFormat.computeFileHash("a\n"))]
+                MV \(dest)
+                [\(fileB)#\(HashlineFormat.computeFileHash("b\n"))]
                 MV \(dest)
                 *** End Patch
                 """
-            let (mvText, mvErr) = await Self.editWithStore(mvInput, store: store)
-            #expect(!mvErr, "MV failed: \(mvText)")
-            // The stale destination history must be gone — only the relocated
-            // (fully-seen) source history remains.
-            let canonicalDest = BuiltinTools.canonicalPath(dest)
-            // The stale destination snapshot must be gone (relocate replaces).
-            #expect(store.byHash(path: canonicalDest, hash: staleTag) == nil)
-            // The destination's head is the moved source content, all seen.
-            let head = store.head(path: canonicalDest)
-            #expect(head?.hash == HashlineFormat.computeFileHash(srcContent))
-            #expect(head?.seenLines?.isSuperset(of: Set(1...5)) == true, "MV should mark all destination lines as seen")
+            let (text, err) = await AllAppTests.editCall(input)
+            #expect(err)
+            #expect(text.contains("used by more than one section"))
+            #expect(tmp.exists("a.txt") && tmp.exists("b.txt") && !tmp.exists("dest.txt"))
+        }
+
+        @Test("MV into a new directory creates it and keeps the BOM and CRLF endings")
+        func moveKeepsEncoding() async throws {
+            let tmp = try EditTestDir()
+            let path = tmp.sub("a.txt")
+            let bom: [UInt8] = [0xEF, 0xBB, 0xBF]
+            try Data(bom + Array("a\r\nb\r\n".utf8)).write(to: URL(fileURLWithPath: path))
+            let tag = HashlineFormat.computeFileHash("a\nb\n")
+            let dest = tmp.sub("moved/dir/b.txt")
+            let input = "*** Begin Patch\n[\(path)#\(tag)]\nPUT 1.=1:\n+A\nMV \(dest)\n*** End Patch"
+            let (text, err) = await AllAppTests.editCall(input)
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(!tmp.exists("a.txt"))
+            #expect(try Data(contentsOf: URL(fileURLWithPath: dest)) == Data(bom + Array("A\r\nb\r\n".utf8)))
+        }
+
+        @Test("a failing write reports which sections landed and keeps their view events")
+        func partialCommitIsReported() async throws {
+            let tmp = try EditTestDir()
+            let fileA = try tmp.write("a.txt", content: "a\nb\n")
+            let fileB = try tmp.write("b.txt", content: "x\ny\n")
+            try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: fileB)
+            let input = """
+                *** Begin Patch
+                [\(fileA)#\(HashlineFormat.computeFileHash("a\nb\n"))]
+                PUT 1.=1:
+                +A
+                [\(fileB)#\(HashlineFormat.computeFileHash("x\ny\n"))]
+                PUT 1.=1:
+                +X
+                *** End Patch
+                """
+            let history = ToolHistory()
+            history.inject([
+                .seen(
+                    .local(resolved: fileA), contentID: HashlineFormat.computeContentID("a\nb\n"),
+                    lines: LineSet(range: 1...2)),
+                .seen(
+                    .local(resolved: fileB), contentID: HashlineFormat.computeContentID("x\ny\n"),
+                    lines: LineSet(range: 1...2)),
+            ])
+            let result = await history.edit(input)
+            #expect(result.isError)
+            #expect(result.content.contains("applied only partly"))
+            #expect(result.content.contains("Written: \(fileA)"))
+            #expect(result.content.contains("Not written: \(fileB)"))
+            #expect(try tmp.read("a.txt") == "A\nb\n")
+            #expect(try tmp.read("b.txt") == "x\ny\n")
+            // The landed section's new version is known, the failed one's old
+            // version still is.
+            let state = history.views
+            #expect(state.view(for: .local(resolved: fileA))?.contentID == HashlineFormat.computeContentID("A\nb\n"))
+            #expect(state.view(for: .local(resolved: fileB))?.contentID == HashlineFormat.computeContentID("x\ny\n"))
         }
     }
 

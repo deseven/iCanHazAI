@@ -94,7 +94,7 @@ enum BuiltinToolsSSH {
         return frags.isEmpty ? "" : "-not \\( " + frags.joined(separator: " -o ") + " \\) "
     }
 
-    private static func run(
+    fileprivate static func run(
         _ ssh: SSHContext, script: String, stdin: Data? = nil,
         hardTimeout: TimeInterval? = fileOpTimeout,
         idleTimeout: TimeInterval? = nil
@@ -110,7 +110,7 @@ enum BuiltinToolsSSH {
     /// `scrubbing` rewrites resolved remote paths in the error text to their
     /// display spelling, so isolated mode never leaks the real remote layout
     /// through a remote binary's stderr (mv/rm/mkdir/grep all embed paths).
-    private static func requireSuccess(
+    fileprivate static func requireSuccess(
         _ r: SSHManager.RunResult, scrubbing paths: [(resolved: String, display: String)] = []
     ) throws {
         if let failure = r.failure {
@@ -133,16 +133,14 @@ enum BuiltinToolsSSH {
     // MARK: - Dispatch
 
     static func filesystem(
-        name: String, args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String,
-        snapshotStore: SnapshotStore? = nil
+        name: String, args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String
     ) async throws -> ToolOutput {
         switch name {
         case "ls": return try await ls(args, workdir: workdir, ssh: ssh)
         case "read_file":
-            return try await readFile(
-                args, workdir: workdir, ssh: ssh, chatFilename: chatFilename, snapshotStore: snapshotStore)
+            return try await readFile(args, workdir: workdir, ssh: ssh, chatFilename: chatFilename)
         case "write_file":
-            return try await writeFile(args, workdir: workdir, ssh: ssh, snapshotStore: snapshotStore)
+            return try await writeFile(args, workdir: workdir, ssh: ssh)
         case "find_file": return try await findFile(args, workdir: workdir, ssh: ssh)
         case "find_text": return try await findText(args, workdir: workdir, ssh: ssh)
         case "mkdir": return try await mkdir(args, workdir: workdir, ssh: ssh)
@@ -153,17 +151,6 @@ enum BuiltinToolsSSH {
         case "pwd": return try await pwd(workdir: workdir, ssh: ssh)
         default:
             throw BuiltinToolError("Unknown tool \"\(name)\" in group \"Filesystem\".")
-        }
-    }
-
-    static func edit(
-        name: String, args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String,
-        snapshotStore: SnapshotStore? = nil
-    ) async throws -> ToolOutput {
-        switch name {
-        case "edit_file": return try await editFile(args, workdir: workdir, ssh: ssh, snapshotStore: snapshotStore)
-        default:
-            throw BuiltinToolError("Unknown tool \"\(name)\" in group \"Edit\".")
         }
     }
 
@@ -203,8 +190,7 @@ enum BuiltinToolsSSH {
     }
 
     private static func readFile(
-        _ args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String,
-        snapshotStore: SnapshotStore?
+        _ args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String
     ) async throws -> ToolOutput {
         let path = try BuiltinTools.requireString(args, "path")
         let (offset, limit) = try BuiltinTools.readWindow(args)
@@ -225,11 +211,11 @@ enum BuiltinToolsSSH {
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
         return try BuiltinTools.formatFileContent(
             r.stdout, path: path, offset: offset, limit: limit, chatFilename: chatFilename,
-            resolvedPath: resolved, key: .ssh(host: ssh.host, resolved: resolved), snapshotStore: snapshotStore)
+            key: .ssh(host: ssh.host, resolved: resolved))
     }
 
     private static func writeFile(
-        _ args: [String: Any], workdir: Workdir, ssh: SSHContext, snapshotStore: SnapshotStore?
+        _ args: [String: Any], workdir: Workdir, ssh: SSHContext
     ) async throws -> ToolOutput {
         let path = try BuiltinTools.requireString(args, "path")
         let (content, strippedPrefixes) = HashlineFormat.stripPastedPrefixes(
@@ -245,137 +231,13 @@ enum BuiltinToolsSSH {
         // A write replaced the whole file, so every line is now seen. Return
         // the minted #TAG so the model can edit the file without re-reading.
         let text = TextFile.decode(data)?.text ?? content
-        let tag: String
-        if let snapshotStore {
-            let lineCount = HashlineFormat.splitAddressableFileLines(text).count
-            tag = snapshotStore.record(
-                path: BuiltinTools.canonicalPath(resolved), text: text, seenLines: Set(1...lineCount))
-        } else {
-            tag = HashlineFormat.computeFileHash(text)
-        }
+        let tag = HashlineFormat.computeFileHash(text)
         var result =
             "Wrote \(data.count) bytes to \(path)\n\(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))"
         if strippedPrefixes { result += "\n\(HashlineFormat.strippedPastedPrefixesNote)" }
         return ToolOutput(
             content: result, isError: false,
             fileViews: [BuiltinTools.writtenFileView(.ssh(host: ssh.host, resolved: resolved), text: text)])
-    }
-
-    /// Edits a remote text file with a hashline patch. Hash computation and
-    /// edit application are local operations on the fetched content — only
-    /// the read (`cat`) and the write-back (`cat >`) go over SSH, keeping
-    /// latency to two round-trips per file. `REM`/`MV` still validate the
-    /// #TAG against the source file before touching it.
-    private static func editFile(
-        _ args: [String: Any], workdir: Workdir, ssh: SSHContext, snapshotStore: SnapshotStore?
-    )
-        async throws -> ToolOutput
-    {
-        let input = try BuiltinTools.requireString(args, "input")
-        let patch = try HashlineEdit.parse(input)
-
-        var summaries: [String] = []
-        var warnings: [String] = []
-        for section in patch.sections {
-            let resolved = try workdir.resolve(section.path)
-            let displayPath = workdir.displayPath(forResolved: resolved)
-            let canonical = BuiltinTools.canonicalPath(resolved)
-
-            let remote = try await fetchFile(ssh, resolved: resolved)
-            guard remote.exists, let data = remote.data else {
-                throw BuiltinToolError("invalid argument 'input': file not found: \(section.path)")
-            }
-            guard let file = TextFile.decode(data) else {
-                throw BuiltinToolError(
-                    "File \(section.path) is not a text file and cannot be edited with edit_file. Use write_file to replace it entirely."
-                )
-            }
-            let currentContent = file.text
-
-            let result: ApplyResult
-            do {
-                result = try HashlineEdit.applySection(section, fileContent: currentContent)
-            } catch let err as HashlineEditError {
-                if case .noop(let path) = err {
-                    summaries.append("No changes to \(path).")
-                    continue
-                }
-                throw BuiltinToolError(err.localizedDescription)
-            }
-            warnings.append(contentsOf: result.warnings)
-
-            // Seen-lines guard: after the hash validated, reject edits that
-            // anchor to lines the model never saw.
-            if let rejection = SnapshotStore.seenLinesRejection(
-                snapshotStore,
-                displayPath: displayPath,
-                canonical: canonical,
-                tag: section.fileHash,
-                currentContent: currentContent,
-                anchorLines: section.anchorLines(in: currentContent),
-                strictReject: true
-            ) {
-                throw BuiltinToolError(rejection)
-            }
-
-            switch section.fileOp {
-            case .rem:
-                try requireSuccess(
-                    try await run(ssh, script: "rm \(qp(resolved))"),
-                    scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
-                snapshotStore?.invalidate(path: canonical)
-                summaries.append("Deleted: \(section.path)")
-            case .move(let dest):
-                let resolvedDest = try workdir.resolve(dest)
-                // Never clobber an existing destination or move onto the
-                // source itself — same guard as the local edit_file.
-                guard canonical != BuiltinTools.canonicalPath(resolvedDest) else {
-                    throw BuiltinToolError("invalid argument 'input': MV destination is the same as \(section.path).")
-                }
-                let exists = try await run(ssh, script: "test -e \(qp(resolvedDest)) && echo yes || echo no")
-                if exists.stdoutString.contains("yes") {
-                    throw BuiltinToolError(
-                        "invalid argument 'input': MV destination already exists: \(dest). Remove it first or pick another name."
-                    )
-                }
-                let write = try await run(
-                    ssh,
-                    script: "mkdir -p \(qp(posixDirname(resolvedDest))) && cat > \(qp(resolvedDest))",
-                    stdin: file.encode(result.text))
-                try requireSuccess(
-                    write, scrubbing: [(resolvedDest, workdir.displayPath(forResolved: resolvedDest))])
-                try requireSuccess(
-                    try await run(ssh, script: "rm \(qp(resolved))"),
-                    scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
-                let newTag = HashlineFormat.computeFileHash(result.text)
-                let canonicalDest = BuiltinTools.canonicalPath(resolvedDest)
-                snapshotStore?.relocate(from: canonical, to: canonicalDest)
-                snapshotStore?.recordEdit(
-                    path: canonicalDest, preTag: section.fileHash, postHash: newTag, postText: result.text,
-                    previewSeen: BuiltinTools.editPreviewSeen(result: result, old: currentContent))
-                summaries.append(
-                    BuiltinTools.updatedSummary(
-                        "Updated: \(section.path) [\(dest)#\(newTag)]", old: currentContent, new: result.text))
-            case nil:
-                let write = try await run(
-                    ssh, script: "cat > \(qp(resolved))", stdin: file.encode(result.text))
-                try requireSuccess(
-                    write, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
-                let newTag = HashlineFormat.computeFileHash(result.text)
-                snapshotStore?.recordEdit(
-                    path: canonical, preTag: section.fileHash, postHash: newTag, postText: result.text,
-                    previewSeen: BuiltinTools.editPreviewSeen(result: result, old: currentContent))
-                summaries.append(
-                    BuiltinTools.updatedSummary(
-                        "Updated: \(section.path) [\(section.path)#\(newTag)]", old: currentContent, new: result.text))
-            }
-        }
-        var content = summaries.joined(separator: "\n")
-        if !warnings.isEmpty {
-            let unique = Array(NSOrderedSet(array: warnings)).compactMap { $0 as? String }
-            content += "\n\nWarnings:\n" + unique.joined(separator: "\n")
-        }
-        return ToolOutput(content: content, isError: false)
     }
 
     private static func findFile(_ args: [String: Any], workdir: Workdir, ssh: SSHContext) async throws -> ToolOutput {
@@ -761,7 +623,9 @@ enum BuiltinToolsSSH {
 
     /// Fetches one remote file. The first stdout line is a status header
     /// (`<marker> file|dir|missing`); file bytes follow.
-    private static func fetchFile(_ ssh: SSHContext, resolved: String) async throws -> (exists: Bool, data: Data?) {
+    fileprivate static func fetchFile(_ ssh: SSHContext, resolved: String) async throws -> (
+        exists: Bool, data: Data?
+    ) {
         let marker = "ICHAI-\(UUID().uuidString)"
         let script = """
             if [ -e \(qp(resolved)) ] || [ -L \(qp(resolved)) ]; then
@@ -802,62 +666,6 @@ enum BuiltinToolsSSH {
         let remote = try await fetchFile(ssh, resolved: resolved)
         let old = (remote.exists ? remote.data.flatMap { String(data: $0, encoding: .utf8) } : nil) ?? ""
         return DiffBuilder.unifiedDiff(old: old, new: content, oldPath: path, newPath: path)
-    }
-
-    /// SSH counterpart of [`DiffBuilder.preflightEditFile`](src/Tools/DiffBuilder.swift:59):
-    /// fetch the remote "before" content, apply the hashline edits locally, and
-    /// generate the diff locally — no remote-side hashing. Returns nil when the
-    /// arguments are invalid so the caller can fail fast exactly like the local
-    /// path; transport failures and hash/parse mismatches throw.
-    static func diffForEditFile(
-        arguments: String, workdir: Workdir, ssh: SSHContext, snapshotStore: SnapshotStore? = nil
-    ) async throws -> String? {
-        guard let data = arguments.data(using: .utf8),
-            let args = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-            let input = args["input"] as? String
-        else { return nil }
-        let patch = try HashlineEdit.parse(input)
-        var diffs: [String] = []
-        for section in patch.sections {
-            let resolved = try workdir.resolve(section.path)
-            let remote = try await fetchFile(ssh, resolved: resolved)
-            guard remote.exists, let fileData = remote.data else {
-                throw BuiltinToolError("invalid argument 'input': file not found: \(section.path)")
-            }
-            guard let old = TextFile.decode(fileData)?.text else {
-                throw BuiltinToolError(
-                    "File \(section.path) is not a text file and cannot be edited with edit_file. Use write_file to replace it entirely."
-                )
-            }
-            let result = try HashlineEdit.applySection(section, fileContent: old)
-            // Seen-lines guard: surface approval-time errors before execution.
-            if let rejection = SnapshotStore.seenLinesRejection(
-                snapshotStore,
-                displayPath: workdir.displayPath(forResolved: resolved),
-                canonical: BuiltinTools.canonicalPath(resolved),
-                tag: section.fileHash,
-                currentContent: old,
-                anchorLines: section.anchorLines(in: old),
-                strictReject: true
-            ) {
-                throw BuiltinToolError(rejection)
-            }
-            switch section.fileOp {
-            case .rem:
-                diffs.append(DiffBuilder.unifiedDiff(old: old, new: "", oldPath: section.path, newPath: nil))
-            case .move(let dest):
-                diffs.append(
-                    DiffBuilder.unifiedDiff(old: old, new: result.text, oldPath: section.path, newPath: dest))
-            case nil:
-                diffs.append(
-                    DiffBuilder.unifiedDiff(old: old, new: result.text, oldPath: section.path, newPath: section.path))
-            }
-        }
-        let joined = diffs.filter { !$0.isEmpty }.joined(separator: "\n")
-        // Warnings (bare rows auto-piped, empty-PUT auto-cut, boundary-echo
-        // repairs) are surfaced in the tool result only — duplicating them in
-        // the approval diff would show them twice.
-        return joined.isEmpty ? nil : joined
     }
 
     // MARK: - Shell tool
@@ -910,5 +718,60 @@ enum BuiltinToolsSSH {
         }
 
         return ToolOutput(content: "\(text)\n[exit code: \(r.exitCode)]", isError: false)
+    }
+}
+
+/// `FileAccess` over SSH for the patch pipeline. Content is fetched and
+/// written whole (`cat` / `cat >`); everything else about an edit happens
+/// locally, so a file costs a read and a write round-trip.
+struct SSHFileAccess: FileAccess {
+    let workdir: Workdir
+    let ssh: SSHContext
+
+    func resolve(_ path: String) throws -> String { try workdir.resolve(path) }
+
+    func displayPath(_ resolved: String) -> String { workdir.displayPath(forResolved: resolved) }
+
+    func key(_ resolved: String) -> FileKey { .ssh(host: ssh.host, resolved: resolved) }
+
+    func identity(_ resolved: String) -> String { key(resolved).raw }
+
+    func read(_ resolved: String) async throws -> FileRead {
+        let remote = try await BuiltinToolsSSH.fetchFile(ssh, resolved: resolved)
+        guard remote.exists else { return .missing }
+        guard let data = remote.data else { return .directory }
+        return .data(data)
+    }
+
+    func exists(_ resolved: String) async throws -> Bool {
+        let path = BuiltinToolsSSH.qp(resolved)
+        let r = try await BuiltinToolsSSH.run(
+            ssh, script: "if [ -e \(path) ] || [ -L \(path) ]; then echo yes; else echo no; fi")
+        try BuiltinToolsSSH.requireSuccess(r, scrubbing: scrub(resolved))
+        return r.stdoutString.contains("yes")
+    }
+
+    func write(_ resolved: String, _ data: Data) async throws {
+        let r = try await BuiltinToolsSSH.run(
+            ssh, script: "cat > \(BuiltinToolsSSH.qp(resolved))", stdin: data)
+        try BuiltinToolsSSH.requireSuccess(r, scrubbing: scrub(resolved))
+    }
+
+    func create(_ resolved: String, _ data: Data) async throws {
+        let r = try await BuiltinToolsSSH.run(
+            ssh,
+            script:
+                "mkdir -p \(BuiltinToolsSSH.qp(BuiltinToolsSSH.posixDirname(resolved))) && cat > \(BuiltinToolsSSH.qp(resolved))",
+            stdin: data)
+        try BuiltinToolsSSH.requireSuccess(r, scrubbing: scrub(resolved))
+    }
+
+    func delete(_ resolved: String) async throws {
+        let r = try await BuiltinToolsSSH.run(ssh, script: "rm \(BuiltinToolsSSH.qp(resolved))")
+        try BuiltinToolsSSH.requireSuccess(r, scrubbing: scrub(resolved))
+    }
+
+    private func scrub(_ resolved: String) -> [(resolved: String, display: String)] {
+        [(resolved, displayPath(resolved))]
     }
 }

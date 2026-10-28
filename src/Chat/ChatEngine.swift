@@ -1364,10 +1364,6 @@ actor ChatEngine {
         if filename == selectedFilename { return false }
         if records[idx].isStreaming { return false }
         records[idx].chat = nil
-        // The snapshot store is derived from the chat's message history —
-        // dropping it with the chat frees memory, and the next request
-        // rebuilds it on demand.
-        records[idx].snapshotStore = nil
         debugLog("Engine", "released chat \(filename) — no longer needed")
         return true
     }
@@ -1642,22 +1638,6 @@ actor ChatEngine {
         baseChat.finalizeActiveStoppedTurn()
         if baseChat.messages != chat.messages, let idx = records.firstIndex(where: { $0.filename == filename }) {
             records[idx].chat = baseChat
-        }
-
-        // Build the per-chat snapshot store before the tool loop begins: the
-        // model is about to act, so replay what it has already seen from the
-        // chat's message history (the finalized active path — the same history
-        // the request is built from). Derived data — rebuilt on demand, kept
-        // alive for the duration of the request, updated live as tools execute.
-        // The workdir must carry the role's isolation flag: the live tools
-        // resolve display paths against an isolated workdir (jail-relative),
-        // and the rebuild resolves the same display paths, so mismatched
-        // isolation would produce store keys that never match.
-        if let idx = records.firstIndex(where: { $0.filename == filename }), records[idx].snapshotStore == nil {
-            let isolation = role(for: baseChat)?.hasDirectoryIsolation ?? false
-            let wd = Workdir(
-                root: effectiveWorkingDirectory(for: baseChat), isolated: isolation, chatID: baseChat.id.uuidString)
-            records[idx].snapshotStore = BuiltinTools.rebuildSnapshots(from: baseChat.activeMessages, workdir: wd)
         }
 
         // Commit pending attachments to disk now that the user has actually
@@ -2600,46 +2580,28 @@ actor ChatEngine {
             }
         }
 
-        // For edit_file, run a preflight: parse the hashline patch, validate
-        // the #TAGs against current file content, and build the diff preview
-        // for the approval UI. A preflight failure (parse error, stale tag,
-        // non-text file, unseen anchor lines) is relayed to the model as an
-        // immediate error instead of asking the user to approve a call that
-        // can't succeed. SSH runs the same checks locally on fetched content.
+        // For edit_file, run the patch pipeline's preflight: parse the hashline
+        // patch, validate the #TAGs against current file content, check the
+        // seen-lines guard against what the active conversation path has
+        // shown, and build the diff preview for the approval UI. Any failure
+        // (parse error, stale tag, non-text file, unseen anchor lines, an
+        // unreachable SSH host) is relayed to the model as an immediate error
+        // instead of asking the user to approve a call that can't succeed. A
+        // seen-lines rejection carries the lines it revealed as file view
+        // events, so a straight retry passes.
         if sourceName == BuiltinTools.editGroup, toolName == "edit_file" {
             let wd = Workdir(root: workdir, isolated: isolation, chatID: chatID)
-            let store = records.first(where: { $0.filename == filename })?.snapshotStore
-            if let ssh = wd.ssh {
-                do {
-                    if let d = try await BuiltinToolsSSH.diffForEditFile(
-                        arguments: call.arguments, workdir: wd, ssh: ssh, snapshotStore: store)
-                    {
-                        setToolCallDiff(callID: call.id, filename: filename, diff: d)
-                    }
-                } catch let err as BuiltinToolError {
-                    return PreparedToolCall(
-                        call: call,
-                        immediateResult: ToolResult(callID: call.id, content: err.message, isError: true))
-                } catch let err as HashlineEditError {
-                    return PreparedToolCall(
-                        call: call,
-                        immediateResult: ToolResult(callID: call.id, content: err.localizedDescription, isError: true))
-                } catch {
-                    debugLog(
-                        "Tool",
-                        "edit_file SSH preflight failed (\(error.localizedDescription)) — proceeding without diff, callID=\(call.id), chat=\(filename)"
-                    )
-                }
-            } else {
-                switch DiffBuilder.preflightEditFile(arguments: call.arguments, workdir: wd, snapshotStore: store) {
-                case .ok(let diff):
-                    setToolCallDiff(callID: call.id, filename: filename, diff: diff)
-                case .error(let message):
-                    debugLog("Tool", "edit_file preflight failed — callID=\(call.id), chat=\(filename)")
-                    return PreparedToolCall(
-                        call: call,
-                        immediateResult: ToolResult(callID: call.id, content: message, isError: true))
-                }
+            let views = FileViewState.fold(chat?.activeMessages ?? [])
+            switch try await HashlinePatcher.preflight(arguments: call.arguments, workdir: wd, views: views) {
+            case .ok(let diff):
+                setToolCallDiff(callID: call.id, filename: filename, diff: diff)
+            case .error(let message, let fileViews):
+                debugLog("Tool", "edit_file preflight failed — callID=\(call.id), chat=\(filename)")
+                return PreparedToolCall(
+                    call: call,
+                    immediateResult: ToolResult(
+                        callID: call.id, content: message, isError: true,
+                        fileViews: fileViews.isEmpty ? nil : fileViews))
             }
         }
 
@@ -2723,10 +2685,17 @@ actor ChatEngine {
             } else if BuiltinTools.allGroups.contains(sourceName) {
                 // Built-in group: run in-process with the chat's workdir.
                 let wd = Workdir(root: prepared.workdir, isolated: prepared.isolation, chatID: prepared.chatID)
+                // The seen-lines guard checks against what the conversation
+                // shows right now, which includes the results of the calls
+                // that ran earlier in this batch.
+                var context = ToolContext()
+                if toolName == "edit_file" {
+                    let messages = records.first(where: { $0.filename == filename })?.chat?.activeMessages ?? []
+                    context.views = FileViewState.fold(messages)
+                }
                 result = await BuiltinTools.call(
                     name: toolName, arguments: call.arguments, callID: call.id, group: sourceName, workdir: wd,
-                    chatFilename: filename,
-                    snapshotStore: records.first(where: { $0.filename == filename })?.snapshotStore)
+                    chatFilename: filename, context: context)
             } else {
                 // Custom MCP server: use the shared connection pool.
                 result = await MCPManager.shared.callTool(

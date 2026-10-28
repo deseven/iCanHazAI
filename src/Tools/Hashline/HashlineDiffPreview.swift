@@ -33,9 +33,25 @@ enum HashlineDiffPreview {
         var isChange: Bool { kind == .added || kind == .removed }
     }
 
+    /// The preview text plus the post-edit lines it printed in full. Those are
+    /// lines the model has now seen, so the caller records them (see
+    /// [`FileViewEvent`](src/Tools/Hashline/FileViews.swift)); rows cut by the
+    /// truncation caps are not among them.
+    struct Preview: Equatable {
+        let text: String
+        let shownLines: LineSet
+    }
+
+    /// One printed row. `line` is the post-edit line number of an added or
+    /// context row; removed rows and blank separators have none.
+    private struct Row {
+        let text: String
+        let line: Int?
+    }
+
     /// Produces the numbered preview between the pre-edit and post-edit file
     /// content. Returns nil when there are no changes.
-    static func generate(old: String, new: String) -> String? {
+    static func generate(old: String, new: String) -> Preview? {
         let oldLines = splitLines(old)
         let newLines = splitLines(new)
 
@@ -47,14 +63,14 @@ enum HashlineDiffPreview {
         if !entries.contains(where: { $0.isChange }) { return nil }
 
         let groups = groupHunks(entries: entries)
-        var out: [String] = []
+        var rows: [Row] = []
         for (index, group) in groups.enumerated() {
-            if index > 0 { out.append("") }
+            if index > 0 { rows.append(Row(text: "", line: nil)) }
             for entry in group {
-                out.append(formatEntry(entry))
+                rows.append(Row(text: formatEntry(entry), line: entry.kind == .removed ? nil : entry.lineNum + 1))
             }
         }
-        return truncate(out.joined(separator: "\n"))
+        return truncate(rows)
     }
 
     // MARK: - Diff alignment
@@ -159,23 +175,23 @@ enum HashlineDiffPreview {
 
     // MARK: - Truncation
 
-    /// Truncates the preview to `maxLines` / `maxBytes`, appending a marker.
-    private static func truncate(_ s: String) -> String {
-        var lines = s.components(separatedBy: "\n")
-        if lines.count > maxLines {
-            lines = Array(lines.prefix(maxLines))
-            lines.append("... (diff preview truncated)")
+    /// Keeps the rows that fit in `maxLines` / `maxBytes` and appends a marker
+    /// when some were dropped. Whole rows only: a row cut in the middle would
+    /// be shown but not really seen, and a split multi-byte character would
+    /// render as U+FFFD.
+    private static func truncate(_ rows: [Row]) -> Preview {
+        var kept: [Row] = []
+        var bytes = 0
+        for row in rows.prefix(maxLines) {
+            let cost = row.text.utf8.count + (kept.isEmpty ? 0 : 1)
+            if bytes + cost > maxBytes { break }
+            kept.append(row)
+            bytes += cost
         }
-        var out = lines.joined(separator: "\n")
-        if let data = out.data(using: .utf8), data.count > maxBytes {
-            // Cut at the last valid UTF-8 character boundary so a multi-byte
-            // character is never split mid-sequence (which would render as a
-            // U+FFFD replacement character).
-            var cut = maxBytes
-            while cut > 0, (data[cut] & 0xC0) == 0x80 { cut -= 1 }
-            out = String(decoding: data.prefix(cut), as: UTF8.self)
-            out += "\n... (diff preview truncated)"
+        var text = kept.map(\.text).joined(separator: "\n")
+        if kept.count < rows.count {
+            text += (kept.isEmpty ? "" : "\n") + "... (diff preview truncated)"
         }
-        return out
+        return Preview(text: text, shownLines: LineSet(kept.compactMap(\.line)))
     }
 }
