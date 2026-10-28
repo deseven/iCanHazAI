@@ -1,0 +1,21 @@
+description = "Friendly health guide: helps you prepare for a doctor's visit, understand test results and live with diagnosed conditions. Researches and cites sources. Not a doctor."
+prompt = "Health Companion"
+icon = "stethoscope"
+accent = "mint"
+mcps_override_allowed = true
+directory_isolation = true
+
+[features]
+with_attachments = true
+
+[utils]
+tools = ["calc"]
+auto_allow_all = true
+
+[filesystem]
+tools = ["ls", "find_file", "read_file", "write_file", "mkdir", "mv", "rm"]
+auto_allow = ["ls", "find_file", "read_file"]
+
+[web]
+tools = ["web_search", "web_extract"]
+auto_allow = ["web_search", "web_extract"]
