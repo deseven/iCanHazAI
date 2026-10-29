@@ -1389,14 +1389,17 @@ actor ChatEngine {
             autoAllowAll || autoAllow.contains(name)
         }
 
-        /// Whether a shell command passes the shell whitelist. Returns false
-        /// when the command is nil (too complex to parse) or any command name
-        /// is not in the whitelist. Returns true when the whitelist is empty
-        /// (no whitelist configured — the caller checks autoAllow first).
+        /// Whether a shell command passes the shell whitelist: every simple
+        /// command in it must either be whitelisted by name (`sed`) or match a
+        /// whitelisted template (`sed:read`, see `ShellTemplates`). False when
+        /// the whitelist is empty or the command is too complex to parse.
         func shellCommandAllowed(_ command: String) -> Bool {
             guard !shellWhitelist.isEmpty else { return false }
-            guard let commands = ShellCommandExtractor.extractCommands(command) else { return false }
-            return commands.allSatisfy { shellWhitelist.contains($0) }
+            guard let segments = ShellCommandExtractor.extractSegments(command) else { return false }
+            return segments.allSatisfy { segment in
+                (!segment.command.contains(":") && shellWhitelist.contains(segment.command))
+                    || ShellTemplates.allows(segment, whitelist: shellWhitelist)
+            }
         }
     }
 

@@ -1396,11 +1396,13 @@ struct RoleToolGroup: Codable, Equatable, Hashable, Sendable {
     var autoAllow: [String]?
     /// When true, all tools from this group are auto-approved.
     var autoAllowAll: Bool?
-    /// Shell-only: commands that bypass the approval prompt. When the shell
-    /// tool requires confirmation, a command is auto-approved only if every
-    /// command name in it is present in this list. Commands too complex to
-    /// parse (subshells, command substitution, loops, etc.) always require
-    /// confirmation. No-op when the shell tool is already auto-approved.
+    /// Shell-only: commands that bypass the approval prompt. An entry is a
+    /// bare command name (any invocation) or a read-only template such as
+    /// `sed:read` (see `ShellTemplates`). When the shell tool requires
+    /// confirmation, a command is auto-approved only if every command in it
+    /// is covered by an entry. Commands too complex to parse (subshells,
+    /// command substitution, loops, etc.) always require confirmation.
+    /// No-op when the shell tool is already auto-approved.
     var shellWhitelist: [String]?
 
     enum CodingKeys: String, CodingKey {

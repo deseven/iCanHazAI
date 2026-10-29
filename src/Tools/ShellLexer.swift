@@ -3,6 +3,19 @@
 
 import Foundation
 
+/// A lexed token plus what the quoting around it says about how the shell
+/// will treat it.
+struct ShellToken: Equatable {
+    let text: String
+    /// Produced from an unquoted run of `|&;()<>` — a control operator or a
+    /// redirection, as opposed to a word that merely contains those characters
+    /// (quoted or escaped).
+    let isPunctuation: Bool
+    /// Contains a `$` outside single quotes. The shell may substitute it, so
+    /// `text` is not what the command will actually receive.
+    let expands: Bool
+}
+
 /// A shell-like tokenizer ported from Python's `shlex` module, configured for
 /// POSIX mode with `punctuation_chars='|&;()<>'`. Quote-aware: single and
 /// double quotes are respected (operators inside quotes are not treated as
@@ -16,6 +29,8 @@ struct ShellLexer {
     private let chars: [Character]
     private var index: Int = 0
     private var pushback: [Character] = []
+    private var tokenIsPunctuation = false
+    private var tokenExpands = false
 
     private static let punctuationChars: Set<Character> = ["|", "&", ";", "(", ")", "<", ">"]
     private static let whitespaceChars: Set<Character> = [" ", "\t", "\r", "\n"]
@@ -61,6 +76,8 @@ struct ShellLexer {
         var quoted = false
         var state: State = .whitespace
         var escapedState: State = .whitespace
+        tokenIsPunctuation = false
+        tokenExpands = false
 
         while true {
             let nextchar = nextChar()
@@ -79,11 +96,13 @@ struct ShellLexer {
                 } else if Self.punctuationChars.contains(c) {
                     token = String(c)
                     state = .punctuation
+                    tokenIsPunctuation = true
                 } else if Self.quoteChars.contains(c) {
                     state = c == "'" ? .singleQuote : .doubleQuote
                 } else {
                     token = String(c)
                     state = .word
+                    if c == "$" { tokenExpands = true }
                 }
 
             case .word:
@@ -101,6 +120,7 @@ struct ShellLexer {
                     escapedState = .word
                     state = .escape
                 } else if Self.wordChars.contains(c) || !Self.punctuationChars.contains(c) {
+                    if c == "$" { tokenExpands = true }
                     token.append(c)
                 } else {
                     pushback.append(c)
@@ -139,11 +159,18 @@ struct ShellLexer {
                     escapedState = .doubleQuote
                     state = .escape
                 } else {
+                    if c == "$" { tokenExpands = true }
                     token.append(c)
                 }
 
             case .escape:
                 guard let c = nextchar else { throw Error.danglingEscape }
+                // Backslash-newline is a line continuation: the shell drops
+                // both characters, so `-\<nl>i` is the single word `-i`.
+                if c == "\n" {
+                    state = escapedState
+                    continue
+                }
                 if escapedState == .singleQuote || escapedState == .doubleQuote {
                     let quoteChar: Character = escapedState == .doubleQuote ? "\"" : "'"
                     if c != Self.escapeChar && c != quoteChar {
@@ -163,14 +190,34 @@ struct ShellLexer {
         }
         return tokens
     }
+
+    mutating func allTokenInfos() throws -> [ShellToken] {
+        var tokens: [ShellToken] = []
+        while let text = try nextToken() {
+            tokens.append(ShellToken(text: text, isPunctuation: tokenIsPunctuation, expands: tokenExpands))
+        }
+        return tokens
+    }
 }
 
-/// Extracts command names from a shell command string for whitelist checking.
+/// One simple command of a (possibly compound) command line: its name and the
+/// raw arguments that follow it.
+struct ShellSegment: Equatable {
+    let command: String
+    let args: [String]
+    /// False when the shell may rewrite `args` before the command sees them
+    /// (`$VAR` expansion) or the segment has redirections or stray operators.
+    /// Pattern-based validation of `args` is meaningless then, so templates
+    /// refuse such segments.
+    let argsAreLiteral: Bool
+}
+
+/// Splits a shell command string into simple commands for whitelist checking.
 ///
 /// Returns nil when the command contains constructs too complex to parse safely
 /// (command substitution, subshells, loops, conditionals, heredocs, etc.),
-/// signaling the caller to require user confirmation. Returns an array of
-/// command names (possibly empty) when parsing succeeds.
+/// signaling the caller to require user confirmation. Returns the segments
+/// (possibly none) when parsing succeeds.
 enum ShellCommandExtractor {
 
     /// Shell operators that delimit command segments.
@@ -196,12 +243,13 @@ enum ShellCommandExtractor {
     ]
 
     /// Extracts the command names from a shell command string.
-    ///
-    /// Returns nil when the command contains constructs too complex to parse
-    /// safely, signaling the caller to require user confirmation. Returns an
-    /// array of command names (possibly empty for whitespace-only or
-    /// operator-only commands) when parsing succeeds.
     static func extractCommands(_ command: String) -> [String]? {
+        extractSegments(command)?.map(\.command)
+    }
+
+    /// Extracts the simple commands (name + raw args) from a shell command
+    /// string, or nil when it is too complex to parse safely.
+    static func extractSegments(_ command: String) -> [ShellSegment]? {
         // Pre-check for complex constructs in the raw string.
         for pattern in bailPatterns {
             if command.contains(pattern) { return nil }
@@ -214,48 +262,80 @@ enum ShellCommandExtractor {
         // sequence). Newlines inside quotes are preserved within a line.
         let lines = splitOnUnquotedNewlines(command)
 
-        var allCommands: [String] = []
+        var segments: [ShellSegment] = []
         for line in lines {
             if line.allSatisfy({ $0.isWhitespace }) { continue }
 
-            let tokens: [String]
+            let tokens: [ShellToken]
             do {
                 var lexer = ShellLexer(line)
-                tokens = try lexer.allTokens()
+                tokens = try lexer.allTokenInfos()
             } catch {
                 return nil
             }
 
             var currentCmd: String? = nil
+            var args: [String] = []
+            var literal = true
+            func flush() {
+                if let cmd = currentCmd {
+                    segments.append(ShellSegment(command: cmd, args: args, argsAreLiteral: literal))
+                }
+                currentCmd = nil
+                args = []
+                literal = true
+            }
+
             for (i, token) in tokens.enumerated() {
-                if operators.contains(token) {
-                    if let cmd = currentCmd { allCommands.append(cmd) }
-                    currentCmd = nil
+                if token.isPunctuation && operators.contains(token.text) {
+                    flush()
                 } else if isRedirection(token) {
-                    continue
+                    if currentCmd != nil {
+                        args.append(token.text)
+                        literal = false
+                    }
                 } else if isFdPrefix(token, nextToken: i + 1 < tokens.count ? tokens[i + 1] : nil) {
-                    continue
+                    if currentCmd != nil { args.append(token.text) }
                 } else if currentCmd == nil {
-                    if bailKeywords.contains(token) { return nil }
-                    currentCmd = token
+                    if bailKeywords.contains(token.text) { return nil }
+                    currentCmd = token.text
+                } else {
+                    if token.isPunctuation || token.expands || mayBraceExpand(token.text) { literal = false }
+                    args.append(token.text)
                 }
             }
-            if let cmd = currentCmd { allCommands.append(cmd) }
+            flush()
         }
 
-        return allCommands
+        return segments
     }
 
-    /// A token is a redirection operator if it consists entirely of `><&` chars
-    /// (e.g. `>`, `>>`, `<`, `>&`, `<&`).
-    private static func isRedirection(_ token: String) -> Bool {
-        !token.isEmpty && token.allSatisfy { "><&".contains($0) }
+    /// `{a,b}` / `{1..3}` turn one word into several, which can conjure
+    /// option-like words out of a token that doesn't look like one. (A lone
+    /// `{u}`, as in `@{u}`, is left alone by the shell.) The lexer doesn't
+    /// track quoting per character, so a quoted one is flagged too — the
+    /// cost is only an approval prompt.
+    private static func mayBraceExpand(_ text: String) -> Bool {
+        var rest = Substring(text)
+        while let open = rest.firstIndex(of: "{") {
+            guard let close = rest[open...].firstIndex(of: "}") else { return false }
+            let inner = rest[rest.index(after: open)..<close]
+            if inner.contains(",") || inner.contains("..") { return true }
+            rest = rest[rest.index(after: close)...]
+        }
+        return false
+    }
+
+    /// A token is a redirection operator if it is an unquoted run made up
+    /// entirely of `><&` chars (e.g. `>`, `>>`, `<`, `>&`, `<&`).
+    private static func isRedirection(_ token: ShellToken) -> Bool {
+        token.isPunctuation && !token.text.isEmpty && token.text.allSatisfy { "><&".contains($0) }
     }
 
     /// A token is a file-descriptor prefix if it's all digits and the next
     /// token is a redirection operator (e.g. `2` before `>` in `2>&1`).
-    private static func isFdPrefix(_ token: String, nextToken: String?) -> Bool {
-        guard !token.isEmpty, token.allSatisfy(\.isNumber) else { return false }
+    private static func isFdPrefix(_ token: ShellToken, nextToken: ShellToken?) -> Bool {
+        guard !token.text.isEmpty, token.text.allSatisfy(\.isNumber) else { return false }
         return nextToken.map { isRedirection($0) } ?? false
     }
 
