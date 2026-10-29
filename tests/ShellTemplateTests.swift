@@ -42,7 +42,26 @@ extension AllAppTests {
             #expect(ShellCommandExtractor.extractSegments("echo ; ls")?.map(\.command) == ["echo", "ls"])
         }
 
-        @Test("segments with redirects, expansion or brace expansion are not literal")
+        @Test("harmless redirects are dropped from args, others make the segment non-literal")
+        func redirectSegments() {
+            #expect(
+                ShellCommandExtractor.extractSegments("cat f 2>&1 >/dev/null")
+                    == [ShellSegment(command: "cat", args: ["f"], argsAreLiteral: true)])
+            #expect(
+                ShellCommandExtractor.extractSegments("2>/dev/null cat f")
+                    == [ShellSegment(command: "cat", args: ["f"], argsAreLiteral: true)])
+            // With a space the `2` is an argument, not a file descriptor.
+            #expect(
+                ShellCommandExtractor.extractSegments("cat f 2 >/dev/null")
+                    == [ShellSegment(command: "cat", args: ["f", "2"], argsAreLiteral: true)])
+            #expect(
+                ShellCommandExtractor.extractSegments("cat f 1&>/dev/null")
+                    == [ShellSegment(command: "cat", args: ["f", "1"], argsAreLiteral: true)])
+            #expect(ShellCommandExtractor.extractSegments("cat f > out")?.first?.argsAreLiteral == false)
+            #expect(ShellCommandExtractor.extractCommands("cat f 2>&1 | grep x > out") == ["cat", "grep"])
+        }
+
+        @Test("segments with expansion, brace expansion or unsafe redirects are not literal")
         func literalFlag() throws {
             func literal(_ command: String) throws -> Bool {
                 try #require(ShellCommandExtractor.extractSegments(command)?.first).argsAreLiteral
@@ -52,13 +71,35 @@ extension AllAppTests {
             #expect(try literal(#"echo \$x"#))
             #expect(try literal("echo @{u}.."))
             #expect(try literal("echo \">\""))
+            #expect(try literal("echo x 2>&1"))
+            #expect(try literal("echo x >&2"))
+            #expect(try literal("echo x > /dev/null"))
+            #expect(try literal("echo x &>/dev/null"))
+            #expect(try literal("echo x </dev/null"))
             #expect(try !literal("echo $x"))
             #expect(try !literal(#"echo "$x""#))
             #expect(try !literal("echo a{b,c}"))
             #expect(try !literal("echo a{1..3}"))
             #expect(try !literal("echo x > f"))
-            #expect(try !literal("echo x 2>&1"))
+            #expect(try !literal("echo x >> f"))
+            #expect(try !literal("echo x 2> f"))
             #expect(try !literal("echo x &> f"))
+            #expect(try !literal("echo x < f"))
+            #expect(try !literal("echo x >&f"))
+            #expect(try !literal("echo x >& /dev/null"))
+            #expect(try !literal("echo x >&\"2\""))
+            #expect(try !literal("echo x 2>&3"))
+            #expect(try !literal("echo x 3>&1"))
+            #expect(try !literal("echo x 3>/dev/null"))
+
+            #expect(try !literal("echo x 2</dev/null"))
+            #expect(try !literal("echo x >|/dev/null"))
+            #expect(try !literal("echo x <>/dev/null"))
+            #expect(try !literal("echo x >/dev/null/x"))
+            #expect(try !literal("echo x > $f"))
+            #expect(try !literal("echo x >/dev/null >out"))
+            #expect(try !literal("echo x |& cat"))
+            #expect(try !literal("echo x >"))
         }
 
         @Test("lexer reports punctuation and expansion per token")
@@ -68,6 +109,23 @@ extension AllAppTests {
             #expect(infos.map(\.text) == ["a", ">", "b>", "$c", "d$", "e$"])
             #expect(infos.map(\.isPunctuation) == [false, true, false, false, false, false])
             #expect(infos.map(\.expands) == [false, false, false, true, false, true])
+            #expect(infos.map(\.isQuoted) == [false, false, true, false, true, true])
+        }
+
+        @Test("lexer flags a file-descriptor prefix only when written against the operator")
+        func lexerIONumber() throws {
+            func flags(_ s: String) throws -> [Bool] {
+                var lexer = ShellLexer(s)
+                return try lexer.allTokenInfos().map(\.isIONumber)
+            }
+            #expect(try flags("a 2>&1") == [false, true, false, false])
+            #expect(try flags("a 12>x") == [false, true, false, false])
+            #expect(try flags("a 2<x") == [false, true, false, false])
+            #expect(try flags("a 2 >x") == [false, false, false, false])
+            #expect(try flags("a b2>x") == [false, false, false, false])
+            #expect(try flags(#"a "2">x"#) == [false, false, false, false])
+            #expect(try flags(#"a \2>x"#) == [false, false, false, false])
+            #expect(try flags("a 2;b") == [false, false, false, false])
         }
 
         @Test("backslash-newline is a line continuation")
@@ -178,14 +236,29 @@ extension AllAppTests {
             #expect(!sed("sed -n '12345678901p' f"))
         }
 
-        @Test("sed:read refuses redirects and expansion")
-        func sedLiteralOnly() {
+        @Test("sed:read tolerates only harmless redirects")
+        func sedRedirects() {
+            #expect(sed("sed -n 1,5p f 2>&1"))
+            #expect(sed("sed -n 1,5p f 2>/dev/null"))
+            #expect(sed("sed -n 1,5p f >/dev/null 2>&1"))
+            #expect(sed("sed -n 1,5p f &>/dev/null"))
+            #expect(sed("sed -n 1,5p </dev/null"))
+            #expect(sed("2>&1 sed -n 1,5p f"))
+            #expect(allowed("sed -n 1,5p f 2>&1 | head", whitelist: ["sed:read", "head"]))
             #expect(!sed("sed -n 1,5p f > out"))
             #expect(!sed("sed -n 1,5p f >> out"))
-            #expect(!sed("sed -n 1,5p f 2>/dev/null"))
-            #expect(!sed("sed -n 1,5p f 2>&1"))
+            #expect(!sed("sed -n 1,5p f 2> err.txt"))
             #expect(!sed("sed -n 1,5p f &> out"))
             #expect(!sed("sed -n 1,5p < f"))
+            #expect(!sed("sed -n 1,5p f >&out"))
+            #expect(!sed("sed -n 1,5p f 2>&1 > out"))
+            #expect(!sed("sed -n 1,5p f >/dev/null > out"))
+            #expect(!sed("sed -n 1,5p f 2>&3"))
+            #expect(!sed("> out sed -n 1,5p f"))
+        }
+
+        @Test("sed:read refuses expansion")
+        func sedLiteralOnly() {
             #expect(!sed("sed -n $X f"))
             #expect(!sed(#"sed -n "$X" f"#))
             #expect(!sed("sed -n 1,5p $F"))
@@ -232,10 +305,12 @@ extension AllAppTests {
             #expect(!find("find . -newermt"))
         }
 
-        @Test("find:read refuses redirects and expansion")
+        @Test("find:read tolerates only harmless redirects, refuses expansion")
         func findLiteralOnly() {
+            #expect(find("find . -name x 2>/dev/null"))
+            #expect(find("find . -name x 2>&1"))
             #expect(!find("find . -name '*.swift' > out"))
-            #expect(!find("find . -name x 2>/dev/null"))
+            #expect(!find("find . -name x 2>err"))
             #expect(!find("find . -name $PAT"))
             #expect(!find("find . -name x{,\\ -delete}"))
         }
@@ -340,10 +415,17 @@ extension AllAppTests {
             }
         }
 
-        @Test("git:read refuses redirects and expansion")
+        @Test("git:read tolerates only harmless redirects, refuses expansion")
         func gitLiteralOnly() {
+            #expect(git("git diff 2>/dev/null"))
+            #expect(git("git log --oneline -5 2>&1"))
+            #expect(git("git branch -a 2>&1"))
+            #expect(git("git remote -v 2>&1"))
             #expect(!git("git log > out"))
-            #expect(!git("git diff 2>/dev/null"))
+            #expect(!git("git log 2> err"))
+            // The space makes `2` an argument: this would create a branch named 2.
+            #expect(!git("git branch -a 2 >/dev/null"))
+            #expect(!git("git remote -v 2 >&1"))
             #expect(!git("git status $X"))
             #expect(!git(#"git log --author="$USER""#))
             #expect(!git("git log --{oneline,output=x}"))

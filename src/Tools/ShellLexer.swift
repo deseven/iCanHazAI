@@ -14,6 +14,12 @@ struct ShellToken: Equatable {
     /// Contains a `$` outside single quotes. The shell may substitute it, so
     /// `text` is not what the command will actually receive.
     let expands: Bool
+    /// An unquoted run of digits written directly against a following `<` or
+    /// `>` (the `2` in `2>&1`), i.e. a file-descriptor prefix rather than an
+    /// argument. `2 >&1` has no such token: there the `2` is an argument.
+    let isIONumber: Bool
+    /// Any part of the token was quoted or backslash-escaped.
+    let isQuoted: Bool
 }
 
 /// A shell-like tokenizer ported from Python's `shlex` module, configured for
@@ -31,6 +37,8 @@ struct ShellLexer {
     private var pushback: [Character] = []
     private var tokenIsPunctuation = false
     private var tokenExpands = false
+    private var tokenIsIONumber = false
+    private var tokenIsQuoted = false
 
     private static let punctuationChars: Set<Character> = ["|", "&", ";", "(", ")", "<", ">"]
     private static let whitespaceChars: Set<Character> = [" ", "\t", "\r", "\n"]
@@ -78,6 +86,8 @@ struct ShellLexer {
         var escapedState: State = .whitespace
         tokenIsPunctuation = false
         tokenExpands = false
+        tokenIsIONumber = false
+        tokenIsQuoted = false
 
         while true {
             let nextchar = nextChar()
@@ -123,6 +133,11 @@ struct ShellLexer {
                     if c == "$" { tokenExpands = true }
                     token.append(c)
                 } else {
+                    if c == "<" || c == ">", !tokenIsQuoted,
+                        !token.isEmpty, token.allSatisfy({ $0.isASCII && $0.isNumber })
+                    {
+                        tokenIsIONumber = true
+                    }
                     pushback.append(c)
                     state = .whitespace
                     if !token.isEmpty || quoted { return token }
@@ -143,6 +158,7 @@ struct ShellLexer {
 
             case .singleQuote:
                 quoted = true
+                tokenIsQuoted = true
                 guard let c = nextchar else { throw Error.unclosedQuote }
                 if c == "'" {
                     state = .word
@@ -152,6 +168,7 @@ struct ShellLexer {
 
             case .doubleQuote:
                 quoted = true
+                tokenIsQuoted = true
                 guard let c = nextchar else { throw Error.unclosedQuote }
                 if c == "\"" {
                     state = .word
@@ -171,6 +188,7 @@ struct ShellLexer {
                     state = escapedState
                     continue
                 }
+                tokenIsQuoted = true
                 if escapedState == .singleQuote || escapedState == .doubleQuote {
                     let quoteChar: Character = escapedState == .doubleQuote ? "\"" : "'"
                     if c != Self.escapeChar && c != quoteChar {
@@ -194,7 +212,10 @@ struct ShellLexer {
     mutating func allTokenInfos() throws -> [ShellToken] {
         var tokens: [ShellToken] = []
         while let text = try nextToken() {
-            tokens.append(ShellToken(text: text, isPunctuation: tokenIsPunctuation, expands: tokenExpands))
+            tokens.append(
+                ShellToken(
+                    text: text, isPunctuation: tokenIsPunctuation, expands: tokenExpands,
+                    isIONumber: tokenIsIONumber, isQuoted: tokenIsQuoted))
         }
         return tokens
     }
@@ -206,9 +227,11 @@ struct ShellSegment: Equatable {
     let command: String
     let args: [String]
     /// False when the shell may rewrite `args` before the command sees them
-    /// (`$VAR` expansion) or the segment has redirections or stray operators.
-    /// Pattern-based validation of `args` is meaningless then, so templates
-    /// refuse such segments.
+    /// (`$VAR` expansion), or the segment has a redirection that could write
+    /// or read a file, or stray operators. Pattern-based validation of `args`
+    /// is meaningless then, so templates refuse such segments. Harmless
+    /// redirections (`2>&1`, `>/dev/null`, see `ShellCommandExtractor`) are
+    /// dropped from `args` and don't clear this flag.
     let argsAreLiteral: Bool
 }
 
@@ -286,22 +309,30 @@ enum ShellCommandExtractor {
                 literal = true
             }
 
-            for (i, token) in tokens.enumerated() {
+            var i = 0
+            while i < tokens.count {
+                let token = tokens[i]
                 if token.isPunctuation && operators.contains(token.text) {
                     flush()
-                } else if isRedirection(token) {
-                    if currentCmd != nil {
-                        args.append(token.text)
+                    i += 1
+                } else if let redirect = redirection(in: tokens, at: i) {
+                    if let end = redirect.harmlessEnd {
+                        i = end
+                    } else {
+                        // Only the operator is consumed; a target word, if any,
+                        // is seen next as an ordinary token.
+                        if currentCmd != nil { args += tokens[i..<redirect.operatorEnd].map(\.text) }
                         literal = false
+                        i = redirect.operatorEnd
                     }
-                } else if isFdPrefix(token, nextToken: i + 1 < tokens.count ? tokens[i + 1] : nil) {
-                    if currentCmd != nil { args.append(token.text) }
                 } else if currentCmd == nil {
                     if bailKeywords.contains(token.text) { return nil }
                     currentCmd = token.text
+                    i += 1
                 } else {
                     if token.isPunctuation || token.expands || mayBraceExpand(token.text) { literal = false }
                     args.append(token.text)
+                    i += 1
                 }
             }
             flush()
@@ -332,11 +363,49 @@ enum ShellCommandExtractor {
         token.isPunctuation && !token.text.isEmpty && token.text.allSatisfy { "><&".contains($0) }
     }
 
-    /// A token is a file-descriptor prefix if it's all digits and the next
-    /// token is a redirection operator (e.g. `2` before `>` in `2>&1`).
-    private static func isFdPrefix(_ token: ShellToken, nextToken: ShellToken?) -> Bool {
-        guard !token.text.isEmpty, token.text.allSatisfy(\.isNumber) else { return false }
-        return nextToken.map { isRedirection($0) } ?? false
+    /// Parses a redirection at `start`: optional fd prefix, operator, target.
+    /// Returns nil when there is none. `operatorEnd` is the index just past
+    /// the operator; `harmlessEnd` is the index just past the target when the
+    /// whole redirection is on the short list of harmless ones, else nil:
+    ///
+    /// - fd duplication between stdout and stderr: `2>&1`, `1>&2`, `>&2`
+    /// - discarding output: `>/dev/null`, `>>/dev/null`, `2>/dev/null`,
+    ///   `&>/dev/null`
+    /// - `</dev/null`
+    ///
+    /// Everything else (any other file, other fds, `>|`, `<>`...) is not.
+    private static func redirection(
+        in tokens: [ShellToken], at start: Int
+    ) -> (operatorEnd: Int, harmlessEnd: Int?)? {
+        var j = start
+        var fd: String?
+        if tokens[j].isIONumber {
+            fd = tokens[j].text
+            j += 1
+        }
+        guard j < tokens.count, isRedirection(tokens[j]) else { return nil }
+        let op = tokens[j].text
+        let operatorEnd = j + 1
+        guard operatorEnd < tokens.count else { return (operatorEnd, nil) }
+        let target = tokens[operatorEnd]
+        guard !target.isPunctuation, !target.expands else { return (operatorEnd, nil) }
+
+        let stdStreams: Set<String?> = [nil, "1", "2"]
+        let harmless: Bool
+        switch op {
+        case ">&":
+            // `>&word` writes to a file unless word is a plain digit.
+            harmless = !target.isQuoted && ["1", "2"].contains(target.text) && stdStreams.contains(fd)
+        case ">", ">>":
+            harmless = target.text == "/dev/null" && stdStreams.contains(fd)
+        case "&>", "&>>":
+            harmless = target.text == "/dev/null" && fd == nil
+        case "<":
+            harmless = target.text == "/dev/null" && (fd == nil || fd == "0")
+        default:
+            harmless = false
+        }
+        return (operatorEnd, harmless ? operatorEnd + 1 : nil)
     }
 
     /// Splits a command string on newlines that are outside of quotes.
