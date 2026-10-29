@@ -201,9 +201,14 @@ struct BuiltinToolDef: Sendable {
     /// out then, and so does what it says about them. Nil when the
     /// description doesn't depend on it.
     var untaggedDescription: String? = nil
+    /// Builds the description from the names of the built-in tools the chat
+    /// exposes; overrides both static variants when set.
+    var availabilityDescription: (@Sendable (_ available: Set<String>) -> String)? = nil
 
-    func description(fileTags: Bool) -> String {
-        fileTags ? description : (untaggedDescription ?? description)
+    /// `available`: names of every built-in tool the chat exposes, this one included.
+    func description(fileTags: Bool, available: Set<String>) -> String {
+        if let availabilityDescription { return availabilityDescription(available) }
+        return fileTags ? description : (untaggedDescription ?? description)
     }
 }
 
@@ -521,17 +526,57 @@ enum BuiltinTools {
         ),
     ]
 
+    /// Names the dedicated file tools the chat has and the shell commands they
+    /// replace. A generic "prefer other tools" doesn't stop models that have
+    /// grepped and sed-printed code from patching it with python too.
+    static func shellDescription(available: Set<String>) -> String {
+        let base =
+            "Execute a command in the user's login shell (\(shellPath) -l). Returns merged stdout and stderr in write order, then the exit code. Runs in current directory."
+        let has = available.contains
+        var rules: [String] = []
+        if has("read_file") { rules.append("reading files: read_file, not cat/head/tail/nl/sed -n/awk") }
+        if has("find_text") { rules.append("searching file contents: find_text, not grep/rg/ag") }
+        if has("find_file") { rules.append("finding files by name: find_file, not find/fd") }
+        if has("ls") { rules.append("listing directories: the ls tool, not shell ls/tree") }
+        let editors = ["replace_text", "edit_file"].filter(has)
+        if !editors.isEmpty {
+            rules.append(
+                "editing existing files: \(editors.joined(separator: " or ")), never sed -i, perl -pi, python/node/ruby scripts, redirections, tee or heredocs"
+            )
+        }
+        if has("write_file") {
+            rules.append("creating or overwriting files: write_file, not echo/printf/cat redirections, tee or heredocs")
+        }
+        guard !rules.isEmpty else {
+            return base
+                + " Only use if other available tools can't achieve the desired results at all or effectively enough."
+        }
+        var out = [
+            base,
+            "",
+            "Use it for what the other tools don't cover: building, testing, running programs, version control, package managers, system inspection. File work has dedicated tools; use them even when a shell one-liner looks quicker:",
+        ]
+        out += rules.map { "- " + $0 }
+        if !editors.isEmpty {
+            out.append(
+                "The edit tools fail loudly when the text doesn't match and show a diff of what changed; a shell edit that misses (e.g. python's str.replace) does nothing silently."
+            )
+        }
+        if has("edit_file") { out.append("Lines seen only in shell output can't be edited with edit_file.") }
+        out.append("Filtering a command's own output through grep/head/tail is fine.")
+        return out.joined(separator: "\n")
+    }
+
     private static let shellToolDefs: [BuiltinToolDef] = {
-        let shellDesc =
-            "Execute a command in the user's login shell (\(shellPath) -l). Returns merged stdout and stderr in write order, then the exit code. Runs in current directory. Only use if other available tools can't achieve the desired results at all or effectively enough."
         let commandDesc = "The shell command to execute. Could be a full multiline script as well."
         return [
             BuiltinToolDef(
                 name: "shell",
-                description: shellDesc,
+                description: shellDescription(available: []),
                 schema:
                     #"{"type":"object","properties":{"command":{"type":"string","description":"__COMMAND_DESC__"},"cwd":{"type":"string","description":"Optional working directory for the command (absolute or relative to the current directory). Defaults to the current working directory."},"timeout":{"type":"integer","description":"Optional timeout in seconds. The command is killed if it exceeds this. Default: no timeout."}},"required":["command"]}"#
-                    .replacingOccurrences(of: "__COMMAND_DESC__", with: commandDesc)),
+                    .replacingOccurrences(of: "__COMMAND_DESC__", with: commandDesc),
+                availabilityDescription: { shellDescription(available: $0) }),
             BuiltinToolDef(
                 name: "applescript",
                 description: "Execute an AppleScript and return its result.",

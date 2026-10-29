@@ -816,11 +816,11 @@ extension AllAppTests {
 
             for name in ["read_file", "write_file", "find_text", "replace_text"] {
                 let tool = try def(name)
-                let plain = tool.description(fileTags: false)
+                let plain = tool.description(fileTags: false, available: [])
                 #expect(plain != tool.description, "\(name) has no variant")
                 #expect(!plain.contains("TAG"), "\(name): \(plain)")
                 #expect(!plain.contains("edit_file"), "\(name): \(plain)")
-                #expect(tool.description(fileTags: true) == tool.description)
+                #expect(tool.description(fileTags: true, available: []) == tool.description)
             }
             #expect(try def("read_file").description.contains("#TAG"))
             #expect(try def("write_file").description.contains("#TAG"))
@@ -828,7 +828,7 @@ extension AllAppTests {
 
             for name in ["ls", "find_file", "edit_file"] {
                 let tool = try def(name)
-                #expect(tool.description(fileTags: false) == tool.description)
+                #expect(tool.description(fileTags: false, available: []) == tool.description)
             }
         }
     }

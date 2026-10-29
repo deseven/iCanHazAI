@@ -1562,6 +1562,23 @@ actor ChatEngine {
         }
     }
 
+    /// The tools of a built-in group source the chat gets, sorted by name: the
+    /// role's tool filter applied, local-only tools dropped against an SSH
+    /// working directory.
+    private static func builtinTools(for source: ResolvedToolSource, sshWorkdir: Bool) -> [BuiltinToolDef] {
+        let roleAllow = Set(source.toolsFilter)
+        return BuiltinTools.tools(for: source.name).filter { t in
+            if sshWorkdir, BuiltinTools.sshUnavailableToolNames.contains(t.name) { return false }
+            return roleAllow.isEmpty || roleAllow.contains(t.name)
+        }.sorted { $0.name < $1.name }
+    }
+
+    /// Names of all built-in tools the chat gets, for descriptions that
+    /// depend on them (see `BuiltinToolDef.availabilityDescription`).
+    private static func builtinToolNames(in sources: [ResolvedToolSource], sshWorkdir: Bool) -> Set<String> {
+        Set(sources.filter(\.isBuiltinGroup).flatMap { builtinTools(for: $0, sshWorkdir: sshWorkdir) }.map(\.name))
+    }
+
     /// The effective working directory for a chat: the per-chat value (seeded
     /// from the role at creation or picked by the user — permanent either way),
     /// falling back to the role's working directory. Nil when neither is set.
@@ -2354,7 +2371,7 @@ actor ChatEngine {
     /// allowlist for custom MCPs). Custom servers that failed configuration
     /// (no cached tools) are silently excluded. On-demand custom stdio servers
     /// are started before the request.
-    private func gatherTools(filename: String) async -> [ToolDefinition] {
+    func gatherTools(filename: String) async -> [ToolDefinition] {
         guard let idx = records.firstIndex(where: { $0.filename == filename }),
             let chat = records[idx].chat
         else { return [] }
@@ -2376,18 +2393,22 @@ actor ChatEngine {
         // working directory and are not advertised at all.
         let sshWorkdir = effectiveWorkingDirectory(for: chat).map { SSHSpec.isSSH($0) } ?? false
         let fileTags = Self.hasEditFile(in: resolved)
-        for r in resolved {
+        let available = Self.builtinToolNames(in: resolved, sshWorkdir: sshWorkdir)
+        // Same order as the chat-info sidebar: built-in groups in canonical
+        // order (as resolved), then MCP servers by name; tools by name within
+        // each source.
+        let ordered =
+            resolved.filter(\.isBuiltinGroup)
+            + resolved.filter { !$0.isBuiltinGroup }.sorted {
+                $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+        for r in ordered {
             if r.isBuiltinGroup {
                 // Built-in groups: tools are always available (in-process).
                 // Provider-backed web tools (web_search/web_extract) are
                 // advertised even without a configured provider; calls fail
                 // with an explanatory error instead.
-                let groupTools = BuiltinTools.tools(for: r.name)
-                let roleAllow = Set(r.toolsFilter)
-                let filtered = groupTools.filter { t in
-                    if sshWorkdir, BuiltinTools.sshUnavailableToolNames.contains(t.name) { return false }
-                    return roleAllow.isEmpty || roleAllow.contains(t.name)
-                }
+                let filtered = Self.builtinTools(for: r, sshWorkdir: sshWorkdir)
                 perSourceCounts.append((r.name, filtered.count))
                 defs.append(
                     contentsOf: filtered.map { tool in
@@ -2395,7 +2416,7 @@ actor ChatEngine {
                             serverName: r.name,
                             prefix: "",
                             name: tool.name,
-                            description: tool.description(fileTags: fileTags),
+                            description: tool.description(fileTags: fileTags, available: available),
                             inputSchema: tool.schema
                         )
                     })
@@ -2412,7 +2433,7 @@ actor ChatEngine {
                 let filtered = tools.filter { t in
                     (serverAllow.isEmpty || serverAllow.contains(t.name))
                         && (roleAllow.isEmpty || roleAllow.contains(t.name))
-                }
+                }.sorted { $0.name < $1.name }
                 perSourceCounts.append((r.name, filtered.count))
                 let prefix = serverConfig?.prefix ?? r.name
                 defs.append(
@@ -3481,19 +3502,16 @@ actor ChatEngine {
         let resolved = resolvedToolSources(for: chat)
         let fileTags = Self.hasEditFile(in: resolved)
         let sshWorkdir = effectiveWorkingDirectory(for: chat).map { SSHSpec.isSSH($0) } ?? false
+        let available = Self.builtinToolNames(in: resolved, sshWorkdir: sshWorkdir)
         var builtin: [ChatToolEntry] = []
         var external: [ChatToolEntry] = []
         for r in resolved {
             if r.isBuiltinGroup {
-                let roleAllow = Set(r.toolsFilter)
-                for tool in BuiltinTools.tools(for: r.name) {
-                    if sshWorkdir, BuiltinTools.sshUnavailableToolNames.contains(tool.name) { continue }
-
-                    if !roleAllow.isEmpty && !roleAllow.contains(tool.name) { continue }
+                for tool in Self.builtinTools(for: r, sshWorkdir: sshWorkdir) {
                     builtin.append(
                         ChatToolEntry(
                             name: tool.name,
-                            description: tool.description(fileTags: fileTags),
+                            description: tool.description(fileTags: fileTags, available: available),
                             autoApproved: chat.isToolAutoApproved(
                                 namespacedName: tool.name, roleDefault: r.autoAllows(tool: tool.name)),
                             roleAutoApproved: r.autoAllows(tool: tool.name),

@@ -11,8 +11,8 @@ tools = ["calc", "rand"]
 auto_allow_all = true
 
 [filesystem]
-tools = ["read_file", "write_file"]
-auto_allow = ["read_file"]
+tools = ["ls", "read_file", "write_file", "find_file", "find_text"]
+auto_allow = ["ls", "read_file", "find_file", "find_text"]
 
 [edit]
 
