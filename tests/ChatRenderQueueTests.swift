@@ -330,6 +330,21 @@ extension AllAppTests {
             #expect(batches[1] == [.scrollTo(messageID: a.uuidString)])
         }
 
+        @Test("revealApproval is delivered after the snapshot queued before it")
+        func revealApprovalIsOrdered() async {
+            let recorder = DeliveryRecorder()
+            let queue = makeQueue(recorder)
+            await queue.enqueue(job("chat-a", [msg(UUID(), content: "one")]))
+            await queue.enqueue(.revealApproval)
+            #expect(await recorder.waitForCount(2))
+            let batches = await recorder.batches
+            guard case .snapshot = batches[0].first else {
+                Issue.record("expected the snapshot first, got \(batches[0])")
+                return
+            }
+            #expect(batches[1] == [.revealApproval])
+        }
+
         // MARK: - Projection
 
         @Test("tool messages fold onto the preceding assistant message")

@@ -1166,9 +1166,9 @@ final class AppViewModel: ObservableObject {
             if filename != selectedChatID {
                 blinkingChatIDs.insert(filename)
             } else {
-                // Bring the pending tool block (with its Allow/Deny buttons,
-                // always at the bottom) into view.
-                chatListController?.scrollToBottom()
+                // A call to action: bring the pending tool block (with its
+                // Allow/Deny buttons) into view, wherever it is in the message.
+                chatListController?.revealPendingApproval()
             }
             requestAttentionIfNeeded()
         case .toolApprovalResolved(let filename, _):
@@ -2146,6 +2146,14 @@ final class AppViewModel: ObservableObject {
         Task { await engine.configureMCPs() }
     }
 
+    /// Tells the chat list the user is about to switch to `filename`, before the
+    /// selection clears its unread marker, so an unread chat opens at its last message.
+    private func noteOpeningChat(_ filename: String) {
+        guard filename != selectedChatID else { return }
+        let unread = chatItems.first(where: { $0.id == filename })?.hasUnreadActivity == true
+        chatListController?.willOpenChat(filename, unread: unread)
+    }
+
     /// Selects a chat, prunes other empty chats, and clears its unread marker.
     /// Re-selecting a chat clears any prior role-picker dismissal so the
     /// picker re-prompts if the chat's role is still missing.
@@ -2160,6 +2168,7 @@ final class AppViewModel: ObservableObject {
         // re-prompts the role picker.
         dismissedRoleAssignmentFor.remove(filename)
         dismissedModelPickerFor.remove(filename)
+        noteOpeningChat(filename)
         selectedChatID = filename
         Task {
             await engine.selectChat(filename: filename)
@@ -2236,6 +2245,7 @@ final class AppViewModel: ObservableObject {
 
         let targetID = items[ctrlTabCurrentIndex].id
         archivedPreviewID = nil
+        noteOpeningChat(targetID)
         selectedChatID = targetID
         Task {
             await engine.selectChat(filename: targetID)

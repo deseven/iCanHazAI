@@ -432,6 +432,108 @@ extension AllAppTests {
             #expect(h.list.testIsPinned)
         }
 
+        private static func longMessage(_ id: String = "long") -> ChatRowModel {
+            ChatRendererFixtures.message(id, content: ChatRendererFixtures.streamingText)
+        }
+
+        @Test("a last message taller than the viewport is shown from its start")
+        func revealsLongLastMessageStart() {
+            let h = Harness()
+            var rows = ChatRendererFixtures.chat(40)
+            rows.append(Self.longMessage())
+            h.list.setMessages(rows)
+            #expect(h.list.testIsPinned)
+            h.list.revealLastMessageStart()
+            #expect(!h.list.testIsPinned)
+            let y = h.list.testScreenY(of: "long") ?? .nan
+            #expect(y >= 0 && y < 40)
+            #expect(h.list.testViewsConsistent())
+        }
+
+        @Test("a last message that fits keeps the list at the bottom")
+        func keepsShortLastMessageAtBottom() {
+            let h = Harness()
+            var rows = ChatRendererFixtures.chat(40)
+            rows.append(ChatRendererFixtures.message("short", content: "Done."))
+            h.list.setMessages(rows)
+            h.list.revealLastMessageStart()
+            #expect(h.list.testIsPinned)
+            #expect(abs(h.list.testDistanceFromBottom) < 1)
+        }
+
+        @Test("revealing the last message start can leave a list the user scrolled away alone")
+        func revealLastMessageStartRespectsScrollAway() {
+            let h = Harness()
+            var rows = ChatRendererFixtures.chat(40)
+            rows.append(Self.longMessage())
+            h.list.setMessages(rows)
+            h.list.testScroll(toRow: 10)
+            let before = h.list.testAnchor()
+            h.list.revealLastMessageStart(onlyIfPinned: true)
+            #expect(anchorMoved(h.list, before) < 0.5)
+        }
+
+        private static func approvalChat(calls: Int, filler: Int = 30) -> [ChatRowModel] {
+            var rows = ChatRendererFixtures.chat(filler)
+            var m = ChatRendererFixtures.message("tools", content: "Running everything.")
+            m.toolCalls = (0..<calls).map {
+                .init(id: "t\($0)", name: "shell", arguments: #"{"command":"echo \#($0)"}"#, summary: "echo \($0)")
+            }
+            m.toolResults = (0..<calls - 1).map { .init(callID: "t\($0)", content: "ok", isError: false) }
+            rows.append(m)
+            return rows
+        }
+
+        @Test("a pending approval scrolled out of view is brought into view")
+        func revealsPendingApproval() {
+            let h = Harness(height: 400)
+            var rows = Self.approvalChat(calls: 12)
+            let last = rows.count - 1
+            rows[last].toolCalls[3].pendingApproval = true
+            rows[last].toolResults.removeAll { $0.callID == "t3" }
+            h.list.setMessages(rows)
+            h.list.revealPendingApproval()
+            let frame = h.list.testApprovalFrame(of: "tools")
+            #expect(frame != nil)
+            #expect((frame?.top ?? -1) >= 0)
+            #expect((frame?.bottom ?? .infinity) <= 400)
+            #expect(h.list.testViewsConsistent())
+        }
+
+        @Test("a pending approval already in view doesn't scroll anything")
+        func keepsVisiblePendingApproval() {
+            let h = Harness()
+            var rows = Self.approvalChat(calls: 2)
+            rows[rows.count - 1].toolCalls[1].pendingApproval = true
+            rows[rows.count - 1].toolResults.removeAll { $0.callID == "t1" }
+            h.list.setMessages(rows)
+            h.list.revealPendingApproval()
+            #expect(h.list.testIsPinned)
+            #expect(abs(h.list.testDistanceFromBottom) < 1)
+        }
+
+        @Test("a pending approval that is moving on to the next call is followed")
+        func followsPendingApprovalToNextCall() {
+            let h = Harness(height: 400)
+            var rows = Self.approvalChat(calls: 12)
+            let last = rows.count - 1
+            rows[last].toolCalls[1].pendingApproval = true
+            rows[last].toolResults.removeAll { $0.callID == "t1" }
+            h.list.setMessages(rows)
+            h.list.revealPendingApproval()
+            let first = h.list.testApprovalFrame(of: "tools")
+
+            rows[last].toolCalls[1].pendingApproval = false
+            rows[last].toolCalls[7].pendingApproval = true
+            rows[last].toolResults.removeAll { $0.callID == "t7" }
+            h.list.update(rows[last])
+            h.list.revealPendingApproval()
+            let next = h.list.testApprovalFrame(of: "tools")
+            #expect(first != nil && next != nil)
+            #expect((next?.top ?? -1) >= 0)
+            #expect((next?.bottom ?? .infinity) <= 400)
+        }
+
         @Test("pinned changes are reported once the list settles")
         func pinnedReports() async {
             let h = Harness()

@@ -187,6 +187,10 @@ final class ChatListController: ObservableObject {
     private var expandToolUse = false
     private var smoothStreaming = true
 
+    /// The chat being opened while it was marked unread. When its content arrives
+    /// and nothing is streaming, the list starts at the last message's beginning.
+    private var openingUnreadChatID: String?
+
     init() {
         listView.onAction = { [weak self] action in self?.perform(action) }
         listView.onPinnedChange = { [weak self] atBottom in self?.store?.selectedChatAtBottom = atBottom }
@@ -273,11 +277,21 @@ final class ChatListController: ObservableObject {
             default: false
             }
         }
+        let wasStreaming = shownState.isStreaming
         if isEdit {
             listView.performEdits { applyOps(ops) }
         } else {
             applyOps(ops)
         }
+        // The reply is complete while nobody is watching: leave the list at the
+        // start of it. A focused window means the user followed it to the end.
+        if isEdit, wasStreaming, !shownState.isStreaming, !windowIsFocused {
+            listView.revealLastMessageStart(onlyIfPinned: true)
+        }
+    }
+
+    private var windowIsFocused: Bool {
+        NSApp.isActive && listView.window?.isKeyWindow == true
     }
 
     private func applyOps(_ ops: [RenderOp]) {
@@ -288,9 +302,15 @@ final class ChatListController: ObservableObject {
                 shownState = ChatRenderState()
                 listView.setMessages([], context: makeContext())
             case .snapshot(let chatID, let rows, let state):
+                let switched = shownChatID != chatID
                 shownChatID = chatID
                 shownState = state
                 listView.setMessages(rows, context: makeContext())
+                if switched {
+                    listView.revealPendingApproval()
+                    if !state.isStreaming, openingUnreadChatID == chatID { listView.revealLastMessageStart() }
+                }
+                if openingUnreadChatID == chatID { openingUnreadChatID = nil }
             case .state(let state):
                 shownState = state
                 listView.context = makeContext()
@@ -302,6 +322,8 @@ final class ChatListController: ObservableObject {
                 listView.delete(id: id)
             case .scrollTo(let messageID):
                 listView.scrollToMessage(id: messageID)
+            case .revealApproval:
+                listView.revealPendingApproval()
             }
         }
     }
@@ -325,6 +347,18 @@ final class ChatListController: ObservableObject {
     /// Pins the list to the bottom (e.g. when the user sends a message).
     func scrollToBottom() {
         listView.jumpToBottom()
+    }
+
+    /// Notes that the user is switching to a chat. An unread one starts at the
+    /// beginning of its last message once shown (unless it's still streaming).
+    func willOpenChat(_ filename: String, unread: Bool) {
+        openingUnreadChatID = unread ? filename : nil
+    }
+
+    /// Brings the tool call awaiting approval into view, once everything pushed
+    /// before has been applied (so the call is in the list by then).
+    func revealPendingApproval() {
+        enqueue(.revealApproval)
     }
 
     /// Scrolls to a message and highlights it, once everything pushed before

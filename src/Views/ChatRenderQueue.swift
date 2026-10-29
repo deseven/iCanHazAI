@@ -26,6 +26,8 @@ enum RenderOp: Sendable, Equatable {
     case delete(id: String)
     /// Bring a message into view and highlight it.
     case scrollTo(messageID: String)
+    /// Bring the tool call awaiting approval into view.
+    case revealApproval
 }
 
 /// A unit of work for `ChatRenderQueue`.
@@ -41,6 +43,9 @@ enum RenderJob: Sendable {
     case snapshot(chatId: String, chat: Chat, state: ChatRenderState)
     /// Scroll to a message once everything queued before has been applied.
     case scrollTo(messageID: String)
+    /// Bring the pending tool approval into view once everything queued before
+    /// has been applied.
+    case revealApproval
 }
 
 /// Moves the expensive part of feeding the list off the main actor:
@@ -83,7 +88,7 @@ actor ChatRenderQueue {
             } else {
                 pending.append(job)
             }
-        case .scrollTo:
+        case .scrollTo, .revealApproval:
             pending.append(job)
         }
         guard !draining else { return }
@@ -111,6 +116,8 @@ actor ChatRenderQueue {
             if !ops.isEmpty { await deliver(ops) }
         case .scrollTo(let messageID):
             await deliver([.scrollTo(messageID: messageID)])
+        case .revealApproval:
+            await deliver([.revealApproval])
         }
     }
 

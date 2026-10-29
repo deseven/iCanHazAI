@@ -241,6 +241,75 @@ final class ChatListView: NSView {
         visibleViews[id]?.flash()
     }
 
+    /// Puts the top of the last message at the top of the viewport, so a long
+    /// message is read from its start. A message that fits stays as it is, at
+    /// the bottom. With `onlyIfPinned` a list the user has scrolled away from
+    /// the bottom is left alone.
+    func revealLastMessageStart(onlyIfPinned: Bool = false) {
+        guard textWidth > 0, !rows.isEmpty, pinnedToBottom || !onlyIfPinned else { return }
+        let i = rows.count - 1
+        if let h = ensureExact(i) { applyHeights([(i, h)]) }
+        let viewport = scrollView.contentView.bounds.height
+        guard documentHeight - (offsets[i] - rowLayout.blockGap) > viewport else { return }
+        followTicker.stop()
+        pinnedToBottom = false
+        for _ in 0..<2 {
+            if let h = ensureExact(i) { applyHeights([(i, h)]) }
+            setScrollY(offsets[i] - rowLayout.blockGap)
+            layoutRows()
+        }
+        pinnedToBottom = documentHeight - scrollView.contentView.bounds.maxY < 30
+        updateJumpButton()
+    }
+
+    /// Brings the tool call awaiting approval into view when it isn't. A block that
+    /// fits the viewport is shown whole, from its top; a taller one is aligned so
+    /// its Allow/Deny buttons are visible.
+    func revealPendingApproval() {
+        guard textWidth > 0,
+            let i = rows.lastIndex(where: { $0.model.toolCalls.contains(where: \.pendingApproval) })
+        else { return }
+        if let h = ensureExact(i) { applyHeights([(i, h)]) }
+        guard var target = approvalScrollTarget(row: i) else { return }
+        followTicker.stop()
+        pinnedToBottom = false
+        for _ in 0..<3 {
+            setScrollY(target)
+            layoutRows()
+            guard let next = approvalScrollTarget(row: i) else { break }
+            target = next
+        }
+        pinnedToBottom = documentHeight - scrollView.contentView.bounds.maxY < 30
+        updateJumpButton()
+    }
+
+    /// Where to scroll to show the approval block of row `i`; nil if it's visible already.
+    private func approvalScrollTarget(row i: Int) -> CGFloat? {
+        let row = rows[i]
+        guard let rendered = row.rendered else { return nil }
+        let layout = rowLayout
+        let frames = layout.blockFrames(rendered, heights: row.heights, open: openPolicy.mask(for: rendered)).frames
+        guard
+            let b = rendered.blocks.firstIndex(where: {
+                if case .collapsible(let c) = $0 { return c.hasApproval }
+                return false
+            }),
+            case .collapsible(let block) = rendered.blocks[b]
+        else { return nil }
+        let top = offsets[i] + frames[b].y
+        let bottom = top + frames[b].height
+        let visible = scrollView.documentVisibleRect
+        if frames[b].height <= visible.height - layout.blockGap * 2 {
+            if top >= visible.minY, bottom <= visible.maxY { return nil }
+            return top - layout.blockGap
+        }
+        let measured = b < row.heights.count ? row.heights[b] : nil
+        guard let approvalY = layout.collapsible(block, open: true, bodyHeight: measured).approvalY else { return nil }
+        let buttonsTop = top + approvalY
+        if buttonsTop >= visible.minY, buttonsTop + layout.approvalHeight <= visible.maxY { return nil }
+        return bottom - visible.height
+    }
+
     // MARK: Search
 
     /// Sets the text to look for; empty clears the highlights. A new query
@@ -1030,6 +1099,21 @@ final class PassToken: @unchecked Sendable {
             pinnedToBottom = false
             setScrollY(offsets[i] - 40)
             layoutRows()
+        }
+
+        /// Top and bottom of the row's approval block relative to the viewport's top edge.
+        func testApprovalFrame(of id: String) -> (top: CGFloat, bottom: CGFloat)? {
+            guard let i = indexByID[id], let rendered = rows[i].rendered,
+                let b = rendered.blocks.firstIndex(where: {
+                    if case .collapsible(let c) = $0 { return c.hasApproval }
+                    return false
+                })
+            else { return nil }
+            let frames = rowLayout.blockFrames(
+                rendered, heights: rows[i].heights, open: openPolicy.mask(for: rendered)
+            ).frames
+            let viewTop = scrollView.documentVisibleRect.minY
+            return (offsets[i] + frames[b].y - viewTop, offsets[i] + frames[b].maxY - viewTop)
         }
 
         func testScreenY(of id: String) -> CGFloat? {
