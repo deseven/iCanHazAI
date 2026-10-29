@@ -500,9 +500,9 @@ enum BuiltinTools {
             name: "replace_text",
             description:
                 """
-                Replace exact text in an existing UTF-8 text file: a literal find-and-replace for small, targeted changes (a token, a call, a few lines) that needs no line numbers or #TAG. New or non-text files: use write_file.
+                Replace exact text in an existing UTF-8 text file: a literal find-and-replace for small, targeted changes (a token, a call, a few lines) that needs no line numbers or #TAG.
 
-                old_text must match the file exactly: whitespace, indentation and line breaks included, no fuzzy matching. It must match exactly once; otherwise the call fails and lists the line numbers of the matches, so add surrounding text to make it unique, or set replace_all to replace every occurrence. The exact match is the staleness check; no #TAG is needed.
+                old_text must match the file exactly: whitespace, indentation and line breaks included, no fuzzy matching. It must match exactly once; otherwise the call fails and lists the line numbers of the matches, so add surrounding text to make it unique, or set replace_all to replace every occurrence.
 
                 Result, the same shape as an edit_file result: 'Updated: path [path#NEWTAG] (+added -removed)', then a preview from a before/after diff: '+N:' new or changed, ' N:' unchanged context (post-edit numbers), '-:TEXT' removed (unnumbered, never an anchor). Check it matches your intent. The new #TAG and the shown lines work with edit_file right away, no re-read needed.
 
@@ -516,7 +516,7 @@ enum BuiltinTools {
 
                 old_text must match the file exactly: whitespace, indentation and line breaks included, no fuzzy matching. It must match exactly once; otherwise the call fails and lists the line numbers of the matches, so add surrounding text to make it unique, or set replace_all to replace every occurrence.
 
-                Result: 'Updated: path (+added -removed)', then a preview from a before/after diff: '+N:' new or changed, ' N:' unchanged context (post-edit numbers), '-:TEXT' removed (unnumbered). Check it matches your intent. Make several separate changes with several calls. Never reformat or restyle with this tool; run the project formatter.
+                Result: 'Updated: path (+added -removed)', then a preview from a before/after diff: '+N:' new or changed, ' N:' unchanged context (post-edit numbers), '-:TEXT' removed (unnumbered). Check it matches your intent. Make several separate changes with several calls.
                 """
         ),
     ]
