@@ -66,9 +66,11 @@ enum HashlineFormat {
 
     // MARK: - Display helpers
 
-    /// Format a hashline section header for a file path and snapshot tag.
-    static func formatHashlineHeader(path: String, fileHash: String) -> String {
-        "\(filePrefix)\(path)\(fileHashSep)\(fileHash)\(fileSuffix)"
+    /// Format a hashline section header for a file path and snapshot tag. Without
+    /// a tag it is a bare `[path]` label, for results shown to a model that has
+    /// no use for tags (see `ToolContext.fileTags`).
+    static func formatHashlineHeader(path: String, fileHash: String? = nil) -> String {
+        "\(filePrefix)\(path)\(fileHash.map { fileHashSep + $0 } ?? "")\(fileSuffix)"
     }
 
     /// Formats a single numbered line as `LINE:TEXT`.

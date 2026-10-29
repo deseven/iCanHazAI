@@ -73,7 +73,9 @@ extension AllAppTests {
             let h = try await makeHarness()
             try await seed(h, Fixtures.chat(messages: [Fixtures.message()], role: "Optional"))
             #expect(
-                await toolNames(h) == ["calc", "edit_file", "ls", "read_file", "shell", "web_fetch"])
+                await toolNames(h) == [
+                    "calc", "edit_file", "ls", "read_file", "replace_text", "shell", "web_fetch",
+                ])
         }
 
         @Test("picking no directory removes Filesystem, Edit and Shell tools but keeps the rest")
@@ -90,7 +92,9 @@ extension AllAppTests {
             try await seed(
                 h, Fixtures.chat(messages: [Fixtures.message()], role: "Required", noWorkingDirectory: true))
             #expect(
-                await toolNames(h) == ["calc", "edit_file", "ls", "read_file", "shell", "web_fetch"])
+                await toolNames(h) == [
+                    "calc", "edit_file", "ls", "read_file", "replace_text", "shell", "web_fetch",
+                ])
         }
 
         @Test("setNoWorkingDirectory records the choice, persists it and drops the tools")

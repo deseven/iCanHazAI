@@ -17,7 +17,7 @@ To address the elephant in the room: there are many AI chat apps and agentic har
 - native macOS app: Swift backend, fully native chat rendering (Markdown, tables, code blocks with syntax highlighting) built on AppKit and TextKit, fast on huge chats, low resource usage
 - BYOK support: OpenAI, Anthropic, DeepSeek and OpenRouter, plus Ollama, llama.cpp and any OpenAI-compatible endpoint (LM Studio, vLLM, etc) as custom providers — add a key once, the model list and each model's capabilities are loaded for you and picked per chat from a searchable list; several named keys per provider, switchable from the Provider menu and managed in Provider → Manage Keys…
 - roles: clearly defined templates bundling a prompt, tools, and a working directory — several bundled, easy to create your own
-- agentic toolset: built-in filesystem/edit/shell/utils/web tool groups with per-tool approval and optional directory isolation; file editing uses the [oh-my-pi](https://github.com/can1357/oh-my-pi) hashline patch format for optimistic-concurrency edits
+- agentic toolset: built-in filesystem/edit/shell/utils/web tool groups with per-tool approval and optional directory isolation; file editing uses the [oh-my-pi](https://github.com/can1357/oh-my-pi) hashline patch format for optimistic-concurrency edits, plus an exact find-and-replace tool for small changes
 - integrated web access: web search and page extraction via Exa, Linkup, or Tavily (unified interface, your choice of provider, set up with a short wizard in Preferences > Web Search that verifies your API key), plus raw URL fetching
 - MCP: stdio and streamable HTTP servers with tool filtering, name prefixing, and run policies
 - remote work: seamless SSH working directories for agentic sessions on remote machines

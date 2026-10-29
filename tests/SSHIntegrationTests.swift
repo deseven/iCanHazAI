@@ -53,20 +53,20 @@ extension AllAppTests {
 
         private static func call(
             _ name: String, _ group: String, _ args: [String: Any], workdir: Workdir,
-            views: FileViewState = FileViewState()
+            views: FileViewState = FileViewState(), fileTags: Bool = true
         ) async -> (text: String, isError: Bool) {
-            let result = await callResult(name, group, args, workdir: workdir, views: views)
+            let result = await callResult(name, group, args, workdir: workdir, views: views, fileTags: fileTags)
             return (result.content, result.isError)
         }
 
         private static func callResult(
             _ name: String, _ group: String, _ args: [String: Any], workdir: Workdir,
-            views: FileViewState = FileViewState()
+            views: FileViewState = FileViewState(), fileTags: Bool = true
         ) async -> ToolResult {
             let arguments = (try? String(data: JSONSerialization.data(withJSONObject: args), encoding: .utf8)) ?? "{}"
             return await BuiltinTools.call(
                 name: name, arguments: arguments, callID: "test", group: group, workdir: workdir,
-                chatFilename: "test.json", context: ToolContext(views: views))
+                chatFilename: "test.json", context: ToolContext(views: views, fileTags: fileTags))
         }
 
         /// What the model knows after these results (their file view events).
@@ -388,6 +388,69 @@ extension AllAppTests {
             #expect(!afterErr)
             #expect(after.contains("1:ONE"))
             #expect(after.contains("2:two"))
+
+            await Self.destroy(wd, remote)
+        }
+
+        @Test("replace_text replaces exact text over SSH, keeps CRLF and hands over to edit_file")
+        func replaceTextSSH() async {
+            let (wd, remote) = Self.makeContext()
+            let write = await Self.callResult(
+                "write_file", Self.fs, ["path": "a.txt", "content": "one\r\ntwo\r\nthree\r\n"], workdir: wd)
+            #expect(!write.isError, "\(write.content)")
+
+            // No read first: the exact match is the check.
+            let replaced = await Self.callResult(
+                "replace_text", Self.edit, ["path": "a.txt", "old_text": "two\nthree", "new_text": "TWO\nTHREE"],
+                workdir: wd)
+            #expect(!replaced.isError, "\(replaced.content)")
+            let after = "one\nTWO\nTHREE\n"
+            let tag = HashlineFormat.computeFileHash(after)
+            #expect(replaced.content.hasPrefix("Updated: a.txt [a.txt#\(tag)] (+2 -2)\n"))
+            #expect(replaced.content.hasSuffix("\n 1:one\n-:two\n-:three\n+2:TWO\n+3:THREE"))
+
+            let (read, readErr) = await Self.call("read_file", Self.fs, ["path": "a.txt"], workdir: wd)
+            #expect(!readErr)
+            #expect(read.contains("[a.txt#\(tag)]"))
+            #expect(read.contains("3:THREE"))
+            // Still CRLF on the remote disk.
+            let (crs, _) = await Self.call(
+                "shell", Self.sh, ["command": "awk '/\\r$/ { n++ } END { print n }' a.txt"], workdir: wd)
+            #expect(crs.contains("3\n"), "\(crs)")
+
+            // edit_file follows with the tag from the result, no read in between.
+            let (edit, editErr) = await Self.call(
+                "edit_file", Self.edit,
+                ["input": "*** Begin Patch\n[a.txt#\(tag)]\nPUT 1.=1:\n+ONE\n*** End Patch"], workdir: wd,
+                views: Self.views(replaced))
+            #expect(!editErr, "edit_file failed: \(edit)")
+
+            let (missing, missingErr) = await Self.call(
+                "replace_text", Self.edit, ["path": "a.txt", "old_text": "nope", "new_text": "x"], workdir: wd)
+            #expect(missingErr)
+            #expect(missing.contains("was not found in a.txt"))
+
+            await Self.destroy(wd, remote)
+        }
+
+        @Test("the file tools leave the tags out over SSH when the model has no edit_file")
+        func untaggedSSH() async {
+            let (wd, remote) = Self.makeContext()
+            let (written, writeErr) = await Self.call(
+                "write_file", Self.fs, ["path": "a.txt", "content": "one\ntwo\n"], workdir: wd, fileTags: false)
+            #expect(!writeErr, "\(written)")
+            #expect(written == "Wrote 8 bytes to a.txt")
+
+            let (read, readErr) = await Self.call(
+                "read_file", Self.fs, ["path": "a.txt"], workdir: wd, fileTags: false)
+            #expect(!readErr)
+            #expect(read == "1:one\n2:two")
+
+            let (replaced, replaceErr) = await Self.call(
+                "replace_text", Self.edit, ["path": "a.txt", "old_text": "two", "new_text": "TWO"], workdir: wd,
+                fileTags: false)
+            #expect(!replaceErr, "\(replaced)")
+            #expect(replaced == "Updated: a.txt (+1 -1)\n 1:one\n-:two\n+2:TWO")
 
             await Self.destroy(wd, remote)
         }

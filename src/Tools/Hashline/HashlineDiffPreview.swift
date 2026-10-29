@@ -4,7 +4,7 @@
 import Foundation
 
 /// Builds the compact, line-numbered preview echoed after a successful
-/// `edit_file` so the model can immediately verify the edit landed. This is
+/// `edit_file` or `replace_text` so the model can immediately verify the edit landed. This is
 /// the *tool-result* text the model reads; the approval UI keeps the unified
 /// format from `DiffBuilder`.
 ///

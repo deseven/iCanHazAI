@@ -229,34 +229,45 @@ enum HashlinePatcher {
         }
     }
 
-    /// The `Updated:` block (with the counts of added and removed lines, which
-    /// stay exact when the preview shortens or truncates) and the `set` event
-    /// for the post-edit content, which lives at `newKey`. The model knows of it what it knew before
-    /// (carried through the applier's line origins), every line it authored
-    /// (even one the text-diff preview shows as unchanged), and the rows of the
-    /// preview it is about to read.
+    /// The model knows of the post-edit content what it knew before (carried
+    /// through the applier's line origins) and every line it authored (even one
+    /// the text-diff preview shows as unchanged); `updatedBlock` adds the rows
+    /// of the preview it is about to read.
     private static func updated(
         _ prepared: PreparedSection, newPath: String, newKey: FileKey
     ) -> (summary: String, events: [FileViewEvent]) {
-        let text = prepared.result.text
-        let preview = HashlineDiffPreview.generate(old: prepared.file.text, new: text)
+        let origins = prepared.result.origins
+        let authored = origins.indices.filter { origins[$0] == nil }.map { $0 + 1 }
+        let known = prepared.seenBefore.remapped(throughOrigins: origins).union(LineSet(authored))
+        return updatedBlock(
+            path: prepared.section.path, newPath: newPath, newKey: newKey, old: prepared.file.text,
+            new: prepared.result.text, known: known, warnings: prepared.result.warnings)
+    }
 
-        var lines = LineSet()
-        if !text.isEmpty {
-            let origins = prepared.result.origins
-            let authored = origins.indices.filter { origins[$0] == nil }.map { $0 + 1 }
-            lines = prepared.seenBefore.remapped(throughOrigins: origins)
-                .union(LineSet(authored))
-                .union(preview?.shownLines ?? LineSet())
+    /// The `Updated:` block (with the counts of added and removed lines, which
+    /// stay exact when the preview shortens or truncates) and the `set` event
+    /// for the post-edit content `new`, which lives at `newKey`. `known` is the
+    /// lines of `new` the model knows without the preview; the rows the preview
+    /// prints in full join them. Shared by every tool that rewrites a file in
+    /// place, so the model reads one result format. `fileTags: false` leaves
+    /// the `[newPath#TAG]` out, for a model without `edit_file`.
+    static func updatedBlock(
+        path: String, newPath: String, newKey: FileKey, old: String, new: String, known: LineSet,
+        warnings: [String], fileTags: Bool = true
+    ) -> (summary: String, events: [FileViewEvent]) {
+        let preview = HashlineDiffPreview.generate(old: old, new: new)
+        let lines = new.isEmpty ? LineSet() : known.union(preview?.shownLines ?? LineSet())
+
+        var header = "Updated: \(path)"
+        if fileTags {
+            header +=
+                " " + HashlineFormat.formatHashlineHeader(path: newPath, fileHash: HashlineFormat.computeFileHash(new))
         }
-
-        var header =
-            "Updated: \(prepared.section.path) [\(newPath)#\(HashlineFormat.computeFileHash(text))]"
         if let preview, let stat = HashlineDiffPreview.changeSummary(added: preview.added, removed: preview.removed) {
             header += " " + stat
         }
-        let summary = block(header, warnings: prepared.result.warnings, preview: preview?.text)
-        return (summary, [.set(newKey, contentID: HashlineFormat.computeContentID(text), lines: lines)])
+        let summary = block(header, warnings: warnings, preview: preview?.text)
+        return (summary, [.set(newKey, contentID: HashlineFormat.computeContentID(new), lines: lines)])
     }
 
     /// A section's result block. Its warnings (auto-repairs included) sit
@@ -323,7 +334,7 @@ enum HashlinePatcher {
     // MARK: - Errors
 
     /// Everything that can go wrong in the pipeline, as one error type.
-    private static func patchError(_ error: Error) -> HashlinePatchError {
+    static func patchError(_ error: Error) -> HashlinePatchError {
         switch error {
         case let error as HashlinePatchError: return error
         case let error as BuiltinToolError: return HashlinePatchError(error.message)

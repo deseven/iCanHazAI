@@ -5,8 +5,9 @@ import Differ
 import Foundation
 
 /// Builds unified-diff text for `write_file` tool calls (and, via
-/// [`HashlinePatcher`](src/Tools/Hashline/HashlinePatcher.swift), `edit_file`
-/// ones) so the chat renderer can show a colorized diff instead of raw JSON
+/// [`HashlinePatcher`](src/Tools/Hashline/HashlinePatcher.swift) and
+/// [`ReplaceText`](src/Tools/ReplaceText.swift), `edit_file` and
+/// `replace_text` ones) so the chat renderer can show a colorized diff instead of raw JSON
 /// arguments.
 ///
 /// The diff is computed against the file's current on-disk content (the "before"

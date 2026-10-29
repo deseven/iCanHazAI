@@ -73,6 +73,16 @@ extension AllAppTests {
                     == [ToolSummary.Entry(key: nil, value: "src/a.swift")])
         }
 
+        @Test("replace_text shows only the path, never the texts")
+        func replaceText() {
+            let arguments = json([
+                "path": "src/a.swift", "old_text": "x = old", "new_text": "x = new", "replace_all": true,
+            ])
+            #expect(
+                ToolSummary.callEntries(name: "replace_text", arguments: arguments)
+                    == [ToolSummary.Entry(key: nil, value: "src/a.swift")])
+        }
+
         @Test("no-arg tools produce an empty summary")
         func noArgTools() {
             #expect(ToolSummary.callEntries(name: "datetime", arguments: "{}") == [])

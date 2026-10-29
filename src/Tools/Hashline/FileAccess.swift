@@ -10,9 +10,10 @@ enum FileRead: Equatable, Sendable {
     case data(Data)
 }
 
-/// The only place the patch pipeline touches a filesystem, so local and SSH
+/// The only place the edit pipelines touch a filesystem, so local and SSH
 /// workdirs share one implementation of `edit_file` (see
-/// [`HashlinePatcher`](src/Tools/Hashline/HashlinePatcher.swift)). `resolved`
+/// [`HashlinePatcher`](src/Tools/Hashline/HashlinePatcher.swift)) and
+/// `replace_text` (see [`ReplaceText`](src/Tools/ReplaceText.swift)). `resolved`
 /// arguments are outputs of `resolve`. Failures are thrown as
 /// `BuiltinToolError`s whose text is safe to show the model.
 protocol FileAccess: Sendable {

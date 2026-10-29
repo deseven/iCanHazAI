@@ -1551,6 +1551,17 @@ actor ChatEngine {
         return sources
     }
 
+    /// Whether the tools of these sources include `edit_file`, the only
+    /// consumer of the file-version `#TAG`s the file tools print. Without it
+    /// they leave the tags out of their results and descriptions (see
+    /// `ToolContext.fileTags`).
+    private static func hasEditFile(in sources: [ResolvedToolSource]) -> Bool {
+        sources.contains {
+            $0.isBuiltinGroup && $0.name == BuiltinTools.editGroup
+                && ($0.toolsFilter.isEmpty || $0.toolsFilter.contains("edit_file"))
+        }
+    }
+
     /// The effective working directory for a chat: the per-chat value (seeded
     /// from the role at creation or picked by the user — permanent either way),
     /// falling back to the role's working directory. Nil when neither is set.
@@ -2364,6 +2375,7 @@ actor ChatEngine {
         // Local-only tools (macOS automation) are meaningless against an SSH
         // working directory and are not advertised at all.
         let sshWorkdir = effectiveWorkingDirectory(for: chat).map { SSHSpec.isSSH($0) } ?? false
+        let fileTags = Self.hasEditFile(in: resolved)
         for r in resolved {
             if r.isBuiltinGroup {
                 // Built-in groups: tools are always available (in-process).
@@ -2383,7 +2395,7 @@ actor ChatEngine {
                             serverName: r.name,
                             prefix: "",
                             name: tool.name,
-                            description: tool.description,
+                            description: tool.description(fileTags: fileTags),
                             inputSchema: tool.schema
                         )
                     })
@@ -2592,14 +2604,24 @@ actor ChatEngine {
         // instead of asking the user to approve a call that can't succeed. A
         // seen-lines rejection carries the lines it revealed as file view
         // events, so a straight retry passes.
-        if sourceName == BuiltinTools.editGroup, toolName == "edit_file" {
+        //
+        // replace_text gets the same treatment from its own pipeline: the
+        // text must be found (exactly, once unless replace_all), the file must
+        // be readable text, and so on. It has no seen-lines guard.
+        if sourceName == BuiltinTools.editGroup, toolName == "edit_file" || toolName == "replace_text" {
             let wd = Workdir(root: workdir, isolated: isolation, chatID: chatID)
             let views = FileViewState.fold(chat?.activeMessages ?? [])
-            switch try await HashlinePatcher.preflight(arguments: call.arguments, workdir: wd, views: views) {
+            let preflight: HashlinePatcher.Preflight
+            if toolName == "edit_file" {
+                preflight = try await HashlinePatcher.preflight(arguments: call.arguments, workdir: wd, views: views)
+            } else {
+                preflight = try await ReplaceText.preflight(arguments: call.arguments, workdir: wd, views: views)
+            }
+            switch preflight {
             case .ok(let diff):
                 setToolCallDiff(callID: call.id, filename: filename, diff: diff)
             case .error(let message, let fileViews):
-                debugLog("Tool", "edit_file preflight failed — callID=\(call.id), chat=\(filename)")
+                debugLog("Tool", "\(toolName) preflight failed — callID=\(call.id), chat=\(filename)")
                 return PreparedToolCall(
                     call: call,
                     immediateResult: ToolResult(
@@ -2688,13 +2710,15 @@ actor ChatEngine {
             } else if BuiltinTools.allGroups.contains(sourceName) {
                 // Built-in group: run in-process with the chat's workdir.
                 let wd = Workdir(root: prepared.workdir, isolated: prepared.isolation, chatID: prepared.chatID)
-                // The seen-lines guard checks against what the conversation
-                // shows right now, which includes the results of the calls
-                // that ran earlier in this batch.
+                // The seen-lines guard (and replace_text's carry-over of seen
+                // lines) checks against what the conversation shows right
+                // now, which includes the results of the calls that ran
+                // earlier in this batch.
                 var context = ToolContext()
-                if toolName == "edit_file" {
-                    let messages = records.first(where: { $0.filename == filename })?.chat?.activeMessages ?? []
-                    context.views = FileViewState.fold(messages)
+                let chat = records.first(where: { $0.filename == filename })?.chat
+                if let chat { context.fileTags = Self.hasEditFile(in: resolvedToolSources(for: chat)) }
+                if toolName == "edit_file" || toolName == "replace_text" {
+                    context.views = FileViewState.fold(chat?.activeMessages ?? [])
                 }
                 result = await BuiltinTools.call(
                     name: toolName, arguments: call.arguments, callID: call.id, group: sourceName, workdir: wd,
@@ -3455,6 +3479,7 @@ actor ChatEngine {
             let chat = records[idx].chat
         else { return ChatToolSnapshot(builtin: [], external: []) }
         let resolved = resolvedToolSources(for: chat)
+        let fileTags = Self.hasEditFile(in: resolved)
         let sshWorkdir = effectiveWorkingDirectory(for: chat).map { SSHSpec.isSSH($0) } ?? false
         var builtin: [ChatToolEntry] = []
         var external: [ChatToolEntry] = []
@@ -3468,7 +3493,7 @@ actor ChatEngine {
                     builtin.append(
                         ChatToolEntry(
                             name: tool.name,
-                            description: tool.description,
+                            description: tool.description(fileTags: fileTags),
                             autoApproved: chat.isToolAutoApproved(
                                 namespacedName: tool.name, roleDefault: r.autoAllows(tool: tool.name)),
                             roleAutoApproved: r.autoAllows(tool: tool.name),

@@ -285,6 +285,7 @@ extension ToolSummary {
     fileprivate static let knownTools: [String: KnownToolSpec] = [
         // Built-in: Edit
         "edit_file": KnownToolSpec(primary: []),
+        "replace_text": KnownToolSpec(primary: ["path"]),
         // Built-in: Filesystem
         "read_file": KnownToolSpec(primary: ["path"], secondary: ["ranges"]),
         "write_file": KnownToolSpec(primary: ["path"]),

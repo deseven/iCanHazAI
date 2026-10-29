@@ -141,6 +141,9 @@ enum SmokeRoleTools {
     /// `read_file` auto-approved, `edit_file` asks first. Chat trees are on, so a regenerated turn stays
     /// in the chat as another branch.
     case fileEditApproval
+    /// `read_file` auto-approved, `replace_text` asks first, and there is no `edit_file`: the file tools
+    /// leave their `#TAG`s out.
+    case fileReplaceApproval
 }
 
 struct SmokeTimeout: Error, CustomStringConvertible {
@@ -244,6 +247,17 @@ final class SmokeFixture: @unchecked Sendable {
                 [features]
                 with_response_regen = true
                 with_chat_trees = true
+
+                """
+        case .fileReplaceApproval:
+            toml += """
+
+                [filesystem]
+                tools = ["read_file"]
+                auto_allow = ["read_file"]
+
+                [edit]
+                tools = ["replace_text"]
 
                 """
         }

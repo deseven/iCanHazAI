@@ -133,14 +133,16 @@ enum BuiltinToolsSSH {
     // MARK: - Dispatch
 
     static func filesystem(
-        name: String, args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String
+        name: String, args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String,
+        fileTags: Bool = true
     ) async throws -> ToolOutput {
         switch name {
         case "ls": return try await ls(args, workdir: workdir, ssh: ssh)
         case "read_file":
-            return try await readFile(args, workdir: workdir, ssh: ssh, chatFilename: chatFilename)
+            return try await readFile(
+                args, workdir: workdir, ssh: ssh, chatFilename: chatFilename, fileTags: fileTags)
         case "write_file":
-            return try await writeFile(args, workdir: workdir, ssh: ssh)
+            return try await writeFile(args, workdir: workdir, ssh: ssh, fileTags: fileTags)
         case "find_file": return try await findFile(args, workdir: workdir, ssh: ssh)
         case "find_text": return try await findText(args, workdir: workdir, ssh: ssh)
         case "mkdir": return try await mkdir(args, workdir: workdir, ssh: ssh)
@@ -190,7 +192,7 @@ enum BuiltinToolsSSH {
     }
 
     private static func readFile(
-        _ args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String
+        _ args: [String: Any], workdir: Workdir, ssh: SSHContext, chatFilename: String, fileTags: Bool
     ) async throws -> ToolOutput {
         let path = try BuiltinTools.requireString(args, "path")
         let selector = try ReadSelector(arguments: args)
@@ -211,11 +213,11 @@ enum BuiltinToolsSSH {
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
         return try BuiltinTools.formatFileContent(
             r.stdout, path: path, selector: selector, chatFilename: chatFilename,
-            key: .ssh(host: ssh.host, resolved: resolved))
+            key: .ssh(host: ssh.host, resolved: resolved), fileTags: fileTags)
     }
 
     private static func writeFile(
-        _ args: [String: Any], workdir: Workdir, ssh: SSHContext
+        _ args: [String: Any], workdir: Workdir, ssh: SSHContext, fileTags: Bool
     ) async throws -> ToolOutput {
         let path = try BuiltinTools.requireString(args, "path")
         let (content, strippedPrefixes) = HashlineFormat.stripPastedPrefixes(
@@ -231,10 +233,8 @@ enum BuiltinToolsSSH {
         // A write replaced the whole file, so every line is now seen. Return
         // the minted #TAG so the model can edit the file without re-reading.
         let text = TextFile.decode(data)?.text ?? content
-        let tag = HashlineFormat.computeFileHash(text)
-        var result =
-            "Wrote \(data.count) bytes to \(path)\n\(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))"
-        if strippedPrefixes { result += "\n\(HashlineFormat.strippedPastedPrefixesNote)" }
+        let result = BuiltinTools.writeResult(
+            path: path, byteCount: data.count, text: text, strippedPrefixes: strippedPrefixes, fileTags: fileTags)
         return ToolOutput(
             content: result, isError: false,
             fileViews: [BuiltinTools.writtenFileView(.ssh(host: ssh.host, resolved: resolved), text: text)])

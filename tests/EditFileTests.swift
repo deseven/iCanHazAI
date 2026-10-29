@@ -14,8 +14,9 @@ extension AllAppTests {
 
     // MARK: - Test helpers
 
-    /// A temp directory + helpers for edit_file tests.
-    private final class EditTestDir {
+    /// A temp directory + helpers for edit_file tests (shared with the
+    /// replace_text ones).
+    final class EditTestDir {
         let path: String
         init() throws {
             let base = NSTemporaryDirectory()
@@ -84,7 +85,7 @@ extension AllAppTests {
     /// A conversation as the file tools see it: every call runs through
     /// `BuiltinTools.call` with the views folded from the results so far, and
     /// its result joins the history like it would join the chat.
-    private final class ToolHistory {
+    final class ToolHistory {
         private(set) var results: [ToolResult] = []
         let workdir: Workdir
 
@@ -1269,13 +1270,14 @@ extension AllAppTests {
 
     @Suite("edit_file: registry")
     struct EditFileRegistryTests {
-        @Test("edit_file is the only Edit tool and dispatches to the Edit group")
+        @Test("the Edit group is edit_file and replace_text, dispatching to the Edit group")
         func registry() {
             let defs = BuiltinTools.tools(for: BuiltinTools.editGroup)
-            #expect(defs.count == 1)
-            #expect(defs[0].name == "edit_file")
-            #expect(BuiltinTools.group(for: "edit_file") == "Edit")
-            #expect(BuiltinTools.allToolNames.contains("edit_file"))
+            #expect(defs.map(\.name) == ["edit_file", "replace_text"])
+            for name in ["edit_file", "replace_text"] {
+                #expect(BuiltinTools.group(for: name) == "Edit")
+                #expect(BuiltinTools.allToolNames.contains(name))
+            }
         }
 
         @Test("edit_file tool definition carries the hashline schema")

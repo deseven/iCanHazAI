@@ -196,6 +196,15 @@ struct BuiltinToolDef: Sendable {
     let name: String
     let description: String
     let schema: String
+    /// The description for a chat whose model has no `edit_file` (see
+    /// `ToolContext.fileTags`): the tool's results leave file-version `#TAG`s
+    /// out then, and so does what it says about them. Nil when the
+    /// description doesn't depend on it.
+    var untaggedDescription: String? = nil
+
+    func description(fileTags: Bool) -> String {
+        fileTags ? description : (untaggedDescription ?? description)
+    }
 }
 
 /// The output of a builtin tool. Most tools produce only `content` + `isError`;
@@ -225,11 +234,17 @@ struct ToolOutput {
     }
 }
 
-/// Per-call state from the conversation that some tools need. Today only
-/// `edit_file`: the file views its seen-lines guard checks against, folded from
-/// the chat's active messages at the moment of the call.
+/// Per-call state from the conversation that some tools need.
 struct ToolContext: Sendable {
+    /// `edit_file` and `replace_text`: the file views the former's seen-lines
+    /// guard checks against and the latter carries forward, folded from the
+    /// chat's active messages at the moment of the call.
     var views = FileViewState()
+    /// Whether the model has `edit_file`, the only consumer of the file-version
+    /// `#TAG`s that `read_file`, `find_text`, `write_file` and `replace_text`
+    /// print. When it hasn't, they are left out of the results: they would
+    /// only cost context.
+    var fileTags = true
 }
 
 /// A processed image produced by `read_file`: the resized/re-encoded image
@@ -344,14 +359,18 @@ enum BuiltinTools {
             description:
                 "Read a file and return its contents in a format that you can process. Use this as a main tool for reading individual files. Supports plain text and any other textual formats, document binaries (docx, doc, odt, rtf, pdf and similar) and image files. Text files are returned as a '[path#TAG]' header followed by 'N:content' numbered lines (the empty line after a final newline is not a line and is not shown; an empty file returns the header and '(empty file)'): #TAG is a file-version hash — copy it verbatim into edit_file to prove the file hasn't changed. A partial read adds a '(lines A-B of N)' line after the header; a '…' row marks the gap between disjoint ranges. Only the lines shown can be edited with edit_file. The 'N:' prefix is display metadata, not file content — never include it in write_file content or edit_file body rows. Document binaries are returned as extracted plain text with no headers or line numbers and cannot be edited via edit_file.",
             schema:
-                #"{"type":"object","properties":{"path":{"type":"string","description":"File path to read. \#(Workdir.pathDescription)"},"ranges":{"type":"string","description":"Comma-separated 1-based line ranges: 'A-B' (inclusive), 'A+C' (C lines starting at A), 'N-' (line N to the end). E.g. '100-200', '500+30', '1-40,1220-1270'. Defaults to the whole file; at most 2000 lines per call."}},"required":["path"]}"#
+                #"{"type":"object","properties":{"path":{"type":"string","description":"File path to read. \#(Workdir.pathDescription)"},"ranges":{"type":"string","description":"Comma-separated 1-based line ranges: 'A-B' (inclusive), 'A+C' (C lines starting at A), 'N-' (line N to the end). E.g. '100-200', '500+30', '1-40,1220-1270'. Defaults to the whole file; at most 2000 lines per call."}},"required":["path"]}"#,
+            untaggedDescription:
+                "Read a file and return its contents in a format that you can process. Use this as a main tool for reading individual files. Supports plain text and any other textual formats, document binaries (docx, doc, odt, rtf, pdf and similar) and image files. Text files are returned as 'N:content' numbered lines (the empty line after a final newline is not a line and is not shown; an empty file returns '(empty file)'). A partial read starts with a '(lines A-B of N)' line; a '…' row marks the gap between disjoint ranges. The 'N:' prefix is display metadata, not file content — never include it in write_file content. Document binaries are returned as extracted plain text with no line numbers."
         ),
         BuiltinToolDef(
             name: "write_file",
             description:
-                "Write text content to a file (creates or overwrites). Parent directories are created as needed. ALWAYS provide the COMPLETE intended content of the file — partial updates or placeholders like '// rest unchanged' are forbidden. Pasted read_file output (a '[path#TAG]' header or consecutive 'N:' line-number prefixes) is automatically stripped, and the result says so. The result includes the '[path#TAG]' file-version hash — copy it verbatim into edit_file to edit the file without re-reading. For targeted edits to existing files, use edit_file instead.",
+                "Write text content to a file (creates or overwrites). Parent directories are created as needed. ALWAYS provide the COMPLETE intended content of the file — partial updates or placeholders like '// rest unchanged' are forbidden. Pasted read_file output (a '[path#TAG]' header or consecutive 'N:' line-number prefixes) is automatically stripped, and the result says so. The result includes the '[path#TAG]' file-version hash — copy it verbatim into edit_file to edit the file without re-reading. For targeted edits to existing files, use replace_text or edit_file instead.",
             schema:
-                #"{"type":"object","properties":{"path":{"type":"string","description":"File path to write. \#(Workdir.pathDescription)"},"content":{"type":"string","description":"The complete text content to write, without line numbers or truncation."}},"required":["path","content"]}"#
+                #"{"type":"object","properties":{"path":{"type":"string","description":"File path to write. \#(Workdir.pathDescription)"},"content":{"type":"string","description":"The complete text content to write, without line numbers or truncation."}},"required":["path","content"]}"#,
+            untaggedDescription:
+                "Write text content to a file (creates or overwrites). Parent directories are created as needed. ALWAYS provide the COMPLETE intended content of the file — partial updates or placeholders like '// rest unchanged' are forbidden. Pasted read_file output (consecutive 'N:' line-number prefixes) is automatically stripped, and the result says so."
         ),
         BuiltinToolDef(
             name: "find_file",
@@ -365,7 +384,9 @@ enum BuiltinTools {
             description:
                 "Search file contents with a regular expression across a directory tree. Returns a '[path#TAG]' header per file followed by 'N:content' for each matching line (context lines use '-' separators, groups are split by '--'), sorted deterministically; lines longer than 300 characters are truncated — read those with read_file before editing them. #TAG is the file-version hash — copy it verbatim into edit_file. Binary files are skipped.",
             schema:
-                #"{"type":"object","properties":{"path":{"type":"string","description":"\#(Workdir.searchRootDescription)"},"regex":{"type":"string","description":"Regular expression to search for in file contents. The full regex syntax is supported (\\d \\w \\s, quantifiers, alternation, groups, anchors); in some environments it is POSIX ERE (grep -E: alternation, groups, + ? {n,m} quantifiers, but no \\d \\w \\s shorthands — use [[:digit:]] etc.). Invalid patterns are reported as errors."},"file_pattern":{"type":"string","description":"Optional glob to filter files by name, e.g. '*.swift'. Same glob syntax as find_file."},"case_insensitive":{"type":"boolean","description":"Match without regard to case. Default false."},"include_hidden":{"type":"boolean","description":"Also search hidden files and directories (names starting with '.'). Default false."},"exclude_paths":{"type":"array","items":{"type":"string"},"description":"\#(Workdir.excludePathsDescription)"},"max_results":{"type":"integer","description":"Maximum number of matching lines to return (1-1000), applied after sorting so truncation is deterministic. Default 200."},"context":{"type":"integer","description":"Lines of context before and after each match (0-25), grep-style. Default 0."}},"required":["regex"]}"#
+                #"{"type":"object","properties":{"path":{"type":"string","description":"\#(Workdir.searchRootDescription)"},"regex":{"type":"string","description":"Regular expression to search for in file contents. The full regex syntax is supported (\\d \\w \\s, quantifiers, alternation, groups, anchors); in some environments it is POSIX ERE (grep -E: alternation, groups, + ? {n,m} quantifiers, but no \\d \\w \\s shorthands — use [[:digit:]] etc.). Invalid patterns are reported as errors."},"file_pattern":{"type":"string","description":"Optional glob to filter files by name, e.g. '*.swift'. Same glob syntax as find_file."},"case_insensitive":{"type":"boolean","description":"Match without regard to case. Default false."},"include_hidden":{"type":"boolean","description":"Also search hidden files and directories (names starting with '.'). Default false."},"exclude_paths":{"type":"array","items":{"type":"string"},"description":"\#(Workdir.excludePathsDescription)"},"max_results":{"type":"integer","description":"Maximum number of matching lines to return (1-1000), applied after sorting so truncation is deterministic. Default 200."},"context":{"type":"integer","description":"Lines of context before and after each match (0-25), grep-style. Default 0."}},"required":["regex"]}"#,
+            untaggedDescription:
+                "Search file contents with a regular expression across a directory tree. Returns a '[path]' header per file followed by 'N:content' for each matching line (context lines use '-' separators, groups are split by '--'), sorted deterministically; lines longer than 300 characters are truncated — read those with read_file to see them in full. Binary files are skipped."
         ),
         BuiltinToolDef(
             name: "mkdir",
@@ -411,7 +432,7 @@ enum BuiltinTools {
             name: "edit_file",
             description:
                 """
-                Edit existing UTF-8 text files with hashline patches: name original lines or gaps, then give the new content. New or non-text files: use write_file.
+                Edit existing UTF-8 text files with hashline patches: name original lines or gaps, then give the new content. New or non-text files: use write_file. For one exact-text substitution (a token, a call, a few lines) in a single file, replace_text is simpler.
 
                 Section header '[path#TAG]': TAG is the 4-hex file-version hash from the latest read_file/find_text/write_file/edit_file result, copied verbatim; required per section. Several sections (and files) per patch are fine; all are validated before anything is written.
 
@@ -474,7 +495,30 @@ enum BuiltinTools {
                 """,
             schema:
                 #"{"type":"object","properties":{"input":{"type":"string","description":"Hashline patch text. Begins with '*** Begin Patch' and ends with '*** End Patch'. Contains one or more [path#TAG] sections with PUT/CUT/REM/MV operations."}},"required":["input"]}"#
-        )
+        ),
+        BuiltinToolDef(
+            name: "replace_text",
+            description:
+                """
+                Replace exact text in an existing UTF-8 text file: a literal find-and-replace for small, targeted changes (a token, a call, a few lines) that needs no line numbers or #TAG. New or non-text files: use write_file.
+
+                old_text must match the file exactly: whitespace, indentation and line breaks included, no fuzzy matching. It must match exactly once; otherwise the call fails and lists the line numbers of the matches, so add surrounding text to make it unique, or set replace_all to replace every occurrence. The exact match is the staleness check; no #TAG is needed.
+
+                Result, the same shape as an edit_file result: 'Updated: path [path#NEWTAG] (+added -removed)', then a preview from a before/after diff: '+N:' new or changed, ' N:' unchanged context (post-edit numbers), '-:TEXT' removed (unnumbered, never an anchor). Check it matches your intent. The new #TAG and the shown lines work with edit_file right away, no re-read needed.
+
+                Prefer edit_file for several separate changes in one file or across files, for inserting or deleting whole lines by number, and for moving or deleting files. Never reformat or restyle with this tool; run the project formatter.
+                """,
+            schema:
+                #"{"type":"object","properties":{"path":{"type":"string","description":"File path to edit. \#(Workdir.pathDescription)"},"old_text":{"type":"string","description":"The exact text to find, copied verbatim from the file, without read_file's 'N:' line-number prefixes. Must not be empty and must match exactly once unless replace_all is true."},"new_text":{"type":"string","description":"The text to put in place of old_text. Empty deletes old_text. Must differ from old_text."},"replace_all":{"type":"boolean","description":"Replace every occurrence of old_text instead of requiring a single match. Default false."}},"required":["path","old_text","new_text"]}"#,
+            untaggedDescription:
+                """
+                Replace exact text in an existing UTF-8 text file: a literal find-and-replace for small, targeted changes (a token, a call, a few lines) that needs no line numbers. New or non-text files: use write_file.
+
+                old_text must match the file exactly: whitespace, indentation and line breaks included, no fuzzy matching. It must match exactly once; otherwise the call fails and lists the line numbers of the matches, so add surrounding text to make it unique, or set replace_all to replace every occurrence.
+
+                Result: 'Updated: path (+added -removed)', then a preview from a before/after diff: '+N:' new or changed, ' N:' unchanged context (post-edit numbers), '-:TEXT' removed (unnumbered). Check it matches your intent. Make several separate changes with several calls. Never reformat or restyle with this tool; run the project formatter.
+                """
+        ),
     ]
 
     private static let shellToolDefs: [BuiltinToolDef] = {
@@ -579,12 +623,14 @@ enum BuiltinTools {
     ) async throws -> ToolOutput {
         // SSH workdir: route workdir-capable tools to the remote
         // implementations. Utils and applescript always run locally, and
-        // edit_file picks local or remote through its `FileAccess`.
+        // edit_file and replace_text pick local or remote through their
+        // `FileAccess`.
         if let ssh = workdir.ssh {
             switch (group, name) {
             case (filesystemGroup, _):
                 return try await BuiltinToolsSSH.filesystem(
-                    name: name, args: args, workdir: workdir, ssh: ssh, chatFilename: chatFilename)
+                    name: name, args: args, workdir: workdir, ssh: ssh, chatFilename: chatFilename,
+                    fileTags: context.fileTags)
             case (shellGroup, "shell"):
                 return try await BuiltinToolsSSH.shell(args: args, workdir: workdir, ssh: ssh)
             default:
@@ -606,10 +652,12 @@ enum BuiltinTools {
         // Filesystem
         case (filesystemGroup, "ls"): return try ls(args, workdir: workdir)
         case (filesystemGroup, "read_file"):
-            return try readFile(args, workdir: workdir, chatFilename: chatFilename)
-        case (filesystemGroup, "write_file"): return try writeFile(args, workdir: workdir)
+            return try readFile(args, workdir: workdir, chatFilename: chatFilename, fileTags: context.fileTags)
+        case (filesystemGroup, "write_file"):
+            return try writeFile(args, workdir: workdir, fileTags: context.fileTags)
         case (filesystemGroup, "find_file"): return try findFile(args, workdir: workdir)
-        case (filesystemGroup, "find_text"): return try await findText(args, workdir: workdir)
+        case (filesystemGroup, "find_text"):
+            return try await findText(args, workdir: workdir, fileTags: context.fileTags)
         case (filesystemGroup, "mkdir"): return try mkdir(args, workdir: workdir)
         case (filesystemGroup, "mv"): return try mv(args, workdir: workdir)
         case (filesystemGroup, "cp"): return try cp(args, workdir: workdir)
@@ -618,6 +666,7 @@ enum BuiltinTools {
         case (filesystemGroup, "pwd"): return pwd(workdir)
         // Edit
         case (editGroup, "edit_file"): return try await editFile(args, workdir: workdir, context: context)
+        case (editGroup, "replace_text"): return try await replaceText(args, workdir: workdir, context: context)
         // Shell
         case (shellGroup, "shell"): return try await shell(args, workdir: workdir)
         case (shellGroup, "applescript"): return try await applescript(args)
@@ -1090,7 +1139,7 @@ enum BuiltinTools {
     }
 
     private static func readFile(
-        _ args: [String: Any], workdir: Workdir, chatFilename: String
+        _ args: [String: Any], workdir: Workdir, chatFilename: String, fileTags: Bool
     ) throws -> ToolOutput {
         let path = try requireString(args, "path")
         let selector = try ReadSelector(arguments: args)
@@ -1111,7 +1160,7 @@ enum BuiltinTools {
         }
         return try formatFileContent(
             data, path: path, selector: selector, chatFilename: chatFilename,
-            key: .local(resolved: resolved))
+            key: .local(resolved: resolved), fileTags: fileTags)
     }
 
     /// Shared read_file formatting pipeline (classification, document/image
@@ -1124,7 +1173,8 @@ enum BuiltinTools {
     /// models and the fallback text on vision-incapable ones — exactly
     /// like user-attached images.
     static func formatFileContent(
-        _ data: Data, path: String, selector: ReadSelector, chatFilename: String, key: FileKey
+        _ data: Data, path: String, selector: ReadSelector, chatFilename: String, key: FileKey,
+        fileTags: Bool = true
     ) throws -> ToolOutput {
         let hint = DocumentTypeHint(filename: path)
         let kind = DocumentClassifier.classify(data: data, hint: hint)
@@ -1134,7 +1184,7 @@ enum BuiltinTools {
             guard let file = TextFile.decode(data) else {
                 throw BuiltinToolError("invalid argument 'path': file is not valid UTF-8: \(path)")
             }
-            return formatTextLines(file.text, path: path, selector: selector, key: key)
+            return formatTextLines(file.text, path: path, selector: selector, key: key, fileTags: fileTags)
 
         case .document(let format):
             switch DocumentExtractor.extract(data: data, format: format) {
@@ -1211,12 +1261,16 @@ enum BuiltinTools {
     /// end still get the header (so the file can be edited) plus a notice.
     /// The displayed line numbers are reported as a `seen` event for this
     /// version of the file (none for an empty file or ranges past the end:
-    /// the model got the tag but no lines).
+    /// the model got the tag but no lines). Without `fileTags` the header is
+    /// left out altogether: it carries nothing but the tag.
     private static func formatTextLines(
-        _ text: String, path: String, selector: ReadSelector, key: FileKey
+        _ text: String, path: String, selector: ReadSelector, key: FileKey, fileTags: Bool
     ) -> ToolOutput {
-        let tag = HashlineFormat.computeFileHash(text)
-        var out: [String] = [HashlineFormat.formatHashlineHeader(path: path, fileHash: tag)]
+        var out: [String] = []
+        if fileTags {
+            out.append(
+                HashlineFormat.formatHashlineHeader(path: path, fileHash: HashlineFormat.computeFileHash(text)))
+        }
         var shown = LineSet()
         if text.isEmpty {
             out.append(HashlineDiffPreview.emptyFileNotice)
@@ -1244,7 +1298,7 @@ enum BuiltinTools {
         }
     }
 
-    private static func writeFile(_ args: [String: Any], workdir: Workdir) throws -> ToolOutput {
+    private static func writeFile(_ args: [String: Any], workdir: Workdir, fileTags: Bool) throws -> ToolOutput {
         let path = try requireString(args, "path")
         let (content, strippedPrefixes) = HashlineFormat.stripPastedPrefixes(try requireString(args, "content"))
         let resolved = try workdir.resolve(path)
@@ -1266,12 +1320,23 @@ enum BuiltinTools {
         // A write replaced the whole file, so every line is now seen. Return
         // the minted #TAG so the model can edit the file without re-reading.
         let text = TextFile.decode(data)?.text ?? content
-        let tag = HashlineFormat.computeFileHash(text)
-        var result =
-            "Wrote \(data.count) bytes to \(path)\n\(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))"
-        if strippedPrefixes { result += "\n\(HashlineFormat.strippedPastedPrefixesNote)" }
+        let result = writeResult(
+            path: path, byteCount: data.count, text: text, strippedPrefixes: strippedPrefixes, fileTags: fileTags)
         return ToolOutput(
             content: result, isError: false, fileViews: [writtenFileView(.local(resolved: resolved), text: text)])
+    }
+
+    /// The `write_file` result text, shared with the SSH implementation.
+    static func writeResult(path: String, byteCount: Int, text: String, strippedPrefixes: Bool, fileTags: Bool)
+        -> String
+    {
+        var result = "Wrote \(byteCount) bytes to \(path)"
+        if fileTags {
+            let tag = HashlineFormat.computeFileHash(text)
+            result += "\n\(HashlineFormat.formatHashlineHeader(path: path, fileHash: tag))"
+        }
+        if strippedPrefixes { result += "\n\(HashlineFormat.strippedPastedPrefixesNote)" }
+        return result
     }
 
     /// A write replaced the whole file, so the model knows every line of it
@@ -1300,6 +1365,23 @@ enum BuiltinTools {
         do {
             let prepared = try await HashlinePatcher.prepare(input, access: access, views: context.views)
             let commit = try await HashlinePatcher.commit(prepared, access: access)
+            return ToolOutput(content: commit.content, isError: false, fileViews: commit.fileViews)
+        } catch let error as HashlinePatchError {
+            return ToolOutput(content: "Error: \(error.message)", isError: true, fileViews: error.fileViews)
+        }
+    }
+
+    /// Replaces exact text in one existing text file through
+    /// [`ReplaceText`](src/Tools/ReplaceText.swift). Like `editFile`, a failure
+    /// is returned as an error output rather than thrown.
+    private static func replaceText(_ args: [String: Any], workdir: Workdir, context: ToolContext) async throws
+        -> ToolOutput
+    {
+        let request = try ReplaceTextRequest(args: args)
+        let access = try workdir.fileAccess()
+        do {
+            let prepared = try await ReplaceText.prepare(request, access: access, views: context.views)
+            let commit = try await ReplaceText.commit(prepared, access: access, fileTags: context.fileTags)
             return ToolOutput(content: commit.content, isError: false, fileViews: commit.fileViews)
         } catch let error as HashlinePatchError {
             return ToolOutput(content: "Error: \(error.message)", isError: true, fileViews: error.fileViews)
@@ -1369,7 +1451,9 @@ enum BuiltinTools {
         clipMatchLine(line).text
     }
 
-    private static func findText(_ args: [String: Any], workdir: Workdir) async throws -> ToolOutput {
+    private static func findText(_ args: [String: Any], workdir: Workdir, fileTags: Bool) async throws
+        -> ToolOutput
+    {
         let pattern = try requireString(args, "regex")
         let searchRoot = optionalString(args, "path") ?? workdir.defaultRoot
         let caseInsensitive = optionalBool(args, "case_insensitive") ?? false
@@ -1473,10 +1557,12 @@ enum BuiltinTools {
                 }
             }
 
-            // One hashline header per file, then 'N:content' lines for matches
-            // and context (context uses '-', matching lines ':').
-            let tag = HashlineFormat.computeFileHash(text)
-            let header = HashlineFormat.formatHashlineHeader(path: display, fileHash: tag)
+            // One hashline header per file (a bare `[path]` label without
+            // `fileTags`: it still says which file the rows belong to), then
+            // 'N:content' lines for matches and context (context uses '-',
+            // matching lines ':').
+            let header = HashlineFormat.formatHashlineHeader(
+                path: display, fileHash: fileTags ? HashlineFormat.computeFileHash(text) : nil)
             var headerEmitted = false
             // 1-indexed lines printed in full — the only ones the model saw.
             var seen = Set<Int>()
