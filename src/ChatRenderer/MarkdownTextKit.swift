@@ -148,7 +148,6 @@ final class MarkdownLayoutManager: NSLayoutManager {
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         if let storage = textStorage, let container = textContainers.first, storage.length > 0 {
             let chars = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
-            drawCodeBlocks(storage, container, chars, origin)
             drawInlineCode(storage, container, chars, origin)
             drawQuotes(storage, chars, origin)
             drawRules(storage, container, chars, origin)
@@ -189,28 +188,25 @@ final class MarkdownLayoutManager: NSLayoutManager {
             height: ext.bottom - ext.top + theme.codePadV * 2 + label)
     }
 
-    private func drawCodeBlocks(
-        _ storage: NSTextStorage, _ container: NSTextContainer, _ chars: NSRange, _ origin: NSPoint
-    ) {
-        storage.enumerateAttribute(MDAttr.codeBlock, in: chars) { value, _, _ in
-            guard let m = value as? CodeBlockMarker, var rect = codeBlockRect(m) else { return }
-            rect = rect.offsetBy(dx: origin.x, dy: origin.y)
-            let path = NSBezierPath(roundedRect: rect, xRadius: theme.codeCornerRadius, yRadius: theme.codeCornerRadius)
-            Theme.codeBackground.setFill()
-            path.fill()
-            Theme.codeBorder.setStroke()
-            path.lineWidth = 1
-            NSBezierPath(
-                roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: theme.codeCornerRadius,
-                yRadius: theme.codeCornerRadius
-            ).stroke()
-            (m.label as NSString).draw(
-                at: NSPoint(x: rect.minX + theme.codePadH, y: rect.minY + theme.scaled(6)),
-                withAttributes: [
-                    .font: NSFont.systemFont(ofSize: theme.codeLabelFontSize, weight: .medium),
-                    .foregroundColor: NSColor.tertiaryLabelColor,
-                ])
-        }
+    /// Drawn by the view rather than from `drawBackground`: TextKit clips that pass to the text
+    /// container, which would cut off the header of a block at the very top of the view.
+    func drawCodeBlock(_ m: CodeBlockMarker, origin: NSPoint) {
+        guard var rect = codeBlockRect(m) else { return }
+        rect = rect.offsetBy(dx: origin.x, dy: origin.y)
+        let path = NSBezierPath(roundedRect: rect, xRadius: theme.codeCornerRadius, yRadius: theme.codeCornerRadius)
+        Theme.codeBackground.setFill()
+        path.fill()
+        Theme.codeBorder.setStroke()
+        NSBezierPath(
+            roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), xRadius: theme.codeCornerRadius,
+            yRadius: theme.codeCornerRadius
+        ).stroke()
+        (m.label as NSString).draw(
+            at: NSPoint(x: rect.minX + theme.codePadH, y: rect.minY + theme.scaled(6)),
+            withAttributes: [
+                .font: NSFont.systemFont(ofSize: theme.codeLabelFontSize, weight: .medium),
+                .foregroundColor: NSColor.tertiaryLabelColor,
+            ])
     }
 
     private func drawInlineCode(
@@ -394,6 +390,19 @@ final class MarkdownTextView: NSTextView {
         detectionTask = nil
         updateCopyButtons()
         detectLanguages(for: string)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if let lm = layoutManager as? MarkdownLayoutManager {
+            let origin = textContainerOrigin
+            for marker in codeBlocks {
+                guard let rect = lm.codeBlockRect(marker),
+                    rect.offsetBy(dx: origin.x, dy: origin.y).intersects(dirtyRect)
+                else { continue }
+                lm.drawCodeBlock(marker, origin: origin)
+            }
+        }
+        super.draw(dirtyRect)
     }
 
     override func setFrameSize(_ newSize: NSSize) {

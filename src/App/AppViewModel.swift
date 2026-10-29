@@ -677,40 +677,6 @@ final class AppViewModel: ObservableObject {
         return (path as NSString).standardizingPath
     }
 
-    /// Truncates a role name for display in the sidebar mode bar: shows the
-    /// first part of the name with "..." appended when it's too long.
-    nonisolated static func truncateRoleName(_ name: String, maxLen: Int = 12) -> String {
-        guard name.count > maxLen else { return name }
-        return String(name.prefix(maxLen - 3)) + "..."
-    }
-
-    /// Truncates a directory path for display in the sidebar mode bar.
-    /// SSH specs show as "host.../last" when too long; local paths show as
-    /// ".../last" when too long.
-    nonisolated static func truncateDirectoryPath(_ path: String, maxLen: Int = 20) -> String {
-        guard path.count > maxLen else { return path }
-        if SSHSpec.isSSH(path) {
-            // Try to show "host.../lastPathComponent"
-            if let slash = path.lastIndex(of: "/") {
-                let host = path[..<slash]
-                let last = path[path.index(after: slash)...]
-                let hostStr = String(host)
-                let lastStr = String(last)
-                if lastStr.count + 4 <= maxLen && !hostStr.isEmpty {
-                    return String(hostStr.prefix(1)) + "..." + "/" + lastStr
-                }
-            }
-            return String(path.prefix(maxLen - 3)) + "..."
-        }
-        // Local path: show ".../last few components" via middle truncation.
-        let nsPath = path as NSString
-        let last = nsPath.lastPathComponent
-        if last.count + 4 <= maxLen {
-            return "..." + String(path.suffix(maxLen - 3))
-        }
-        return String(path.prefix(maxLen - 3)) + "..."
-    }
-
     /// The display label for the current directory filter, abbreviated with
     /// `~` for the home directory.
     var chatListDirectoryDisplay: String {

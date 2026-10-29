@@ -24,6 +24,7 @@ final class ChatInputController: ObservableObject {
     private var facts = ChatInputFacts()
     private var optionHeld = false
     private var flagsMonitor: Any?
+    private var typeToFocusMonitor: Any?
     private var lastFocusRequest = 0
     private var wantsFocus = false
 
@@ -60,6 +61,9 @@ final class ChatInputController: ObservableObject {
             self?.setOptionHeld(event.modifierFlags.contains(.option))
             return event
         }
+        typeToFocusMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.redirectTyping(event) ?? event
+        }
     }
 
     func unbind() {
@@ -70,6 +74,33 @@ final class ChatInputController: ObservableObject {
             NSEvent.removeMonitor(flagsMonitor)
             self.flagsMonitor = nil
         }
+        if let typeToFocusMonitor {
+            NSEvent.removeMonitor(typeToFocusMonitor)
+            self.typeToFocusMonitor = nil
+        }
+    }
+
+    /// Typing while nothing in the main window accepts text (focus is on the chat, the sidebar,
+    /// a button) goes to the message input instead of being lost. Sheets are separate windows
+    /// and any editable field, search and filter included, is left alone.
+    private func redirectTyping(_ event: NSEvent) -> NSEvent? {
+        guard let window = bar.window, event.window === window, window.isKeyWindow, window.attachedSheet == nil,
+            bar.textView.isEditable, Self.isPlainTyping(event)
+        else { return event }
+        if let editor = window.firstResponder as? NSText, editor.isEditable { return event }
+        if window.firstResponder is NSButton, event.characters == " " { return event }
+        guard bar.focusText() else { return event }
+        bar.textView.keyDown(with: event)
+        return nil
+    }
+
+    /// A key that produces text: no Command/Control, and not Return, Tab, Esc, arrows or function keys.
+    static func isPlainTyping(_ event: NSEvent) -> Bool {
+        guard event.modifierFlags.intersection([.command, .control, .function]).isEmpty,
+            let scalar = event.characters?.unicodeScalars.first
+        else { return false }
+        let v = scalar.value
+        return v >= 0x20 && v != 0x7F && !(0xF700...0xF8FF).contains(v)
     }
 
     // MARK: Store state

@@ -31,6 +31,27 @@ extension AllAppTests {
             bar.subviews.compactMap { $0 as? NSButton }.first { $0.toolTip == tooltip }
         }
 
+        private func key(_ chars: String, _ flags: NSEvent.ModifierFlags = []) -> NSEvent {
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil,
+                characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: 0)!
+        }
+
+        @Test("only keys that produce text are redirected to the input")
+        func typingClassification() {
+            #expect(ChatInputController.isPlainTyping(key("a")))
+            #expect(ChatInputController.isPlainTyping(key("A", .shift)))
+            #expect(ChatInputController.isPlainTyping(key("ж")))
+            #expect(ChatInputController.isPlainTyping(key(" ")))
+            #expect(!ChatInputController.isPlainTyping(key("a", .command)))
+            #expect(!ChatInputController.isPlainTyping(key("a", .control)))
+            #expect(!ChatInputController.isPlainTyping(key("\r")))
+            #expect(!ChatInputController.isPlainTyping(key("\t")))
+            #expect(!ChatInputController.isPlainTyping(key("\u{1B}")))
+            #expect(!ChatInputController.isPlainTyping(key("\u{7F}")))
+            #expect(!ChatInputController.isPlainTyping(key("\u{F700}")))
+        }
+
         @Test("an empty bar is exactly its minimum height")
         func emptyBarIsMinimum() {
             #expect(makeBar().preferredHeight(maxHeight: 500) == minHeight)

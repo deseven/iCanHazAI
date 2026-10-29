@@ -38,7 +38,7 @@ final class CodeBlockMarker: NSObject, @unchecked Sendable {
     }
 
     /// Shown in the block's header.
-    var label: String { language ?? detectedLanguage ?? "code" }
+    var label: String { language ?? detectedLanguage ?? "plain text" }
 }
 
 final class QuoteMarker: NSObject, @unchecked Sendable {

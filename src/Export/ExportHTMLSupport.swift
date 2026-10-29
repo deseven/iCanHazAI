@@ -55,7 +55,7 @@ enum ExportCodeHTML {
         let spans = language.map { SyntaxHighlighter.shared.highlight(code, as: $0).spans } ?? []
         let inner = highlighted(code, spans: spans)
         return
-            "<div class=\"code\"><div class=\"code-lang\">\((shownLabel ?? "code").htmlEscaped)</div><pre><code>\(inner)</code></pre></div>\n"
+            "<div class=\"code\"><div class=\"code-lang\">\((shownLabel ?? "plain text").htmlEscaped)</div><pre><code>\(inner)</code></pre></div>\n"
     }
 
     static func highlighted(_ code: String, spans: [SyntaxSpan]) -> String {

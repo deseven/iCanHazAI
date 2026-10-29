@@ -87,6 +87,9 @@ struct ChatSidebar: View {
                 modeButton(.all, icon: "list.bullet.circle", help: "All chats")
                 modeButton(.role, icon: "theatermasks.circle", help: "By Role")
                 modeButton(.directory, icon: "folder.circle", help: "By Directory")
+                Spacer(minLength: 0)
+                // Right-aligned; takes all remaining width and only truncates
+                // when the full name/path doesn't fit.
                 if store.chatListMode == .role {
                     RoleFilterTag()
                         .onTapGesture { store.showSidebarRolePicker = true }
@@ -94,7 +97,6 @@ struct ChatSidebar: View {
                     DirectoryFilterTag()
                         .onTapGesture { store.showSidebarDirectoryPicker = true }
                 }
-                Spacer(minLength: 0)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
@@ -517,19 +519,20 @@ private struct RoleFilterTag: View {
     var body: some View {
         let role = store.chatListSelectedRole
         let name = store.chatListRole ?? "None"
-        let truncated = AppViewModel.truncateRoleName(name)
         HStack(spacing: 3) {
             Image(systemName: role?.icon ?? Role.defaultIcon)
                 .font(.system(size: 9, weight: .semibold))
-            Text(truncated)
+            Text(name)
                 .font(.caption2)
                 .fontWeight(.medium)
+                .lineLimit(1)
+                .truncationMode(.tail)
         }
         .padding(.horizontal, 5)
         .padding(.vertical, 2)
         .background((role?.accentColor ?? .accentColor).opacity(0.15), in: Capsule())
         .foregroundStyle(role?.accentColor ?? .accentColor)
-        .lineLimit(1)
+        .contentShape(Capsule())
         .help("Filtering by role: \(name). Click to change.")
     }
 }
@@ -541,19 +544,20 @@ private struct DirectoryFilterTag: View {
 
     var body: some View {
         let display = store.chatListDirectoryDisplay
-        let truncated = AppViewModel.truncateDirectoryPath(display)
         HStack(spacing: 3) {
             Image(systemName: SSHSpec.isSSH(store.chatListDirectory ?? "") ? "network" : "folder")
                 .font(.system(size: 9, weight: .semibold))
-            Text(truncated)
+            Text(display)
                 .font(.caption2)
                 .fontWeight(.medium)
+                .lineLimit(1)
+                .truncationMode(.head)
         }
         .padding(.horizontal, 5)
         .padding(.vertical, 2)
         .background(Color.accentColor.opacity(0.15), in: Capsule())
         .foregroundStyle(.secondary)
-        .lineLimit(1)
+        .contentShape(Capsule())
         .help("Filtering by directory: \(display). Click to change.")
     }
 }

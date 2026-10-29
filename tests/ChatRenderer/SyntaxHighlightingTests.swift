@@ -556,7 +556,7 @@ extension AllAppTests {
             let long = render("```\na\nb\nc\nd\n```")
             let marker = try #require(long.codeBlocks.first)
             #expect(marker.needsDetection)
-            #expect(marker.label == "code")
+            #expect(marker.label == "plain text")
 
             let blank = try #require(render("```\n \n```").codeBlocks.first)
             #expect(!blank.needsDetection)
@@ -604,6 +604,20 @@ extension AllAppTests {
             #expect(first.frame.minY >= 0)
             #expect(first.frame.maxY <= view.topInset)
             #expect(buttons[1].frame.minY > first.frame.maxY)
+        }
+
+        @Test("a block at the very top of the view draws its header, outside the text container")
+        @MainActor
+        func leadingHeaderIsDrawn() throws {
+            let (view, _) = shownView("```\nx = 1\n```")
+            view.appearance = NSAppearance(named: .darkAqua)
+            // Left of the label and clear of the copy button: only the box's fill can be here.
+            let rect = NSRect(x: 0, y: 0, width: 400, height: view.topInset)
+            let rep = try #require(view.bitmapImageRepForCachingDisplay(in: rect))
+            view.cacheDisplay(in: rect, to: rep)
+            let scale = CGFloat(rep.pixelsWide) / rect.width
+            let pixel = rep.colorAt(x: Int(4 * scale), y: Int(view.topInset / 2 * scale))
+            #expect((pixel?.alphaComponent ?? 0) > 0)
         }
 
         @Test("the copy button puts the block's source on the pasteboard")

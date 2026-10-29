@@ -4,9 +4,7 @@ import Testing
 @testable import iCanHazAI
 
 /// Tests for the chat list mode filtering logic:
-/// [`AppViewModel.chatMatchesDirectory`](src/App/AppViewModel.swift),
-/// [`AppViewModel.truncateRoleName`](src/App/AppViewModel.swift), and
-/// [`AppViewModel.truncateDirectoryPath`](src/App/AppViewModel.swift).
+/// [`AppViewModel.chatMatchesDirectory`](src/App/AppViewModel.swift).
 /// Pure logic (no UI), so it can be unit-tested directly.
 extension AllAppTests {
 
@@ -79,46 +77,6 @@ extension AllAppTests {
         func sshDoesNotMatchHome() {
             let chat = summary("a.json", workingDirectory: "host:/var/www")
             #expect(!AppViewModel.chatMatchesDirectory(chat, directory: AppViewModel.homeDirectoryPath))
-        }
-
-        // MARK: - Role name truncation
-
-        @Test("short role name is not truncated")
-        func shortRoleName() {
-            #expect(AppViewModel.truncateRoleName("Assistant") == "Assistant")
-        }
-
-        @Test("long role name is truncated with ellipsis")
-        func longRoleName() {
-            let result = AppViewModel.truncateRoleName("VeryLongRoleName")
-            #expect(result.hasSuffix("..."))
-            #expect(result.count <= 12)
-        }
-
-        @Test("role name at exactly the limit is not truncated")
-        func roleAtLimit() {
-            #expect(AppViewModel.truncateRoleName("Exactly12Ch") == "Exactly12Ch")
-        }
-
-        // MARK: - Directory path truncation
-
-        @Test("short directory path is not truncated")
-        func shortDirectoryPath() {
-            #expect(AppViewModel.truncateDirectoryPath("~/projects") == "~/projects")
-        }
-
-        @Test("long local path is truncated")
-        func longLocalPath() {
-            let path = "/Users/alice/very/deeply/nested/project/directory"
-            let result = AppViewModel.truncateDirectoryPath(path, maxLen: 20)
-            #expect(result.count <= 20)
-        }
-
-        @Test("long SSH path is truncated showing host and last component")
-        func longSSHPath() {
-            let path = "user@host:/very/deeply/nested/remote/project"
-            let result = AppViewModel.truncateDirectoryPath(path, maxLen: 20)
-            #expect(result.count <= 20)
         }
 
         // MARK: - ChatListMode enum
