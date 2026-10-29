@@ -115,6 +115,42 @@ final class MarkdownLayoutManager: NSLayoutManager {
     var search: SearchHighlight?
     /// Sorted and non-overlapping.
     var fades: [TextFade] = []
+    /// Set while the text holds tables, see `glyphRange(forBoundingRect:in:)`.
+    var hasTables = false
+
+    /// For text laid out in `NSTextTable` cells TextKit answers this with too few glyphs, sometimes
+    /// none at all, for a rect that does hold line fragments, so the text view skips painting them.
+    /// The fragments of the cells are not in vertical order, which is what its lookup relies on.
+    override func glyphRange(forBoundingRect bounds: NSRect, in container: NSTextContainer) -> NSRange {
+        let range = super.glyphRange(forBoundingRect: bounds, in: container)
+        guard hasTables else { return range }
+        return widened(range, intersecting: bounds, in: container)
+    }
+
+    override func glyphRange(forBoundingRectWithoutAdditionalLayout bounds: NSRect, in container: NSTextContainer)
+        -> NSRange
+    {
+        let range = super.glyphRange(forBoundingRectWithoutAdditionalLayout: bounds, in: container)
+        guard hasTables else { return range }
+        return widened(range, intersecting: bounds, in: container)
+    }
+
+    private func widened(_ range: NSRange, intersecting bounds: NSRect, in container: NSTextContainer) -> NSRange {
+        let found = fragmentGlyphRange(intersecting: bounds, in: container)
+        if found.length == 0 { return range }
+        return range.length == 0 ? found : NSUnionRange(range, found)
+    }
+
+    private func fragmentGlyphRange(intersecting bounds: NSRect, in container: NSTextContainer) -> NSRange {
+        var first = Int.max
+        var last = 0
+        enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: numberOfGlyphs)) { rect, _, tc, glyphs, _ in
+            guard tc === container, rect.intersects(bounds) else { return }
+            first = min(first, glyphs.location)
+            last = max(last, NSMaxRange(glyphs))
+        }
+        return first < last ? NSRange(location: first, length: last - first) : NSRange(location: 0, length: 0)
+    }
 
     override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         guard !fades.isEmpty, let storage = textStorage, let context = NSGraphicsContext.current?.cgContext else {
@@ -386,6 +422,7 @@ final class MarkdownTextView: NSTextView {
             codeBlocks = text.codeBlocks
         }
         renderedBlocks = text.blocks
+        (layoutManager as? MarkdownLayoutManager)?.hasTables = !text.tables.isEmpty
         detectionTask?.cancel()
         detectionTask = nil
         updateCopyButtons()
