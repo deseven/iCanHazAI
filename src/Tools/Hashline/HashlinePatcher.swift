@@ -244,14 +244,14 @@ enum HashlinePatcher {
     /// The `Updated:` block (with the counts of added and removed lines, since
     /// the preview does not print removals) and the `set` event for the
     /// post-edit content, which lives at `newKey`. The model knows of it what it knew before
-    /// (carried through the edit's line origins), every line it authored, and
-    /// the rows of the preview it is about to read.
+    /// (carried through the applier's line origins), every line it authored
+    /// (even one the text-diff preview shows as unchanged), and the rows of the
+    /// preview it is about to read.
     private static func updated(
         _ prepared: PreparedSection, newPath: String, newKey: FileKey
     ) -> (summary: String, events: [FileViewEvent]) {
         let text = prepared.result.text
-        let preview = HashlineDiffPreview.generate(
-            old: prepared.file.text, new: text, origins: prepared.result.origins)
+        let preview = HashlineDiffPreview.generate(old: prepared.file.text, new: text)
 
         var lines = LineSet()
         if !text.isEmpty {
@@ -264,12 +264,12 @@ enum HashlinePatcher {
 
         var summary =
             "Updated: \(prepared.section.path) [\(newPath)#\(HashlineFormat.computeFileHash(text))]"
-        let counts = HashlineDiffPreview.changeCounts(
-            old: prepared.file.text, new: text, origins: prepared.result.origins)
-        if let stat = HashlineDiffPreview.changeSummary(added: counts.added, removed: counts.removed) {
-            summary += " " + stat
+        if let preview {
+            if let stat = HashlineDiffPreview.changeSummary(added: preview.added, removed: preview.removed) {
+                summary += " " + stat
+            }
+            summary += "\n" + preview.text
         }
-        if let preview { summary += "\n" + preview.text }
         return (summary, [.set(newKey, contentID: HashlineFormat.computeContentID(text), lines: lines)])
     }
 

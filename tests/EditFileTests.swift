@@ -426,7 +426,8 @@ extension AllAppTests {
             let tag = HashlineFormat.computeFileHash(old)
             let patch = try HashlineEdit.parse("[a.txt#\(tag)]\n\(ops)")
             let result = try HashlineEdit.applySection(patch.sections[0], fileContent: old)
-            return HashlineDiffPreview.changeCounts(old: old, new: result.text, origins: result.origins)
+            let preview = HashlineDiffPreview.generate(old: old, new: result.text)
+            return (preview?.added ?? 0, preview?.removed ?? 0)
         }
 
         @Test("change counts of an emptied file, a filled file, an unterminated file and a bare move")
@@ -507,12 +508,12 @@ extension AllAppTests {
             #expect(!text.contains("\u{FFFD}"))
         }
 
-        /// The preview of applying `ops` to `old`, built from the applier's own origins.
+        /// The preview of applying `ops` to `old` with the real applier.
         private static func preview(_ old: String, _ ops: String) throws -> HashlineDiffPreview.Preview? {
             let tag = HashlineFormat.computeFileHash(old)
             let patch = try HashlineEdit.parse("[a.txt#\(tag)]\n\(ops)")
             let result = try HashlineEdit.applySection(patch.sections[0], fileContent: old)
-            return HashlineDiffPreview.generate(old: old, new: result.text, origins: result.origins)
+            return HashlineDiffPreview.generate(old: old, new: result.text)
         }
 
         private static func numbered(_ count: Int) -> String {
@@ -560,12 +561,46 @@ extension AllAppTests {
         @Test("unchanged content has no preview")
         func unchangedHasNoPreview() {
             let text = "a\nb\n"
-            #expect(HashlineDiffPreview.generate(old: text, new: text, origins: [1, 2]) == nil)
+            #expect(HashlineDiffPreview.generate(old: text, new: text) == nil)
+            // Only the final newline changed: no line differs.
+            #expect(HashlineDiffPreview.generate(old: "a\nb", new: text) == nil)
         }
 
-        @Test("an origins list that does not describe the new text yields no preview")
-        func mismatchedOrigins() {
-            #expect(HashlineDiffPreview.generate(old: "a\n", new: "b\nc\n", origins: [nil]) == nil)
+        @Test("body rows that retype the lines they replace are unchanged context, not added")
+        func retypedLinesAreContext() throws {
+            // Replaces 4-5 with the same two lines plus two new ones.
+            let preview = try #require(
+                try Self.preview(Self.numbered(10), "PUT 4.=5:\n+line4\n+line5\n+X\n+Y\n"))
+            #expect(preview.text == " 4:line4\n 5:line5\n+6:X\n+7:Y\n 8:line6\n 9:line7")
+            #expect(preview.added == 2 && preview.removed == 0)
+            #expect(preview.shownLines == LineSet(range: 4...9))
+        }
+
+        @Test("a rewritten range that drops a duplicate counts only the real changes")
+        func rewriteCollapsingDuplicate() throws {
+            let old = "a\nradius\nallowed\nradius\nb\n"
+            let preview = try #require(try Self.preview(old, "PUT 2.=4:\n+radius\n+// note\n+allowed\n"))
+            #expect(preview.added == 1 && preview.removed == 1)
+            #expect(preview.text == " 1:a\n 2:radius\n+3:// note\n 4:allowed\n 5:b")
+        }
+
+        @Test("retyped lines still count as seen after the edit")
+        func retypedLinesStaySeen() async throws {
+            let tmp = try EditTestDir()
+            let content = Self.numbered(20)
+            let file = try tmp.write("a.txt", content: content)
+            let history = ToolHistory()
+            await history.read(file, ranges: "2-12")
+            // Line 2 is retyped, far from the only real change on line 12.
+            let body = (2...11).map { "+line\($0)" }.joined(separator: "\n") + "\n+X\n"
+            let edit = await history.edit(
+                patch(file, "PUT 2.=12:\n\(body)", tag: HashlineFormat.computeFileHash(content)))
+            #expect(!edit.isError, "edit_file failed: \(edit.content)")
+            #expect(edit.content.contains("] (+1 -1)\n"))
+            // Not in the preview, yet still seen: the model wrote it.
+            #expect(!edit.content.contains("2:line2"))
+            let view = try #require(history.views.view(for: .local(resolved: file)))
+            #expect(view.lines.contains(2))
         }
 
         @Test("a move without edits has no preview")
@@ -582,8 +617,7 @@ extension AllAppTests {
         @Test("rows cut by the truncation caps are not reported as shown")
         func shownLinesAfterTruncation() throws {
             let new = Self.numbered(400)
-            let origins: [Int?] = [1] + [Int?](repeating: nil, count: 399)
-            let preview = try #require(HashlineDiffPreview.generate(old: "line1\n", new: new, origins: origins))
+            let preview = try #require(HashlineDiffPreview.generate(old: "line1\n", new: new))
             #expect(preview.text.hasSuffix("... (diff preview truncated)"))
             #expect(preview.shownLines == LineSet(range: 1...HashlineDiffPreview.maxLines))
             #expect(!preview.text.contains("\n201:") && !preview.text.contains("+201:"))

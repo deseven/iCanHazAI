@@ -11,9 +11,13 @@ import Foundation
 /// Mirrors the reference `buildCompactDiffPreview`: removed lines are not
 /// printed (the model named them, echoing them would only cost context), and
 /// every row (added or context) carries its **post-edit** line number, so a
-/// follow-up edit can reuse the numbers directly. What counts as added comes
-/// from the applier's `origins`, so the preview, the line numbers the model is
-/// told and the lines recorded as authored always agree.
+/// follow-up edit can reuse the numbers directly.
+///
+/// Like the reference, what counts as added comes from a text diff of the old
+/// and new content (the same alignment as the approval diff, see
+/// `DiffBuilder.lineOrigins`), not from how the patch was written: a body row
+/// that retypes the line it replaces is an unchanged line. The applier's own
+/// origins still carry the seen lines through the edit (`HashlinePatcher`).
 ///
 /// Unlike the reference, the removals are still reported as a count (see
 /// `changeSummary`): a wrong range would otherwise leave no trace in the result.
@@ -31,10 +35,13 @@ enum HashlineDiffPreview {
     /// The preview text plus the post-edit lines it printed in full. Those are
     /// lines the model has now seen, so the caller records them (see
     /// [`FileViewEvent`](src/Tools/Hashline/FileViews.swift)); rows cut by the
-    /// truncation caps are not among them.
+    /// truncation caps are not among them. `added`/`removed` count the lines
+    /// the text diff added and removed, truncation aside.
     struct Preview: Equatable {
         let text: String
         let shownLines: LineSet
+        let added: Int
+        let removed: Int
     }
 
     /// One printed row. `line` is the post-edit line number of an added or
@@ -44,20 +51,25 @@ enum HashlineDiffPreview {
         let line: Int?
     }
 
-    /// Produces the numbered preview of an edit. `origins` is
-    /// `ApplyResult.origins` (one entry per addressable line of `new`: the
-    /// pre-edit line it is, or nil when the patch wrote it). Returns nil when
-    /// the content did not change.
+    /// Produces the numbered preview of an edit. Returns nil when no line
+    /// changed (identical text, a bare move, only the final newline changed).
     ///
     /// Added lines are shown with context around them. A deletion leaves no
     /// line to print, so the lines on both sides of the cut are shown as
     /// context instead.
-    static func generate(old: String, new: String, origins: [Int?]) -> Preview? {
+    static func generate(old: String, new: String) -> Preview? {
         if old == new { return nil }
-        if new.isEmpty { return Preview(text: emptyFileNotice, shownLines: LineSet()) }
+        let oldLines = old.isEmpty ? [] : HashlineFormat.splitAddressableFileLines(old)
+        if new.isEmpty {
+            return Preview(text: emptyFileNotice, shownLines: LineSet(), added: 0, removed: oldLines.count)
+        }
 
         let lines = HashlineFormat.splitAddressableFileLines(new)
-        guard origins.count == lines.count else { return nil }
+        // One entry per line of `new`: the pre-edit line it is, or nil when added.
+        let origins = DiffBuilder.lineOrigins(old: oldLines, new: lines)
+        let added = origins.filter { $0 == nil }.count
+        let removed = oldLines.count - (origins.count - added)
+        if added == 0, removed == 0 { return nil }
 
         var visible = [Bool](repeating: false, count: lines.count)
         func show(_ range: ClosedRange<Int>) {
@@ -78,7 +90,7 @@ enum HashlineDiffPreview {
             if origin != expected { show((index - contextLines)...(index + contextLines - 1)) }
             expected = origin + 1
         }
-        if expected != HashlineFormat.splitAddressableFileLines(old).count + 1 {
+        if expected != oldLines.count + 1 {
             show((lines.count - contextLines)...(lines.count - 1))
         }
 
@@ -89,21 +101,11 @@ enum HashlineDiffPreview {
             let marker = origins[index] == nil ? "+" : " "
             rows.append(Row(text: "\(marker)\(number):\(lines[index])", line: number))
         }
-        if rows.isEmpty { return nil }
-        return truncate(rows)
+        let (text, shownLines) = truncate(rows)
+        return Preview(text: text, shownLines: shownLines, added: added, removed: removed)
     }
 
     // MARK: - Change counts
-
-    /// How many lines an edit wrote and removed, from the applier's `origins`
-    /// (see `generate`): lines without an origin are the ones the patch wrote,
-    /// pre-edit lines no origin points at are gone.
-    static func changeCounts(old: String, new: String, origins: [Int?]) -> (added: Int, removed: Int) {
-        let oldCount = old.isEmpty ? 0 : HashlineFormat.splitAddressableFileLines(old).count
-        if new.isEmpty { return (0, oldCount) }
-        let added = origins.filter { $0 == nil }.count
-        return (added, max(0, oldCount - (origins.count - added)))
-    }
 
     /// `(+3 -1)`, with a zero side left out; nil when nothing was added or removed.
     static func changeSummary(added: Int, removed: Int) -> String? {
@@ -117,7 +119,7 @@ enum HashlineDiffPreview {
     /// when some were dropped. Whole rows only: a row cut in the middle would
     /// be shown but not really seen, and a split multi-byte character would
     /// render as U+FFFD.
-    private static func truncate(_ rows: [Row]) -> Preview {
+    private static func truncate(_ rows: [Row]) -> (text: String, shownLines: LineSet) {
         var kept: [Row] = []
         var bytes = 0
         for row in rows.prefix(maxLines) {
@@ -134,6 +136,6 @@ enum HashlineDiffPreview {
         if truncated {
             text += (kept.isEmpty ? "" : "\n") + "... (diff preview truncated)"
         }
-        return Preview(text: text, shownLines: LineSet(kept.compactMap(\.line)))
+        return (text, LineSet(kept.compactMap(\.line)))
     }
 }

@@ -61,6 +61,21 @@ enum DiffBuilder {
         return truncate(out)
     }
 
+    /// Aligns `newLines` against `oldLines` exactly as `unifiedDiff` does, so
+    /// the `edit_file` result and the approval diff agree: one entry per line
+    /// of `newLines`, the 1-based `oldLines` line it is kept from, or nil when
+    /// the diff counts it as inserted.
+    static func lineOrigins(old oldLines: [String], new newLines: [String]) -> [Int?] {
+        if oldLines == newLines { return oldLines.indices.map { $0 + 1 } }
+        var origins = [Int?](repeating: nil, count: newLines.count)
+        for case .equal(let o, let n) in buildEntries(
+            oldLines: oldLines, newLines: newLines, diff: oldLines.diff(newLines))
+        {
+            origins[n] = o + 1
+        }
+        return origins
+    }
+
     // MARK: - Internals
 
     private enum Entry {
