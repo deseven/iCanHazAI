@@ -64,13 +64,15 @@ struct ModelPickerView: View {
 
 /// The model status block shared by the chat toolbar and Preferences: the
 /// provider tag and a chip with the model name, or a red "No model" when none
-/// is selected.
+/// is selected. `isActive` greys the label out while it can't be changed
+/// (streaming), matching the other toolbar controls.
 struct ModelStatusLabel: View {
     let provider: Provider?
     /// The color of a custom provider's tag.
     var color: ProviderColor?
     let label: String
     let hasModel: Bool
+    var isActive: Bool = true
 
     var body: some View {
         HStack(spacing: 4) {
@@ -84,7 +86,12 @@ struct ModelStatusLabel: View {
         }
         .font(.callout)
         .lineLimit(1)
-        .foregroundStyle(hasModel ? Color.primary : Color.red)
+        .foregroundStyle(foreground)
+    }
+
+    private var foreground: Color {
+        guard hasModel else { return .red }
+        return isActive ? .primary : .secondary
     }
 }
 

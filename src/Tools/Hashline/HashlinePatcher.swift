@@ -37,24 +37,16 @@ struct PreparedSection {
 
 struct PreparedPatch {
     let sections: [PreparedSection]
-    /// Parser and applier warnings, deduplicated, in patch order.
-    let warnings: [String]
 }
 
 /// What a committed patch reports.
 struct PatchCommit {
-    /// One block per section: an `Updated:`/`Deleted:` line, then the preview.
+    /// One block per section: an `Updated:`/`Deleted:` line, that section's
+    /// warnings, then the preview.
     let summaries: [String]
-    let warnings: [String]
     let fileViews: [FileViewEvent]
 
-    var content: String {
-        var text = summaries.joined(separator: "\n")
-        if !warnings.isEmpty {
-            text += "\n\nWarnings:\n" + warnings.joined(separator: "\n")
-        }
-        return text
-    }
+    var content: String { summaries.joined(separator: "\n") }
 }
 
 /// The single `edit_file` pipeline, used for local and SSH workdirs alike
@@ -156,11 +148,7 @@ enum HashlinePatcher {
                 fileViews: rejections.flatMap(\.events))
         }
 
-        var warnings: [String] = []
-        for warning in prepared.flatMap(\.result.warnings) where !warnings.contains(warning) {
-            warnings.append(warning)
-        }
-        return PreparedPatch(sections: prepared, warnings: warnings)
+        return PreparedPatch(sections: prepared)
     }
 
     /// The destination must differ from the source, be unused by another
@@ -214,7 +202,7 @@ enum HashlinePatcher {
                 throw HashlinePatchError(message, fileViews: events)
             }
         }
-        return PatchCommit(summaries: summaries, warnings: patch.warnings, fileViews: events)
+        return PatchCommit(summaries: summaries, fileViews: events)
     }
 
     private static func write(
@@ -224,7 +212,7 @@ enum HashlinePatcher {
         switch section.fileOp {
         case .rem:
             try await access.delete(prepared.resolved)
-            return ("Deleted: \(section.path)", [.drop(prepared.key)])
+            return (block("Deleted: \(section.path)", warnings: prepared.result.warnings), [.drop(prepared.key)])
 
         case .move(let dest):
             guard let destination = prepared.destination else {
@@ -241,9 +229,9 @@ enum HashlinePatcher {
         }
     }
 
-    /// The `Updated:` block (with the counts of added and removed lines, since
-    /// the preview does not print removals) and the `set` event for the
-    /// post-edit content, which lives at `newKey`. The model knows of it what it knew before
+    /// The `Updated:` block (with the counts of added and removed lines, which
+    /// stay exact when the preview shortens or truncates) and the `set` event
+    /// for the post-edit content, which lives at `newKey`. The model knows of it what it knew before
     /// (carried through the applier's line origins), every line it authored
     /// (even one the text-diff preview shows as unchanged), and the rows of the
     /// preview it is about to read.
@@ -262,15 +250,25 @@ enum HashlinePatcher {
                 .union(preview?.shownLines ?? LineSet())
         }
 
-        var summary =
+        var header =
             "Updated: \(prepared.section.path) [\(newPath)#\(HashlineFormat.computeFileHash(text))]"
-        if let preview {
-            if let stat = HashlineDiffPreview.changeSummary(added: preview.added, removed: preview.removed) {
-                summary += " " + stat
-            }
-            summary += "\n" + preview.text
+        if let preview, let stat = HashlineDiffPreview.changeSummary(added: preview.added, removed: preview.removed) {
+            header += " " + stat
         }
+        let summary = block(header, warnings: prepared.result.warnings, preview: preview?.text)
         return (summary, [.set(newKey, contentID: HashlineFormat.computeContentID(text), lines: lines)])
+    }
+
+    /// A section's result block. Its warnings (auto-repairs included) sit
+    /// right under the header, before the preview, so they are read before
+    /// the result they explain rather than after every file's preview.
+    private static func block(_ header: String, warnings: [String], preview: String? = nil) -> String {
+        var rows = [header]
+        var unique: [String] = []
+        for warning in warnings where !unique.contains(warning) { unique.append(warning) }
+        rows += unique.map { "Warning: \($0)" }
+        if let preview { rows.append(preview) }
+        return rows.joined(separator: "\n")
     }
 
     // MARK: - Preflight

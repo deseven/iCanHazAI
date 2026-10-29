@@ -104,15 +104,13 @@ enum HashlineRepair {
         if suffix > 0 {
             return Repair(
                 dropLeading: 0, dropTrailing: suffix,
-                warning: describeBalanceRepair(
-                    group, "dropped \(suffix) duplicated trailing payload line(s) already present below the range"))
+                warning: describeBalanceRepair(group, (.trailing, suffix)))
         }
         let prefix = findDuplicatePrefix(group, fileLines: fileLines, delta: delta)
         if prefix > 0 {
             return Repair(
                 dropLeading: prefix, dropTrailing: 0,
-                warning: describeBalanceRepair(
-                    group, "dropped \(prefix) duplicated leading payload line(s) already present above the range"))
+                warning: describeBalanceRepair(group, (.leading, prefix)))
         }
         return nil
     }
@@ -288,32 +286,58 @@ enum HashlineRepair {
 
     // MARK: - Messages
 
+    /// Every repair message names the hunk and quotes the rows it dropped,
+    /// so the model can check the repair without reconstructing it.
+    private static func hunkHeader(_ group: ReplacementGroup) -> String {
+        "`\(HashlineFormat.putKeyword) \(group.startLine)\(HashlineFormat.rangeSep)\(group.endLine)\(HashlineFormat.headerColon)`"
+    }
+
+    /// `2 leading body row(s) repeating lines 3-4 just above the range (`a`, `b`)`.
+    private static func describeDrop(
+        _ group: ReplacementGroup, side: Side, count: Int
+    ) -> String {
+        let rows = side == .leading ? group.payload.prefix(count) : group.payload.suffix(count)
+        let first = side == .leading ? group.startLine - count : group.endLine + 1
+        let lines = count == 1 ? "line \(first)" : "lines \(first)-\(first + count - 1)"
+        let name = side == .leading ? "leading" : "trailing"
+        let direction = side == .leading ? "above" : "below"
+        return "\(count) \(name) body row(s) repeating \(lines) just \(direction) the range (\(quoted(rows)))"
+    }
+
+    private static func quoted(_ rows: ArraySlice<String>) -> String {
+        let shown = rows.prefix(3).map { row -> String in
+            let text = row.count > 80 ? String(row.prefix(80)) + "…" : row
+            return "`\(text)`"
+        }
+        let more = rows.count > 3 ? " and \(rows.count - 3) more" : ""
+        return shown.joined(separator: ", ") + more
+    }
+
     private static func describeBoundaryEchoRepair(
         _ group: ReplacementGroup, _ echo: (leading: Int, trailing: Int)
     ) -> String {
-        "Auto-repaired a replacement boundary echo at line \(group.startLine): "
-            + "dropped \(echo.leading) leading and \(echo.trailing) trailing payload line(s) "
-            + "already present outside the range. Issue the payload as the final "
-            + "desired content for the selected range only."
+        "Auto-repaired \(hunkHeader(group)): dropped "
+            + describeDrop(group, side: .leading, count: echo.leading) + " and "
+            + describeDrop(group, side: .trailing, count: echo.trailing) + ". "
+            + "The body must be only the final content of the range — never restate lines outside it."
     }
 
     private static func describeOneSidedEchoRepair(
         _ group: ReplacementGroup, _ echo: (side: Side, count: Int)
     ) -> String {
-        let side = echo.side == .leading ? "leading" : "trailing"
-        let direction = echo.side == .leading ? "above" : "below"
-        return "Auto-repaired a replacement boundary echo at line \(group.startLine): "
-            + "dropped \(echo.count) \(side) payload line(s) identical to the surviving "
-            + "line(s) just \(direction) the range. The range was "
-            + "one line short of the content you retyped — issue the payload as the "
-            + "final content for the selected range only, and widen the range to "
-            + "consume any keeper you restate."
+        "Auto-repaired \(hunkHeader(group)): dropped "
+            + describeDrop(group, side: echo.side, count: echo.count) + ". "
+            + "The range was one line short of the content you retyped: widen the range to consume "
+            + "any line you restate, or leave that line out of the body."
     }
 
-    private static func describeBalanceRepair(_ group: ReplacementGroup, _ action: String) -> String {
-        "Auto-repaired a delimiter-balance mismatch in the replacement at line \(group.startLine): \(action). "
-            + "Issue the payload as the final desired content only — never restate or omit a closing "
-            + "bracket bordering the range."
+    private static func describeBalanceRepair(
+        _ group: ReplacementGroup, _ drop: (side: Side, count: Int)
+    ) -> String {
+        "Auto-repaired \(hunkHeader(group)): dropped "
+            + describeDrop(group, side: drop.side, count: drop.count)
+            + "; keeping them would have duplicated the bracket(s) they hold. "
+            + "Never restate or omit a closing bracket bordering the range."
     }
 
     private static func ambiguousBoundaryEchoMessage(

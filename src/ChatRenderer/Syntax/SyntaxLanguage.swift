@@ -6,6 +6,7 @@ import Foundation
 /// Close relatives share a grammar (see `aliases`): every grammar costs megabytes of binary, and
 /// colors don't need to be IDE-perfect. The last group has no grammar at all and is colored by
 /// `LightweightSyntax`; it has no detection hints, so it's only ever picked by an explicit marker.
+/// YAML is treated the same way: its hints fire on any prose with colons, so it's never auto-detected.
 enum SyntaxLanguage: String, CaseIterable, Sendable {
     case python, javascript, java, c, go, rust, swift, php, ruby, bash
     case html, css, json, yaml, toml, lua

@@ -36,8 +36,9 @@ enum HashlineApplier {
         // Repair replacement boundary echoes before materializing: a replace
         // body that restates unchanged lines bordering the range would silently
         // duplicate them in the output. Repairs only see addressable lines.
-        let repaired = try HashlineRepair.repairReplacementBoundaries(
-            anchored, fileLines: Array(fileLines.prefix(addressableCount)))
+        let addressable = Array(fileLines.prefix(addressableCount))
+        let repaired = try HashlineRepair.repairReplacementBoundaries(anchored, fileLines: addressable)
+        try rejectNoopReplacements(repaired.edits, fileLines: addressable)
 
         let result = materializeEdits(originalLines: fileLines, edits: repaired.edits)
         return ApplyResult(
@@ -74,6 +75,41 @@ enum HashlineApplier {
             case .delete(let anchor, _, _):
                 try check(anchor)
             }
+        }
+    }
+
+    /// A replacement whose body is byte-identical to its range changes
+    /// nothing. Even when other hunks do change the file, it means the model's
+    /// picture of the file has drifted and the change it meant is missing, so
+    /// the whole patch is rejected (nothing has been written yet).
+    private static func rejectNoopReplacements(_ edits: [Edit], fileLines: [String]) throws {
+        var order: [Int] = []
+        var payloads: [Int: [String]] = [:]
+        var deleted: [Int: [Int]] = [:]
+        for edit in edits {
+            switch edit {
+            case .insert(_, let text, let lineNum, _, let mode) where mode == .replacement:
+                if payloads[lineNum] == nil, deleted[lineNum] == nil { order.append(lineNum) }
+                payloads[lineNum, default: []].append(text)
+            case .delete(let anchor, let lineNum, _):
+                if payloads[lineNum] == nil, deleted[lineNum] == nil { order.append(lineNum) }
+                deleted[lineNum, default: []].append(anchor.line)
+            case .insert:
+                continue
+            }
+        }
+        for lineNum in order {
+            guard let payload = payloads[lineNum], let lines = deleted[lineNum]?.sorted(),
+                let first = lines.first, let last = lines.last,
+                last - first + 1 == lines.count, last <= fileLines.count,
+                Array(fileLines[(first - 1)..<last]) == payload
+            else { continue }
+            let span = first == last ? "line \(first)" : "lines \(first)-\(last)"
+            let header =
+                "\(HashlineFormat.putKeyword) \(first)\(HashlineFormat.rangeSep)\(last)\(HashlineFormat.headerColon)"
+            throw HashlineParseError.message(
+                "`\(header)` changes nothing: its body is byte-identical to \(span). Either that change is already in the file or the range points at the wrong lines. Check them (re-read if unsure) instead of widening the body, then fix or drop this hunk. Nothing was applied."
+            )
         }
     }
 

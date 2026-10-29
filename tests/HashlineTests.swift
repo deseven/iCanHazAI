@@ -847,7 +847,8 @@ extension AllAppTests {
             let result = try Self.apply("f {\n  a\n  b\n}\nz\n", "PUT 2.=3:\n+  A\n+  B\n+}")
             #expect(result.text == "f {\n  A\n  B\n}\nz\n")
             #expect(result.warnings.count == 1)
-            #expect(result.warnings[0].contains("delimiter-balance mismatch"))
+            #expect(result.warnings[0].contains("would have duplicated the bracket(s)"))
+            #expect(result.warnings[0].contains("repeating line 4 just below the range (`}`)"))
         }
 
         @Test func wholePayloadEchoIsLeftAlone() throws {
@@ -1000,8 +1001,11 @@ extension AllAppTests {
                 """
             let patch = try HashlineEdit.parse(input)
             let section = patch.sections[0]
-            #expect(throws: HashlineEditError.self) {
+            do {
                 _ = try HashlineEdit.applySection(section, fileContent: fileContent)
+                Issue.record("expected a no-op rejection")
+            } catch {
+                #expect(error.localizedDescription.contains("`PUT 1.=1:` changes nothing"))
             }
         }
 
@@ -1163,11 +1167,15 @@ extension AllAppTests {
 
     @Suite struct HashlineEdgeCaseTests {
 
-        @Test func emptyPutBodyAutoCut() throws {
-            let diff = "PUT 3.=5:"
-            let result = try HashlineParser.parsePatch(diff)
-            #expect(result.edits.count == 3)
-            #expect(result.warnings.contains(where: { $0.contains("deletion") }))
+        @Test func emptyPutBodyIsRejected() {
+            for diff in ["PUT 3.=5:", "PUT 3.=5:\n\n\nCUT 7.=7"] {
+                #expect(throws: HashlineParseError.self) { _ = try HashlineParser.parsePatch(diff) }
+                do {
+                    _ = try HashlineParser.parsePatch(diff)
+                } catch {
+                    #expect(error.localizedDescription.contains("line 1: `PUT 3.=5:` has no body rows"))
+                }
+            }
         }
 
         @Test func multipleHunksInOneSection() throws {
@@ -1421,6 +1429,30 @@ extension AllAppTests {
                 return
             }
             #expect(text == "PUT 3.=3: foo")
+        }
+
+        @Test func invalidHeaderIsRejectedWhereverItAppears() {
+            let cases = [
+                "CUT 2.=2\nPUT >~4:\n+x",
+                "PUT 2.=2:\n+B\nPUT >~4:\n+x",
+                "PUT <3:\n+B\nCUT x.=y",
+                "PUT >~4:\n+x",
+                "PUT 1.=1:\n+a\nMV",
+                "PUT 1.=1:\n+a\nPUT",
+            ]
+            for diff in cases {
+                let message = Self.parseFailure(diff)
+                #expect(message?.contains("is not a valid hunk header") == true, "\(diff): \(message ?? "parsed")")
+            }
+            let message = Self.parseFailure("CUT 2.=2\nPUT >~4:\n+x")
+            #expect(message?.hasPrefix("line 2: `PUT >~4:`") == true, "\(message ?? "parsed")")
+        }
+
+        @Test func wordsThatOnlyStartWithAKeywordAreStillBareRows() throws {
+            // `PUTTING`/`MVP` are not keywords: the bare-row recovery applies.
+            let result = try HashlineParser.parsePatch("PUT 1.=1:\nPUTTING it\nMVP")
+            #expect(result.edits.count == 3)
+            #expect(result.warnings.contains { $0.contains("Auto-prefixed bare body row(s)") })
         }
 
         @Test func firstPendingErrorWins() {

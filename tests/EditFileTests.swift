@@ -308,12 +308,9 @@ extension AllAppTests {
             let tag = HashlineFormat.computeFileHash("one\ntwo\nthree\n")
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=2:\n+TWO\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
-            // The added line and its context, in post-edit numbers; the removed line is not echoed.
-            #expect(text.contains("+2:TWO"))
-            #expect(text.contains(" 1:one"))
-            #expect(text.contains(" 3:three"))
-            #expect(!text.contains(":two"))
-            #expect(!text.components(separatedBy: "\n").contains { $0.hasPrefix("-") })
+            // Post-edit numbers for added and context rows; the removed line
+            // is unnumbered and comes before what replaced it.
+            #expect(text.hasSuffix("\n 1:one\n-:two\n+2:TWO\n 3:three"))
         }
 
         @Test("context lines carry post-edit numbers after an insert")
@@ -358,19 +355,14 @@ extension AllAppTests {
             #expect(updated2!.lowerBound > preview1!.lowerBound)
         }
 
-        @Test("multi-line replace shows the added lines only")
+        @Test("multi-line replace shows the removed lines, then the added ones")
         func multiLineReplace() async throws {
             let tmp = try EditTestDir()
             let file = try tmp.write("a.txt", content: "a\nb\nc\nd\ne\n")
             let tag = HashlineFormat.computeFileHash("a\nb\nc\nd\ne\n")
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=4:\n+X\n+Y\n+Z\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
-            #expect(text.contains(" 1:a"))
-            #expect(text.contains("+2:X"))
-            #expect(text.contains("+3:Y"))
-            #expect(text.contains("+4:Z"))
-            #expect(text.contains(" 5:e"))
-            #expect(!text.components(separatedBy: "\n").contains { $0.hasPrefix("-") })
+            #expect(text.hasSuffix("\n 1:a\n-:b\n-:c\n-:d\n+2:X\n+3:Y\n+4:Z\n 5:e"))
         }
 
         @Test("insert produces additions only")
@@ -393,13 +385,11 @@ extension AllAppTests {
             let tag = HashlineFormat.computeFileHash("a\nb\nc\nd\ne\n")
             let (text, err) = await AllAppTests.editCall(patch(file, "CUT 2.=4\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
-            #expect(text.hasSuffix("\n 1:a\n 2:e"))
-            // Neither '+' nor '-' rows for a pure cut.
-            let rows = text.components(separatedBy: "\n")
-            #expect(!rows.contains { $0.hasPrefix("+") || $0.hasPrefix("-") })
+            #expect(text.hasSuffix("\n 1:a\n-:b\n-:c\n-:d\n 2:e"))
+            #expect(!text.components(separatedBy: "\n").contains { $0.hasPrefix("+") })
         }
 
-        @Test("the Updated line counts what was added and removed, since removed lines are not shown")
+        @Test("the Updated line counts what was added and removed")
         func updatedLineCounts() async throws {
             let tmp = try EditTestDir()
             let content = Self.numbered(10)
@@ -417,8 +407,8 @@ extension AllAppTests {
                 #expect(!err, "edit_file failed: \(text)")
                 let header = try #require(text.components(separatedBy: "\n").first)
                 #expect(header.hasSuffix("] \(c.stat)"), "\(c.ops.debugDescription): \(header)")
-                // Counted, never printed.
-                #expect(!text.components(separatedBy: "\n").contains { $0.hasPrefix("-") })
+                let hasRemovedRows = text.components(separatedBy: "\n").contains { $0.hasPrefix("-") }
+                #expect(hasRemovedRows == c.stat.contains("-"), "\(c.ops.debugDescription): \(text)")
             }
         }
 
@@ -524,31 +514,63 @@ extension AllAppTests {
         func shownLines() throws {
             let preview = try #require(try Self.preview(Self.numbered(10), "PUT 5.=5:\n+X\n+Y\n"))
             #expect(
-                preview.text == " 3:line3\n 4:line4\n+5:X\n+6:Y\n 7:line6\n 8:line7")
+                preview.text == " 3:line3\n 4:line4\n-:line5\n+5:X\n+6:Y\n 7:line6\n 8:line7")
+            // Removed rows are not lines of the new file: never reported as shown.
             #expect(preview.shownLines == LineSet(range: 3...8))
         }
 
-        @Test("a cut in the middle shows both sides as contiguous post-edit rows")
+        @Test("a cut in the middle shows the removed lines between contiguous post-edit rows")
         func cutInTheMiddle() throws {
             let preview = try #require(try Self.preview(Self.numbered(10), "CUT 5.=6\n"))
-            #expect(preview.text == " 3:line3\n 4:line4\n 5:line7\n 6:line8")
+            #expect(preview.text == " 3:line3\n 4:line4\n-:line5\n-:line6\n 5:line7\n 6:line8")
             #expect(preview.shownLines == LineSet(range: 3...6))
         }
 
         @Test("a cut at the head or at the tail still shows the neighbours")
         func cutAtTheEdges() throws {
             let head = try #require(try Self.preview(Self.numbered(5), "CUT 1.=2\n"))
-            #expect(head.text == " 1:line3\n 2:line4")
+            #expect(head.text == "-:line1\n-:line2\n 1:line3\n 2:line4")
             let tail = try #require(try Self.preview(Self.numbered(5), "CUT 4.=5\n"))
-            #expect(tail.text == " 2:line2\n 3:line3")
+            #expect(tail.text == " 2:line2\n 3:line3\n-:line4\n-:line5")
             #expect(tail.shownLines == LineSet(range: 2...3))
         }
 
-        @Test("removing every line says the file is empty")
+        @Test("removing every line shows them and says the file is empty")
         func cutEverything() throws {
             let preview = try #require(try Self.preview("a\nb\nc\n", "CUT 1.=3\n"))
-            #expect(preview.text == HashlineDiffPreview.emptyFileNotice)
+            #expect(preview.text == "-:a\n-:b\n-:c\n\(HashlineDiffPreview.emptyFileNotice)")
             #expect(preview.shownLines.isEmpty)
+        }
+
+        @Test("a long removed run keeps only its first and last lines")
+        func longRemovedRunIsShortened() throws {
+            let preview = try #require(try Self.preview(Self.numbered(12), "CUT 3.=10\n"))
+            #expect(
+                preview.text
+                    == " 1:line1\n 2:line2\n-:line3\n-:line4\n-… (4 more removed)\n-:line9\n-:line10\n 3:line11\n 4:line12"
+            )
+            #expect(preview.removed == 8)
+            // Five lines are short enough to show in full.
+            let five = try #require(try Self.preview(Self.numbered(7), "CUT 2.=6\n"))
+            #expect(five.text == " 1:line1\n-:line2\n-:line3\n-:line4\n-:line5\n-:line6\n 2:line7")
+        }
+
+        @Test("a long removed line is cut")
+        func longRemovedLineIsCut() throws {
+            let long = String(repeating: "x", count: 1000)
+            let preview = try #require(try Self.preview("a\n\(long)\nb\n", "CUT 2.=2\n"))
+            let cut = String(repeating: "x", count: HashlineDiffPreview.maxRemovedLineLength) + "…"
+            #expect(preview.text == " 1:a\n-:\(cut)\n 2:b")
+        }
+
+        @Test("removed lines of separate hunks stay in their own region")
+        func removedRowsPerHunk() throws {
+            let preview = try #require(
+                try Self.preview(Self.numbered(12), "PUT 2.=2:\n+TWO\nCUT 10.=10\n"))
+            #expect(
+                preview.text
+                    == " 1:line1\n-:line2\n+2:TWO\n 3:line3\n 4:line4\n\n 8:line8\n 9:line9\n-:line10\n 10:line11\n 11:line12"
+            )
         }
 
         @Test("filling an empty file shows the new lines")
@@ -581,7 +603,7 @@ extension AllAppTests {
             let old = "a\nradius\nallowed\nradius\nb\n"
             let preview = try #require(try Self.preview(old, "PUT 2.=4:\n+radius\n+// note\n+allowed\n"))
             #expect(preview.added == 1 && preview.removed == 1)
-            #expect(preview.text == " 1:a\n 2:radius\n+3:// note\n 4:allowed\n 5:b")
+            #expect(preview.text == " 1:a\n 2:radius\n+3:// note\n 4:allowed\n-:radius\n 5:b")
         }
 
         @Test("retyped lines still count as seen after the edit")
@@ -653,8 +675,8 @@ extension AllAppTests {
             let tag = HashlineFormat.computeFileHash("a\nb\n")
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT 1.=1:\n+a\n", tag: tag))
             #expect(err)
-            #expect(text.contains("Edits to \(file) resulted in no changes."))
-            #expect(!text.contains("-1:"))
+            #expect(text.contains("`PUT 1.=1:` changes nothing"))
+            #expect(!text.contains("-:"))
             #expect(!text.contains("+1:"))
         }
     }
@@ -848,15 +870,42 @@ extension AllAppTests {
             #expect(text.contains("is a directory"))
         }
 
-        @Test("empty PUT body becomes an auto-cut with a warning")
-        func emptyPutAutoCut() async throws {
+        @Test("an empty PUT body is rejected, not read as a delete")
+        func emptyPutRejected() async throws {
             let tmp = try EditTestDir()
             let file = try tmp.write("a.txt", content: "a\nb\nc\n")
             let tag = HashlineFormat.computeFileHash("a\nb\nc\n")
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=2:\n", tag: tag))
+            #expect(err)
+            #expect(text.contains("`PUT 2.=2:` has no body rows"))
+            #expect(text.contains("`CUT 2.=2`"))
+            #expect(try tmp.read("a.txt") == "a\nb\nc\n")
+        }
+
+        @Test("a single bare + row replaces a range with one blank line")
+        func rangeToBlankLine() async throws {
+            let tmp = try EditTestDir()
+            let content = "a\nb\nc\nd\ne\n"
+            let file = try tmp.write("a.txt", content: content)
+            let (text, err) = await AllAppTests.editCall(
+                patch(file, "PUT 2.=4:\n+\n", tag: HashlineFormat.computeFileHash(content)))
             #expect(!err, "edit_file failed: \(text)")
-            #expect(try tmp.read("a.txt") == "a\nc\n")
-            #expect(text.contains("Empty `PUT` bodies are deprecated"))
+            #expect(try tmp.read("a.txt") == "a\n\ne\n")
+        }
+
+        @Test("an invalid header after a hunk is rejected, never written into the file")
+        func invalidHeaderIsNotBodyText() async throws {
+            let tmp = try EditTestDir()
+            let content = "a\nb\nc\nd\ne\n"
+            let file = try tmp.write("a.txt", content: content)
+            let tag = HashlineFormat.computeFileHash(content)
+            for body in ["PUT 2.=2:\n+B\nPUT >~4:\n+x\n", "CUT 2.=2\nPUT >~4:\n+x\n", "PUT >1:\n+y\nPUT >~4:\n+x\n"] {
+                let (text, err) = await AllAppTests.editCall(patch(file, body, tag: tag))
+                #expect(err, "\(body.debugDescription): \(text)")
+                #expect(text.contains("`PUT >~4:` is not a valid hunk header"), "\(body.debugDescription): \(text)")
+                #expect(!text.contains("takes no body"))
+                #expect(try tmp.read("a.txt") == content)
+            }
         }
 
         @Test("bare body rows are auto-piped with a warning surfaced in output")
@@ -869,8 +918,36 @@ extension AllAppTests {
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=2:\nbravo (modified)\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
             #expect(try tmp.read("a.txt") == "alpha\nbravo (modified)\ncharlie\n")
-            #expect(text.contains("Warnings:"))
-            #expect(text.contains("Auto-prefixed bare body row(s)"))
+            let rows = text.components(separatedBy: "\n")
+            #expect(rows.count > 1 && rows[1].hasPrefix("Warning: Auto-prefixed bare body row(s)"), "\(text)")
+        }
+
+        @Test("warnings sit under their own section's Updated line, before its preview")
+        func warningsPerSection() async throws {
+            let tmp = try EditTestDir()
+            let fileA = try tmp.write("one.txt", content: "a\nb\nc\n")
+            let fileB = try tmp.write("two.txt", content: "a\nb\nc\nd\ne\n")
+            let input = """
+                *** Begin Patch
+                [\(fileA)#\(HashlineFormat.computeFileHash("a\nb\nc\n"))]
+                PUT 2.=2:
+                +B
+                [\(fileB)#\(HashlineFormat.computeFileHash("a\nb\nc\nd\ne\n"))]
+                PUT 2.=3:
+                +a
+                +X
+                +d
+                *** End Patch
+                """
+            let (text, err) = await AllAppTests.editCall(input)
+            #expect(!err, "edit_file failed: \(text)")
+            let rows = text.components(separatedBy: "\n")
+            let updatedB = try #require(rows.firstIndex { $0.hasPrefix("Updated: \(fileB)") })
+            #expect(rows[updatedB + 1].hasPrefix("Warning: Auto-repaired `PUT 2.=3:`"))
+            #expect(rows[updatedB + 2] == " 1:a")
+            // Section A has no warning, and nothing trails the last preview.
+            #expect(!rows[..<updatedB].contains { $0.hasPrefix("Warning:") })
+            #expect(rows.last == " 4:e")
         }
 
         @Test("duplicate sections for the same file apply atomically")
@@ -944,8 +1021,32 @@ extension AllAppTests {
             // Body identical to the targeted line.
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT 1.=1:\n+a\n", tag: tag))
             #expect(err)
-            #expect(text.contains("resulted in no changes"))
+            #expect(text.contains("`PUT 1.=1:` changes nothing: its body is byte-identical to line 1"))
             #expect(try tmp.read("a.txt") == "a\nb\n")
+        }
+
+        @Test("a hunk that changes nothing fails the patch even when other hunks change the file")
+        func noopHunkInABatch() async throws {
+            let tmp = try EditTestDir()
+            let content = "a\nb\nc\nd\ne\n"
+            let file = try tmp.write("a.txt", content: content)
+            let tag = HashlineFormat.computeFileHash(content)
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 1.=1:\n+A\nPUT 3.=4:\n+c\n+d\n", tag: tag))
+            #expect(err)
+            #expect(text.contains("`PUT 3.=4:` changes nothing: its body is byte-identical to lines 3-4"))
+            #expect(try tmp.read("a.txt") == content)
+        }
+
+        @Test("a body that only matches its range once the restated rows are dropped changes nothing")
+        func noopAfterRepair() async throws {
+            let tmp = try EditTestDir()
+            let content = "a\nb\nc\nd\ne\n"
+            let file = try tmp.write("a.txt", content: content)
+            let tag = HashlineFormat.computeFileHash(content)
+            let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=3:\n+a\n+b\n+c\n+d\n", tag: tag))
+            #expect(err)
+            #expect(text.contains("`PUT 2.=3:` changes nothing"))
+            #expect(try tmp.read("a.txt") == content)
         }
 
         @Test("non-text files are rejected")
@@ -1119,7 +1220,7 @@ extension AllAppTests {
                 Issue.record("expected .error, got \(result)")
                 return
             }
-            #expect(message.contains("resulted in no changes"))
+            #expect(message.contains("changes nothing"))
         }
     }
 
@@ -1705,7 +1806,7 @@ extension AllAppTests {
                 """
             let (text, err) = await AllAppTests.editCall(input)
             #expect(err)
-            #expect(text.contains("Edits to \(fileB) resulted in no changes."))
+            #expect(text.contains("[\(fileB)] `PUT 1.=1:` changes nothing"))
             #expect(try tmp.read("a.txt") == "a\nb\n")
         }
 
@@ -1843,8 +1944,10 @@ extension AllAppTests {
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=3:\n+a\n+X\n+d\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
             #expect(try tmp.read("a.txt") == "a\nX\nd\ne\n")
-            #expect(text.contains("Auto-repaired a replacement boundary echo at line 2"))
-            #expect(text.contains("dropped 1 leading and 1 trailing payload line(s)"))
+            #expect(
+                text.contains(
+                    "Warning: Auto-repaired `PUT 2.=3:`: dropped 1 leading body row(s) repeating line 1 just above the range (`a`) and 1 trailing body row(s) repeating line 4 just below the range (`d`)."
+                ))
         }
 
         @Test("one-sided leading echo: body restates lines above the range")
@@ -1857,8 +1960,10 @@ extension AllAppTests {
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT 3.=4:\n+a\n+b\n+X\n+Y\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
             #expect(try tmp.read("a.txt") == "a\nb\nX\nY\ne\nf\n")
-            #expect(text.contains("dropped 2 leading payload line(s)"))
-            #expect(text.contains("just above the range"))
+            #expect(
+                text.contains(
+                    "Auto-repaired `PUT 3.=4:`: dropped 2 leading body row(s) repeating lines 1-2 just above the range (`a`, `b`). The range was one line short"
+                ))
         }
 
         @Test("one-sided trailing echo: body restates a line below the range")
@@ -1871,8 +1976,7 @@ extension AllAppTests {
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT 1.=2:\n+X\n+Y\n+c\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
             #expect(try tmp.read("a.txt") == "X\nY\nc\nd\n")
-            #expect(text.contains("dropped 1 trailing payload line(s)"))
-            #expect(text.contains("just below the range"))
+            #expect(text.contains("dropped 1 trailing body row(s) repeating line 3 just below the range (`c`)"))
         }
 
         @Test("one-sided echo on a single-line range is not repaired")
@@ -1915,7 +2019,7 @@ extension AllAppTests {
                 patch(file, "PUT 5.=7:\n+A\n+B\n+C\n+l8\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
             #expect(try tmp.read("a.txt") == "l1\nl2\nl3\nl4\nA\nB\nC\nl8\nl9\n")
-            #expect(text.contains("dropped 1 trailing payload line(s)"))
+            #expect(text.contains("dropped 1 trailing body row(s) repeating line 8 just below the range (`l8`)"))
         }
 
         @Test("two-sided echo that shifts the delimiter balance is not repaired")
@@ -1940,7 +2044,8 @@ extension AllAppTests {
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=3:\n+f(\n+w\n+)\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
             #expect(try tmp.read("a.txt") == "f(\nw\n)\nz\n")
-            #expect(text.contains("dropped 1 leading and 1 trailing payload line(s)"))
+            #expect(text.contains("repeating line 1 just above the range (`f(`)"))
+            #expect(text.contains("repeating line 4 just below the range (`)`)"))
         }
 
         @Test("duplicated trailing closer that explains the imbalance is dropped")
@@ -1953,8 +2058,10 @@ extension AllAppTests {
                 patch(file, "PUT 2.=3:\n+  a2,\n+  b2,\n+)\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
             #expect(try tmp.read("a.txt") == "foo(\n  a2,\n  b2,\n)\ntail\n")
-            #expect(text.contains("delimiter-balance mismatch"))
-            #expect(text.contains("dropped 1 duplicated trailing payload line(s)"))
+            #expect(
+                text.contains(
+                    "Auto-repaired `PUT 2.=3:`: dropped 1 trailing body row(s) repeating line 4 just below the range (`)`); keeping them would have duplicated the bracket(s) they hold."
+                ))
         }
 
         @Test("duplicated leading opener that explains the imbalance is dropped")
@@ -1967,7 +2074,7 @@ extension AllAppTests {
                 patch(file, "PUT 3.=4:\n+foo(\n+  a2,\n+)\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
             #expect(try tmp.read("a.txt") == "x\nfoo(\n  a2,\n)\n")
-            #expect(text.contains("dropped 1 duplicated leading payload line(s)"))
+            #expect(text.contains("dropped 1 leading body row(s) repeating line 2 just above the range (`foo(`)"))
         }
 
         @Test("echo repair works on a CRLF file and keeps its endings")
@@ -1978,7 +2085,7 @@ extension AllAppTests {
             let (text, err) = await AllAppTests.editCall(patch(file, "PUT 2.=3:\n+a\n+X\n+d\n", tag: tag))
             #expect(!err, "edit_file failed: \(text)")
             #expect(try tmp.read("a.txt") == "a\r\nX\r\nd\r\ne\r\n")
-            #expect(text.contains("dropped 1 leading and 1 trailing payload line(s)"))
+            #expect(text.contains("(`a`) and 1 trailing body row(s) repeating line 4 just below the range (`d`)"))
         }
 
         @Test("whole-payload echo is left alone as intentional")
@@ -2030,9 +2137,27 @@ extension AllAppTests {
             #expect(
                 try tmp.read("a.txt") == "alpha\nX\ndelta\necho\nfoxtrot\nGOLF\nhotel\nindia\njuliet\n")
             // Exactly one warning, attributed to the echoed hunk.
-            let occurrences = text.components(separatedBy: "Auto-repaired a replacement boundary echo").count - 1
+            let occurrences = text.components(separatedBy: "Auto-repaired").count - 1
             #expect(occurrences == 1)
-            #expect(text.contains("at line 2"))
+            #expect(text.contains("Auto-repaired `PUT 2.=3:`"))
+        }
+
+        @Test("the repair warning quotes at most three dropped rows and cuts long ones")
+        func repairWarningQuotesAreCapped() async throws {
+            let long = String(repeating: "y", count: 100)
+            let content = "\(long)\np2\np3\np4\nr1\nr2\nq\n"
+            let tmp = try EditTestDir()
+            let file = try tmp.write("a.txt", content: content)
+            let tag = HashlineFormat.computeFileHash(content)
+            // Range 5-6 with a body restating lines 1-4 above it. Line 1 is
+            // outside the preview's context, so only the warning could print it.
+            let (text, err) = await AllAppTests.editCall(
+                patch(file, "PUT 5.=6:\n+\(long)\n+p2\n+p3\n+p4\n+R1\n+R2\n+R3\n", tag: tag))
+            #expect(!err, "edit_file failed: \(text)")
+            #expect(try tmp.read("a.txt") == "\(long)\np2\np3\np4\nR1\nR2\nR3\nq\n")
+            let cut = String(repeating: "y", count: 80) + "…"
+            #expect(text.contains("repeating lines 1-4 just above the range (`\(cut)`, `p2`, `p3` and 1 more)"))
+            #expect(!text.contains(long))
         }
     }
 }

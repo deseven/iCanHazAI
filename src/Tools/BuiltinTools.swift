@@ -411,29 +411,26 @@ enum BuiltinTools {
             name: "edit_file",
             description:
                 """
-                Edit existing text files with the hashline patch format: name original lines or gaps, then give the new content. ':' operations take '+TEXT' body rows; CUT/REM/MV take none.
+                Edit existing UTF-8 text files with hashline patches: name original lines or gaps, then give the new content. New or non-text files: use write_file.
 
-                Section header: '[path#TAG]' — TAG is the 4-hex file-version hash printed by read_file, find_text, write_file and edit_file results; copy it verbatim, it is REQUIRED per section. If the file changed since you read it, the edit is rejected with a re-read instruction. New files or non-text files (PDF, docx, images, binaries): use write_file. edit_file edits existing UTF-8 text files only.
+                Section header '[path#TAG]': TAG is the 4-hex file-version hash from the latest read_file/find_text/write_file/edit_file result, copied verbatim; required per section. Several sections (and files) per patch are fine; all are validated before anything is written.
 
-                Operations (per section):
-                'PUT N.=M:' — replace original inclusive lines N-M with the following '+TEXT' body rows.
-                'PUT <N:' / 'PUT >N:' — insert body rows before/after line N; '<1' is the file head, '>$' is the file tail (also how you fill an empty file).
-                'CUT N.=M' — delete original inclusive lines N-M (no body).
-                'REM' — delete the section file.
-                'MV DEST' — move/rename the file (quote paths with spaces); edits above apply to the source first, final content goes to DEST. DEST must not already exist (MV refuses to overwrite), and must differ from the source.
-                An operation header ends at its ':' — body rows go on the following lines, text after the ':' is an error. Block operations ('PUT 5*:') and registers ('@name') are not supported.
-                Multiple sections targeting the same file are merged into one batch so their original line anchors apply together; conflicting tags are rejected up front. Ranges of different hunks must not overlap: one hunk per range, its body is the final content. All sections are validated before the first one is written.
-                Body rows: only below ':' operations. Every row starts with '+': '+TEXT' is a literal line (leading whitespace preserved), a bare '+' is a blank line. NEVER use '-' rows, bare rows, or context rows — the range deletes, the body is the final content. A literal leading '-' or '+': write '+- item' or '++ item'. To keep a line, leave it out of every range.
+                Operations:
+                'PUT N.=M:' — replace original inclusive lines N-M with the body (one line: 'PUT N.=N:').
+                'PUT <N:' / 'PUT >N:' — insert the body before/after line N; '<1' is the head, '>$' the tail (also fills an empty file).
+                'CUT N.=M' — delete lines N-M; no body.
+                'REM' — delete the file. 'MV DEST' — move/rename (quote paths with spaces); edits above apply first; DEST must not exist.
+                A header ends at its ':'; body rows go on the following lines.
+
+                Body rows (only under ':' headers): every row starts with '+'. '+TEXT' is a literal line (leading whitespace kept), a bare '+' is a blank line. No '-', bare or context rows: the range deletes, the body is the final content. Literal leading '-'/'+': '+- item', '++ item'. To keep a line, leave it out of every range.
 
                 Rules:
-                - Numbers and '#TAG' come from the latest read_file/find_text 'LINE:TEXT' or edit result; within one patch numbers are original, never shifted by its own hunks.
-                - Touch only lines you have seen: displayed by read_file/find_text (a line cut at 300 characters does not count), written by you with write_file, or shown in an edit result. Ranges cover changed lines only, never widened over lines you keep. Non-adjacent changes: separate hunks.
-                - An edit that touches other lines of a file version you have seen is rejected with those lines' current content (up to 20 lines, each cut at 300 characters). When that content is shown in full, the lines now count as seen: re-issue the edit as is. When it is capped or cut, read that range with read_file first. A file version you never saw must be read first; nothing is revealed for it.
-                - Each edit changes '#TAG' and renumbers the file. Use the new '#TAG' and the post-edit numbers from the result's preview. Lines you had seen before the edit stay usable at their new numbers, as do the lines you wrote and the preview rows; read anything else again before editing it.
-                - The result ends its 'Updated:' line with the counts '(+added -removed)' and includes a compact preview of the changed region, both from a diff of the file before and after: '+N:' for lines that are new or changed, ' N:' for unchanged context (body rows that only retyped an existing line count as unchanged), post-edit numbers; removed lines are not shown, only counted. Verify the counts and the preview match your intent.
-                - If your replace body restates unchanged lines bordering the range, they are automatically dropped with a warning. Issue the payload as the final desired content for the selected range only.
-                - Pure addition: 'PUT <N:' / 'PUT >N:', never a widened 'PUT N.=M:'.
-                - Never start or end a range mid-expression or mid-block.
+                - Line numbers are the original ones from the latest result; hunks of one patch never shift each other and must not overlap.
+                - Touch only lines you have seen: displayed in full by read_file/find_text, written by you, or shown in an edit result. Otherwise the edit is rejected, and the rejection says whether to re-issue it as is or read first.
+                - Ranges cover changed lines only, never widened over lines you keep; pure additions use 'PUT <N:'/'PUT >N:'. Non-adjacent changes: separate hunks. Never start or end a range mid-expression or mid-block.
+                - Result: 'Updated: path [path#NEWTAG] (+added -removed)', then a preview from a before/after diff: '+N:' new or changed, ' N:' unchanged context (post-edit numbers), '-:TEXT' removed (unnumbered, never an anchor). Check it matches your intent: a '-:' row you meant to keep means the range was too wide.
+                - 'Warning:' lines under 'Updated:' report fixes applied to your patch, e.g. dropped body rows that restated lines outside the range. Write the body as the range's final content only.
+                - A hunk whose body equals its range is rejected: the change is already there or the range is wrong. Check the lines; don't widen the body.
                 - Never reformat or restyle with this tool; run the project formatter.
 
                 Example — read_file output:
@@ -450,9 +447,11 @@ enum BuiltinTools {
                 +    return "Hi, " + name
                 *** End Patch
 
-                Result — new tag, post-edit numbers:
+                Result:
                 Updated: greet.swift [greet.swift#C3D4] (+1 -2)
                  1:func greet(name: String) {
+                -:    let msg = "Hello, " + name
+                -:    return msg
                 +2:    return "Hi, " + name
                  3:}
 
@@ -463,16 +462,15 @@ enum BuiltinTools {
                 +  - nested task
 
                 Anti-patterns:
-                - WRONG: empty 'PUT 4.=4:' to delete. RIGHT: 'CUT 4.=4'.
-                - WRONG: range sized to the post-edit content ('PUT 1.=2:' for a one-line change). RIGHT: 'PUT 1.=1:' — body length is irrelevant.
-                - WRONG: '-' rows or bare context lines. RIGHT: only '+' rows; the range deletes, the body is the final content.
-                - WRONG: pure insertion as a widened 'PUT 2.=4:' retyping keepers. RIGHT: 'PUT >2:' — touch nothing you keep.
-                - WRONG: body on the header line ('PUT 2.=2: new text'). RIGHT: 'PUT 2.=2:' then '+new text' on the next line.
+                - WRONG: empty 'PUT 4.=4:' to delete. RIGHT: 'CUT 4.=4'. Lines 4-9 to one blank line: 'PUT 4.=9:' then '+'.
+                - WRONG: 'PUT 1.=2:' for a one-line change (range sized to the new content). RIGHT: 'PUT 1.=1:'; body length is irrelevant.
+                - WRONG: pure insertion as a widened 'PUT 2.=4:' retyping keepers. RIGHT: 'PUT >2:'.
+                - WRONG: 'PUT 2.=2: new text'. RIGHT: 'PUT 2.=2:' then '+new text'.
 
                 Critical rules:
-                1. RE-GROUND AFTER EVERY EDIT: edits renumber and change '#TAG'; take the new tag and numbers from the edit result (lines you had seen keep working at their new numbers, re-read anything else). Stale tag or surprise: STOP and re-read.
+                1. RE-GROUND AFTER EVERY EDIT: use the new '#TAG' and post-edit numbers from the result; lines you saw keep working at their new numbers, re-read anything else. Stale tag or surprise: STOP and re-read.
                 2. RANGES TIGHT: changed lines only.
-                3. BODY IS FINAL CONTENT: every row starts '+'; Markdown bullet is '+- item', not '- item'.
+                3. BODY IS FINAL CONTENT: every row starts '+'; a Markdown bullet is '+- item'.
                 """,
             schema:
                 #"{"type":"object","properties":{"input":{"type":"string","description":"Hashline patch text. Begins with '*** Begin Patch' and ends with '*** End Patch'. Contains one or more [path#TAG] sections with PUT/CUT/REM/MV operations."}},"required":["input"]}"#

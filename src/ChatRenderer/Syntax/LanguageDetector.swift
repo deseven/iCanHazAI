@@ -241,13 +241,6 @@ enum LanguageHints {
             Hint(#"^\s*"[^"\n]+"\s*:\s*\S"#, 2, repeats: true),
             Hint(#"^\s*[\[{]\s*$"#, 1),
         ],
-        .yaml: [
-            Hint(#"^---\s*$"#, 3),
-            Hint(#"^\s*-\s+[\w"'-]+:\s"#, 2),
-            Hint(
-                #"^\s*(?!(else|try|finally|default|case|do|begin|public|private)\b)[A-Za-z_][\w.-]*:(\s+[^{};,()\[\]]*)?$"#,
-                1, repeats: true),
-        ],
         .toml: [
             Hint(#"^\s*\[\[?[\w."-]+\]\]?\s*$"#, 3),
             Hint(#"^\s*[\w.-]+\s*=\s*("|'|\d|true\b|false\b|\[|\{)"#, 1, repeats: true),

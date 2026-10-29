@@ -27,8 +27,6 @@ final class HashlineParser {
         "Recovered a bare `N.=M:` header as `PUT N.=M:`. Prefix replacement ranges with `PUT`."
     private static let snapshotRowsAutoPutWarning =
         "Recovered top-level `N:TEXT` snapshot row(s) as single-line `PUT N.=N:` replacements. Use explicit `PUT` headers for reliable edits."
-    private static let emptyPutAutoCutWarning =
-        "Empty `PUT` bodies are deprecated and will be rejected in a future version; use `CUT N.=M` for bodyless deletes. (For now the empty body was interpreted as deletion.)"
     private static let cutColonIgnoredWarning =
         "Ignored a trailing `:` on bodyless `CUT`. Prefer `CUT N.=M` without a colon."
     private static let diffOldRowsIgnoredWarning =
@@ -45,6 +43,11 @@ final class HashlineParser {
     private static let colonlessSpanPut =
         "`PUT N.=M` without `:` and without body is ambiguous. Add `:` and body rows, or use `CUT N.=M`."
     private static let emptyInsert = "insert `PUT` header requires body rows."
+    private static func emptyReplaceMessage(_ range: ParsedRange) -> String {
+        let span = "\(range.start.line)\(HashlineFormat.rangeSep)\(range.end.line)"
+        return
+            "`PUT \(span):` has no body rows. To delete the lines use `CUT \(span)`; to replace them with one blank line write a single `+` row."
+    }
     private static let readMetadataIgnoredWarning =
         "Ignored copied read-output elision row(s). Re-read elided ranges before editing them."
     private static let repeatedHunkCoalescedWarning =
@@ -320,6 +323,12 @@ final class HashlineParser {
         if let prefix = HashlineTokenizer.scanHunkHeaderPrefix(text), !prefix.trailing.isEmpty {
             throw HashlineParseError.message("line \(lineNum): \(Self.trailingTextMessage(text, prefix))")
         }
+        // A header the tokenizer could not parse must not fall through to the
+        // bare-row recovery below: it would land in the file as text, and the
+        // `+` rows meant for it would join the previous hunk.
+        if let keyword = Self.headerKeyword(text) {
+            throw HashlineParseError.message("line \(lineNum): \(Self.invalidHeaderMessage(text, keyword: keyword))")
+        }
         if fileOp != nil {
             throw HashlineParseError.message("line \(lineNum): \(Self.moveTakesNoBody)")
         }
@@ -379,6 +388,26 @@ final class HashlineParser {
         throw HashlineParseError.message(
             "line \(lineNum): payload line has no preceding hunk header. Use `PUT N.=M:`, `CUT N.=M`, or `PUT <N:`/`PUT >N:` above the body. Got \(text)."
         )
+    }
+
+    /// The operation keyword a line starts with (as a word), if any.
+    private static func headerKeyword(_ text: String) -> String? {
+        let trimmed = text.drop(while: { $0 == " " || $0 == "\t" })
+        let keywords = [
+            HashlineFormat.putKeyword, HashlineFormat.cutKeyword, HashlineFormat.remKeyword,
+            HashlineFormat.moveKeyword,
+        ]
+        return keywords.first { keyword in
+            guard trimmed.hasPrefix(keyword) else { return false }
+            let rest = trimmed.dropFirst(keyword.count)
+            return rest.isEmpty || rest.first == " " || rest.first == "\t" || rest.first == ":"
+        }
+    }
+
+    private static func invalidHeaderMessage(_ text: String, keyword: String) -> String {
+        let header = text.trimmingCharacters(in: .whitespaces)
+        return
+            "`\(header)` is not a valid hunk header. Headers are `PUT N.=M:`, `PUT <N:`, `PUT >N:` (`<1` is the file head, `>$` the tail), `CUT N.=M`, `REM` and `MV DEST`. A file line that starts with `\(keyword)` goes in a `+` body row."
     }
 
     private static func trailingTextMessage(_ text: String, _ prefix: HashlineTokenizer.HunkHeaderPrefix) -> String {
@@ -576,12 +605,11 @@ final class HashlineParser {
             return
         case .replace(let range):
             if payloads.isEmpty {
-                if !hadColon {
-                    recordPendingError(HashlineParseError.message("line \(lineNum): \(Self.colonlessSpanPut)"))
-                    return
-                }
-                pushDeleteRange(range, lineNum: lineNum)
-                addWarning(Self.emptyPutAutoCutWarning)
+                // Rejected rather than read as a delete: an empty body is as
+                // likely truncated output as a deliberate cut.
+                let message =
+                    hadColon ? Self.emptyReplaceMessage(range) : Self.colonlessSpanPut
+                recordPendingError(HashlineParseError.message("line \(lineNum): \(message)"))
                 return
             }
             let cursor: Cursor = .beforeAnchor(range.start)

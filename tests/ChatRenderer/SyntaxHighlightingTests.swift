@@ -14,11 +14,8 @@ extension AllAppTests {
         func languagesAreAvailable() {
             for language in SyntaxLanguage.allCases {
                 #expect(SyntaxEngine.isAvailable(language), "\(language) has no grammar or query")
-                if language.lightweight == nil {
-                    #expect(!(LanguageHints.all[language] ?? []).isEmpty, "\(language) has no detection hints")
-                } else {
-                    #expect((LanguageHints.all[language] ?? []).isEmpty, "\(language) must not be auto-detected")
-                }
+                let hasHints = !(LanguageHints.all[language] ?? []).isEmpty
+                #expect(hasHints == (language.lightweight == nil && language != .yaml), "\(language) hints")
             }
         }
 
@@ -414,18 +411,6 @@ extension AllAppTests {
                 """
             ),
             (
-                .yaml,
-                """
-                name: build
-                on:
-                  push:
-                    branches: [main]
-                jobs:
-                  test:
-                    runs-on: ubuntu-latest
-                """
-            ),
-            (
                 .toml,
                 """
                 [package]
@@ -471,6 +456,22 @@ extension AllAppTests {
                     drwxr-xr-x  3 me  staff   96 Oct 16 12:00 build
                     -rw-r--r--  1 me  staff  120 Oct 16 12:00 notes
                     """) == nil)
+        }
+
+        @Test("YAML is never auto-detected, even for a textbook workflow file")
+        func yamlIsNeverDetected() {
+            let code = """
+                name: build
+                on:
+                  push:
+                    branches: [main]
+                jobs:
+                  test:
+                    runs-on: ubuntu-latest
+                """
+            #expect(LanguageDetector.candidates(in: code).allSatisfy { $0.language != .yaml })
+            #expect(LanguageDetector.detect(code) == nil)
+            #expect(SyntaxLanguage.from(marker: "yaml") == .yaml)
         }
 
         @Test("a shebang or doctype decides without any parsing")

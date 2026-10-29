@@ -55,9 +55,9 @@ struct ChatView: View {
 
                 // The model, workdir and MCP controls share the same look: an
                 // icon plus tag(s), white while the value can be (re)set via a
-                // picker, grey when it's fixed. Red marks a missing required
-                // directory. `allowsHitTesting` is used instead of `disabled`
-                // so the colors aren't dimmed.
+                // picker, grey when it's fixed or while streaming. Red marks a
+                // missing required directory. `allowsHitTesting` is used
+                // instead of `disabled` so the colors aren't dimmed.
                 if store.selectedChatItem?.chat != nil {
                     let parts = store.modelParts(for: store.selectedChatItem?.chat?.model)
                     Button {
@@ -65,7 +65,7 @@ struct ChatView: View {
                     } label: {
                         ModelStatusLabel(
                             provider: parts.provider, color: store.tagColor(for: parts.provider), label: parts.name,
-                            hasModel: store.selectedChatHasModel)
+                            hasModel: store.selectedChatHasModel, isActive: !store.isStreaming)
                     }
                     .buttonStyle(.borderless)
                     .fixedSize()
@@ -100,6 +100,7 @@ struct ChatView: View {
                         }
                         .font(.callout)
                         .lineLimit(1)
+                        .foregroundStyle(controlColor())
                     }
                     .buttonStyle(.plain)
                     .menuIndicator(.hidden)
@@ -149,7 +150,7 @@ struct ChatView: View {
                         }
                         .font(.callout)
                         .lineLimit(1)
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(controlColor())
                     }
                     .buttonStyle(.borderless)
                     .fixedSize()
@@ -203,7 +204,13 @@ struct ChatView: View {
         /// picked; grey once it's fixed (picked or pre-set by the role).
         private var workdirColor: Color {
             if store.selectedChatWorkdirRequired { return .red }
-            return store.selectedChatWorkdirPickerEnabled ? .primary : .secondary
+            return controlColor(active: store.selectedChatWorkdirPickerEnabled)
+        }
+
+        /// White while the control can still be used, grey when it can't
+        /// (fixed value, or streaming in progress).
+        private func controlColor(active: Bool = true) -> Color {
+            active && !store.isStreaming ? .primary : .secondary
         }
 
         private var workdirHelp: String {
