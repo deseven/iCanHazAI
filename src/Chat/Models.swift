@@ -57,13 +57,18 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     /// Which continuation branch is active. Nil → the last (most recently
     /// added) branch.
     var activeBranch: Int?
+    /// User messages only: a note for the model (e.g. the working directory
+    /// changed), kept apart from `content` so the UI, the chat title and edits
+    /// never see it. Appended to the content, marked `[SYSTEM NOTE]`, when the
+    /// request is built (see `requestForm`).
+    var systemNote: String?
 
     init(
         id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil,
         thinkingDuration: TimeInterval? = nil, error: String? = nil,
         timestamp: Date = Date(), model: String? = nil, attachments: [Attachment]? = nil,
         toolCalls: [ToolCall]? = nil, toolResults: [ToolResult]? = nil, tokenUsage: TokenUsage? = nil,
-        branches: [[ChatMessage]]? = nil, activeBranch: Int? = nil
+        branches: [[ChatMessage]]? = nil, activeBranch: Int? = nil, systemNote: String? = nil
     ) {
         self.id = id
         self.role = role
@@ -79,12 +84,13 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         self.tokenUsage = tokenUsage
         self.branches = branches
         self.activeBranch = activeBranch
+        self.systemNote = systemNote
     }
 
     enum CodingKeys: String, CodingKey {
         case id, role, content, thinking, thinkingDuration, error, timestamp, model
         case attachments, toolCalls, toolResults, tokenUsage
-        case branches, activeBranch
+        case branches, activeBranch, systemNote
     }
 
     /// Tolerant decode: every field is optional at the JSON level. A missing or
@@ -108,10 +114,25 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         tokenUsage = try? c.decode(TokenUsage.self, forKey: .tokenUsage)
         branches = try? c.decode([[ChatMessage]].self, forKey: .branches)
         activeBranch = try? c.decode(Int.self, forKey: .activeBranch)
+        systemNote = try? c.decode(String.self, forKey: .systemNote)
     }
 }
 
 extension ChatMessage {
+    static let systemNoteMarker = "[SYSTEM NOTE]"
+
+    /// The message as the model sees it: a user message's `systemNote` is
+    /// appended to its content under the `[SYSTEM NOTE]` marker. Any other
+    /// message is returned unchanged.
+    var requestForm: ChatMessage {
+        guard role == .user, let note = systemNote, !note.isEmpty else { return self }
+        var copy = self
+        let block = "\(Self.systemNoteMarker)\n\(note)"
+        copy.content = content.isEmpty ? block : "\(content)\n\n\(block)"
+        copy.systemNote = nil
+        return copy
+    }
+
     /// A copy detached from the tree (no `branches`/`activeBranch`).
     var detached: ChatMessage {
         var copy = self
@@ -243,14 +264,20 @@ struct Chat: Codable, Identifiable, Equatable {
     /// Selected role name.
     var role: String?
     /// The chat's working directory: seeded from the role's
-    /// `working_directory` at creation, or picked by the user (picker or CLI)
-    /// when the role doesn't pre-set one. Permanent once set — a directory
-    /// swap mid-chat confuses the model, so a different directory requires a
-    /// new chat.
+    /// `working_directory` at creation, or picked by the user (picker or CLI).
+    /// The user may change it any time the chat isn't streaming; the model is
+    /// told about a change through a note on the next user message (see
+    /// `lastWorkingDirectory`).
     var workingDirectory: String?
+    /// The directory the model was last told about: the effective directory at
+    /// the time of the latest request (nil for none). Compared with the
+    /// current one when the next message is sent to tell whether the user
+    /// changed it in between. Persisted (next to `workingDirectory`, same key
+    /// style) so that holds across app restarts.
+    var lastWorkingDirectory: String?
     /// Set when the user picked "No Directory" in the directory picker of a
-    /// role with `working_directory_optional`. Permanent like a picked
-    /// directory. Only honored while the role still allows it (see
+    /// role with `working_directory_optional`. Picking a directory later
+    /// clears it. Only honored while the role still allows it (see
     /// `Role.isWithoutDirectory(_:)`).
     var noWorkingDirectory: Bool?
     /// Names of the custom MCP servers active for this chat. Seeded from the
@@ -282,15 +309,16 @@ struct Chat: Codable, Identifiable, Equatable {
     var outputRendering: ChatOutputRendering?
     init(
         id: UUID = UUID(), messages: [ChatMessage] = [], model: String? = nil, role: String? = nil,
-        workingDirectory: String? = nil, noWorkingDirectory: Bool? = nil, mcps: [String]? = nil,
-        title: String? = nil, archive: Bool? = nil, autoAllow: [String]? = nil, autoDeny: [String]? = nil,
-        outputRendering: ChatOutputRendering? = nil
+        workingDirectory: String? = nil, lastWorkingDirectory: String? = nil, noWorkingDirectory: Bool? = nil,
+        mcps: [String]? = nil, title: String? = nil, archive: Bool? = nil, autoAllow: [String]? = nil,
+        autoDeny: [String]? = nil, outputRendering: ChatOutputRendering? = nil
     ) {
         self.id = id
         self.messages = messages
         self.model = model
         self.role = role
         self.workingDirectory = workingDirectory
+        self.lastWorkingDirectory = lastWorkingDirectory
         self.noWorkingDirectory = noWorkingDirectory
         self.mcps = mcps
         self.title = title
@@ -301,8 +329,8 @@ struct Chat: Codable, Identifiable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, messages, model, reasoning, role, workingDirectory, mcps, title, archive
-        case noWorkingDirectory = "no_working_directory"
+        case id, messages, model, reasoning, role, workingDirectory, lastWorkingDirectory, noWorkingDirectory
+        case mcps, title, archive
         case autoAllow = "auto_allow"
         case autoDeny = "auto_deny"
         case outputRendering = "output_rendering"
@@ -321,6 +349,7 @@ struct Chat: Codable, Identifiable, Equatable {
         reasoning = try? c.decode(String.self, forKey: .reasoning)
         role = try? c.decode(String.self, forKey: .role)
         workingDirectory = try? c.decode(String.self, forKey: .workingDirectory)
+        lastWorkingDirectory = try? c.decode(String.self, forKey: .lastWorkingDirectory)
         noWorkingDirectory = try? c.decode(Bool.self, forKey: .noWorkingDirectory)
         mcps = try? c.decode([String].self, forKey: .mcps)
         title = try? c.decode(String.self, forKey: .title)
@@ -1562,15 +1591,15 @@ struct Role: Identifiable, Equatable, Hashable {
     /// Whether this role selects at least one directory-relevant built-in
     /// group (Filesystem or Edit) — tools that operate on files and therefore
     /// need a working directory. When the role doesn't pre-set one, the user
-    /// must pick a directory once per chat (permanent). Shell is excluded:
-    /// without a directory it simply defaults to the user's home.
+    /// must pick a directory for the chat. Shell is excluded: without a
+    /// directory it simply defaults to the user's home.
     var hasDirectoryRelevantTools: Bool {
         enabledGroups.contains { BuiltinTools.directoryRelevantGroups.contains($0) }
     }
 
     /// Whether `chat` is in the "No Directory" state: the user picked it for
     /// this chat and the role still allows it (optional directory, none
-    /// pre-set). A chat that already has a directory is never in this state.
+    /// pre-set). A chat that has a directory is never in this state.
     /// The choice is stored on the chat but honored only through this check,
     /// so a later role edit that makes the directory mandatory again simply
     /// turns the chat back into one that needs a directory pick.

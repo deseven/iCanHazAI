@@ -1580,13 +1580,43 @@ actor ChatEngine {
     }
 
     /// The effective working directory for a chat: the per-chat value (seeded
-    /// from the role at creation or picked by the user — permanent either way),
-    /// falling back to the role's working directory. Nil when neither is set.
+    /// from the role at creation or picked by the user), falling back to the
+    /// role's working directory. Nil when neither is set.
     /// Forwarded to built-in Filesystem/Edit/Shell tools so relative paths
     /// resolve against it.
     private func effectiveWorkingDirectory(for chat: Chat) -> String? {
         if let dir = chat.workingDirectory, !dir.isEmpty { return dir }
         return self.role(for: chat)?.workingDirectory
+    }
+
+    /// The directory the model works in, for change tracking: nil when the
+    /// role has no workdir-capable tool, the chat is in the "No Directory"
+    /// state, or no directory is set (Shell then runs in the user's home).
+    private func modelWorkingDirectory(for chat: Chat) -> String? {
+        guard let role = self.role(for: chat), role.hasWorkdirCapableMCP, !role.isWithoutDirectory(chat),
+            let dir = effectiveWorkingDirectory(for: chat), !dir.isEmpty
+        else { return nil }
+        return dir
+    }
+
+    /// The system note telling the model the working directory changed from
+    /// `previous` to `current` (nil = none), or nil when nothing changed. An
+    /// isolated directory is the model's `/`, so real paths are left out.
+    nonisolated static func workdirChangeNote(previous: String?, current: String?, isolated: Bool) -> String? {
+        guard previous != current else { return nil }
+        func shown(_ path: String) -> String { "`\((path as NSString).abbreviatingWithTildeInPath)`" }
+        switch (previous, current) {
+        case (_, nil):
+            return "The user removed the working directory. The file, edit and shell tools are no longer available."
+        case (nil, let new?):
+            return isolated
+                ? "The user picked a working directory. It is now the root `/` of your filesystem."
+                : "The user picked the working directory \(shown(new))."
+        case (let old?, let new?):
+            return isolated
+                ? "The user changed the working directory. The root `/` of your filesystem now refers to a different directory, so earlier listings and file contents may be outdated."
+                : "The user changed the working directory from \(shown(old)) to \(shown(new))."
+        }
     }
 
     // MARK: - Sending messages
@@ -1689,7 +1719,18 @@ actor ChatEngine {
             messages.append(systemMsg)
         }
         messages.append(contentsOf: baseChat.activeMessages)
-        let userMessage = ChatMessage(role: .user, content: text, attachments: committed.isEmpty ? nil : committed)
+        // Tell the model when the user changed the working directory since
+        // the last request. The very first request needs no note: the
+        // directory is part of the system prompt and nothing was said before.
+        let modelWorkdir = modelWorkingDirectory(for: baseChat)
+        let workdirNote =
+            baseChat.messages.isEmpty
+            ? nil
+            : Self.workdirChangeNote(
+                previous: baseChat.lastWorkingDirectory, current: modelWorkdir,
+                isolated: role(for: baseChat)?.hasDirectoryIsolation ?? false)
+        let userMessage = ChatMessage(
+            role: .user, content: text, attachments: committed.isEmpty ? nil : committed, systemNote: workdirNote)
         messages.append(userMessage)
 
         // Add the user message immediately and create a placeholder assistant message.
@@ -1699,6 +1740,7 @@ actor ChatEngine {
         // at the active leaf — structurally, they cannot end up grafted onto
         // a non-active branch.
         var updatedChat = baseChat
+        updatedChat.lastWorkingDirectory = modelWorkdir
         let assistantPlaceholder = ChatMessage(role: .assistant, content: "", model: model.id)
         updatedChat.appendToActiveLeaf(userMessage)
         updatedChat.appendToActiveLeaf(assistantPlaceholder)
@@ -1901,9 +1943,9 @@ actor ChatEngine {
         // Apply the CLI's working directory (the client process's cwd, or the
         // explicit --workdir value) — but only for roles that actually consume
         // one and don't already fix the directory themselves: a role's pre-set
-        // working directory is permanent and always wins, and so does a chat's
-        // permanent "No Directory" choice. An explicitly-passed workdir that
-        // can't be applied triggers a warning.
+        // working directory always wins, and so does a chat's "No Directory"
+        // choice. An explicitly-passed workdir that can't be applied triggers
+        // a warning.
         if let workdir, !workdir.isEmpty {
             await ensureChatLoaded(filename: filename)
             if let idx = records.firstIndex(where: { $0.filename == filename }),
@@ -2178,7 +2220,7 @@ actor ChatEngine {
     /// await MCP calls and re-stream without holding the actor.
     private func performToolLoop(filename: String, model: ResolvedModel, messages: [ChatMessage]) async {
         // The working message history grows as tool calls + results are appended.
-        var history = messages
+        var history = messages.map(\.requestForm)
 
         // Unbounded: the loop terminates naturally when the model stops
         // emitting tool calls, on error, or on user cancellation. See the
@@ -3585,26 +3627,33 @@ actor ChatEngine {
         emit(.chatsChanged(records))
     }
 
-    /// Updates the per-chat working-directory override for a chat.
+    /// Sets the chat's working directory (picking one clears a "No Directory"
+    /// choice). Allowed at any time except while the chat streams: the change
+    /// is reported to the model on the next message (see `workdirChangeNote`).
     func setWorkingDirectory(filename: String, path: String?) async {
-        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         await ensureChatLoaded(filename: filename)
-        guard var chat = records[idx].chat else { return }
+        guard let idx = records.firstIndex(where: { $0.filename == filename }),
+            !records[idx].isStreaming, var chat = records[idx].chat
+        else { return }
+        guard chat.workingDirectory != path || chat.noWorkingDirectory != nil else { return }
         chat.workingDirectory = path
+        chat.noWorkingDirectory = nil
         saveChat(chat, filename: filename)
         emit(.chatsChanged(records))
     }
 
-    /// Records the user's "No Directory" pick. Final, like a picked directory:
-    /// ignored unless the role makes the directory optional and the chat has
-    /// no directory yet, and never reverted afterwards.
+    /// Records the user's "No Directory" pick, dropping any directory the chat
+    /// had. Ignored unless the role makes the directory optional, and while
+    /// the chat streams. Picking a directory later undoes it.
     func setNoWorkingDirectory(filename: String) async {
-        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         await ensureChatLoaded(filename: filename)
-        guard var chat = records[idx].chat, let chatRole = self.role(for: chat) else { return }
-        guard chatRole.workingDirectoryOptional, chatRole.workingDirectory?.isEmpty ?? true,
-            chat.workingDirectory?.isEmpty ?? true
+        guard let idx = records.firstIndex(where: { $0.filename == filename }),
+            !records[idx].isStreaming, var chat = records[idx].chat,
+            let chatRole = self.role(for: chat),
+            chatRole.workingDirectoryOptional, chatRole.workingDirectory?.isEmpty ?? true
         else { return }
+        guard chat.workingDirectory != nil || chat.noWorkingDirectory != true else { return }
+        chat.workingDirectory = nil
         chat.noWorkingDirectory = true
         saveChat(chat, filename: filename)
         emit(.chatsChanged(records))

@@ -3,9 +3,8 @@
 
 import SwiftUI
 
-/// A modal sheet for picking the chat's working directory. The pick is
-/// permanent (like the role itself): the sheet is only reachable while the
-/// chat has no directory, so it never offers a "current" entry.
+/// A modal sheet for picking the chat's working directory. It can be opened
+/// any time the chat isn't streaming; a new pick replaces the current one.
 ///
 /// With an empty search the sheet lists recently picked directories (the MRU
 /// list from the app config, capped at 30 — see
@@ -89,7 +88,7 @@ struct WorkdirPickerView: View {
         PickerDialog<WorkdirItem>(
             title: "Working directory",
             subtitle:
-                "Pick a directory for this chat — the choice is permanent. Recently picked directories are remembered; type a local path or host:/path to browse.",
+                "Pick a directory for this chat. You can change it later and the model will be told. Recently picked directories are remembered; type a local path or host:/path to browse.",
             searchText: $query,
             searchPlaceholder: "Type a path or host:/path",
             items: scrollItems,

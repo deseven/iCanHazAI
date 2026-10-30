@@ -724,7 +724,7 @@ extension AllAppTests {
             #expect(shell.shellWhitelist == nil)
         }
 
-        // MARK: - workdirPickerEnabled (pick permanence)
+        // MARK: - workdirPickerEnabled (changeable any time but while streaming)
 
         /// A role with directory-relevant tools and no pre-set directory.
         private func pickerRole() throws -> Role {
@@ -737,43 +737,29 @@ extension AllAppTests {
             return Role(name: "Developer", config: config)
         }
 
-        @Test("workdirPickerEnabled is true while the chat has no directory")
-        func pickerEnabledBeforePick() throws {
-            let role = try pickerRole()
-            #expect(AppViewModel.workdirPickerEnabled(role: role, chatWorkingDirectory: nil))
-            #expect(AppViewModel.workdirPickerEnabled(role: role, chatWorkingDirectory: ""))
+        @Test("workdirPickerEnabled is true when idle, whether or not a directory is already set")
+        func pickerEnabledWhenIdle() throws {
+            #expect(AppViewModel.workdirPickerEnabled(role: try pickerRole(), isStreaming: false))
         }
 
-        @Test("workdirPickerEnabled is false once a directory is picked (permanent)")
-        func pickerDisabledAfterPick() throws {
-            let role = try pickerRole()
-            #expect(!AppViewModel.workdirPickerEnabled(role: role, chatWorkingDirectory: "/tmp/proj"))
-            #expect(!AppViewModel.workdirPickerEnabled(role: role, chatWorkingDirectory: "nas:/var/www"))
+        @Test("workdirPickerEnabled is false while the chat streams")
+        func pickerDisabledWhileStreaming() throws {
+            #expect(!AppViewModel.workdirPickerEnabled(role: try pickerRole(), isStreaming: true))
         }
 
-        @Test("workdirPickerEnabled is false when the role pre-sets a directory")
-        func pickerDisabledForPresetRole() throws {
-            let toml = """
-                prompt = "Developer"
-                working_directory = "~/projects"
-
-                [filesystem]
-                """
-            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
-            let role = Role(name: "Developer", config: config)
-            #expect(!AppViewModel.workdirPickerEnabled(role: role, chatWorkingDirectory: nil))
+        @Test("workdirPickerEnabled is true when the role pre-sets a directory (the user may change it)")
+        func pickerEnabledForPresetRole() throws {
+            #expect(AppViewModel.workdirPickerEnabled(role: try presetRole("~/projects"), isStreaming: false))
         }
 
-        @Test("workdirPickerEnabled is false for roles without directory-relevant tools")
-        func pickerDisabledForShellOnly() throws {
-            let toml = """
-                prompt = "Developer"
+        @Test("workdirPickerEnabled is true for a Shell-only role")
+        func pickerEnabledForShellOnly() throws {
+            #expect(AppViewModel.workdirPickerEnabled(role: try shellOnlyRole(), isStreaming: false))
+        }
 
-                [shell]
-                """
-            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
-            let role = Role(name: "Developer", config: config)
-            #expect(!AppViewModel.workdirPickerEnabled(role: role, chatWorkingDirectory: nil))
+        @Test("workdirPickerEnabled is false for roles without a directory-using tool")
+        func pickerDisabledWithoutDirectoryTools() throws {
+            #expect(!AppViewModel.workdirPickerEnabled(role: try noDirectoryToolsRole(), isStreaming: false))
         }
 
         // MARK: - workdirPickerVisible (toolbar control)
@@ -790,55 +776,59 @@ extension AllAppTests {
             return Role(name: "Developer", config: config)
         }
 
-        @Test("workdirPickerVisible is true for a pre-set non-home directory")
-        func pickerVisibleForPresetDir() throws {
-            #expect(AppViewModel.workdirPickerVisible(role: try presetRole("/tmp/proj")))
-            #expect(AppViewModel.workdirPickerVisible(role: try presetRole("~/projects")))
-            #expect(AppViewModel.workdirPickerVisible(role: try presetRole("nas:/var/www")))
-        }
-
-        @Test("workdirPickerVisible is false when the role pre-sets the home directory")
-        func pickerHiddenForHomePreset() throws {
-            #expect(!AppViewModel.workdirPickerVisible(role: try presetRole("~")))
-            #expect(!AppViewModel.workdirPickerVisible(role: try presetRole("~/")))
-            #expect(!AppViewModel.workdirPickerVisible(role: try presetRole(NSHomeDirectory())))
-        }
-
-        @Test("workdirPickerVisible is true with directory-relevant tools and no pre-set dir")
-        func pickerVisibleForPickerRole() throws {
-            #expect(AppViewModel.workdirPickerVisible(role: try pickerRole()))
-        }
-
-        @Test("workdirPickerVisible is false without directory-relevant tools and no pre-set dir")
-        func pickerVisibleForShellOnly() throws {
+        private func shellOnlyRole() throws -> Role {
             let toml = """
                 prompt = "Developer"
 
                 [shell]
                 """
             let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
-            let role = Role(name: "Developer", config: config)
-            #expect(!AppViewModel.workdirPickerVisible(role: role))
+            return Role(name: "Developer", config: config)
         }
 
-        @Test("isHomeWorkdir recognizes home in tilde and expanded forms only")
-        func isHomeWorkdirForms() {
-            #expect(AppViewModel.isHomeWorkdir("~"))
-            #expect(AppViewModel.isHomeWorkdir("~/"))
-            #expect(AppViewModel.isHomeWorkdir(NSHomeDirectory()))
-            #expect(!AppViewModel.isHomeWorkdir("/tmp"))
-            #expect(!AppViewModel.isHomeWorkdir("~/projects"))
-            #expect(!AppViewModel.isHomeWorkdir("nas:/var/www"))
+        private func noDirectoryToolsRole() throws -> Role {
+            let toml = """
+                prompt = "Developer"
+
+                [utils]
+
+                [web]
+                """
+            let config = try TOMLDecoder().decode(RoleConfig.self, from: Data(toml.utf8))
+            return Role(name: "Developer", config: config)
+        }
+
+        @Test("workdirPickerVisible is true for any pre-set directory, home included")
+        func pickerVisibleForPresetDir() throws {
+            for dir in ["/tmp/proj", "~/projects", "nas:/var/www", "~", NSHomeDirectory()] {
+                #expect(AppViewModel.workdirPickerVisible(role: try presetRole(dir)), "expected visible for \(dir)")
+            }
+        }
+
+        @Test("workdirPickerVisible is true with Filesystem, Edit or Shell and no pre-set dir")
+        func pickerVisibleForDirectoryTools() throws {
+            #expect(AppViewModel.workdirPickerVisible(role: try pickerRole()))
+            #expect(AppViewModel.workdirPickerVisible(role: try shellOnlyRole()))
+        }
+
+        @Test("workdirPickerVisible is false for a role without Filesystem, Edit or Shell")
+        func pickerHiddenWithoutDirectoryTools() throws {
+            #expect(!AppViewModel.workdirPickerVisible(role: try noDirectoryToolsRole()))
         }
 
         // MARK: - workdirIcon (toolbar symbol)
 
-        @Test("workdirIcon is questionmark.folder when no directory is picked")
+        @Test("workdirIcon is questionmark.folder when a required directory is not picked")
         func workdirIconNoDirectory() {
             #expect(AppViewModel.workdirIcon(directory: nil, isolated: false) == "questionmark.folder")
             #expect(AppViewModel.workdirIcon(directory: "", isolated: false) == "questionmark.folder")
             // Isolation doesn't matter until a directory is picked.
             #expect(AppViewModel.workdirIcon(directory: nil, isolated: true) == "questionmark.folder")
+        }
+
+        @Test("workdirIcon is a plain folder when an unset directory isn't required")
+        func workdirIconNotRequired() {
+            #expect(AppViewModel.workdirIcon(directory: nil, isolated: false, required: false) == "folder")
         }
 
         @Test("workdirIcon is folder.circle for an isolated directory")
@@ -947,11 +937,9 @@ extension AllAppTests {
             #expect(AppViewModel.roleNeedsWorkdirPick(try optionalRole()))
         }
 
-        @Test("workdirPickerEnabled is false once the user picked no directory (final)")
-        func pickerDisabledAfterNoDirectory() throws {
-            let role = try optionalRole()
-            #expect(AppViewModel.workdirPickerEnabled(role: role, chatWorkingDirectory: nil, noDirectory: false))
-            #expect(!AppViewModel.workdirPickerEnabled(role: role, chatWorkingDirectory: nil, noDirectory: true))
+        @Test("workdirPickerEnabled stays true for optional roles: No Directory can be undone")
+        func pickerEnabledForOptionalRole() throws {
+            #expect(AppViewModel.workdirPickerEnabled(role: try optionalRole(), isStreaming: false))
         }
 
         // MARK: - [features] table

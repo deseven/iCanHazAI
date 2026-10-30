@@ -130,19 +130,62 @@ extension AllAppTests {
             #expect(chat.messages.isEmpty)
         }
 
-        @Test("Chat round-trips the no_working_directory choice")
+        @Test("Chat round-trips the noWorkingDirectory choice")
         func chatRoundTripsNoWorkingDirectory() throws {
             let original = Chat(noWorkingDirectory: true)
             let data = try JSONEncoder().encode(original)
-            #expect(String(data: data, encoding: .utf8)!.contains("\"no_working_directory\""))
+            #expect(String(data: data, encoding: .utf8)!.contains("\"noWorkingDirectory\""))
             let decoded = try JSONDecoder().decode(Chat.self, from: data)
             #expect(decoded == original)
             #expect(decoded.noWorkingDirectory == true)
 
             let bad = """
-                {"id":"00000000-0000-0000-0000-000000000001","messages":[],"no_working_directory":"yes"}
+                {"id":"00000000-0000-0000-0000-000000000001","messages":[],"noWorkingDirectory":"yes"}
                 """.data(using: .utf8)!
             #expect(try JSONDecoder().decode(Chat.self, from: bad).noWorkingDirectory == nil)
+        }
+
+        @Test("Chat round-trips lastWorkingDirectory, keyed like workingDirectory")
+        func chatRoundTripsLastWorkingDirectory() throws {
+            let original = Chat(workingDirectory: "/tmp/b", lastWorkingDirectory: "/tmp/a")
+            let data = try JSONEncoder().encode(original)
+            let raw = String(data: data, encoding: .utf8)!
+            #expect(raw.contains("\"lastWorkingDirectory\""))
+            #expect(raw.contains("\"workingDirectory\""))
+            let decoded = try JSONDecoder().decode(Chat.self, from: data)
+            #expect(decoded == original)
+            #expect(decoded.lastWorkingDirectory == "/tmp/a")
+
+            let sparse = """
+                {"id":"00000000-0000-0000-0000-000000000001","messages":[]}
+                """.data(using: .utf8)!
+            #expect(try JSONDecoder().decode(Chat.self, from: sparse).lastWorkingDirectory == nil)
+        }
+
+        @Test("a user message's systemNote persists and is appended under the marker for requests only")
+        func systemNoteRequestForm() throws {
+            let message = ChatMessage(role: .user, content: "hi", systemNote: "Something changed.")
+            let decoded = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(message))
+            #expect(decoded == message)
+            #expect(decoded.content == "hi")
+
+            let request = message.requestForm
+            #expect(request.content == "hi\n\n[SYSTEM NOTE]\nSomething changed.")
+            #expect(request.systemNote == nil)
+
+            // No text: the note stands alone, without leading blank lines.
+            let bare = ChatMessage(role: .user, content: "", systemNote: "Only note.")
+            #expect(bare.requestForm.content == "[SYSTEM NOTE]\nOnly note.")
+        }
+
+        @Test("requestForm leaves messages without a note, and non-user messages, untouched")
+        func requestFormUnchanged() {
+            let plain = ChatMessage(role: .user, content: "hi")
+            #expect(plain.requestForm == plain)
+            let empty = ChatMessage(role: .user, content: "hi", systemNote: "")
+            #expect(empty.requestForm == empty)
+            let assistant = ChatMessage(role: .assistant, content: "yo", systemNote: "ignored")
+            #expect(assistant.requestForm == assistant)
         }
 
         @Test("Chat files carrying the removed per-chat prompt override still load")

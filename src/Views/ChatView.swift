@@ -118,7 +118,8 @@ struct ChatView: View {
                                 systemName: AppViewModel.workdirIcon(
                                     directory: store.selectedChatWorkingDirectory,
                                     isolated: store.selectedChatWorkdirIsolated,
-                                    noDirectory: store.selectedChatWorkdirDeclined
+                                    noDirectory: store.selectedChatWorkdirDeclined,
+                                    required: store.selectedChatWorkdirRequired
                                 ))
                             toolbarTag(workdirLabel)
                         }
@@ -196,12 +197,14 @@ struct ChatView: View {
             if let path = store.selectedChatWorkingDirectory, !path.isEmpty {
                 return (path as NSString).abbreviatingWithTildeInPath
             }
+            // Shell alone runs in the user's home when no directory is set.
+            if !store.selectedChatWorkdirRequired && !store.selectedChatWorkdirDeclined { return "~" }
             return "No directory"
         }
 
         /// Red when a required directory is missing (the chat is blocked
         /// until the user picks one); white while the directory can be
-        /// picked; grey once it's fixed (picked or pre-set by the role).
+        /// changed; grey while it can't (streaming).
         private var workdirColor: Color {
             if store.selectedChatWorkdirRequired { return .red }
             return controlColor(active: store.selectedChatWorkdirPickerEnabled)
@@ -217,13 +220,13 @@ struct ChatView: View {
             if store.selectedChatWorkdirRequired {
                 return "A working directory is required by this role"
             }
+            if store.isStreaming {
+                return "Working directory (can't be changed while the chat is streaming)"
+            }
             if store.selectedChatWorkdirDeclined {
-                return "No working directory (chosen for this chat) — file and shell tools are disabled"
+                return "No working directory (chosen for this chat) — file, edit and shell tools are disabled"
             }
-            if !store.selectedChatWorkdirPickerEnabled {
-                return "Working directory (fixed for this chat)"
-            }
-            return "Working directory (permanent once picked)"
+            return "Working directory (click to change)"
         }
     }
 }

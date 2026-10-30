@@ -1453,8 +1453,8 @@ final class AppViewModel: ObservableObject {
     }
 
     /// The effective working directory for the selected chat: the per-chat
-    /// value (seeded from the role at creation or picked by the user —
-    /// permanent either way), falling back to the role's working directory.
+    /// value (seeded from the role at creation or picked by the user),
+    /// falling back to the role's working directory.
     var selectedChatWorkingDirectory: String? {
         guard let chat = selectedChatItem?.chat else { return nil }
         if let dir = chat.workingDirectory, !dir.isEmpty { return dir }
@@ -1462,25 +1462,17 @@ final class AppViewModel: ObservableObject {
     }
 
     /// Whether the working-directory control should be shown in the chat
-    /// toolbar. Shown when the role pre-sets a working directory (display
-    /// only — the value is permanent) or when the role selects
-    /// directory-relevant tools (Filesystem/Edit) so a directory must be
-    /// picked. Hidden otherwise: with no directory-relevant tools nothing
-    /// requires a directory (Shell alone defaults to the user's home).
+    /// toolbar: only when the role has a tool that uses a directory
+    /// (Filesystem, Edit or Shell).
     var selectedChatWorkdirPickerVisible: Bool {
         guard let role = selectedRole else { return false }
         return Self.workdirPickerVisible(role: role)
     }
 
     /// Pure decision logic behind `selectedChatWorkdirPickerVisible`
-    /// (testable without an app instance). A role pre-set to the home
-    /// directory hides the control: home is the default directory and it
-    /// can't be changed, so there's nothing to show.
+    /// (testable without an app instance).
     nonisolated static func workdirPickerVisible(role: Role) -> Bool {
-        if let dir = role.workingDirectory, !dir.isEmpty {
-            return !isHomeWorkdir(dir)
-        }
-        return role.hasDirectoryRelevantTools
+        role.hasWorkdirCapableMCP
     }
 
     /// Whether the chat info sidebar shows the working-directory section:
@@ -1490,44 +1482,24 @@ final class AppViewModel: ObservableObject {
         selectedRole?.hasWorkdirCapableMCP ?? false
     }
 
-    /// Whether the given working directory is the user's home. SSH specs are
-    /// never considered home: a remote spec is always informative.
-    nonisolated static func isHomeWorkdir(_ path: String) -> Bool {
-        guard !SSHSpec.isSSH(path) else { return false }
-        let expanded = ((path as NSString).expandingTildeInPath as NSString).standardizingPath
-        return expanded == (NSHomeDirectory() as NSString).standardizingPath
-    }
-
     /// Whether the selected chat's user picked "No Directory" (see
-    /// `Role.isWithoutDirectory(_:)`). Final for the chat, like a picked
-    /// directory.
+    /// `Role.isWithoutDirectory(_:)`).
     var selectedChatWorkdirDeclined: Bool {
         guard let chat = selectedChatItem?.chat, let role = selectedRole else { return false }
         return role.isWithoutDirectory(chat)
     }
 
-    /// Whether the user can pick a working directory for the selected chat
-    /// (i.e. the control opens the picker). True only while the chat has no
-    /// directory yet (and didn't pick "No Directory") and the role doesn't
-    /// pre-set one. The pick is permanent, like the role itself: once a
-    /// directory is set, a different one requires a new chat (a mid-chat swap
-    /// would confuse the model).
+    /// Whether the control opens the picker: any time the working directory
+    /// can be set at all, except while the chat streams.
     var selectedChatWorkdirPickerEnabled: Bool {
         guard let role = selectedRole else { return false }
-        return Self.workdirPickerEnabled(
-            role: role, chatWorkingDirectory: selectedChatItem?.chat?.workingDirectory,
-            noDirectory: selectedChatWorkdirDeclined)
+        return Self.workdirPickerEnabled(role: role, isStreaming: isStreaming)
     }
 
     /// Pure decision logic behind `selectedChatWorkdirPickerEnabled`
     /// (testable without an app instance).
-    nonisolated static func workdirPickerEnabled(
-        role: Role, chatWorkingDirectory: String?, noDirectory: Bool = false
-    ) -> Bool {
-        guard role.hasDirectoryRelevantTools else { return false }
-        guard role.workingDirectory?.isEmpty ?? true else { return false }
-        guard !noDirectory else { return false }
-        return chatWorkingDirectory?.isEmpty ?? true
+    nonisolated static func workdirPickerEnabled(role: Role, isStreaming: Bool) -> Bool {
+        workdirPickerVisible(role: role) && !isStreaming
     }
 
     /// Whether the selected chat requires a working directory before the user
@@ -1551,12 +1523,15 @@ final class AppViewModel: ObservableObject {
     }
 
     /// The toolbar icon for the workdir control: a crossed-out folder when
-    /// the user picked "No Directory", a question-marked folder while no
-    /// directory is picked yet, a circled folder for an isolated directory, a
-    /// plain folder otherwise.
-    nonisolated static func workdirIcon(directory: String?, isolated: Bool, noDirectory: Bool = false) -> String {
+    /// the user picked "No Directory", a question-marked folder while a
+    /// required directory isn't picked yet, a circled folder for an isolated
+    /// directory, a plain folder otherwise (also for an unset directory that
+    /// isn't required: Shell then runs in the user's home).
+    nonisolated static func workdirIcon(
+        directory: String?, isolated: Bool, noDirectory: Bool = false, required: Bool = true
+    ) -> String {
         if noDirectory { return "folder.badge.minus" }
-        guard let directory, !directory.isEmpty else { return "questionmark.folder" }
+        guard let directory, !directory.isEmpty else { return required ? "questionmark.folder" : "folder" }
         return isolated ? "folder.circle" : "folder"
     }
 
@@ -2042,7 +2017,7 @@ final class AppViewModel: ObservableObject {
         Task { await engine.setWorkingDirectory(filename: filename, path: path) }
     }
 
-    /// Records the "No Directory" pick for the selected chat (final).
+    /// Records the "No Directory" pick for the selected chat.
     func setNoWorkingDirectory() {
         guard let filename = selectedChatID else { return }
         Task { await engine.setNoWorkingDirectory(filename: filename) }

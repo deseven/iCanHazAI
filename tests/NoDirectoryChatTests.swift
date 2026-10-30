@@ -108,20 +108,93 @@ extension AllAppTests {
             #expect(await toolNames(h) == ["calc", "web_fetch"])
         }
 
-        @Test("setNoWorkingDirectory is ignored once a directory is set or for roles that require one")
+        @Test("setNoWorkingDirectory drops a directory the chat already had")
+        func setNoWorkingDirectoryReplacesDirectory() async throws {
+            let h = try await makeHarness()
+            try await seed(
+                h, Fixtures.chat(messages: [Fixtures.message()], role: "Optional", workingDirectory: "/tmp/proj"))
+            await h.engine.setNoWorkingDirectory(filename: "c.json")
+
+            let chat = try await loadedChat(h)
+            #expect(chat.noWorkingDirectory == true)
+            #expect(chat.workingDirectory == nil)
+            #expect(await toolNames(h) == ["calc", "web_fetch"])
+        }
+
+        @Test("setNoWorkingDirectory is ignored for roles that require a directory")
         func setNoWorkingDirectoryIgnored() async throws {
             let h = try await makeHarness()
             try await seed(
                 h,
-                Fixtures.chat(messages: [Fixtures.message()], role: "Optional", workingDirectory: "/tmp/proj"),
-                filename: "picked.json")
-            try await seed(
-                h, Fixtures.chat(messages: [Fixtures.message()], role: "Required"), filename: "required.json")
-            await h.engine.setNoWorkingDirectory(filename: "picked.json")
-            await h.engine.setNoWorkingDirectory(filename: "required.json")
+                Fixtures.chat(messages: [Fixtures.message()], role: "Required", workingDirectory: "/tmp/proj"))
+            await h.engine.setNoWorkingDirectory(filename: "c.json")
 
-            #expect(try await loadedChat(h, filename: "picked.json").noWorkingDirectory == nil)
-            #expect(try await loadedChat(h, filename: "required.json").noWorkingDirectory == nil)
+            let chat = try await loadedChat(h)
+            #expect(chat.noWorkingDirectory == nil)
+            #expect(chat.workingDirectory == "/tmp/proj")
+        }
+
+        @Test("setWorkingDirectory changes the directory, persists it and undoes a No Directory choice")
+        func setWorkingDirectoryChanges() async throws {
+            let h = try await makeHarness()
+            try await seed(
+                h, Fixtures.chat(messages: [Fixtures.message()], role: "Optional", noWorkingDirectory: true))
+            await h.engine.setWorkingDirectory(filename: "c.json", path: "/tmp/one")
+
+            var chat = try await loadedChat(h)
+            #expect(chat.workingDirectory == "/tmp/one")
+            #expect(chat.noWorkingDirectory == nil)
+            #expect(await toolNames(h).contains("ls"))
+
+            await h.engine.setWorkingDirectory(filename: "c.json", path: "/tmp/two")
+            chat = try await loadedChat(h)
+            #expect(chat.workingDirectory == "/tmp/two")
+            #expect(try h.temp.readChatDirect("c.json").workingDirectory == "/tmp/two")
+        }
+
+        // MARK: - Change notes
+
+        @Test("the note names both directories, with the home folder abbreviated")
+        func noteForChange() {
+            let home = NSHomeDirectory()
+            #expect(
+                ChatEngine.workdirChangeNote(
+                    previous: "\(home)/work/project1", current: "\(home)/work/project2", isolated: false)
+                    == "The user changed the working directory from `~/work/project1` to `~/work/project2`.")
+            #expect(
+                ChatEngine.workdirChangeNote(previous: "/tmp/a", current: "nas:/srv", isolated: false)
+                    == "The user changed the working directory from `/tmp/a` to `nas:/srv`.")
+        }
+
+        @Test("the note says the user picked a directory when there was none before")
+        func noteForFirstPick() {
+            #expect(
+                ChatEngine.workdirChangeNote(previous: nil, current: "/tmp/a", isolated: false)
+                    == "The user picked the working directory `/tmp/a`.")
+        }
+
+        @Test("the note says the directory was removed, and tools are gone")
+        func noteForRemoval() throws {
+            let note = try #require(ChatEngine.workdirChangeNote(previous: "/tmp/a", current: nil, isolated: false))
+            #expect(note.contains("removed the working directory"))
+            #expect(!note.contains("/tmp/a"))
+        }
+
+        @Test("no note when nothing changed")
+        func noNoteWithoutChange() {
+            #expect(ChatEngine.workdirChangeNote(previous: "/tmp/a", current: "/tmp/a", isolated: false) == nil)
+            #expect(ChatEngine.workdirChangeNote(previous: nil, current: nil, isolated: false) == nil)
+        }
+
+        @Test("an isolated directory's real paths stay out of the note")
+        func noteForIsolated() throws {
+            let picked = try #require(ChatEngine.workdirChangeNote(previous: nil, current: "/tmp/b", isolated: true))
+            let changed = try #require(
+                ChatEngine.workdirChangeNote(previous: "/tmp/a", current: "/tmp/b", isolated: true))
+            for note in [picked, changed] {
+                #expect(!note.contains("/tmp/"))
+                #expect(note.contains("`/`"))
+            }
         }
 
         @Test("the system prompt explains the missing directory and reads no files")
