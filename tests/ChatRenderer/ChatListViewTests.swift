@@ -53,6 +53,19 @@ extension AllAppTests {
             #expect(h.list.testViewsConsistent())
         }
 
+        @Test("replacing a long chat with an empty one drops the scroll range and shows the placeholder")
+        func emptyAfterLong() {
+            let h = Harness()
+            #expect(h.list.testEmptyLabelVisible)
+            h.list.setMessages(ChatRendererFixtures.chat(200))
+            #expect(!h.list.testEmptyLabelVisible)
+            #expect(h.list.testDocumentHeight > 800)
+            h.list.setMessages([])
+            #expect(h.list.testEmptyLabelVisible)
+            #expect(h.list.testDocumentHeight < 800)
+            #expect(h.list.testDistanceFromBottom < 800)
+        }
+
         @Test("the background pass measures every row without moving the content on screen")
         func backgroundPassKeepsAnchor() async {
             let h = Harness()

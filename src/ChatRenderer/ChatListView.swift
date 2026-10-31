@@ -38,11 +38,15 @@ final class ChatListView: NSView {
     private let scrollView = NSScrollView()
     private let document = FlippedView()
     private let jumpButton = NSButton()
+    /// Shown in place of the list while there are no messages.
+    private let emptyLabel = NSTextField(labelWithString: "No messages")
 
     private var theme = Theme()
     private var rowLayout: RowLayout { RowLayout(theme: theme) }
 
-    private var rows: [RowState] = []
+    private var rows: [RowState] = [] {
+        didSet { emptyLabel.isHidden = !rows.isEmpty }
+    }
     private var indexByID: [String: Int] = [:]
     /// `offsets[i]` is the top of row `i`; the last element is the bottom of the last row.
     private var offsets: [CGFloat] = [RowLayout(theme: Theme()).listPadTop]
@@ -96,6 +100,9 @@ final class ChatListView: NSView {
         scrollView.documentView = document
         scrollView.contentView.postsBoundsChangedNotifications = true
         addSubview(scrollView)
+        emptyLabel.font = .systemFont(ofSize: theme.fontSize + 1)
+        emptyLabel.textColor = .secondaryLabelColor
+        addSubview(emptyLabel)
         NotificationCenter.default.addObserver(
             self, selector: #selector(boundsChanged), name: NSView.boundsDidChangeNotification,
             object: scrollView.contentView)
@@ -432,6 +439,9 @@ final class ChatListView: NSView {
         layoutRows()
         updateJumpButton()
         jumpButton.frame = NSRect(x: bounds.maxX - 32 - 20, y: 14, width: 32, height: 32)
+        emptyLabel.sizeToFit()
+        emptyLabel.frame.origin = NSPoint(
+            x: (bounds.width - emptyLabel.frame.width) / 2, y: (bounds.height - emptyLabel.frame.height) / 2)
     }
 
     override func viewDidEndLiveResize() {
@@ -647,6 +657,8 @@ final class ChatListView: NSView {
         let anchor = captureAnchor()
         let ratio = new.scale / theme.scale
         theme = new
+        emptyLabel.font = .systemFont(ofSize: new.fontSize + 1)
+        needsLayout = true
         pendingPass?.cancel()
         _ = pass.next()
         for v in visibleViews.values { recycle(v) }
@@ -669,7 +681,7 @@ final class ChatListView: NSView {
     }
 
     private func measureTail() {
-        guard textWidth > 0, !rows.isEmpty else { return }
+        guard textWidth > 0 else { return }
         let target = max(scrollView.contentView.bounds.height, 600) * 1.75
         var acc: CGFloat = 0
         var changes: [(Int, CGFloat)] = []
@@ -1066,6 +1078,7 @@ final class PassToken: @unchecked Sendable {
     extension ChatListView {
         var testIsPinned: Bool { pinnedToBottom }
         var testRowCount: Int { rows.count }
+        var testEmptyLabelVisible: Bool { !emptyLabel.isHidden }
         var testJumpButtonVisible: Bool { !jumpButton.isHidden }
         var testDocumentHeight: CGFloat { documentHeight }
         var testTextWidth: CGFloat { textWidth }
