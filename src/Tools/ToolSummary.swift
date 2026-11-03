@@ -312,7 +312,7 @@ extension ToolSummary {
         "rand": KnownToolSpec(primary: [], secondary: ["min", "max"]),
         // Built-in: Web
         "web_search": KnownToolSpec(primary: ["query"], secondary: ["num_results", "date_start", "date_end"]),
-        "web_extract": KnownToolSpec(primary: ["url"]),
+        "web_extract": KnownToolSpec(primary: ["url"], secondary: ["ranges", "regex"]),
         "web_fetch": KnownToolSpec(primary: ["url"], secondary: ["request_type", "headers", "data", "return_headers"]),
         // Configurator
         "read_mcp": KnownToolSpec(primary: ["name"]),
@@ -509,14 +509,15 @@ extension ToolSummary {
             }
             return firstLine(content)
         case "web_extract":
-            // The extracted content starts after the header's blank line.
-            let body: Substring
-            if let range = content.range(of: "\n\n") {
-                body = content[range.upperBound...]
-            } else {
-                body = Substring(content)
-            }
-            return "Extracted \(body.count) \(body.count == 1 ? "character" : "characters")."
+            // Content rows carry the "N:" gutter; the metadata header and the
+            // parenthesized notices ("(no lines match ...)") do not.
+            let re = try? NSRegularExpression(pattern: #"^\d+:"#)
+            let n = content.split(separator: "\n", omittingEmptySubsequences: false).filter { line in
+                let s = String(line)
+                return re?.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
+            }.count
+            if n > 0 { return "Read \(n) \(n == 1 ? "line" : "lines")." }
+            return content.split(separator: "\n").last.map(String.init) ?? ""
         // Configurator: bullet lists ("- name" per entry, or "(none)").
         case "list_mcps", "list_roles", "list_prompts":
             let n = countBulletLines(content)

@@ -717,7 +717,8 @@ enum BuiltinTools {
         case (shellGroup, "applescript"): return try await applescript(args)
         // Web
         case (webGroup, "web_search"): return try await BuiltinToolsWeb.search(args)
-        case (webGroup, "web_extract"): return try await BuiltinToolsWeb.extract(args)
+        case (webGroup, "web_extract"):
+            return try await BuiltinToolsWeb.extract(args, chatFilename: chatFilename)
         case (webGroup, "web_fetch"): return try await BuiltinToolsWeb.fetch(args)
         default:
             throw BuiltinToolError("Unknown tool \"\(name)\" in group \"\(group)\".")
@@ -1281,7 +1282,7 @@ enum BuiltinTools {
     /// with a `…` row between disjoint ones, then the cap and skipped-range
     /// notices. `lines` are the addressable lines (the phantom element after a
     /// final newline is not one, so `"a\nb\n"` has 2).
-    private static func readRows(
+    static func readRows(
         _ lines: [String], _ resolution: ReadSelector.Resolution, numbered: Bool
     ) -> [String] {
         var rows: [String] = []

@@ -230,13 +230,118 @@ extension AllAppTests {
             }
         }
 
-        @Test("Unified extract output carries the metadata header")
-        func unifiedExtractOutput() {
-            let out = BuiltinToolsWeb.formatExtractOutput(
+        @Test("Extract providers returning no text are errors")
+        func emptyExtractIsError() {
+            #expect(throws: BuiltinToolError.self) {
+                _ = try BuiltinToolsWeb.parseExtractedPage(
+                    provider: .linkup, data: Data(#"{"markdown": "  \n"}"#.utf8), url: "https://a.example")
+            }
+            #expect(throws: BuiltinToolError.self) {
+                _ = try BuiltinToolsWeb.parseExtractedPage(
+                    provider: .exa, data: Data(#"{"results": [{"url": "https://a.example"}]}"#.utf8),
+                    url: "https://a.example")
+            }
+        }
+
+        // MARK: - Extract output, cache and selection
+
+        private func document(_ content: String, title: String? = nil) -> WebExtractDocument {
+            WebExtractDocument(
                 page: .init(
-                    url: "https://a.example", title: "T", published: "2026-01-01", author: nil, content: "body"
-                ))
-            #expect(out == "URL: https://a.example\nTitle: T\nPublished: 2026-01-01\n\nbody")
+                    url: "https://a.example", title: title, published: "2026-01-01", author: nil, content: content))
+        }
+
+        private func numberedLines(_ count: Int) -> String {
+            (1...count).map { "line\($0)" }.joined(separator: "\n")
+        }
+
+        @Test("Extract output is a metadata header followed by numbered lines")
+        func extractOutputFormat() {
+            let out = document("a\nb\n", title: "T").render(.ranges(.whole))
+            #expect(out == "URL: https://a.example\nTitle: T\nPublished: 2026-01-01\n\n1:a\n2:b")
+        }
+
+        @Test("Lines over 1000 characters are split, preferring spaces")
+        func longLinesSplit() {
+            let hard = String(repeating: "x", count: 2500)
+            #expect(WebExtractDocument.split(hard).map(\.count) == [1000, 1000, 500])
+
+            let words = Array(repeating: "word", count: 600).joined(separator: " ")
+            let chunks = WebExtractDocument.split(words)
+            #expect(chunks.joined() == words)
+            #expect(chunks.allSatisfy { $0.count <= 1000 })
+            #expect(chunks.dropLast().allSatisfy { $0.hasSuffix(" ") })
+
+            #expect(document(hard + "\nshort").lines.count == 4)
+            #expect(WebExtractDocument.split(String(repeating: "é", count: 1000)).count == 1)
+        }
+
+        @Test("Ranges select lines and the 2000-line cap applies")
+        func extractRanges() throws {
+            let doc = document(numberedLines(3000))
+            let part = doc.render(try WebExtractSelection(args: ["ranges": "10-12"]))
+            #expect(part.hasSuffix("\n\n(lines 10-12 of 3000)\n10:line10\n11:line11\n12:line12"))
+            let whole = doc.render(.ranges(.whole))
+            #expect(whole.contains("\n(lines 1-2000 of 3000)\n"))
+            #expect(whole.hasSuffix("\n2000:line2000\n... (truncated at 2000 lines)"))
+        }
+
+        @Test("Regex returns case-insensitive matches with 5 lines of context, merged")
+        func extractRegex() throws {
+            let doc = document(numberedLines(100))
+            let one = doc.render(try WebExtractSelection(args: ["regex": "LINE50$"]))
+            #expect(one.contains("(1 matching line)\n(lines 45-55 of 100)\n45:line45\n"))
+            #expect(one.hasSuffix("\n55:line55"))
+
+            let merged = doc.render(try WebExtractSelection(args: ["regex": "line(10|14|30)$"]))
+            #expect(merged.contains("(3 matching lines)\n(lines 5-19, 25-35 of 100)\n"))
+            #expect(merged.contains("\n…\n"))
+
+            let edge = doc.render(try WebExtractSelection(args: ["regex": "^line1$"]))
+            #expect(edge.contains("(lines 1-6 of 100)"))
+
+            let none = doc.render(try WebExtractSelection(args: ["regex": "nothing"]))
+            #expect(none.hasSuffix("\n\n(no lines match regex \"nothing\"; 100 lines total)"))
+        }
+
+        @Test("Regex output is capped at 2000 lines")
+        func extractRegexCap() throws {
+            let doc = document(numberedLines(5000))
+            let out = doc.render(try WebExtractSelection(args: ["regex": "line"]))
+            #expect(out.contains("(lines 1-2000 of 5000)"))
+            #expect(out.hasSuffix("\n2000:line2000\n... (truncated at 2000 lines)"))
+        }
+
+        @Test("Regex and ranges are mutually exclusive; bad regex is rejected; empty values are ignored")
+        func selectionValidation() throws {
+            #expect(throws: BuiltinToolError.self) {
+                _ = try WebExtractSelection(args: ["regex": "a", "ranges": "1-5"])
+            }
+            #expect(throws: BuiltinToolError.self) {
+                _ = try WebExtractSelection(args: ["regex": "("])
+            }
+            if case .ranges(let selector) = try WebExtractSelection(args: ["regex": "", "ranges": ""]) {
+                #expect(selector == .whole)
+            } else {
+                Issue.record("expected ranges")
+            }
+        }
+
+        @Test("Cached pages are served without a provider, per chat")
+        func extractServedFromCache() async throws {
+            let cache = WebExtractCache()
+            cache.store(document("alpha\nbeta"), chat: "c.json", url: "https://a.example")
+            // A hit never reaches the provider or its config (whitespace around the URL is ignored).
+            var args: [String: Any] = ["regex": "BETA"]
+            args["url"] = "  https://a.example \n"
+            let hit = try await BuiltinToolsWeb.extract(args, chatFilename: "c.json", cache: cache)
+            #expect(!hit.isError)
+            #expect(hit.content.contains("1:alpha\n2:beta"))
+            // Entries are per chat and per URL, and clearing a chat drops them.
+            #expect(cache.document(chat: "other.json", url: "https://a.example") == nil)
+            #expect(cache.document(chat: "c.json", url: "https://b.example") == nil)
+            cache.clear(chat: "c.json")
+            #expect(cache.document(chat: "c.json", url: "https://a.example") == nil)
         }
 
         // MARK: - Result summaries
@@ -253,15 +358,12 @@ extension AllAppTests {
             #expect(status?.description == "1 result.")
         }
 
-        @Test("web_extract result summary reports the extracted character count")
+        @Test("web_extract result summary reports the number of lines read")
         func extractResultSummary() {
-            let content = BuiltinToolsWeb.formatExtractOutput(
-                page: .init(
-                    url: "https://a.example", title: nil, published: nil, author: nil, content: "body"
-                ))
+            let content = document("a\nb\nc").render(.ranges(.whole))
             let status = ToolSummary.resultStatus(
                 name: "web_extract", result: ToolResult(callID: "1", content: content, isError: false))
-            #expect(status?.description == "Extracted 4 characters.")
+            #expect(status?.description == "Read 3 lines.")
         }
 
         // MARK: - Error message extraction

@@ -1119,6 +1119,7 @@ actor ChatEngine {
         streamTasks[filename]?.cancel()
         streamTasks[filename] = nil
         env.deleteAllAttachments(for: filename)
+        WebExtractCache.shared.clear(chat: filename)
         records.removeAll(where: { $0.filename == filename })
         if selectedFilename == filename { selectedFilename = nil }
         cliDriven.remove(filename)
@@ -1147,6 +1148,7 @@ actor ChatEngine {
         cliInteractive.remove(filename)
         store.deleteChat(filename: filename)
         env.deleteAllAttachments(for: filename)
+        WebExtractCache.shared.clear(chat: filename)
         records.removeAll(where: { $0.filename == filename })
         if selectedFilename == filename { selectedFilename = nil }
         emit(.chatsChanged(records))
@@ -1372,6 +1374,7 @@ actor ChatEngine {
         if filename == selectedFilename { return false }
         if records[idx].isStreaming { return false }
         records[idx].chat = nil
+        WebExtractCache.shared.clear(chat: filename)
         debugLog("Engine", "released chat \(filename) — no longer needed")
         return true
     }

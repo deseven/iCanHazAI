@@ -29,9 +29,9 @@ enum BuiltinToolsWeb {
         BuiltinToolDef(
             name: extractToolName,
             description:
-                "Extract the readable content of a web page. Prefer this over web_fetch for reading articles and documentation pages.",
+                "Extract the readable content of a web page and return it as numbered lines, optionally only selected line ranges or regex matches. Prefer this over web_fetch for reading articles and documentation pages. The extracted content is cached for the current session, so the tool can be called multiple times for the same URL quickly.",
             schema:
-                #"{"type":"object","properties":{"url":{"type":"string","description":"The URL of the page to extract."}},"required":["url"]}"#
+                #"{"type":"object","properties":{"url":{"type":"string","description":"The URL of the page to extract."},"ranges":{"type":"string","description":"Comma-separated 1-based line ranges: 'A-B' (inclusive), 'A+C' (C lines starting at A), 'N-' (line N to the end). E.g. '100-200', '500+30', '1-40,1220-1270'. Defaults to the whole page; at most 2000 lines per call. Cannot be combined with 'regex'."},"regex":{"type":"string","description":"Case-insensitive regular expression matched against each line of the page. Returns the matches with 5 lines of context before and after each; at most 2000 lines in total. Cannot be combined with 'ranges'."}},"required":["url"]}"#
         ),
         BuiltinToolDef(
             name: fetchToolName,
@@ -71,12 +71,24 @@ enum BuiltinToolsWeb {
             isError: false)
     }
 
-    static func extract(_ args: [String: Any]) async throws -> ToolOutput {
-        let config = try await configured()
-        let url = try BuiltinTools.requireString(args, "url")
-        let data = try await post(extractRequest(config: config, url: url))
-        let page = try parseExtractedPage(provider: config.resolvedProvider, data: data, url: url)
-        return ToolOutput(content: formatExtractOutput(page: page), isError: false)
+    /// A page already extracted in this chat is served from `cache` without
+    /// touching the provider (so also without a configured one).
+    static func extract(
+        _ args: [String: Any], chatFilename: String, cache: WebExtractCache = .shared
+    ) async throws -> ToolOutput {
+        let url = try BuiltinTools.requireString(args, "url").trimmingCharacters(in: .whitespacesAndNewlines)
+        let selection = try WebExtractSelection(args: args)
+        let document: WebExtractDocument
+        if let cached = cache.document(chat: chatFilename, url: url) {
+            document = cached
+        } else {
+            let config = try await configured()
+            let data = try await post(extractRequest(config: config, url: url))
+            let page = try parseExtractedPage(provider: config.resolvedProvider, data: data, url: url)
+            document = WebExtractDocument(page: page)
+            cache.store(document, chat: chatFilename, url: url)
+        }
+        return ToolOutput(content: document.render(selection), isError: false)
     }
 
     /// Parsed `web_fetch` arguments, extracted for testability.
@@ -316,14 +328,6 @@ enum BuiltinToolsWeb {
         return out
     }
 
-    static func formatExtractOutput(page: ExtractedPage) -> String {
-        var out = "URL: \(page.url)\n"
-        if let title = page.title, !title.isEmpty { out += "Title: \(title)\n" }
-        if let published = page.published, !published.isEmpty { out += "Published: \(published)\n" }
-        if let author = page.author, !author.isEmpty { out += "Author: \(author)\n" }
-        return out + "\n" + page.content
-    }
-
     // MARK: - Response parsing (per provider)
 
     static func parseSearchHits(provider: WebSearchProviderKind, data: Data) throws -> [SearchHit] {
@@ -365,7 +369,19 @@ enum BuiltinToolsWeb {
         }
     }
 
+    /// A page without any text counts as a failed extraction, so it is neither
+    /// shown as a success nor cached.
     static func parseExtractedPage(provider: WebSearchProviderKind, data: Data, url: String) throws -> ExtractedPage {
+        let page = try decodeExtractedPage(provider: provider, data: data, url: url)
+        guard !page.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw BuiltinToolError("provider returned no content for this URL")
+        }
+        return page
+    }
+
+    private static func decodeExtractedPage(
+        provider: WebSearchProviderKind, data: Data, url: String
+    ) throws -> ExtractedPage {
         let obj = try jsonObject(data)
         switch provider {
         case .exa:
