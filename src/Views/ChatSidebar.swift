@@ -268,7 +268,7 @@ struct ChatSidebar: View {
             roleIcon: role?.icon ?? Role.defaultIcon,
             roleAccent: role?.accentColor ?? .accentColor,
             isSelected: isFiltering ? item.id == filterSelection?.id : item.id == store.selectedChatID,
-            isUnread: item.hasUnreadActivity && item.id != store.selectedChatID,
+            isUnread: item.hasUnreadActivity,
             isStreaming: item.isStreaming,
             isBlinking: store.blinkingChatIDs.contains(item.id),
             hidesRoleBadge: store.chatListMode == .role

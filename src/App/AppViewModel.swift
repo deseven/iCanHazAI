@@ -44,7 +44,9 @@ final class AppViewModel: ObservableObject {
 
     @Published var chatItems: [ChatRecord] = []
     /// Whether the main window is currently open (it persists hidden after being closed).
-    @Published var mainWindowVisible = false
+    @Published var mainWindowVisible = false {
+        didSet { refreshWindowFocus() }
+    }
     /// An export or print is being prepared; the Chat menu items are disabled meanwhile.
     @Published var chatExportRunning = false
     /// Cheap, message-free projection of `chatItems` for the sidebar. The
@@ -95,7 +97,11 @@ final class AppViewModel: ObservableObject {
     /// Whether the currently selected chat is scrolled to the bottom. Updated
     /// by `ChatView`; used to suppress the unread marker when the user is
     /// already looking at the latest content.
-    @Published var selectedChatAtBottom: Bool = true
+    @Published var selectedChatAtBottom: Bool = true {
+        didSet {
+            if selectedChatAtBottom { markSelectedViewedIfLooking() }
+        }
+    }
     /// Whether the right-hand chat info sidebar is currently shown.
     @Published var chatInfoSidebarVisible: Bool = false
     /// Width of the chat list sidebar. Drag-resizable via the split view
@@ -190,6 +196,17 @@ final class AppViewModel: ObservableObject {
     var inputDrafts = InputDraftStore()
     /// Observer token for `didBecomeActive` (to cancel the dock bounce).
     private var didBecomeActiveObserver: NSObjectProtocol?
+    /// Observer tokens for app/window focus changes (dock badge / unread rules).
+    private var focusObservers: [NSObjectProtocol] = []
+    /// Whether the app is active with the main window visible and not
+    /// minimized — i.e. the selected chat is actually in front of the user.
+    /// Mirrored into the engine, which decides unread state when a stream ends.
+    private var windowFocused = false
+    /// Chats with an unread answer / with tool calls awaiting approval (call
+    /// ids per chat). Together they make up the dock badge.
+    private var unreadChatIDs: Set<String> = []
+    private var approvalCallIDs: [String: Set<String>] = [:]
+    private var shownBadgeCount = 0
 
     // MARK: - Preferences state (cached from ConfigManager)
 
@@ -480,6 +497,8 @@ final class AppViewModel: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in self?.cancelAttention() }
         }
+        observeWindowFocus()
+        Task { await engine.setWindowFocused(false) }
     }
 
     deinit {
@@ -490,6 +509,7 @@ final class AppViewModel: ObservableObject {
             if let obs = didBecomeActiveObserver {
                 NotificationCenter.default.removeObserver(obs)
             }
+            for obs in focusObservers { NotificationCenter.default.removeObserver(obs) }
         }
     }
 
@@ -1104,16 +1124,13 @@ final class AppViewModel: ObservableObject {
                     }
                 }
             }
-            // Suppress the unread marker if the user is already viewing the
-            // selected chat scrolled to the bottom.
-            if selectedChatAtBottom,
-                let selected = selectedChatID,
-                let item = records.first(where: { $0.id == selected }),
-                item.hasUnreadActivity,
-                !item.isStreaming
-            {
-                Task { await engine.markViewed(filename: selected) }
+            markSelectedViewedIfLooking(in: records)
+            unreadChatIDs = DockBadge.unreadChatIDs(in: records)
+            if !approvalCallIDs.isEmpty {
+                let existing = Set(records.lazy.map(\.filename))
+                approvalCallIDs = approvalCallIDs.filter { existing.contains($0.key) }
             }
+            updateDockBadge()
             // Push the snapshot synchronously in the same main-actor turn so
             // the list reflects tool-call state before the engine resumes
             // to execute the tool. Pass the fresh records: `chatItems` is
@@ -1160,7 +1177,9 @@ final class AppViewModel: ObservableObject {
             LoaderController.shared.markApplicationCompleted(.configuration, loaded: 1)
         case .generalModelsLost(let lost):
             lostGeneralModels.merge(lost)
-        case .toolApprovalRequested(let filename, _):
+        case .toolApprovalRequested(let filename, let callID):
+            approvalCallIDs[filename, default: []].insert(callID)
+            updateDockBadge()
             // Blink the chat in the sidebar if the user isn't already viewing
             // it (otherwise the renderer shows the Allow/Deny buttons).
             if filename != selectedChatID {
@@ -1171,7 +1190,10 @@ final class AppViewModel: ObservableObject {
                 chatListController?.revealPendingApproval()
             }
             requestAttentionIfNeeded()
-        case .toolApprovalResolved(let filename, _):
+        case .toolApprovalResolved(let filename, let callID):
+            approvalCallIDs[filename]?.remove(callID)
+            if approvalCallIDs[filename]?.isEmpty == true { approvalCallIDs[filename] = nil }
+            updateDockBadge()
             blinkingChatIDs.remove(filename)
             if blinkingChatIDs.isEmpty {
                 cancelAttention()
@@ -1181,6 +1203,63 @@ final class AppViewModel: ObservableObject {
         case .configErrorsChanged(let errors):
             configErrors = errors
         }
+    }
+
+    // MARK: - Window focus & dock badge
+
+    private func observeWindowFocus() {
+        let center = NotificationCenter.default
+        func observe(_ name: Notification.Name, appActive: Bool? = nil) -> NSObjectProtocol {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                // Window notifications for sheets and the loader are irrelevant.
+                let window = note.object as? NSWindow
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if let window, window !== MainWindowController.shared.mainWindow { return }
+                    self.refreshWindowFocus(appActive: appActive)
+                }
+            }
+        }
+        focusObservers = [
+            observe(NSApplication.didBecomeActiveNotification, appActive: true),
+            observe(NSApplication.didResignActiveNotification, appActive: false),
+            observe(NSWindow.didMiniaturizeNotification),
+            observe(NSWindow.didDeminiaturizeNotification),
+        ]
+    }
+
+    /// Recomputes `windowFocused` and, on a change, tells the engine and
+    /// clears the selected chat's unread marker once it is in front again.
+    /// `appActive` is passed by the app activation notifications, where
+    /// `NSApp.isActive` may not have caught up yet.
+    private func refreshWindowFocus(appActive: Bool? = nil) {
+        var focused = false
+        if appActive ?? NSApp.isActive, mainWindowVisible,
+            let window = MainWindowController.shared.mainWindow
+        {
+            focused = !window.isMiniaturized
+        }
+        guard focused != windowFocused else { return }
+        windowFocused = focused
+        Task { await engine.setWindowFocused(focused) }
+        if focused { markSelectedViewedIfLooking() }
+    }
+
+    /// The selected chat counts as read once it is in front of the user and
+    /// scrolled to the bottom. Other chats wait until they are opened.
+    private func markSelectedViewedIfLooking(in records: [ChatRecord]? = nil) {
+        guard windowFocused, selectedChatAtBottom, let selected = selectedChatID,
+            let item = (records ?? chatItems).first(where: { $0.id == selected }),
+            item.hasUnreadActivity, !item.isStreaming
+        else { return }
+        Task { await engine.markViewed(filename: selected) }
+    }
+
+    private func updateDockBadge() {
+        let count = DockBadge.count(unread: unreadChatIDs, awaitingApproval: Set(approvalCallIDs.keys))
+        guard count != shownBadgeCount else { return }
+        shownBadgeCount = count
+        NSApp.dockTile.badgeLabel = DockBadge.label(for: count)
     }
 
     // MARK: - Tool-call approval attention

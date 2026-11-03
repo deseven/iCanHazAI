@@ -79,6 +79,12 @@ actor ChatEngine {
     /// screen — the user has seen the answer, so no notification is needed.
     private(set) var selectedFilename: String?
 
+    /// Whether the app window is in front and visible. The selected chat only
+    /// counts as viewed while this holds, so an answer finishing behind another
+    /// app still gets the unread marker (and the dock badge). Pushed by the UI;
+    /// defaults to true so a UI-less engine behaves as before.
+    private var windowFocused = true
+
     /// Runtime cache for `{load_first_available:...}` prompt variables:
     /// remembers which file was picked, its modification date, and contents.
     private let loadFirstAvailableCache = LoadFirstAvailableCache()
@@ -1109,6 +1115,7 @@ actor ChatEngine {
     /// file cleanup is needed — temporary chats never touch the chats dir.
     private func destroyTemporaryChat(filename: String) {
         guard records.first(where: { $0.filename == filename })?.isTemporary == true else { return }
+        cancelPendingApprovals(filename: filename)
         streamTasks[filename]?.cancel()
         streamTasks[filename] = nil
         env.deleteAllAttachments(for: filename)
@@ -1132,6 +1139,7 @@ actor ChatEngine {
     /// attachment folder on disk. Safe to call for chats that were never
     /// persisted (the store handles missing files gracefully).
     func deleteChat(filename: String) {
+        cancelPendingApprovals(filename: filename)
         streamTasks[filename]?.cancel()
         streamTasks[filename] = nil
         cliDriven.remove(filename)
@@ -2393,10 +2401,10 @@ actor ChatEngine {
                 // Loop again: the model will see the tool results and either
                 // call more tools or produce a final answer.
             } catch is CancellationError {
-                finishStream(filename: filename)
+                finishStream(filename: filename, cancelled: true)
                 return
             } catch let error as URLError where error.code == .cancelled {
-                finishStream(filename: filename)
+                finishStream(filename: filename, cancelled: true)
                 return
             } catch {
                 recordError(error.localizedDescription, filename: filename)
@@ -3145,8 +3153,9 @@ actor ChatEngine {
     }
 
     /// Marks a stream as finished for the given chat, persisting the final
-    /// state and clearing bookkeeping.
-    private func finishStream(filename: String) {
+    /// state and clearing bookkeeping. A `cancelled` stream (the user hit
+    /// stop) never raises the unread marker — they know it ended.
+    private func finishStream(filename: String, cancelled: Bool = false) {
         debugLog("Stream", "end — chat=\(filename)")
         thinkingTimers[filename] = nil
         defer { completeOneShotSinks(filename: filename) }
@@ -3175,11 +3184,12 @@ actor ChatEngine {
         records[idx].isStreaming = false
         streamTasks[filename] = nil
         // Flag as unread so the user is notified of new activity — but only if
-        // this isn't the chat the user is currently looking at. When the
-        // finished chat is the selected one the user has already seen the
-        // answer, so marking it unread would only surface a stale circle once
-        // they switch away.
-        if records[idx].filename != selectedFilename, !cliDriven.contains(records[idx].filename) {
+        // they aren't looking at this chat right now. When the finished chat
+        // is the selected one in a focused window the user has already seen
+        // the answer, so marking it unread would only surface a stale circle
+        // once they switch away.
+        let beingViewed = filename == selectedFilename && windowFocused
+        if !cancelled, !beingViewed, !cliDriven.contains(filename) {
             records[idx].hasUnreadActivity = true
         }
         // Agentic work is done; if the user isn't viewing this chat, its
@@ -3657,6 +3667,10 @@ actor ChatEngine {
         chat.noWorkingDirectory = true
         saveChat(chat, filename: filename)
         emit(.chatsChanged(records))
+    }
+
+    func setWindowFocused(_ focused: Bool) {
+        windowFocused = focused
     }
 
     /// Clears the unread marker for a chat once the user views it.
