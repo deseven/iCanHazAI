@@ -352,6 +352,7 @@ final class SSHManager: @unchecked Sendable {
 
         let box = IOBox()
         try process.run()
+        let killer = ProcessGroupKiller(process: process)
         debugLog("SSH", "spawned ssh pid \(process.processIdentifier): \(arguments.joined(separator: " "))")
 
         // Drain stdout/stderr concurrently; chunk arrival doubles as the
@@ -409,7 +410,15 @@ final class SSHManager: @unchecked Sendable {
             }
         }
 
-        await awaitProcessExit(process)
+        // A stopped tool call must not leave ssh running until a watchdog
+        // fires. Killing it closes the channel; a remote command without a
+        // pty only finds out on its next write (SIGPIPE).
+        await withTaskCancellationHandler {
+            await awaitProcessExit(process)
+        } onCancel: {
+            killer.kill()
+        }
+        killer.release()
         hardWatchdog?.cancel()
         idleWatchdog?.cancel()
         debugLog(

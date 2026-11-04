@@ -144,6 +144,8 @@ enum SmokeRoleTools {
     /// `read_file` auto-approved, `replace_text` asks first, and there is no `edit_file`: the file tools
     /// leave their `#TAG`s out.
     case fileReplaceApproval
+    /// `shell` only, auto-approved. Needs a working directory.
+    case shellAutoAllow
 }
 
 struct SmokeTimeout: Error, CustomStringConvertible {
@@ -260,6 +262,7 @@ final class SmokeFixture: @unchecked Sendable {
                 tools = ["replace_text"]
 
                 """
+        case .shellAutoAllow: toml += "\n[shell]\ntools = [\"shell\"]\nauto_allow_all = true\n"
         }
         try toml.write(
             to: temp.env.rolesURL.appendingPathComponent("\(name).toml"), atomically: true, encoding: .utf8)

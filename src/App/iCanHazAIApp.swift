@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import AppKit
+import ProcessExit
 import SwiftUI
 
 /// App delegate used to hook into application termination so we can tear down
@@ -108,6 +109,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Synchronous: closes the listener and unlinks the socket file so no
         // stale socket survives a normal quit.
         CLIServer.shared.stop()
+        // Commands of tool calls still running (or stopped, inside their kill
+        // grace period) would otherwise outlive the app as orphans.
+        ProcessGroupKiller.killAllNow()
         Task { await MCPManager.shared.disconnectAll() }
         DebugLogger.stopFileLogging()
     }

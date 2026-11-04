@@ -267,6 +267,33 @@ extension AllAppTests {
             #expect(await h.engine.resolveModel(for: Chat()) == .invalid)
         }
 
+        // MARK: - Unfinished turn on disk
+
+        @Test("a turn saved mid-stream loads finalized: no dead approval prompt, no placeholder")
+        func staleTurnFinalizedOnLoad() async throws {
+            let h = try await makeEngine(providers: [.deepseek])
+            var call = ToolCall(id: "call_w", name: "write_file", arguments: #"{"path":"a.txt"}"#)
+            call.pendingApproval = true
+            call.diff = "+new"
+            try h.temp.writeChatDirect(
+                Fixtures.chat(
+                    messages: [
+                        Fixtures.message(role: .user, content: "go"),
+                        Fixtures.message(role: .assistant, content: "", toolCalls: [call]),
+                    ], role: "Assistant"), filename: "c.json")
+            await h.engine.loadFromCache()
+            await h.engine.ensureChatLoaded(filename: "c.json")
+
+            let messages = try #require(await h.engine.record(for: "c.json")?.chat).activeMessages
+            #expect(messages.map(\.role) == [.user, .assistant, .tool])
+            let loadedCall = try #require(messages[1].toolCalls?.first)
+            #expect(!loadedCall.pendingApproval)
+            #expect(loadedCall.diff == nil)
+            let result = try #require(messages[2].toolResults?.first)
+            #expect(result.callID == "call_w")
+            #expect(result.isCancelled)
+        }
+
         // MARK: - One-shot failure text
 
         @Test("one-shot failures name the model and the way out")

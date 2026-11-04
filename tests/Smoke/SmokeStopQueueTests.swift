@@ -105,6 +105,149 @@ extension AllSmokeTests {
             }
         }
 
+        /// A shell command that ignores SIGTERM (so does what it `exec`s) and reports the pid of its inner
+        /// process, so a test can tell when it runs and whether it got killed.
+        private static func stubbornShellCall(pidFile: String) -> String {
+            let command = "trap '' TERM; sh -c 'echo $$ > \(pidFile); exec sleep 600'"
+            let data = try! JSONSerialization.data(withJSONObject: ["command": command])
+            return String(decoding: data, as: UTF8.self)
+        }
+
+        private static func waitForPid(at path: String, timeout: Duration = .seconds(10)) async throws -> pid_t {
+            let clock = ContinuousClock()
+            let deadline = clock.now + timeout
+            while clock.now < deadline {
+                if let text = try? String(contentsOfFile: path, encoding: .utf8),
+                    let pid = pid_t(text.trimmingCharacters(in: .whitespacesAndNewlines))
+                {
+                    return pid
+                }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            throw SmokeTimeout(description: "the shell command never started")
+        }
+
+        private static func waitForDeath(_ pid: pid_t, timeout: Duration = .seconds(10)) async throws -> Bool {
+            let clock = ContinuousClock()
+            let deadline = clock.now + timeout
+            while clock.now < deadline {
+                if kill(pid, 0) != 0, errno == ESRCH { return true }
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            return false
+        }
+
+        @Test("stopping a shell command that ignores the stop unwinds at once, saves the turn and kills it later")
+        func stopDuringStubbornShell() async throws {
+            let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent(
+                "ichai-smoke-stop-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: dir) }
+            let pidFile = (dir as NSString).appendingPathComponent("child.pid")
+
+            try await SmokeFixture.run { fx in
+                let chat = try await fx.start(tools: .shellAutoAllow, workingDirectory: dir)
+                try await fx.mock.enqueue(
+                    .deepseek,
+                    .toolCall(name: "shell", arguments: Self.stubbornShellCall(pidFile: pidFile), id: "call_sh"))
+                await fx.send(chat, "go")
+                let child = try await Self.waitForPid(at: pidFile)
+
+                // The process group only gets SIGKILL after a 2s grace, so an unwind that waited for the
+                // command could not make this deadline.
+                await fx.engine.stopStreaming(filename: chat)
+                let record = try await fx.waitUntilIdle(chat, timeout: 1.5)
+
+                let messages = try #require(record.chat).activeMessages
+                #expect(messages.map(\.role) == [.user, .assistant, .tool])
+                #expect(messages[2].toolResults?.first?.callID == "call_sh")
+                #expect(messages[2].toolResults?.first?.isError == true)
+                #expect(try fx.persisted(chat).activeMessages.map(\.role) == [.user, .assistant, .tool])
+
+                // The chat takes the next message right away.
+                try await fx.mock.enqueue(.deepseek, .text("ok"))
+                await fx.send(chat, "next")
+                let after = try await fx.waitUntilIdle(chat)
+                #expect(after.lastError == nil)
+                #expect(after.chat?.activeMessages.last?.content == "ok")
+
+                #expect(try await Self.waitForDeath(child), "the stopped command was left running")
+            }
+        }
+
+        @Test("switching chats right after stopping a stuck tool loses nothing from the turn, queued messages included")
+        func stopThenSwitchAway() async throws {
+            let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent(
+                "ichai-smoke-stop-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: dir) }
+            let pidFile = (dir as NSString).appendingPathComponent("child.pid")
+
+            try await SmokeFixture.run { fx in
+                let chat = try await fx.start(tools: .shellAutoAllow, workingDirectory: dir)
+                let other = await fx.engine.createNewChat(role: "SmokePlain", model: SmokeProvider.deepseek.modelString)
+                try await fx.mock.enqueue(
+                    .deepseek, .text("Working"), .gate("g"),
+                    .toolCall(name: "shell", arguments: #"{"command":"echo hi"}"#, id: "call_1"))
+                try await fx.mock.enqueue(
+                    .deepseek,
+                    .toolCall(name: "shell", arguments: Self.stubbornShellCall(pidFile: pidFile), id: "call_2"))
+                await fx.send(chat, "go")
+                try await fx.mock.waitForChatRequest(.deepseek, index: 0, atGate: "g")
+                await fx.engine.queueMessage(filename: chat, text: "steer", pendingAttachments: [])
+                try await fx.waitForQueue(chat, count: 1)
+                try await fx.mock.release("g")
+                let child = try await Self.waitForPid(at: pidFile)
+
+                await fx.engine.stopStreaming(filename: chat)
+                await fx.engine.selectChat(filename: other)
+                await fx.engine.selectChat(filename: chat)
+
+                func shape(_ messages: [ChatMessage]) -> [String] {
+                    messages.map { message in
+                        if let result = message.toolResults?.first {
+                            return "tool[\(result.callID)]\(result.isCancelled ? " cancelled" : "")"
+                        }
+                        let calls = message.toolCalls?.map(\.id).joined(separator: ",")
+                        return "\(message.role.rawValue): \(message.content)" + (calls.map { " [\($0)]" } ?? "")
+                    }
+                }
+                let expected = [
+                    "user: go", "assistant: Working [call_1]", "tool[call_1]", "user: steer", "assistant:  [call_2]",
+                    "tool[call_2] cancelled",
+                ]
+                #expect(shape(await fx.messages(chat)) == expected)
+                #expect(shape(try fx.persisted(chat).activeMessages) == expected)
+
+                try await fx.waitUntilIdle(chat)
+                #expect(try await Self.waitForDeath(child), "the stopped command was left running")
+            }
+        }
+
+        @Test("allowing a tool for the chat saves no approval prompt to disk")
+        func allowForChatSavesNoPrompt() async throws {
+            try await SmokeFixture.run { fx in
+                let chat = try await fx.start(tools: .calcApproval)
+                try await fx.mock.enqueue(
+                    .deepseek, .toolCall(name: "calc", arguments: Calc.call("2+2"), id: "call_ask"))
+                try await fx.mock.enqueue(.deepseek, [.text(Self.partial), .gate("g"), .text(" finished")])
+                await fx.send(chat, "go")
+                let callID = try await fx.waitForApproval(chat)
+
+                await fx.engine.allowToolCallForChat(callID: callID)
+                // Mid-stream: the save that remembered the allowance is the latest one on disk.
+                try await fx.mock.waitForChatRequest(.deepseek, index: 1, atGate: "g")
+                let saved = try fx.persisted(chat)
+                #expect(saved.autoAllow == ["calc"])
+                let calls = saved.activeMessages.compactMap(\.toolCalls).joined()
+                #expect(!calls.isEmpty)
+                #expect(!calls.contains { $0.pendingApproval })
+
+                try await fx.mock.release("g")
+                try await fx.waitUntilIdle(chat)
+            }
+        }
+
         @Test("stop-after-iteration finishes the tool turn, sends no follow-up and carries the results forward")
         func stopAfterIteration() async throws {
             try await SmokeFixture.run { fx in

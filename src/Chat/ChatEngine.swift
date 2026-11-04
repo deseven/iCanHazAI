@@ -92,6 +92,11 @@ actor ChatEngine {
     /// In-flight streaming tasks keyed by chat filename, used for cancellation.
     private var streamTasks: [String: Task<Void, Never>] = [:]
 
+    /// Ids of the tool calls a tool loop is waiting on right now. A stop
+    /// abandons the wait (see `executeUnlessStopped`), so this is what tells
+    /// live progress from a late one.
+    private var runningToolCalls: Set<String> = []
+
     /// The thinking phase currently streaming into a chat's assistant message.
     /// `base` is what the message had already accumulated before this phase.
     private struct ThinkingTimer {
@@ -1269,6 +1274,11 @@ actor ChatEngine {
             return
         }
         var changed = sanitizeMCPSelection(&chat)
+        // A chat that isn't in memory has no stream, so an unfinished turn on
+        // disk (saved mid-stream) is a stopped one: no approval prompt can
+        // still be answered, no placeholder will be filled. Normalized in
+        // memory only; the next save writes it.
+        chat.finalizeActiveStoppedTurn()
         if let modelString = chat.model {
             switch await resolveModel(for: chat) {
             case .invalid:
@@ -1373,6 +1383,9 @@ actor ChatEngine {
         if records[idx].isTemporary { return false }
         if filename == selectedFilename { return false }
         if records[idx].isStreaming { return false }
+        // A stopped stream still unwinding writes to the chat until
+        // `finishStream`, which releases it then.
+        if streamTasks[filename] != nil { return false }
         records[idx].chat = nil
         WebExtractCache.shared.clear(chat: filename)
         debugLog("Engine", "released chat \(filename) — no longer needed")
@@ -2365,7 +2378,7 @@ actor ChatEngine {
                 // is built directly from these messages by `ChatService` (no
                 // un-folding `flatMap` needed).
                 for prepared in preparedCalls {
-                    let toolResult = try await executePreparedToolCall(prepared, filename: filename)
+                    let toolResult = try await executeUnlessStopped(prepared, filename: filename)
                     // A stop requested during execution must unwind here:
                     // MCP/built-in tool calls may swallow task cancellation
                     // and return a result instead of throwing. Without this
@@ -2766,6 +2779,30 @@ actor ChatEngine {
     /// report it as-is; denied calls produce the denial result. Built-in
     /// groups and configurator tools run in-process; custom MCP server tools
     /// run via [`MCPManager`](src/MCP/MCPManager.swift).
+    /// Runs a tool call so that a stop unwinds the loop at once, whether or
+    /// not the tool honours cancellation: the tool runs in its own task, which
+    /// is cancelled on stop while the loop stops waiting for it. Without this a
+    /// single uncooperative tool (an MCP server, a hung process) keeps the
+    /// stream from ever finishing: nothing gets saved and every later send
+    /// waits on it forever. The abandoned task still gets the cancellation, so
+    /// built-in processes are killed (`ProcessRunner`); its result is dropped.
+    private func executeUnlessStopped(_ prepared: PreparedToolCall, filename: String) async throws -> ToolResult {
+        let callID = prepared.call.id
+        runningToolCalls.insert(callID)
+        defer { runningToolCalls.remove(callID) }
+        let work = Task { try await self.executePreparedToolCall(prepared, filename: filename) }
+        let outcome = OneShotResult<ToolResult>()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                outcome.install(continuation)
+                Task { outcome.finish(await work.result) }
+            }
+        } onCancel: {
+            work.cancel()
+            outcome.finish(.failure(CancellationError()))
+        }
+    }
+
     private func executePreparedToolCall(_ prepared: PreparedToolCall, filename: String) async throws -> ToolResult {
         // Don't start new work once the stream was stopped — the task is
         // cancelled but MCP/built-in calls don't throw.
@@ -2897,6 +2934,9 @@ actor ChatEngine {
     /// pending approval exists.
     func allowToolCallForChat(callID: String) {
         guard let pending = pendingApprovals[callID] else { return }
+        // Resolved first so the chat saved below no longer carries the
+        // approval prompt. The loop only resumes once this method returns.
+        resolveToolCallApproval(callID: callID, approval: .allow)
         if let idx = records.firstIndex(where: { $0.filename == pending.filename }),
             var chat = records[idx].chat,
             let call = chat.allMessages.lazy.compactMap(\.toolCalls).joined().first(where: { $0.id == callID })
@@ -2919,7 +2959,6 @@ actor ChatEngine {
                 debugLog("Tool", "auto-allowing \(call.name) for chat \(pending.filename)")
             }
         }
-        resolveToolCallApproval(callID: callID, approval: .allow)
     }
 
     /// Sets the `pendingApproval` flag on a tool call (matched by `callID`) on
@@ -3016,8 +3055,10 @@ actor ChatEngine {
     private func updateStreamingToolResult(chatFilename: String, callID: String, partial: String) {
         guard let idx = records.firstIndex(where: { $0.filename == chatFilename }) else { return }
         // Ignore late progress after a stop: the turn was finalized and its
-        // unexecuted calls already carry synthesized "cancelled" results.
-        guard records[idx].isStreaming else { return }
+        // unexecuted calls already carry synthesized "cancelled" results. The
+        // call check also covers a tool abandoned by a stop that keeps
+        // reporting while the next stream already runs.
+        guard records[idx].isStreaming, runningToolCalls.contains(callID) else { return }
         guard var chat = records[idx].chat else { return }
         // Find the `tool`-role message carrying an in-flight result for this
         // callID (current turn only, active path) and append to its streaming
@@ -3262,9 +3303,11 @@ actor ChatEngine {
             // state providers accept, which also tells the model exactly which
             // actions did and didn't happen. Only the last (incomplete) turn
             // is touched; earlier completed tool-call loops are kept.
+            // Saved right away rather than left to `finishStream`: the stop
+            // is final, and the chat must not depend on the task unwinding.
             if var chat = records[idx].chat {
                 chat.finalizeActiveStoppedTurn()
-                records[idx].chat = chat
+                saveChat(chat, filename: filename)
             }
             records[idx].isStreaming = false
             // Flush any pending coalesced emit first so the latest streamed
@@ -3747,6 +3790,39 @@ struct PreparedToolCall: Sendable {
     var isolation: Bool = false
     var chatID: String = ""
     var approval: ToolApproval = .allow
+}
+
+/// A result raced between several producers: the first `finish` wins, the rest
+/// are ignored. `finish` may come before the continuation is installed (a
+/// cancellation handler runs at once for an already cancelled task).
+final class OneShotResult<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value, Error>?
+    private var result: Result<Value, Error>?
+
+    func install(_ continuation: CheckedContinuation<Value, Error>) {
+        lock.lock()
+        if let result {
+            lock.unlock()
+            continuation.resume(with: result)
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func finish(_ result: Result<Value, Error>) {
+        lock.lock()
+        guard self.result == nil else {
+            lock.unlock()
+            return
+        }
+        self.result = result
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(with: result)
+    }
 }
 
 /// A tool-call approval awaiting a user decision, stored in
