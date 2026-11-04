@@ -547,11 +547,11 @@ extension AllAppTests {
             #expect((next?.bottom ?? .infinity) <= 400)
         }
 
-        @Test("pinned changes are reported once the list settles")
-        func pinnedReports() async {
+        @Test("last message visibility is reported once the list settles")
+        func lastVisibleReports() async {
             let h = Harness()
             var reports: [Bool] = []
-            h.list.onPinnedChange = { reports.append($0) }
+            h.list.onLastMessageVisibleChange = { reports.append($0) }
             h.list.setMessages(ChatRendererFixtures.chat(200))
             h.list.testScroll(toRow: 50)
             await Task.yield()
@@ -560,6 +560,23 @@ extension AllAppTests {
             h.list.jumpToBottom()
             try? await Task.sleep(for: .milliseconds(50))
             #expect(reports == [false, true])
+        }
+
+        @Test("the last message counts as visible once its start is on screen, without reaching the bottom")
+        func lastVisibleBeforeBottom() async {
+            let h = Harness()
+            var reports: [Bool] = []
+            h.list.onLastMessageVisibleChange = { reports.append($0) }
+            var rows = ChatRendererFixtures.chat(40)
+            rows.append(ChatRendererFixtures.message("long", content: String(repeating: "line\n\n", count: 400)))
+            h.list.setMessages(rows)
+            h.list.revealLastMessageStart()
+            try? await Task.sleep(for: .milliseconds(50))
+            #expect(!h.list.testIsPinned)
+            #expect(reports == [true])
+            h.list.testScroll(toRow: 5)
+            try? await Task.sleep(for: .milliseconds(50))
+            #expect(reports == [true, false])
         }
 
         @Test("views are reconfigured for rows that replace deleted ones, even with the same structure")

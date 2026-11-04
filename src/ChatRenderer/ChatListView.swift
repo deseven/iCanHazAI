@@ -28,9 +28,10 @@ final class ChatListView: NSView {
     /// Called when the user asks for something only the host can do.
     var onAction: ((ChatRowAction) -> Void)?
 
-    /// Called (coalesced, on a later main-actor turn) when the list becomes
-    /// pinned to the bottom or stops being so.
-    var onPinnedChange: ((Bool) -> Void)?
+    /// Called (coalesced, on a later main-actor turn) when the last message
+    /// comes into view or leaves it, and once after every `setMessages` with
+    /// the resulting state. Always false while the list is empty.
+    var onLastMessageVisibleChange: ((Bool) -> Void)?
 
     /// Called whenever the number of matches or the current one changes.
     var onSearchChange: ((ChatSearchStatus) -> Void)?
@@ -68,11 +69,9 @@ final class ChatListView: NSView {
     private var columnWidth: CGFloat = 0
     private var textWidth: CGFloat = 0
     private var columnX: CGFloat = 0
-    private var pinnedToBottom = true {
-        didSet { if pinnedToBottom != oldValue { schedulePinnedReport() } }
-    }
-    private var reportedPinned = true
-    private var pinnedReportScheduled = false
+    private var pinnedToBottom = true
+    private var reportedLastVisible: Bool?
+    private var lastVisibleReportScheduled = false
     private var adjusting = false
     /// Eases a pinned list toward the bottom while a reply grows; see `followBottom`.
     private lazy var followTicker = FrameTicker { [weak self] dt in self?.followStep(dt) ?? false }
@@ -140,6 +139,8 @@ final class ChatListView: NSView {
         pinnedToBottom = true
         updateJumpButton()
         scheduleSearch(delay: .zero)
+        reportedLastVisible = nil
+        scheduleLastVisibleReport()
         guard textWidth > 0 else { return }
         measureTail()
         scrollToBottom()
@@ -527,6 +528,7 @@ final class ChatListView: NSView {
     }
 
     private func layoutRows() {
+        defer { scheduleLastVisibleReport() }
         guard textWidth > 0, var range = visibleRange() else {
             for v in visibleViews.values { recycle(v) }
             visibleViews.removeAll()
@@ -807,15 +809,25 @@ final class ChatListView: NSView {
         jumpButton.isHidden = pinnedToBottom
     }
 
-    private func schedulePinnedReport() {
-        guard !pinnedReportScheduled else { return }
-        pinnedReportScheduled = true
+    /// Whether a meaningful part of the last message is on screen.
+    private var lastMessageVisible: Bool {
+        guard textWidth > 0, let last = rows.indices.last else { return false }
+        let r = scrollView.documentVisibleRect
+        let top = offsets[last]
+        let minShown = min(rows[last].height, 40)
+        return top + minShown <= r.maxY && offsets[last + 1] > r.minY
+    }
+
+    private func scheduleLastVisibleReport() {
+        guard !lastVisibleReportScheduled, lastMessageVisible != reportedLastVisible else { return }
+        lastVisibleReportScheduled = true
         Task { @MainActor [weak self] in
             guard let self else { return }
-            pinnedReportScheduled = false
-            guard pinnedToBottom != reportedPinned else { return }
-            reportedPinned = pinnedToBottom
-            onPinnedChange?(pinnedToBottom)
+            lastVisibleReportScheduled = false
+            let visible = lastMessageVisible
+            guard visible != reportedLastVisible else { return }
+            reportedLastVisible = visible
+            onLastMessageVisibleChange?(visible)
         }
     }
 

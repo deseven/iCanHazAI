@@ -193,7 +193,10 @@ final class ChatListController: ObservableObject {
 
     init() {
         listView.onAction = { [weak self] action in self?.perform(action) }
-        listView.onPinnedChange = { [weak self] atBottom in self?.store?.selectedChatAtBottom = atBottom }
+        listView.onLastMessageVisibleChange = { [weak self] visible in
+            guard let self else { return }
+            store?.lastMessageVisibleChatID = visible ? shownChatID : nil
+        }
         listView.onSearchChange = { [weak self] status in self?.searchStatus = status }
     }
 

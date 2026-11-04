@@ -94,13 +94,11 @@ final class AppViewModel: ObservableObject {
     /// or when the chat is restored or deleted.
     private var archivedPreviewID: String?
     @Published var errorMessage: String?
-    /// Whether the currently selected chat is scrolled to the bottom. Updated
-    /// by `ChatView`; used to suppress the unread marker when the user is
-    /// already looking at the latest content.
-    @Published var selectedChatAtBottom: Bool = true {
-        didSet {
-            if selectedChatAtBottom { markSelectedViewedIfLooking() }
-        }
+    /// The chat whose last message is currently on screen, as reported by the
+    /// chat list (nil when none is). Tagged with the chat so a report for the
+    /// previously shown chat never counts for a newly selected one.
+    var lastMessageVisibleChatID: String? {
+        didSet { markSelectedViewedIfLooking() }
     }
     /// Whether the right-hand chat info sidebar is currently shown.
     @Published var chatInfoSidebarVisible: Bool = false
@@ -1245,10 +1243,12 @@ final class AppViewModel: ObservableObject {
         if focused { markSelectedViewedIfLooking() }
     }
 
-    /// The selected chat counts as read once it is in front of the user and
-    /// scrolled to the bottom. Other chats wait until they are opened.
+    /// The single rule for reading a chat: the selected chat counts as read as
+    /// soon as the window is in front and its last message is on screen (not
+    /// necessarily scrolled to the very bottom). Drives both the sidebar marker
+    /// and the dock badge. Other chats wait until they are opened.
     private func markSelectedViewedIfLooking(in records: [ChatRecord]? = nil) {
-        guard windowFocused, selectedChatAtBottom, let selected = selectedChatID,
+        guard windowFocused, let selected = selectedChatID, lastMessageVisibleChatID == selected,
             let item = (records ?? chatItems).first(where: { $0.id == selected }),
             item.hasUnreadActivity, !item.isStreaming
         else { return }
@@ -2208,7 +2208,8 @@ final class AppViewModel: ObservableObject {
         chatListController?.willOpenChat(filename, unread: unread)
     }
 
-    /// Selects a chat, prunes other empty chats, and clears its unread marker.
+    /// Selects a chat and prunes other empty chats. Its unread marker clears
+    /// once its last message is on screen (`markSelectedViewedIfLooking`).
     /// Re-selecting a chat clears any prior role-picker dismissal so the
     /// picker re-prompts if the chat's role is still missing.
     func selectChat(_ filename: String) {
@@ -2226,7 +2227,6 @@ final class AppViewModel: ObservableObject {
         selectedChatID = filename
         Task {
             await engine.selectChat(filename: filename)
-            await engine.markViewed(filename: filename)
             // After the chat is loaded, present the role picker if its role is
             // missing. Done after selectChat so the chat record is loaded and
             // `selectedChatNeedsRoleAssignment` reflects the real role state.
@@ -2303,7 +2303,6 @@ final class AppViewModel: ObservableObject {
         selectedChatID = targetID
         Task {
             await engine.selectChat(filename: targetID)
-            await engine.markViewed(filename: targetID)
         }
     }
 
