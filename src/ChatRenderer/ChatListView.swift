@@ -987,7 +987,7 @@ final class ChatListView: NSView {
         let policy = openPolicy
         let streaming = context.isStreaming
         let token = pass
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let chunkSize = 128
             var start = 0
             while start < todo.count, token.current == gen {
@@ -1163,6 +1163,8 @@ final class PassToken: @unchecked Sendable {
         }
 
         func testBottomActionsVisible(of id: String) -> Bool? { visibleViews[id]?.showsBottomActions }
+        /// The status text shown next to the row's pending spinner; nil when none is shown.
+        func testPendingText(of id: String) -> String? { visibleViews[id]?.testPendingText }
         /// Hovers a row and reports whether its action bar ends up shown.
         func testActionsVisible(hovering id: String) -> Bool? {
             hoveredID = id

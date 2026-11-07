@@ -23,6 +23,27 @@ enum StreamChunk: Sendable {
     /// at the end of a stream (OpenAI sends it in a final chunk with
     /// `stream_options.include_usage`; Anthropic sends it in `message_delta`).
     case usage(TokenUsage)
+    /// Where the request is in its lifecycle, before any output exists. Never
+    /// carries content; the engine only shows it on the pending placeholder.
+    case phase(RequestPhase)
+}
+
+/// A step of a request before the first output arrives.
+enum RequestPhase: Sendable, Equatable {
+    /// The request is being sent: connecting, TLS, upload.
+    case connecting
+    /// The server accepted the request and the model hasn't produced output yet.
+    case awaitingResponse
+    /// An attempt failed and the next one starts after a short pause.
+    case retrying(attempt: Int, of: Int)
+
+    var statusText: String {
+        switch self {
+        case .connecting: return "Connecting to API…"
+        case .awaitingResponse: return "Awaiting answer…"
+        case .retrying(let attempt, let total): return "Request failed, retrying (\(attempt)/\(total))…"
+        }
+    }
 }
 
 /// Token usage as reported by the provider. Stored on each assistant

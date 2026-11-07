@@ -62,13 +62,19 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
     /// never see it. Appended to the content, marked `[SYSTEM NOTE]`, when the
     /// request is built (see `requestForm`).
     var systemNote: String?
+    /// Assistant placeholders only: what the engine is doing right now while
+    /// nothing has streamed in yet ("Performing OCR…", "Connecting to API…").
+    /// Runtime state, never persisted: it lives in the in-memory chat, so a chat
+    /// reopened mid-stream shows it again.
+    var pendingStatus: String?
 
     init(
         id: UUID = UUID(), role: MessageRole, content: String, thinking: String? = nil,
         thinkingDuration: TimeInterval? = nil, error: String? = nil,
         timestamp: Date = Date(), model: String? = nil, attachments: [Attachment]? = nil,
         toolCalls: [ToolCall]? = nil, toolResults: [ToolResult]? = nil, tokenUsage: TokenUsage? = nil,
-        branches: [[ChatMessage]]? = nil, activeBranch: Int? = nil, systemNote: String? = nil
+        branches: [[ChatMessage]]? = nil, activeBranch: Int? = nil, systemNote: String? = nil,
+        pendingStatus: String? = nil
     ) {
         self.id = id
         self.role = role
@@ -85,6 +91,7 @@ struct ChatMessage: Codable, Identifiable, Equatable, Sendable {
         self.branches = branches
         self.activeBranch = activeBranch
         self.systemNote = systemNote
+        self.pendingStatus = pendingStatus
     }
 
     enum CodingKeys: String, CodingKey {

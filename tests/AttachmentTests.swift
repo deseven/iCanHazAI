@@ -53,10 +53,10 @@ extension AllAppTests {
         // MARK: - Commit-on-send logic
 
         @Test("Committing a text attachment embeds the text and sets status ok")
-        func commitTextEmbedsText() throws {
+        func commitTextEmbedsText() async throws {
             let text = Data("plain text content".utf8)
             let pending = PendingAttachment(data: text, kind: .text, originalName: "note.txt")
-            let committed = AttachmentManager.commit(pending, chatFilename: "test.json")
+            let committed = await AttachmentManager.commit(pending, chatFilename: "test.json")
             #expect(committed != nil)
             guard let committed else { return }
             #expect(committed.kind == .text)
@@ -67,14 +67,14 @@ extension AllAppTests {
 
         @Test("Committing a document attachment extracts text and sets status ok")
         @MainActor
-        func commitDocumentExtractsText() throws {
+        func commitDocumentExtractsText() async throws {
             let rtfAttr = NSAttributedString(string: "Hello RTF\nSecond line.")
             let rtfData = try rtfAttr.data(
                 from: NSRange(location: 0, length: rtfAttr.length),
                 documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
             )
             let pending = PendingAttachment(data: rtfData, kind: .document(.rtf), originalName: "doc.rtf")
-            let committed = AttachmentManager.commit(pending, chatFilename: "test.json")
+            let committed = await AttachmentManager.commit(pending, chatFilename: "test.json")
             #expect(committed != nil)
             guard let committed else { return }
             #expect(committed.kind == .document)
@@ -85,10 +85,10 @@ extension AllAppTests {
 
         @Test("Committing an image attachment produces an image record with a text fallback")
         @MainActor
-        func commitImageRecord() throws {
+        func commitImageRecord() async throws {
             let png = makePNG(text: "IMG")
             let pending = PendingAttachment(data: png, kind: .image, originalName: "shot.png")
-            let committed = AttachmentManager.commit(pending, chatFilename: "test.json")
+            let committed = await AttachmentManager.commit(pending, chatFilename: "test.json")
             #expect(committed != nil)
             guard let committed else { return }
             #expect(committed.kind == .image)
@@ -100,9 +100,76 @@ extension AllAppTests {
         }
 
         @Test("Committing an unsupported binary returns nil")
-        func commitUnsupportedReturnsNil() {
+        func commitUnsupportedReturnsNil() async {
             let pending = PendingAttachment(data: Data([0x00]), kind: .unsupportedBinary, originalName: "x.bin")
-            #expect(AttachmentManager.commit(pending, chatFilename: "test.json") == nil)
+            #expect(await AttachmentManager.commit(pending, chatFilename: "test.json") == nil)
+        }
+
+        @Test("Staging writes the files and leaves the slow text to enrich: images and documents have none yet")
+        @MainActor
+        func stageLeavesTextForEnrich() async throws {
+            let chatFilename = EnvironmentManager.shared.newTemporaryChatFilename()
+            let dir = EnvironmentManager.shared.attachmentsDirectory(for: chatFilename)
+
+            let image = PendingAttachment(data: makePNG(text: "IMG"), kind: .image, originalName: "shot.png")
+            let stagedImage = try #require(AttachmentManager.stage(image, chatFilename: chatFilename))
+            #expect(stagedImage.attachment.kind == .image)
+            #expect(stagedImage.attachment.text == nil)
+            #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("shot.png").path))
+            let enrichedImage = await AttachmentManager.enrich(stagedImage)
+            #expect(enrichedImage.id == stagedImage.attachment.id)
+            #expect(enrichedImage.filename == stagedImage.attachment.filename)
+            #expect(enrichedImage.text?.contains("lacking the capabilities to digest images") == true)
+
+            let rtf = try NSAttributedString(string: "Staged RTF").data(
+                from: NSRange(location: 0, length: 10),
+                documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
+            let document = PendingAttachment(data: rtf, kind: .document(.rtf), originalName: "d.rtf")
+            let stagedDocument = try #require(AttachmentManager.stage(document, chatFilename: chatFilename))
+            #expect(stagedDocument.attachment.text == nil)
+            #expect(stagedDocument.attachment.status == .ok)
+            #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent("d.rtf").path))
+            let enrichedDocument = await AttachmentManager.enrich(stagedDocument)
+            #expect(enrichedDocument.text?.contains("Staged RTF") == true)
+
+            // Plain text is complete the moment it is staged.
+            let text = PendingAttachment(data: Data("hello".utf8), kind: .text, originalName: "n.txt")
+            let stagedText = try #require(AttachmentManager.stage(text, chatFilename: chatFilename))
+            #expect(stagedText.attachment.text == "hello")
+            #expect(await AttachmentManager.enrich(stagedText) == stagedText.attachment)
+        }
+
+        @Test("A document that can't be read fails in enrich, not in stage")
+        func enrichReportsFailure() async throws {
+            let chatFilename = EnvironmentManager.shared.newTemporaryChatFilename()
+            let broken = PendingAttachment(
+                data: Data("not a pdf".utf8), kind: .document(.pdf), originalName: "broken.pdf")
+            let staged = try #require(AttachmentManager.stage(broken, chatFilename: chatFilename))
+            #expect(staged.attachment.status == .ok)
+            let enriched = await AttachmentManager.enrich(staged)
+            #expect(enriched.status == .failed)
+            #expect(enriched.text == nil)
+            #expect(enriched.failureReason?.isEmpty == false)
+        }
+
+        @Test("What a send reports while attachments are processed")
+        func enrichmentStatusText() {
+            func pending(_ kind: DocumentKind) -> PendingAttachment { PendingAttachment(data: Data(), kind: kind) }
+            let image = pending(.image)
+            let pdf = pending(.document(.pdf))
+            let text = pending(.text)
+
+            #expect(AttachmentManager.enrichmentStatus(for: []) == nil)
+            #expect(AttachmentManager.enrichmentStatus(for: [text]) == nil, "plain text has nothing slow")
+            #expect(AttachmentManager.enrichmentStatus(for: [image]) == "Performing OCR on the image…")
+            #expect(AttachmentManager.enrichmentStatus(for: [image, image, text]) == "Performing OCR on 2 images…")
+            #expect(AttachmentManager.enrichmentStatus(for: [pdf]) == "Extracting text from the document…")
+            #expect(AttachmentManager.enrichmentStatus(for: [pdf, pdf]) == "Extracting text from 2 documents…")
+            #expect(AttachmentManager.enrichmentStatus(for: [image, pdf]) == "Reading the attachments…")
+
+            #expect(AttachmentManager.needsEnrichment(.image))
+            #expect(AttachmentManager.needsEnrichment(.document(.docx)))
+            #expect(!AttachmentManager.needsEnrichment(.text))
         }
 
         // MARK: - Persistence
@@ -345,11 +412,11 @@ extension AllAppTests {
         // MARK: - Commit uses original names
 
         @Test("Committing a text attachment keeps the original filename on disk")
-        func commitTextKeepsOriginalName() {
+        func commitTextKeepsOriginalName() async {
             let chatFilename = EnvironmentManager.shared.newTemporaryChatFilename()
             let text = Data("hello".utf8)
             let pending = PendingAttachment(data: text, kind: .text, originalName: "notes.txt")
-            let committed = AttachmentManager.commit(pending, chatFilename: chatFilename)
+            let committed = await AttachmentManager.commit(pending, chatFilename: chatFilename)
             #expect(committed != nil)
             guard let committed else { return }
             #expect(committed.filename == "notes.txt")
@@ -359,13 +426,13 @@ extension AllAppTests {
         }
 
         @Test("Committing two attachments with the same name deduplicates")
-        func commitDeduplicatesSameName() {
+        func commitDeduplicatesSameName() async {
             let chatFilename = EnvironmentManager.shared.newTemporaryChatFilename()
             let text = Data("hello".utf8)
             let p1 = PendingAttachment(data: text, kind: .text, originalName: "notes.txt")
-            let c1 = AttachmentManager.commit(p1, chatFilename: chatFilename)
+            let c1 = await AttachmentManager.commit(p1, chatFilename: chatFilename)
             let p2 = PendingAttachment(data: text, kind: .text, originalName: "notes.txt")
-            let c2 = AttachmentManager.commit(p2, chatFilename: chatFilename)
+            let c2 = await AttachmentManager.commit(p2, chatFilename: chatFilename)
             #expect(c1?.filename == "notes.txt")
             #expect(c2?.filename == "notes (1).txt")
             let dir = EnvironmentManager.shared.attachmentsDirectory(for: chatFilename)
@@ -374,20 +441,20 @@ extension AllAppTests {
         }
 
         @Test("Committing sanitizes illegal characters in the original name")
-        func commitSanitizesName() {
+        func commitSanitizesName() async {
             let chatFilename = EnvironmentManager.shared.newTemporaryChatFilename()
             let text = Data("hello".utf8)
             let pending = PendingAttachment(data: text, kind: .text, originalName: "a/b:notes.txt")
-            let committed = AttachmentManager.commit(pending, chatFilename: chatFilename)
+            let committed = await AttachmentManager.commit(pending, chatFilename: chatFilename)
             #expect(committed?.filename == "abnotes.txt")
         }
 
         @Test("Committing a pasted image with no original name uses a UUID stem")
-        func commitImageNoOriginalName() {
+        func commitImageNoOriginalName() async {
             let chatFilename = EnvironmentManager.shared.newTemporaryChatFilename()
             let png = makePNG(text: "IMG")
             let pending = PendingAttachment(data: png, kind: .image, originalName: nil)
-            let committed = AttachmentManager.commit(pending, chatFilename: chatFilename)
+            let committed = await AttachmentManager.commit(pending, chatFilename: chatFilename)
             #expect(committed != nil)
             guard let committed else { return }
             // No original name → UUID stem + .png extension.

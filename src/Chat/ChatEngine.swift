@@ -209,7 +209,7 @@ actor ChatEngine {
         await startProviders()
         // Wire MCPManager errors into the engine's error event bus so the UI
         // can surface MCP failures without crashing the stream.
-        Task {
+        Task { [weak self] in
             await MCPManager.shared.setErrorHandler { [weak self] message in
                 Task { await self?.emit(.error(message)) }
             }
@@ -219,7 +219,7 @@ actor ChatEngine {
         // originating chat (identified by chatFilename + callID) and pushed to
         // the renderer as it arrives. No global scan: the sink carries the
         // chatFilename so we update one message in one chat directly.
-        Task {
+        Task { [weak self] in
             await MCPManager.shared.setProgressHandler { [weak self] chatFilename, callID, partial in
                 Task {
                     await self?.updateStreamingToolResult(chatFilename: chatFilename, callID: callID, partial: partial)
@@ -230,7 +230,7 @@ actor ChatEngine {
         // UI overlay can reflect each server's connect/listTools progress. The
         // handler hops back into the engine actor to update `mcpConfiguration`
         // and emit the snapshot.
-        Task {
+        Task { [weak self] in
             await MCPManager.shared.setStatusHandler { [weak self] state in
                 Task { await self?.handleMCPConfigurationState(state) }
             }
@@ -1667,11 +1667,16 @@ actor ChatEngine {
     /// Sends a user message and streams the assistant response for the given chat.
     /// Returns false (and emits an error) if no usable model is selected.
     ///
-    /// `pendingAttachments` are in-memory attachments that are committed to
+    /// `pendingAttachments` are in-memory attachments that are written to
     /// disk only at this point — i.e. when the user actually sends the
-    /// message. Images are resized/re-encoded; text/documents have their
-    /// original copied and text extracted. If the user cancels, nothing is
-    /// written.
+    /// message. Images are resized/re-encoded and text/documents copied right
+    /// away, so the message shows up at once; the slow part (OCR, document
+    /// text extraction) runs afterwards inside the stream task, which the
+    /// placeholder reports ("Performing OCR…"). If the user cancels, the
+    /// files stay but the message goes out without that text.
+    ///
+    /// The chat counts as streaming from the first moment on, so anything sent
+    /// meanwhile goes straight into the queue.
     @discardableResult
     func sendMessage(filename: String, text: String, pendingAttachments: [PendingAttachment] = []) async -> Bool {
         debugLog(
@@ -1680,16 +1685,38 @@ actor ChatEngine {
         // A stopped stream may still be unwinding; its cleanup would clobber
         // the new stream's state. If a live stream is running instead (or one
         // started while waiting), the message joins the queue.
-        guard await awaitStreamUnwind(filename: filename) else {
+        while true {
+            guard await awaitStreamUnwind(filename: filename) else {
+                guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return false }
+                records[idx].queuedMessages.append(QueuedMessage(text: text, attachments: pendingAttachments))
+                emit(.chatsChanged(records))
+                return true
+            }
             guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return false }
-            records[idx].queuedMessages.append(QueuedMessage(text: text, attachments: pendingAttachments))
-            emit(.chatsChanged(records))
-            return true
+            if records[idx].chat != nil { break }
+            await ensureChatLoaded(filename: filename)
+            guard records.first(where: { $0.filename == filename })?.chat != nil else { return false }
         }
-        await ensureChatLoaded(filename: filename)
-        guard let chat = records.first(where: { $0.filename == filename })?.chat else { return false }
-        guard let model = await resolvedModelOrReport(for: chat) else { return false }
-        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return false }
+
+        // Claimed without a suspension since the check above: from here on a
+        // concurrent send sees a running stream and queues. Every `await` below
+        // must hand the claim back on failure (`releaseClaim`).
+        guard let claimIdx = records.firstIndex(where: { $0.filename == filename }),
+            let claimedChat = records[claimIdx].chat
+        else { return false }
+        records[claimIdx].isStreaming = true
+        records[claimIdx].stopAfterIteration = false
+        records[claimIdx].lastError = nil
+        emit(.chatsChanged(records))
+
+        guard let model = await resolvedModelOrReport(for: claimedChat) else {
+            releaseClaim(filename: filename)
+            return false
+        }
+        // No suspension from here to `runToolLoop`: the chat can't change under us.
+        guard let idx = records.firstIndex(where: { $0.filename == filename }),
+            let chat = records[idx].chat
+        else { return false }
 
         // Messages still queued (the stream was stopped or failed before they
         // could go out) travel together with this one as a single user message.
@@ -1725,15 +1752,15 @@ actor ChatEngine {
             records[idx].chat = baseChat
         }
 
-        // Commit pending attachments to disk now that the user has actually
-        // sent. Images are resized/re-encoded; text/documents have their
-        // original copied and (for documents) text extracted. The returned
+        // Write the pending attachments to disk now that the user has actually
+        // sent. Images are resized/re-encoded and documents copied; their text
+        // (OCR, extraction) follows inside the stream task. The returned
         // Attachment refs are persisted on the user message and used to build
         // the request payload. Defensive strip: the UI gates attachments on
         // the role's `with_attachments` flag, but a CLI-driven send against
         // a chat whose role doesn't allow attachments drops them here so they
         // never reach the request payload.
-        let committed = commitAttachments(pendingAttachments, for: baseChat, filename: filename)
+        let staged = stageAttachments(pendingAttachments, for: baseChat, filename: filename)
 
         // Build the message list including the system prompt from the role's
         // prompt, with variables substituted at request time. The request history is built
@@ -1754,7 +1781,8 @@ actor ChatEngine {
                 previous: baseChat.lastWorkingDirectory, current: modelWorkdir,
                 isolated: role(for: baseChat)?.hasDirectoryIsolation ?? false)
         let userMessage = ChatMessage(
-            role: .user, content: text, attachments: committed.isEmpty ? nil : committed, systemNote: workdirNote)
+            role: .user, content: text, attachments: staged.isEmpty ? nil : staged.map(\.attachment),
+            systemNote: workdirNote)
         messages.append(userMessage)
 
         // Add the user message immediately and create a placeholder assistant message.
@@ -1765,7 +1793,9 @@ actor ChatEngine {
         // a non-active branch.
         var updatedChat = baseChat
         updatedChat.lastWorkingDirectory = modelWorkdir
-        let assistantPlaceholder = ChatMessage(role: .assistant, content: "", model: model.id)
+        let assistantPlaceholder = ChatMessage(
+            role: .assistant, content: "", model: model.id,
+            pendingStatus: AttachmentManager.enrichmentStatus(for: staged.map(\.source)))
         updatedChat.appendToActiveLeaf(userMessage)
         updatedChat.appendToActiveLeaf(assistantPlaceholder)
         if let idx = records.firstIndex(where: { $0.filename == filename }) {
@@ -1773,7 +1803,7 @@ actor ChatEngine {
         }
         sortAndEmit()
 
-        runToolLoop(for: filename, model: model, messages: messages)
+        runToolLoop(for: filename, model: model, messages: messages, staged: staged, userMessageID: userMessage.id)
 
         // Fire-and-forget: try to generate a chat name via the utility model
         // if this chat doesn't have a title yet.
@@ -1782,13 +1812,76 @@ actor ChatEngine {
         return true
     }
 
-    /// Writes pending attachments to disk and returns their persisted refs.
-    /// Empty when the chat's role doesn't allow attachments.
-    private func commitAttachments(
+    /// Writes pending attachments to disk (the quick part; see
+    /// `AttachmentManager.stage`). Empty when the chat's role doesn't allow
+    /// attachments.
+    private func stageAttachments(
         _ pending: [PendingAttachment], for chat: Chat, filename: String
-    ) -> [Attachment] {
+    ) -> [AttachmentManager.Staged] {
         guard role(for: chat)?.hasAttachments ?? false else { return [] }
-        return pending.compactMap { AttachmentManager.commit($0, chatFilename: filename) }
+        return pending.compactMap { AttachmentManager.stage($0, chatFilename: filename) }
+    }
+
+    /// Does the slow part of attachment processing (OCR, document extraction)
+    /// off the actor and stores the result on the user message. Throws
+    /// `CancellationError` as soon as the stream is stopped, even though the
+    /// recognition itself can't be interrupted; its result is then dropped.
+    private func enrichAttachments(
+        _ staged: [AttachmentManager.Staged], filename: String, userMessageID: UUID
+    ) async throws -> [Attachment] {
+        let enriched = try await Self.abandoningOnCancel {
+            var out: [Attachment] = []
+            for item in staged { out.append(await AttachmentManager.enrich(item)) }
+            return out
+        }
+        if let idx = records.firstIndex(where: { $0.filename == filename }), var chat = records[idx].chat {
+            chat.updateMessage(id: userMessageID) { $0.attachments = enriched }
+            records[idx].chat = chat
+        }
+        setPendingStatus(nil, filename: filename)
+        return enriched
+    }
+
+    /// Runs `body` in a task of its own and returns its result, or throws
+    /// `CancellationError` at once when the caller is cancelled. The abandoned
+    /// task keeps running (Vision can't be interrupted) and its result is
+    /// dropped.
+    private static func abandoningOnCancel<T: Sendable>(_ body: @escaping @Sendable () async -> T) async throws -> T {
+        let work = Task.detached(priority: .userInitiated) { await body() }
+        let outcome = OneShotResult<T>()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                outcome.install(continuation)
+                Task { outcome.finish(.success(await work.value)) }
+            }
+        } onCancel: {
+            work.cancel()
+            outcome.finish(.failure(CancellationError()))
+        }
+    }
+
+    /// Hands back the streaming claim of a send that failed before its stream
+    /// task started.
+    private func releaseClaim(filename: String) {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
+        records[idx].isStreaming = false
+        emit(.chatsChanged(records))
+    }
+
+    /// Sets what the active leaf placeholder says it is doing, shown next to
+    /// its spinner until content arrives. No-op unless the leaf is an assistant
+    /// message.
+    private func setPendingStatus(_ status: String?, filename: String) {
+        guard let idx = records.firstIndex(where: { $0.filename == filename }),
+            var chat = records[idx].chat,
+            let leafID = chat.activeLeafID,
+            let leaf = chat.message(id: leafID), leaf.role == .assistant,
+            leaf.pendingStatus != status
+        else { return }
+        chat.updateMessage(id: leafID) { $0.pendingStatus = status }
+        records[idx].chat = chat
+        flushCoalescedEmit()
+        emit(.chatsChanged(records))
     }
 
     // MARK: - Message queue
@@ -1867,9 +1960,13 @@ actor ChatEngine {
     /// A pending "stop after streaming" is consumed: the queued message is the
     /// reason to keep going. Does nothing once the task is cancelled, which
     /// leaves the queue for whoever cancelled it.
+    ///
+    /// The user message is added to the chat at once; the slow part of its
+    /// attachments (OCR, extraction) follows under the new placeholder's status,
+    /// so this throws `CancellationError` when the stream is stopped meanwhile.
     private func continueWithQueuedMessages(
         filename: String, model: ResolvedModel, history: inout [ChatMessage]
-    ) -> Bool {
+    ) async throws -> Bool {
         guard !Task.isCancelled,
             let idx = records.firstIndex(where: { $0.filename == filename }),
             !records[idx].queuedMessages.isEmpty,
@@ -1880,14 +1977,20 @@ actor ChatEngine {
         records[idx].stopAfterIteration = false
 
         let combined = QueuedMessage.combine(queued)
-        let committed = commitAttachments(combined.attachments, for: chat, filename: filename)
-        let userMessage = ChatMessage(
-            role: .user, content: combined.text, attachments: committed.isEmpty ? nil : committed)
+        let staged = stageAttachments(combined.attachments, for: chat, filename: filename)
+        var userMessage = ChatMessage(
+            role: .user, content: combined.text, attachments: staged.isEmpty ? nil : staged.map(\.attachment))
         debugLog("Stream", "sending \(queued.count) queued message(s) — chat=\(filename)")
         chat.appendToActiveLeaf(userMessage)
         records[idx].chat = chat
+        appendAssistantMessage(
+            filename: filename, model: model,
+            pendingStatus: AttachmentManager.enrichmentStatus(for: staged.map(\.source)))
+        if staged.contains(where: { AttachmentManager.needsEnrichment($0.source.kind) }) {
+            userMessage.attachments = try await enrichAttachments(
+                staged, filename: filename, userMessageID: userMessage.id)
+        }
         history.append(userMessage)
-        appendAssistantMessage(filename: filename, model: model)
         return true
     }
 
@@ -2224,7 +2327,14 @@ actor ChatEngine {
     /// tool calls, execute them via `MCPManager`, append the results, and stream
     /// again. Repeats until the model responds with no tool calls, an error
     /// occurs, or the user cancels the stream.
-    private func runToolLoop(for filename: String, model: ResolvedModel, messages: [ChatMessage]) {
+    ///
+    /// `staged` are the attachments of the new user message (`userMessageID`)
+    /// whose text is still to be produced; that happens first, inside the task,
+    /// so a stop can interrupt it and the engine stays free meanwhile.
+    private func runToolLoop(
+        for filename: String, model: ResolvedModel, messages: [ChatMessage],
+        staged: [AttachmentManager.Staged] = [], userMessageID: UUID? = nil
+    ) {
         debugLog("Stream", "start — chat=\(filename), model=\(model.id)")
         if let idx = records.firstIndex(where: { $0.filename == filename }) {
             records[idx].isStreaming = true
@@ -2235,6 +2345,19 @@ actor ChatEngine {
 
         let task = Task { [weak self] in
             guard let self else { return }
+            var messages = messages
+            if let userMessageID, staged.contains(where: { AttachmentManager.needsEnrichment($0.source.kind) }) {
+                do {
+                    let enriched = try await self.enrichAttachments(
+                        staged, filename: filename, userMessageID: userMessageID)
+                    if let i = messages.lastIndex(where: { $0.id == userMessageID }) {
+                        messages[i].attachments = enriched
+                    }
+                } catch {
+                    await self.finishStream(filename: filename, cancelled: true)
+                    return
+                }
+            }
             await self.performToolLoop(filename: filename, model: model, messages: messages)
         }
         streamTasks[filename] = task
@@ -2307,7 +2430,9 @@ actor ChatEngine {
                         {
                             history.append(answer)
                         }
-                        if continueWithQueuedMessages(filename: filename, model: model, history: &history) {
+                        if try await continueWithQueuedMessages(
+                            filename: filename, model: model, history: &history)
+                        {
                             continue
                         }
                     }
@@ -2395,7 +2520,7 @@ actor ChatEngine {
                 // Queued messages ride along with the tool results: one
                 // request with the results followed by a single user block.
                 // This takes precedence over "stop after streaming".
-                if continueWithQueuedMessages(filename: filename, model: model, history: &history) {
+                if try await continueWithQueuedMessages(filename: filename, model: model, history: &history) {
                     continue
                 }
 
@@ -2450,6 +2575,13 @@ actor ChatEngine {
         // Start on-demand custom stdio servers before the request.
         let custom = resolved.filter { !$0.isBuiltinGroup }.map(\.name)
         if !custom.isEmpty {
+            let starting = await MCPManager.shared.onDemandServersToStart(custom)
+            if !starting.isEmpty {
+                setPendingStatus(
+                    starting.count == 1
+                        ? "Starting MCP server \"\(starting[0])\"…" : "Starting \(starting.count) MCP servers…",
+                    filename: filename)
+            }
             await MCPManager.shared.ensureOnDemandRunning(custom)
         }
 
@@ -3099,10 +3231,11 @@ actor ChatEngine {
     /// message carrying the tool call + result, and this new assistant message
     /// with the final answer. Appends to the active leaf. Persists and emits
     /// immediately so the new row appears right away.
-    private func appendAssistantMessage(filename: String, model: ResolvedModel) {
+    private func appendAssistantMessage(filename: String, model: ResolvedModel, pendingStatus: String? = nil) {
         guard let idx = records.firstIndex(where: { $0.filename == filename }) else { return }
         guard var chat = records[idx].chat else { return }
-        chat.appendToActiveLeaf(ChatMessage(role: .assistant, content: "", model: model.id))
+        chat.appendToActiveLeaf(
+            ChatMessage(role: .assistant, content: "", model: model.id, pendingStatus: pendingStatus))
         records[idx].chat = chat
         // In-memory only during streaming; persisted once by `finishStream`.
         flushCoalescedEmit()
@@ -3178,6 +3311,10 @@ actor ChatEngine {
             // Provider-reported token usage for this assistant response.
             // Stored on the message and surfaced in the chat info panel.
             chat.updateMessage(id: leafID) { $0.tokenUsage = usage }
+        case .phase(let phase):
+            // Only meaningful while nothing has streamed in; the renderer
+            // shows it next to the pending spinner and ignores it afterwards.
+            chat.updateMessage(id: leafID) { $0.pendingStatus = phase.statusText }
         }
         records[idx].chat = chat
         // Coalesce: don't emit on every chunk. The flush fires on a timer,

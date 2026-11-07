@@ -5,11 +5,11 @@ import Foundation
 enum ChatRendererFixtures {
     static func message(
         _ id: String, role: ChatRowModel.Role = .assistant, content: String = "", thinking: String? = nil,
-        error: String? = nil
+        error: String? = nil, pendingStatus: String? = nil
     ) -> ChatRowModel {
         ChatRowModel(
             id: id, role: role, content: content, thinking: thinking, error: error,
-            timestamp: Date(timeIntervalSince1970: 0))
+            timestamp: Date(timeIntervalSince1970: 0), pendingStatus: pendingStatus)
     }
 
     static func paragraph(_ seed: Int, sentences: Int = 4) -> String {

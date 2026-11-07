@@ -30,6 +30,7 @@ final class MessageRowView: FlippedView {
     private let headerActions = ActionBarView()
     private let bottomActions = ActionBarView()
     private let pendingSpinner = SpinnerView()
+    private let pendingLabel = NSTextField(labelWithString: "")
     private var texts: [MarkdownTextView] = []
     private var panels: [PanelView] = []
     private var collapsibles: [CollapsibleView] = []
@@ -73,10 +74,15 @@ final class MessageRowView: FlippedView {
         detail.textColor = .tertiaryLabelColor
         detail.lineBreakMode = .byTruncatingTail
         detail.isHidden = true
+        pendingLabel.textColor = .secondaryLabelColor
+        pendingLabel.lineBreakMode = .byTruncatingTail
+        pendingLabel.isHidden = true
         headerActions.isHidden = true
         bottomActions.isHidden = true
         for bar in [headerActions, bottomActions] { bar.onEvent = { [weak self] in self?.onEvent?($0) } }
-        for v in [icon, title, detail, headerActions, bottomActions, pendingSpinner] as [NSView] { addSubview(v) }
+        for v in [icon, title, detail, headerActions, bottomActions, pendingSpinner, pendingLabel] as [NSView] {
+            addSubview(v)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -169,15 +175,27 @@ final class MessageRowView: FlippedView {
         let x = layout.rowInset
         let (frames, _) = layout.blockFrames(rendered, heights: row.heights, open: open)
         var counts = PoolCounts()
+        var pendingText: String?
         var showsPending = false
         bodyText = nil
         for (i, block) in rendered.blocks.enumerated() {
             let f = frames[i]
             switch block {
-            case .pending:
+            case .pending(let status):
                 showsPending = true
                 let side = 16 * theme.scale
                 pendingSpinner.frame = NSRect(x: x, y: f.y + (f.height - side) / 2, width: side, height: side)
+                if let status, !status.isEmpty {
+                    pendingText = status
+                    pendingLabel.font = .systemFont(ofSize: theme.scaled(12))
+                    pendingLabel.stringValue = status
+                    pendingLabel.sizeToFit()
+                    let labelX = x + side + 8 * theme.scale
+                    pendingLabel.frame = NSRect(
+                        x: labelX, y: f.y + (f.height - pendingLabel.frame.height) / 2,
+                        width: max(0, min(pendingLabel.frame.width, x + textWidth - labelX)),
+                        height: pendingLabel.frame.height)
+                }
             case .collapsible(let c):
                 let v = take(&collapsibles, &counts.collapsibles) {
                     let v = CollapsibleView()
@@ -229,6 +247,7 @@ final class MessageRowView: FlippedView {
         }
         applySearch()
         pendingSpinner.setActive(showsPending)
+        pendingLabel.isHidden = pendingText == nil
         for v in texts[counts.texts...] { v.isHidden = true }
         for v in panels[counts.panels...] { v.isHidden = true }
         for v in collapsibles[counts.collapsibles...] { v.isHidden = true }
@@ -316,5 +335,7 @@ final class MessageRowView: FlippedView {
     extension MessageRowView {
         /// Whether either action bar is on screen right now.
         var testActionsVisible: Bool { !headerActions.isHidden || !bottomActions.isHidden }
+        /// The text next to the pending spinner, if the row shows one.
+        var testPendingText: String? { pendingLabel.isHidden ? nil : pendingLabel.stringValue }
     }
 #endif

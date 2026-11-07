@@ -211,7 +211,7 @@ enum BuiltinToolsSSH {
             """
         let r = try await run(ssh, script: script)
         try requireSuccess(r, scrubbing: [(resolved, workdir.displayPath(forResolved: resolved))])
-        return try BuiltinTools.formatFileContent(
+        return try await BuiltinTools.formatFileContent(
             r.stdout, path: path, selector: selector, chatFilename: chatFilename,
             key: .ssh(host: ssh.host, resolved: resolved), fileTags: fileTags)
     }

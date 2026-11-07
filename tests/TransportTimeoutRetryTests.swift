@@ -104,6 +104,15 @@ extension AllAppTests {
             #expect(transport.contains("budget"))
         }
 
+        // MARK: - Request phases
+
+        @Test("Request phases read as short status lines for the pending placeholder")
+        func requestPhaseText() {
+            #expect(RequestPhase.connecting.statusText == "Connecting to API…")
+            #expect(RequestPhase.awaitingResponse.statusText == "Awaiting answer…")
+            #expect(RequestPhase.retrying(attempt: 2, of: 3).statusText == "Request failed, retrying (2/3)…")
+        }
+
         // MARK: - Retry delay math
 
         @Test("Retry delays follow exponential backoff")

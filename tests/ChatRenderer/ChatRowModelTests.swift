@@ -74,6 +74,39 @@ extension AllAppTests {
             #expect(!withCall.isPending(streaming: true))
         }
 
+        @Test("the pending status comes from the stored message and rides on the pending block only")
+        func pendingStatus() {
+            let stored = ChatMessage(role: .assistant, content: "", pendingStatus: "Connecting to API…")
+            let row = ChatRowModel(stored)
+            #expect(row.pendingStatus == "Connecting to API…")
+
+            let pending = RenderedMessage.render(row, theme: Theme(), streaming: true)
+            guard case .pending(let status) = pending.blocks.first else {
+                Issue.record("expected a pending block, got \(pending.blocks)")
+                return
+            }
+            #expect(status == "Connecting to API…")
+
+            // Once something arrived, the status has nothing left to say.
+            var answered = row
+            answered.content = "Hi"
+            let rendered = RenderedMessage.render(answered, theme: Theme(), streaming: true)
+            #expect(!rendered.blocks.contains { if case .pending = $0 { return true } else { return false } })
+
+            // A different status is a different row, so the list re-renders it.
+            var other = row
+            other.pendingStatus = "Awaiting answer…"
+            #expect(other != row)
+        }
+
+        @Test("the pending status is runtime state: never written to a chat file")
+        func pendingStatusNotPersisted() throws {
+            let message = ChatMessage(role: .assistant, content: "", pendingStatus: "Performing OCR…")
+            let data = try JSONEncoder().encode(message)
+            #expect(!String(decoding: data, as: UTF8.self).contains("pendingStatus"))
+            #expect(try JSONDecoder().decode(ChatMessage.self, from: data).pendingStatus == nil)
+        }
+
         @Test("rows depend on the streaming flag only for pending spinners and unfinished calls")
         func dependsOnStreaming() {
             #expect(ChatRendererFixtures.message("a").dependsOnStreaming)

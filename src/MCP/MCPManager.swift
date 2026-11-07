@@ -765,6 +765,15 @@ actor MCPManager {
 
     // MARK: - On-demand server lifecycle
 
+    /// The on-demand stdio servers among `names` that `ensureOnDemandRunning`
+    /// would have to start now (not connected yet), so callers can say so.
+    func onDemandServersToStart(_ names: [String]) -> [String] {
+        names.filter { name in
+            guard let server = knownServers[name], server.runPolicy == .onDemand else { return false }
+            return connections[name] == nil && toolsCache[name] != nil
+        }
+    }
+
     /// Ensures an on-demand stdio server is connected before a chat request.
     /// If the server is already connected, this refreshes its idle timer. If
     /// not, it looks up the current config from `knownServers` and starts it.

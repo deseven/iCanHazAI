@@ -146,6 +146,8 @@ enum SmokeRoleTools {
     case fileReplaceApproval
     /// `shell` only, auto-approved. Needs a working directory.
     case shellAutoAllow
+    /// No tools; the chat takes attachments.
+    case attachments
 }
 
 struct SmokeTimeout: Error, CustomStringConvertible {
@@ -263,6 +265,7 @@ final class SmokeFixture: @unchecked Sendable {
 
                 """
         case .shellAutoAllow: toml += "\n[shell]\ntools = [\"shell\"]\nauto_allow_all = true\n"
+        case .attachments: toml += "\n[features]\nwith_attachments = true\n"
         }
         try toml.write(
             to: temp.env.rolesURL.appendingPathComponent("\(name).toml"), atomically: true, encoding: .utf8)

@@ -61,6 +61,9 @@ struct ChatRowModel: Sendable, Equatable, Identifiable {
     /// standalone `tool` row they have no matching call.
     var toolResults: [ToolResult] = []
     var siblings: Siblings?
+    /// What the engine is doing while this placeholder waits for content; shown
+    /// next to the pending spinner.
+    var pendingStatus: String?
 }
 
 extension ChatRowModel {

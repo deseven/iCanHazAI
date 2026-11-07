@@ -50,13 +50,13 @@ enum DocumentExtractor {
 
     /// Extracts text from a known document binary. The caller is responsible
     /// for classification — this only handles the document bucket.
-    static func extract(data: Data, format: DocumentFormat) -> Result {
+    static func extract(data: Data, format: DocumentFormat) async -> Result {
         guard data.count <= maxInputBytes else {
             return .failed(reason: "document is \(data.count) bytes; exceeds the \(maxInputBytes) byte limit")
         }
         switch format {
         case .pdf:
-            return extractPDF(data)
+            return await extractPDF(data)
         case .docx, .doc, .odt, .rtf, .rtfd, .wordml, .webarchive:
             return extractOffice(data: data, format: format)
         }
@@ -64,7 +64,7 @@ enum DocumentExtractor {
 
     // MARK: - PDF
 
-    private static func extractPDF(_ data: Data) -> Result {
+    private static func extractPDF(_ data: Data) async -> Result {
         guard let doc = PDFDocument(data: data) else {
             return .failed(reason: "PDFKit could not open the PDF")
         }
@@ -83,7 +83,7 @@ enum DocumentExtractor {
                 continue
             }
             // Textless page — likely scanned. Render and OCR.
-            if let ocrText = ocrPDFPage(page), !ocrText.isEmpty {
+            if let ocrText = await ocrPDFPage(page), !ocrText.isEmpty {
                 ocrUsed = true
                 ocrPages += 1
                 blocks.append("[Page \(i + 1) — OCR]")
@@ -113,7 +113,7 @@ enum DocumentExtractor {
 
     /// Renders a PDFPage to a thumbnail and OCRs it. Returns nil on any
     /// rendering or recognition failure.
-    private static func ocrPDFPage(_ page: PDFPage) -> String? {
+    private static func ocrPDFPage(_ page: PDFPage) async -> String? {
         let bounds = page.bounds(for: .mediaBox)
         let longest = max(bounds.width, bounds.height)
         let scale: CGFloat = longest > 0 ? ocrRenderMaxSide / longest : 1
@@ -129,7 +129,7 @@ enum DocumentExtractor {
         // The thumbnail is rendered at the bounds size; rescale to the OCR
         // target by drawing into a context at the desired pixel size.
         let scaled = rescaleCGImage(cgImage, scale: scale) ?? cgImage
-        return TextRecognizer.recognize(cgImage: scaled)
+        return await TextRecognizer.recognize(cgImage: scaled)
     }
 
     /// Rescales a CGImage by `scale` (relative to its current size). Returns
@@ -251,7 +251,7 @@ enum DocumentExtractor {
     /// the `read_file` tool so a screenshot/scanned image returns
     /// text instead of the bare `[image: …]` placeholder. Chat attachments
     /// still treat images as images (base64, not OCR).
-    static func ocrImage(_ data: Data) -> Result {
+    static func ocrImage(_ data: Data) async -> Result {
         guard data.count <= maxInputBytes else {
             return .failed(reason: "image is \(data.count) bytes; exceeds the \(maxInputBytes) byte limit")
         }
@@ -259,7 +259,7 @@ enum DocumentExtractor {
             return .unsupported(
                 format: ImageProcessor.typeIdentifier(for: data), reason: "not a supported image format for OCR")
         }
-        guard let text = TextRecognizer.recognize(data: data),
+        guard let text = await TextRecognizer.recognize(data: data),
             !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
             return .success(

@@ -697,7 +697,7 @@ enum BuiltinTools {
         // Filesystem
         case (filesystemGroup, "ls"): return try ls(args, workdir: workdir)
         case (filesystemGroup, "read_file"):
-            return try readFile(args, workdir: workdir, chatFilename: chatFilename, fileTags: context.fileTags)
+            return try await readFile(args, workdir: workdir, chatFilename: chatFilename, fileTags: context.fileTags)
         case (filesystemGroup, "write_file"):
             return try writeFile(args, workdir: workdir, fileTags: context.fileTags)
         case (filesystemGroup, "find_file"): return try findFile(args, workdir: workdir)
@@ -1186,7 +1186,7 @@ enum BuiltinTools {
 
     private static func readFile(
         _ args: [String: Any], workdir: Workdir, chatFilename: String, fileTags: Bool
-    ) throws -> ToolOutput {
+    ) async throws -> ToolOutput {
         let path = try requireString(args, "path")
         let selector = try ReadSelector(arguments: args)
         let resolved = try workdir.resolve(path)
@@ -1204,7 +1204,7 @@ enum BuiltinTools {
         guard let data = fm.contents(atPath: resolved) else {
             throw BuiltinToolError("invalid argument 'path': could not read: \(path)")
         }
-        return try formatFileContent(
+        return try await formatFileContent(
             data, path: path, selector: selector, chatFilename: chatFilename,
             key: .local(resolved: resolved), fileTags: fileTags)
     }
@@ -1221,7 +1221,7 @@ enum BuiltinTools {
     static func formatFileContent(
         _ data: Data, path: String, selector: ReadSelector, chatFilename: String, key: FileKey,
         fileTags: Bool = true
-    ) throws -> ToolOutput {
+    ) async throws -> ToolOutput {
         let hint = DocumentTypeHint(filename: path)
         let kind = DocumentClassifier.classify(data: data, hint: hint)
 
@@ -1233,7 +1233,7 @@ enum BuiltinTools {
             return formatTextLines(file.text, path: path, selector: selector, key: key, fileTags: fileTags)
 
         case .document(let format):
-            switch DocumentExtractor.extract(data: data, format: format) {
+            switch await DocumentExtractor.extract(data: data, format: format) {
             case .success(let extraction):
                 // Extracted text is not the file on disk — a hash tag would be
                 // meaningless and line numbers misleading, so return as-is.
@@ -1248,7 +1248,7 @@ enum BuiltinTools {
             }
 
         case .image:
-            return formatImageContent(data, path: path)
+            return await formatImageContent(data, path: path)
 
         case .unsupportedBinary:
             return ToolOutput(
@@ -1266,13 +1266,13 @@ enum BuiltinTools {
     /// ones. The `content` is the fallback text (classification + OCR), so a
     /// vision-incapable model gets a useful textual description directly
     /// in the tool result.
-    private static func formatImageContent(_ data: Data, path: String) -> ToolOutput {
+    private static func formatImageContent(_ data: Data, path: String) async -> ToolOutput {
         guard let processed = ImageProcessor.process(data) else {
             return ToolOutput(
                 content: "Could not process image \(path): unsupported or undecodable image format.", isError: false)
         }
         let mimeType = imageMimeType(for: processed.data) ?? "image/\(processed.ext)"
-        let fallback = ImageFallbackSynthesizer.fallback(for: data)
+        let fallback = await ImageFallbackSynthesizer.fallback(for: data)
         let image = ProcessedToolImage(data: processed.data, mimeType: mimeType, fallback: fallback)
         return ToolOutput(content: fallback, isError: false, image: image)
     }

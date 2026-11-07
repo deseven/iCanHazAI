@@ -356,6 +356,34 @@ extension AllAppTests {
             #expect(h.list.testHeight(of: "a") == idle)
         }
 
+        @Test("the pending spinner says what the engine is doing, follows changes and goes with the content")
+        func pendingStatusText() {
+            let h = Harness()
+            var row = ChatRendererFixtures.message("a", pendingStatus: "Performing OCR on the image…")
+            h.list.setMessages([row])
+            #expect(h.list.testPendingText(of: "a") == nil, "nothing is pending while the chat idles")
+
+            h.list.context.isStreaming = true
+            #expect(h.list.testPendingText(of: "a") == "Performing OCR on the image…")
+
+            row.pendingStatus = "Awaiting answer…"
+            h.list.update(row)
+            #expect(h.list.testPendingText(of: "a") == "Awaiting answer…")
+
+            row.content = "Hello"
+            h.list.update(row)
+            #expect(h.list.testPendingText(of: "a") == nil)
+        }
+
+        @Test("a pending row without a status shows the spinner alone")
+        func pendingWithoutStatus() {
+            let h = Harness()
+            h.list.setMessages([ChatRendererFixtures.message("a")])
+            h.list.context.isStreaming = true
+            #expect(h.list.testPendingText(of: "a") == nil)
+            #expect(h.list.testHeight(of: "a")! > 0)
+        }
+
         @Test("role, accent and features reconfigure views without touching heights")
         func visualContext() {
             let h = Harness()

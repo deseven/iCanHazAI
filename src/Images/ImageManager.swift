@@ -114,29 +114,93 @@ enum AttachmentManager {
 
     // MARK: - Commit (called on send)
 
-    /// Processes a pending attachment and saves it into the chat's attachment
-    /// directory. For images: resize + re-encode + save. For text/documents:
-    /// copy the original bytes, then extract text (documents only) and embed
-    /// it on the returned record. Returns the persistent `Attachment`, or nil
-    /// on failure.
-    static func commit(_ pending: PendingAttachment, chatFilename: String) -> Attachment? {
+    /// An attachment whose file is on disk but whose text isn't extracted yet.
+    /// Staging is quick, so the message can show its attachments at once;
+    /// `enrich` then does the slow part (OCR, document extraction).
+    struct Staged: Sendable {
+        var attachment: Attachment
+        let source: PendingAttachment
+    }
+
+    /// Whether `enrich` has real work to do for this kind: images get their
+    /// OCR fallback, documents their text. Plain text is complete once staged.
+    static func needsEnrichment(_ kind: DocumentKind) -> Bool {
+        switch kind {
+        case .image, .document: return true
+        case .text, .unsupportedBinary: return false
+        }
+    }
+
+    /// What the slow part of sending these attachments is doing, for the
+    /// placeholder under the user's message; nil when there is nothing slow.
+    static func enrichmentStatus(for pending: [PendingAttachment]) -> String? {
+        let images = pending.filter { $0.kind == .image }.count
+        let documents = pending.filter { needsEnrichment($0.kind) && $0.kind != .image }.count
+        switch (images, documents) {
+        case (0, 0): return nil
+        case (1, 0): return "Performing OCR on the image…"
+        case (_, 0): return "Performing OCR on \(images) images…"
+        case (0, 1): return "Extracting text from the document…"
+        case (0, _): return "Extracting text from \(documents) documents…"
+        default: return "Reading the attachments…"
+        }
+    }
+
+    /// Test seam: awaited at the start of `enrich`, so a test can hold the slow
+    /// part of a send and look at the app meanwhile.
+    nonisolated(unsafe) static var enrichmentGate: (@Sendable () async -> Void)?
+
+    /// Stages and enriches in one go. Returns the persistent `Attachment`, or
+    /// nil on failure.
+    static func commit(_ pending: PendingAttachment, chatFilename: String) async -> Attachment? {
+        guard let staged = stage(pending, chatFilename: chatFilename) else { return nil }
+        return await enrich(staged)
+    }
+
+    /// Saves a pending attachment into the chat's attachment directory. For
+    /// images: resize + re-encode + save. For text/documents: copy the original
+    /// bytes (plain text also embeds its content). Nil on failure.
+    static func stage(_ pending: PendingAttachment, chatFilename: String) -> Staged? {
         switch pending.kind {
         case .image:
-            return commitImage(pending, chatFilename: chatFilename)
+            return stageImage(pending, chatFilename: chatFilename)
         case .text:
-            return commitText(pending, chatFilename: chatFilename)
+            return stageText(pending, chatFilename: chatFilename)
         case .document(let format):
-            return commitDocument(pending, chatFilename: chatFilename, format: format)
+            return stageDocument(pending, chatFilename: chatFilename, format: format)
         case .unsupportedBinary:
             return nil
         }
     }
 
-    /// Resizes/re-encodes an image, saves it, and generates the text fallback
-    /// (classification labels + OCR) stored on the record. The fallback lives
-    /// in `Attachment.text` so a vision-incapable model can send it as a
-    /// text block instead of the image block.
-    private static func commitImage(_ pending: PendingAttachment, chatFilename: String) -> Attachment? {
+    /// Fills in what staging left out: the OCR fallback of an image (classification
+    /// labels + OCR, in `Attachment.text` so a vision-incapable model can send it
+    /// as a text block instead of the image block) or the extracted text of a
+    /// document. May take a long time; keep it off the main actor and `ChatEngine`.
+    static func enrich(_ staged: Staged) async -> Attachment {
+        await enrichmentGate?()
+        var attachment = staged.attachment
+        switch staged.source.kind {
+        case .image:
+            attachment.text = await ImageFallbackSynthesizer.fallback(for: staged.source.data)
+        case .document(let format):
+            switch await DocumentExtractor.extract(data: staged.source.data, format: format) {
+            case .success(let extraction):
+                attachment.text = extraction.text
+                attachment.status = extraction.truncated ? .truncated : .ok
+            case .unsupported(_, let reason), .failed(let reason):
+                attachment.text = nil
+                attachment.status = .failed
+                attachment.failureReason = reason
+            }
+        case .text, .unsupportedBinary:
+            break
+        }
+        return attachment
+    }
+
+    /// Resizes/re-encodes an image and saves it.
+    private static func stageImage(_ pending: PendingAttachment, chatFilename: String) -> Staged? {
         guard let processed = ImageProcessor.process(pending.data) else { return nil }
         let id = UUID()
         let baseName = pending.originalName ?? "\(id.uuidString).\(processed.ext)"
@@ -145,14 +209,15 @@ enum AttachmentManager {
         let filename = deduplicatedFilename(proposed: proposed, chatFilename: chatFilename)
         _ = EnvironmentManager.shared.saveAttachment(
             data: processed.data, filename: filename, chatFilename: chatFilename)
-        let fallback = ImageFallbackSynthesizer.fallback(for: pending.data)
-        return Attachment(
-            id: id, kind: .image, ext: ext, filename: filename, originalName: pending.originalName, text: fallback,
-            status: .ok)
+        return Staged(
+            attachment: Attachment(
+                id: id, kind: .image, ext: ext, filename: filename, originalName: pending.originalName,
+                status: .ok),
+            source: pending)
     }
 
     /// Copies a plain-text file as-is; the text is embedded on the record.
-    private static func commitText(_ pending: PendingAttachment, chatFilename: String) -> Attachment? {
+    private static func stageText(_ pending: PendingAttachment, chatFilename: String) -> Staged? {
         let id = UUID()
         let baseName = pending.originalName ?? "\(id.uuidString).txt"
         let proposed = sanitize(filename: baseName)
@@ -161,14 +226,16 @@ enum AttachmentManager {
         let filename = deduplicatedFilename(proposed: proposed, chatFilename: chatFilename)
         _ = EnvironmentManager.shared.saveAttachment(data: pending.data, filename: filename, chatFilename: chatFilename)
         let text = String(data: pending.data, encoding: .utf8) ?? ""
-        return Attachment(
-            id: id, kind: .text, ext: safeExt, filename: filename, originalName: pending.originalName, text: text,
-            status: .ok)
+        return Staged(
+            attachment: Attachment(
+                id: id, kind: .text, ext: safeExt, filename: filename, originalName: pending.originalName,
+                text: text, status: .ok),
+            source: pending)
     }
 
-    /// Copies a document's original bytes and extracts its text.
-    private static func commitDocument(_ pending: PendingAttachment, chatFilename: String, format: DocumentFormat)
-        -> Attachment?
+    /// Copies a document's original bytes; the text is extracted by `enrich`.
+    private static func stageDocument(_ pending: PendingAttachment, chatFilename: String, format: DocumentFormat)
+        -> Staged?
     {
         let id = UUID()
         let ext = format.fileExtensions.first ?? "bin"
@@ -176,22 +243,10 @@ enum AttachmentManager {
         let proposed = sanitize(filename: baseName)
         let filename = deduplicatedFilename(proposed: proposed, chatFilename: chatFilename)
         _ = EnvironmentManager.shared.saveAttachment(data: pending.data, filename: filename, chatFilename: chatFilename)
-        let result = DocumentExtractor.extract(data: pending.data, format: format)
-        switch result {
-        case .success(let extraction):
-            return Attachment(
-                id: id, kind: .document, ext: ext, filename: filename,
-                originalName: pending.originalName,
-                text: extraction.text,
-                status: extraction.truncated ? .truncated : .ok
-            )
-        case .unsupported(_, let reason), .failed(let reason):
-            return Attachment(
-                id: id, kind: .document, ext: ext, filename: filename,
-                originalName: pending.originalName,
-                text: nil, status: .failed, failureReason: reason
-            )
-        }
+        return Staged(
+            attachment: Attachment(
+                id: id, kind: .document, ext: ext, filename: filename, originalName: pending.originalName),
+            source: pending)
     }
 
     // MARK: - Pasteboard helpers

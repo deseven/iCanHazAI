@@ -65,8 +65,8 @@ struct AttachmentsBlock: Sendable {
 /// construction (`NSColor` is the only non-value member), so it can cross threads.
 struct RenderedMessage: @unchecked Sendable {
     enum Block {
-        /// Request sent, nothing received yet.
-        case pending
+        /// Request sent, nothing received yet; the text says what's going on.
+        case pending(status: String?)
         case collapsible(CollapsibleBlock)
         case attachments(AttachmentsBlock)
         case text(RenderedText, panel: Bool)
@@ -78,7 +78,7 @@ struct RenderedMessage: @unchecked Sendable {
 
     static func render(_ m: ChatRowModel, theme: Theme, streaming: Bool = false) -> RenderedMessage {
         var blocks: [Block] = []
-        if m.isPending(streaming: streaming) { blocks.append(.pending) }
+        if m.isPending(streaming: streaming) { blocks.append(.pending(status: m.pendingStatus)) }
 
         if m.hasThinking, let thinking = m.thinking {
             let thinkingStreams = m.isThinkingOnly(streaming: streaming)

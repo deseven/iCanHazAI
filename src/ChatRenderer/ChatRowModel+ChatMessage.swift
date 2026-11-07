@@ -20,7 +20,8 @@ extension ChatRowModel {
             model: message.model,
             attachments: (message.attachments ?? []).map(AttachmentInfo.init),
             toolCalls: (message.toolCalls ?? []).map(ToolCall.init),
-            toolResults: (message.toolResults ?? []).map(ToolResult.init)
+            toolResults: (message.toolResults ?? []).map(ToolResult.init),
+            pendingStatus: message.pendingStatus
         )
     }
 }

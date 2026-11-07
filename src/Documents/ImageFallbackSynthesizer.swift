@@ -30,21 +30,21 @@ enum ImageFallbackSynthesizer {
     ///   classification: {labels}. Text on the image: {ocr}.`
     ///
     /// Variants for no-text and fully-empty cases are handled explicitly.
-    static func fallback(for cgImage: CGImage) -> String {
+    static func fallback(for cgImage: CGImage) async -> String {
         let labels = TextRecognizer.classifyImage(cgImage: cgImage)
-        let ocr = TextRecognizer.recognize(cgImage: cgImage)
+        let ocr = await TextRecognizer.recognize(cgImage: cgImage)
         return synthesize(labels: labels, ocr: ocr)
     }
 
     /// Builds the fallback string for raw image `Data` (any ImageIO-decodable
     /// format). Returns a "no signals" fallback if the data can't be decoded.
-    static func fallback(for data: Data) -> String {
+    static func fallback(for data: Data) async -> String {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
             let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil)
         else {
             return synthesize(labels: [], ocr: nil)
         }
-        return fallback(for: cgImage)
+        return await fallback(for: cgImage)
     }
 
     /// Combines labels and OCR into the locked fallback string. Exposed for

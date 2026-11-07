@@ -165,6 +165,7 @@ enum LLMTransport {
             if attempt > 0 {
                 let delay = pow(2.0, Double(attempt - 1))
                 debugLog("LLM", "retry \(attempt)/\(maxRetries) after \(delay)s — \(model.id)")
+                await onChunk(.phase(.retrying(attempt: attempt, of: maxRetries)))
                 try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
 
@@ -214,6 +215,7 @@ enum LLMTransport {
         tools: [ToolDefinition]?,
         onChunk: @escaping @Sendable (StreamChunk) async -> Void
     ) async throws -> ChatService.StreamResult {
+        await onChunk(.phase(.connecting))
         let provider = provider(for: model)
         let request = try buildRequest(
             model: model,
@@ -248,6 +250,7 @@ enum LLMTransport {
                 )
                 throw labeled(provider.parseError(body, statusCode: http.statusCode), for: model)
             }
+            await onChunk(.phase(.awaitingResponse))
 
             var fullContent = ""
             var finishReason: String?
@@ -396,6 +399,7 @@ enum LLMTransport {
         case .content(let text): return !text.isEmpty
         case .thinking(let text): return !text.isEmpty
         case .toolCallDelta, .toolCall, .finishReason, .usage, .error: return true
+        case .phase: return false
         }
     }
 

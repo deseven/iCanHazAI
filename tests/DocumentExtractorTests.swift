@@ -273,7 +273,7 @@ extension AllAppTests {
         @Test("RTF extracts to plain text")
         func rtfExtraction() async throws {
             let f = try DocFixtures()
-            let result = DocumentExtractor.extract(data: f.rtf, format: .rtf)
+            let result = await DocumentExtractor.extract(data: f.rtf, format: .rtf)
             guard case .success(let ext) = result else {
                 Issue.record("expected success, got \(result)")
                 return
@@ -286,7 +286,7 @@ extension AllAppTests {
         @Test("DOCX extracts to plain text")
         func docxExtraction() async throws {
             let f = try DocFixtures()
-            let result = DocumentExtractor.extract(data: f.docx, format: .docx)
+            let result = await DocumentExtractor.extract(data: f.docx, format: .docx)
             guard case .success(let ext) = result else {
                 Issue.record("expected success, got \(result)")
                 return
@@ -297,7 +297,7 @@ extension AllAppTests {
         @Test("ODT extracts to plain text via AppKit .openDocument")
         func odtExtraction() async throws {
             let f = try DocFixtures()
-            let result = DocumentExtractor.extract(data: f.odt, format: .odt)
+            let result = await DocumentExtractor.extract(data: f.odt, format: .odt)
             guard case .success(let ext) = result else {
                 Issue.record("expected success, got \(result)")
                 return
@@ -308,7 +308,7 @@ extension AllAppTests {
         @Test("DOC extracts to plain text")
         func docExtraction() async throws {
             let f = try DocFixtures()
-            let result = DocumentExtractor.extract(data: f.doc, format: .doc)
+            let result = await DocumentExtractor.extract(data: f.doc, format: .doc)
             guard case .success(let ext) = result else {
                 Issue.record("expected success, got \(result)")
                 return
@@ -319,7 +319,7 @@ extension AllAppTests {
         @Test("PDF text-layer extraction includes page markers")
         func pdfTextLayer() async throws {
             let f = try DocFixtures()
-            let result = DocumentExtractor.extract(data: f.pdfText, format: .pdf)
+            let result = await DocumentExtractor.extract(data: f.pdfText, format: .pdf)
             guard case .success(let ext) = result else {
                 Issue.record("expected success, got \(result)")
                 return
@@ -334,7 +334,7 @@ extension AllAppTests {
         @Test("multi-page PDF produces per-page markers")
         func pdfMultiPageMarkers() async throws {
             let f = try DocFixtures()
-            let result = DocumentExtractor.extract(data: f.pdfMultiPage, format: .pdf)
+            let result = await DocumentExtractor.extract(data: f.pdfMultiPage, format: .pdf)
             guard case .success(let ext) = result else {
                 Issue.record("expected success, got \(result)")
                 return
@@ -348,7 +348,7 @@ extension AllAppTests {
         @Test("scanned PDF triggers OCR fallback")
         func pdfScannedOCR() async throws {
             let f = try DocFixtures()
-            let result = DocumentExtractor.extract(data: f.pdfScanned, format: .pdf)
+            let result = await DocumentExtractor.extract(data: f.pdfScanned, format: .pdf)
             guard case .success(let ext) = result else {
                 Issue.record("expected success, got \(result)")
                 return
@@ -372,7 +372,7 @@ extension AllAppTests {
         @Test("standalone image OCR returns recognized text")
         func imageOCR() async throws {
             let f = try DocFixtures()
-            let result = DocumentExtractor.ocrImage(f.pngWithText)
+            let result = await DocumentExtractor.ocrImage(f.pngWithText)
             guard case .success(let ext) = result else {
                 Issue.record("expected success, got \(result)")
                 return
@@ -401,7 +401,7 @@ extension AllAppTests {
         @Test("corrupt PDF reports failure, not crash")
         func corruptPDF() async throws {
             let junk = Data("not a pdf at all".utf8)
-            let result = DocumentExtractor.extract(data: junk, format: .pdf)
+            let result = await DocumentExtractor.extract(data: junk, format: .pdf)
             if case .success = result {
                 Issue.record("expected failure for corrupt PDF")
             }
