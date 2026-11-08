@@ -39,14 +39,16 @@ esac
 
 buildConfig="release"; [ "$mode" = "dev" ] && buildConfig="debug"
 
-# Dev builds a single arm64 slice straight into .build/arm64-apple-macosx;
-# everything else builds a universal (arm64+x86_64) binary that SwiftPM
-# lipo's automatically into .build/apple/Products.
+# Dev builds a single arm64 slice; everything else builds a universal
+# (arm64+x86_64) binary. Where SwiftPM puts the products depends on the
+# toolchain (e.g. .build/out/Products/Release, formerly .build/apple/Products/Release),
+# so ask it instead of guessing: a wrong guess silently packages a stale binary.
 if [ "$mode" = "dev" ]; then
-    buildDir="$loc/.build/arm64-apple-macosx/$buildConfig"
+    buildDir="$(cd "$loc" && swift build -c "$buildConfig" --arch arm64 --show-bin-path 2> /dev/null | tail -n 1)"
 else
-    buildDir="$loc/.build/apple/Products/$buildConfig"
+    buildDir="$(cd "$loc" && swift build -c "$buildConfig" --arch arm64 --arch x86_64 --show-bin-path 2> /dev/null | tail -n 1)"
 fi
+[ -n "$buildDir" ] || { echo "could not determine the SwiftPM build directory" >&2; exit 1; }
 
 # ── Determine signing & notarization ─────────────────────────────────
 can_sign=false

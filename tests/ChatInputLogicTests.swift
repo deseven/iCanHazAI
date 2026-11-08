@@ -185,5 +185,21 @@ extension AllAppTests {
             #expect(a != b)
             #expect(AppViewModel.recordsUIRelevantChanged(from: [b], to: [a]))
         }
+
+        @Test("a changed pending status reaches the published chat items, streamed text does not")
+        func pendingStatusIsUIRelevant() {
+            var chat = Chat()
+            chat.appendToActiveLeaf(ChatMessage(role: .assistant, content: ""))
+            var old = ChatRecord(filename: "x.json")
+            old.chat = chat
+            var new = old
+            let id = chat.activeLeafID!
+
+            new.chat?.updateMessage(id: id) { $0.content = "streamed" }
+            #expect(!AppViewModel.recordsUIRelevantChanged(from: [old], to: [new]))
+
+            new.chat?.updateMessage(id: id) { $0.pendingStatus = "Awaiting answer…" }
+            #expect(AppViewModel.recordsUIRelevantChanged(from: [old], to: [new]))
+        }
     }
 }

@@ -1751,6 +1751,8 @@ final class AppViewModel: ObservableObject {
     }
 
     /// Structural comparison of message trees, ignoring `content`/`thinking`.
+    /// `pendingStatus` must count: `chatItems` is also what the list is re-pushed from on
+    /// streaming/role changes, and a stale copy would wipe the live status.
     private nonisolated static func messagesUIRelevantChanged(_ a: [ChatMessage], _ b: [ChatMessage]) -> Bool {
         guard a.count == b.count else { return true }
         for (m, n) in zip(a, b) {
@@ -1763,6 +1765,7 @@ final class AppViewModel: ObservableObject {
                 || m.toolCalls != n.toolCalls
                 || m.toolResults != n.toolResults
                 || m.tokenUsage != n.tokenUsage
+                || m.pendingStatus != n.pendingStatus
                 || m.activeBranch != n.activeBranch
             {
                 return true
